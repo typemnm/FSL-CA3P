@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#153431" />
+    <meta
+      name="description"
+      content="로컬 보안 실습을 위한 바닐라 JavaScript 게시판입니다."
+    />
+    <title>모아 · 작은 게시판</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="site-shell">
+      <header class="site-header">
+        <div class="header-inner">
+          <a class="brand" href="/" aria-label="모아 게시판 홈">
+            <span class="brand-mark" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </span>
+            <span class="brand-word">moa<span class="brand-dot">.</span></span>
+          </a>
+          <div class="header-right">
+            <span class="header-caption">작은 생각이 모이는 곳</span>
+            <span class="header-divider" aria-hidden="true"></span>
+            <div class="current-user" aria-live="polite">
+              <span class="current-user-avatar" id="header-avatar">?</span>
+              <span id="header-user-name">연결 중</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-inner">
+          <div class="hero-copy">
+            <div class="eyebrow"><span class="eyebrow-line"></span> OPEN BOARD · 2026</div>
+            <h1 id="hero-title">생각을 적고,<br /><em>이야기를 나눠요.</em></h1>
+            <p>오늘의 한 문장부터 긴 이야기까지.<br />서로의 생각을 편하게 남겨 보세요.</p>
+          </div>
+          <div class="hero-visual" aria-hidden="true">
+            <div class="visual-orbit visual-orbit-one"></div>
+            <div class="visual-orbit visual-orbit-two"></div>
+            <div class="visual-note visual-note-back"><span></span><span></span></div>
+            <div class="visual-note visual-note-front">
+              <span class="visual-note-star">✳</span>
+              <span class="visual-note-line"></span>
+              <span class="visual-note-line short"></span>
+              <span class="visual-note-line medium"></span>
+              <span class="visual-note-dot"></span>
+            </div>
+            <span class="visual-spark visual-spark-one">✴</span>
+            <span class="visual-spark visual-spark-two">✳</span>
+          </div>
+        </div>
+      </section>
+
+      <main class="main-content">
+        <div class="lab-notice" role="note">
+          <span class="notice-icon" aria-hidden="true">!</span>
+          <div>
+            <strong>로컬 보안 실습용 게시판</strong>
+            <span>이 사이트에는 의도적으로 취약한 동작이 포함되어 있습니다. 실습 환경에서만 사용하세요.</span>
+          </div>
+          <span class="notice-label">SECURITY LAB</span>
+        </div>
+
+        <div class="workspace-grid">
+          <section class="feed" aria-labelledby="feed-title">
+            <div class="section-heading">
+              <div>
+                <span class="section-kicker">THE BOARD</span>
+                <h2 id="feed-title">모든 이야기 <span id="post-count" class="count-badge">0</span></h2>
+              </div>
+              <button class="refresh-button" id="refresh-button" type="button" aria-label="게시글 새로고침">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.4-5.65"/><path d="M20 4v6h-6"/></svg>
+                <span>새로고침</span>
+              </button>
+            </div>
+            <p class="feed-intro">다른 사람들의 글을 읽고, 내 이야기도 남겨 보세요.</p>
+            <div id="post-list" class="post-list" aria-live="polite" aria-busy="true"></div>
+          </section>
+
+          <aside class="sidebar" aria-label="글쓰기 및 계정 설정">
+            <section class="compose-panel" aria-labelledby="compose-title">
+              <div class="compose-topline"><span>NEW STORY</span><span aria-hidden="true">✳</span></div>
+              <h2 id="compose-title">새 글 쓰기<span class="heading-period">.</span></h2>
+              <p>지금 떠오른 생각을 자유롭게 적어 주세요.</p>
+              <form id="post-form">
+                <label for="post-title">제목</label>
+                <input id="post-title" name="title" type="text" maxlength="120" placeholder="어떤 이야기를 들려주실 건가요?" required />
+                <label for="post-content">내용</label>
+                <textarea id="post-content" name="content" rows="7" maxlength="10000" placeholder="당신의 이야기를 여기에 적어 주세요." required></textarea>
+                <div class="compose-meta"><span>서로를 존중하는 이야기를 나눠요</span><span id="content-length">0 / 10000</span></div>
+                <button class="publish-button" id="publish-button" type="submit">
+                  <span>게시글 올리기</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                </button>
+              </form>
+            </section>
+
+            <section class="account-panel" aria-labelledby="account-title">
+              <div class="account-heading">
+                <span class="account-icon" aria-hidden="true">◎</span>
+                <div><span class="section-kicker">DEMO ACCOUNT</span><h2 id="account-title">계정 전환</h2></div>
+              </div>
+              <p>다른 계정으로 게시판을 살펴보세요.</p>
+              <div class="account-buttons" role="group" aria-label="실습 계정 선택">
+                <button class="account-button" type="button" data-user-id="alice"><span class="account-button-avatar">A</span><span>앨리스</span><span class="account-indicator" aria-hidden="true"></span></button>
+                <button class="account-button" type="button" data-user-id="bob"><span class="account-button-avatar">B</span><span>밥</span><span class="account-indicator" aria-hidden="true"></span></button>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </main>
+
+      <footer class="site-footer"><span>moa<span class="brand-dot">.</span></span><span>작은 이야기가 모이는 게시판</span><span>LOCAL SECURITY LAB · 2026</span></footer>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
