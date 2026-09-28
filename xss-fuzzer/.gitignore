@@ -1,0 +1,5 @@
+node_modules/
+result.json
+my-result.json
+practice.json
+*.result.json
