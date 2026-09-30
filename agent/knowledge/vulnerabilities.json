@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1.0",
+  "entries": [
+    {
+      "id": "lab-client-controlled-delete-owner",
+      "title": "클라이언트 제어 authorId를 신뢰하는 삭제 권한 검사",
+      "cwe": "CWE-639",
+      "severity": "high",
+      "severityBasis": "local_lab_default_without_cvss_or_environmental_impact_analysis",
+      "appliesTo": "vul-web-1",
+      "preconditions": {
+        "attackerMustDifferFromOwner": true,
+        "resourceType": "post"
+      },
+      "actionTemplate": {
+        "module": "web_explorer",
+        "method": "DELETE",
+        "pathTemplate": "/api/posts/{resourceId}",
+        "query": {
+          "authorId": "{ownerId}"
+        }
+      },
+      "successCriteria": [
+        "공격자 세션과 리소스 소유자가 다르다",
+        "삭제 요청이 2xx 응답을 반환한다",
+        "삭제 전 존재하던 리소스가 재조회에서 사라진다"
+      ],
+      "provenance": {
+        "source": "vul-web-1/server.js",
+        "lines": "201-220",
+        "trust": "repository_source"
+      }
+    }
+  ]
+}

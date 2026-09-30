@@ -1,0 +1,13 @@
+{
+  "name": "ca3p-local-pentest-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "JSON 모듈 경계와 단일 사고 루프를 갖는 로컬 펜테스팅 에이전트 MVP",
+  "scripts": {
+    "demo": "node bin/demo.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
