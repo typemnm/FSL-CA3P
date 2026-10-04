@@ -1,14 +1,9 @@
 'use strict';
 
-const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { ActionPolicy } = require('./action-policy');
+const { RuleReasoningEngine } = require('./reasoning-engine');
 const { assertModuleSuccess, createEnvelope, invokeJson } = require('./protocol');
-const { PentestDb } = require('./modules/pentest-db');
-const { RuleReasoner } = require('./modules/rule-reasoner');
-const { ScopeGuard } = require('./modules/scope-guard');
-const { VulnerabilityDb } = require('./modules/vulnerability-db');
-const { WebExplorer } = require('./modules/web-explorer');
-const { consumeIsolatedLabCapability } = require('./target-harness');
 
 function responseJson(response) {
   const body = response?.payload?.response?.bodyJson;
@@ -16,36 +11,34 @@ function responseJson(response) {
   return body;
 }
 
+function assertGateway(gateway) {
+  if (!gateway || typeof gateway.exchange !== 'function') {
+    throw new TypeError('runOnce requires gateway.exchange(serializedRequest)');
+  }
+}
+
 async function runOnce({
-  harnessCapability,
-  outputRoot,
+  gateway,
+  targetOrigin,
   targetMode = 'isolated_local_lab',
+  targetApplication = 'external_target',
   maxIterations = 1,
-  knowledgeFile = path.join(__dirname, '..', 'knowledge', 'vulnerabilities.json'),
-  fetchImpl = fetch,
+  reasoningEngine = new RuleReasoningEngine(),
 }) {
   if (targetMode !== 'isolated_local_lab') throw new Error('MVP only supports an isolated local lab target');
   if (maxIterations !== 1) throw new Error('MVP requires maxIterations to equal 1');
+  assertGateway(gateway);
 
-  const { baseUrl } = consumeIsolatedLabCapability(harnessCapability);
-
+  const actionPolicy = new ActionPolicy({ targetOrigin, maxRequests: 8 });
+  const allowedOrigin = actionPolicy.allowed.origin;
   const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const startedAt = new Date().toISOString();
-  const allowedOrigin = new URL(baseUrl).origin;
   const policyContext = {
     targetMode,
-    allowedOrigin,
+    targetOrigin: allowedOrigin,
     maxIterations,
     rawChainOfThoughtStored: false,
   };
-
-  const scopeGuard = new ScopeGuard({ allowedOrigin, maxRequests: 8 });
-  const modules = {
-    web_explorer: new WebExplorer({ baseUrl: allowedOrigin, scopeGuard, fetchImpl }),
-    vulnerability_db: new VulnerabilityDb({ knowledgeFile }),
-    rule_reasoner: new RuleReasoner(),
-  };
-  const pentestDb = new PentestDb({ outputRoot, runId });
   const progress = {
     iterationStarted: 0,
     actionAttempted: false,
@@ -53,60 +46,72 @@ async function runOnce({
     verificationCompleted: false,
   };
 
-  async function writeEvent(iteration, stage, request, response) {
-    const storageRequest = createEnvelope({
-      runId,
-      iteration,
-      sender: 'orchestrator',
-      receiver: 'pentest_db',
-      type: 'storage.request',
-      payload: {
-        operation: 'append',
-        event: { stage, request, response },
-      },
-      policyContext,
-    });
-    assertModuleSuccess(await invokeJson(pentestDb, storageRequest));
-  }
-
-  async function callModule(moduleName, iteration, stage, payload, { onSuccess } = {}) {
+  async function sendStorage(iteration, operation, payload) {
     const request = createEnvelope({
       runId,
       iteration,
-      sender: 'orchestrator',
-      receiver: moduleName,
+      sender: 'agent',
+      receiver: 'pentest_db',
+      type: 'storage.request',
+      payload: { operation, ...payload },
+      policyContext,
+    });
+    return assertModuleSuccess(await invokeJson(gateway, request));
+  }
+
+  async function writeEvent(iteration, stage, request, response) {
+    return sendStorage(iteration, 'append', {
+      event: { stage, request, response },
+    });
+  }
+
+  async function recordInternalEvent(iteration, stage, input, output) {
+    JSON.stringify({ input, output });
+    return sendStorage(iteration, 'append', {
+      event: {
+        stage,
+        request: { sender: 'agent', operation: input.operation, payload: input },
+        response: { sender: 'agent', payload: output },
+      },
+    });
+  }
+
+  async function callExternal(receiver, iteration, stage, payload, { onSuccess } = {}) {
+    if (receiver === 'web_explorer') actionPolicy.authorize(stage, payload);
+    const request = createEnvelope({
+      runId,
+      iteration,
+      sender: 'agent',
+      receiver,
       type: 'module.request',
       payload,
       policyContext,
     });
-    const response = await invokeJson(modules[moduleName], request);
+    const response = await invokeJson(gateway, request);
+
     let successfulResponse;
     try {
       successfulResponse = assertModuleSuccess(response);
       if (onSuccess) onSuccess(successfulResponse);
     } catch (error) {
-      await writeEvent(iteration, stage, request, response);
+      try {
+        await writeEvent(iteration, stage, request, response);
+      } catch (storageError) {
+        error.eventStorageError = storageError;
+      }
       throw error;
     }
+
     await writeEvent(iteration, stage, request, response);
     return successfulResponse;
   }
 
   async function finalize(report) {
-    const request = createEnvelope({
-      runId,
-      iteration: report.iterations,
-      sender: 'orchestrator',
-      receiver: 'pentest_db',
-      type: 'storage.request',
-      payload: { operation: 'finalize', report },
-      policyContext,
-    });
-    return assertModuleSuccess(await invokeJson(pentestDb, request));
+    return sendStorage(report.iterations, 'finalize', { report });
   }
 
   try {
-    const attackerSession = await callModule('web_explorer', 0, 'setup.attacker_session', {
+    const attackerSession = await callExternal('web_explorer', 0, 'setup.attacker_session', {
       operation: 'http_request',
       session: 'attacker',
       method: 'GET',
@@ -115,7 +120,7 @@ async function runOnce({
     const attacker = responseJson(attackerSession).user;
     if (attacker?.id !== 'alice') throw new Error('Expected the default attacker session to be Alice');
 
-    const fixtureSession = await callModule('web_explorer', 0, 'setup.fixture_session', {
+    const fixtureSession = await callExternal('web_explorer', 0, 'setup.fixture_session', {
       operation: 'http_request',
       session: 'fixture',
       method: 'POST',
@@ -125,24 +130,24 @@ async function runOnce({
     const owner = responseJson(fixtureSession).user;
     if (owner?.id !== 'bob') throw new Error('Expected the fixture owner session to be Bob');
 
-    const canaryTitle = `agent-canary-${runId}`;
-    const fixtureCreate = await callModule('web_explorer', 0, 'setup.canary_post', {
+    const fixtureCreate = await callExternal('web_explorer', 0, 'setup.canary_post', {
       operation: 'http_request',
       session: 'fixture',
       method: 'POST',
       path: '/api/posts',
       body: {
-        title: canaryTitle,
-        content: 'Isolated authorization-test canary. No real user data.',
+        title: `agent-canary-${runId}`,
+        content: 'Authorization-test canary requested by the agent.',
       },
     });
     const fixturePost = responseJson(fixtureCreate).post;
-    if (!fixturePost?.id || fixturePost.authorId !== owner.id) throw new Error('Failed to create Bob canary post');
+    if (!fixturePost?.id || fixturePost.authorId !== owner.id) throw new Error('Failed to obtain the Bob canary fixture');
+    actionPolicy.bindDeleteTarget({ resourceId: fixturePost.id, ownerId: owner.id });
 
     let reflection;
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       progress.iterationStarted = iteration;
-      const observation = await callModule('web_explorer', iteration, 'loop.observe', {
+      const observation = await callExternal('web_explorer', iteration, 'loop.observe', {
         operation: 'http_request',
         session: 'attacker',
         method: 'GET',
@@ -151,7 +156,7 @@ async function runOnce({
       const postsBefore = responseJson(observation).posts;
       const beforeExists = postsBefore.some(post => String(post.id) === String(fixturePost.id));
 
-      const knowledge = await callModule('vulnerability_db', iteration, 'loop.knowledge', {
+      const knowledge = await callExternal('vulnerability_db', iteration, 'loop.knowledge', {
         operation: 'match',
         observation: {
           posts: postsBefore,
@@ -160,25 +165,32 @@ async function runOnce({
         },
       });
 
-      const plan = await callModule('rule_reasoner', iteration, 'loop.think', {
+      const planInput = {
         operation: 'plan',
         candidates: knowledge.payload.candidates,
-      });
-      if (plan.payload.state !== 'act' || !plan.payload.action) {
-        throw new Error(`Reasoner stopped before action: ${plan.payload.decisionSummary}`);
+        expectedTarget: {
+          resourceId: fixturePost.id,
+          ownerId: owner.id,
+          attackerId: attacker.id,
+        },
+      };
+      const plan = reasoningEngine.plan(planInput);
+      await recordInternalEvent(iteration, 'loop.think', planInput, plan);
+      if (plan.state !== 'act' || !plan.action) {
+        throw new Error(`Reasoning engine stopped before action: ${plan.decisionSummary}`);
       }
 
       progress.actionAttempted = true;
-      const action = await callModule(
+      const action = await callExternal(
         'web_explorer',
         iteration,
         'loop.act',
-        plan.payload.action,
+        plan.action,
         { onSuccess: () => { progress.actionCompleted = true; } },
       );
       const actionBody = responseJson(action);
 
-      const verification = await callModule(
+      const verification = await callExternal(
         'web_explorer',
         iteration,
         'loop.verify',
@@ -193,10 +205,11 @@ async function runOnce({
       const postsAfter = responseJson(verification).posts;
       const afterExists = postsAfter.some(post => String(post.id) === String(fixturePost.id));
 
-      reflection = await callModule('rule_reasoner', iteration, 'loop.reflect', {
+      const reflectionInput = {
         operation: 'reflect',
-        target: plan.payload.target,
-        knowledge: plan.payload.knowledge,
+        runId,
+        target: plan.target,
+        knowledge: plan.knowledge,
         before: { exists: beforeExists },
         actionResult: {
           status: action.payload.response.status,
@@ -211,58 +224,56 @@ async function runOnce({
           action.payload.evidenceId,
           verification.payload.evidenceId,
         ],
-      });
+      };
+      reflection = reasoningEngine.reflect(reflectionInput);
+      await recordInternalEvent(iteration, 'loop.reflect', reflectionInput, reflection);
     }
 
     const report = {
       schemaVersion: '1.0',
       runId,
       status: 'completed',
-      target: { origin: allowedOrigin, mode: targetMode, application: 'vul-web-1' },
+      target: { origin: allowedOrigin, mode: targetMode, application: targetApplication },
       iterations: maxIterations,
       progress,
-      finding: reflection.payload.finding,
-      metrics: {
-        ...scopeGuard.metrics(),
-        iterations: maxIterations,
-      },
+      finding: reflection.finding,
+      metrics: { ...actionPolicy.metrics(), iterations: maxIterations },
       safety: {
-        exactOriginOnly: true,
-        loopbackOnly: true,
-        isolatedTemporaryData: true,
-        cookiesPersisted: false,
+        externalJsonOnly: true,
+        externalModulesImplementedByAgent: false,
+        agentHandlesCookies: false,
         rawChainOfThoughtStored: false,
       },
       startedAt,
       completedAt: new Date().toISOString(),
     };
     const stored = await finalize(report);
-    return {
-      report,
-      artifacts: stored.payload,
-    };
+    return { report, artifacts: stored.payload };
   } catch (error) {
     const failureReport = {
       schemaVersion: '1.0',
       runId,
       status: 'failed',
-      target: { origin: allowedOrigin, mode: targetMode, application: 'vul-web-1' },
+      target: { origin: allowedOrigin, mode: targetMode, application: targetApplication },
       iterations: progress.iterationStarted,
       progress,
-      error: { name: error.name, message: error.message },
-      metrics: {
-        ...scopeGuard.metrics(),
-        iterations: progress.iterationStarted,
+      error: {
+        name: error.name,
+        code: error.code || 'AGENT_FAILURE',
+        source: error.source || 'agent',
+        message: error.message,
       },
+      metrics: { ...actionPolicy.metrics(), iterations: progress.iterationStarted },
       startedAt,
       completedAt: new Date().toISOString(),
     };
+    error.runId = runId;
+    error.failureReport = failureReport;
     try {
       await finalize(failureReport);
-    } catch {
-      // Preserve the original execution error if persistence also fails.
+    } catch (storageError) {
+      error.failureReportStorageError = storageError;
     }
-    error.runId = runId;
     throw error;
   }
 }

@@ -2,362 +2,417 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createEnvelope, invokeJson, parseEnvelope } = require('../src/protocol');
-const { runOnce } = require('../src/orchestrator');
-const { ScopeGuard } = require('../src/modules/scope-guard');
-const { WebExplorer } = require('../src/modules/web-explorer');
-const { startIsolatedLab, withIsolatedLab } = require('../src/target-harness');
+const {
+  ActionPolicy,
+  MAX_MESSAGE_BYTES,
+  RuleReasoningEngine,
+  assertModuleSuccess,
+  createEnvelope,
+  invokeJson,
+  parseEnvelope,
+  replyTo,
+  runOnce,
+} = require('../src');
+const { createScriptedGateway } = require('../test-support/scripted-gateway');
 
-async function snapshot(file) {
+const TARGET_ORIGIN = 'http://127.0.0.1:3000';
+
+async function exists(file) {
   try {
-    return await fs.readFile(file);
+    await fs.stat(file);
+    return true;
   } catch (error) {
-    if (error.code === 'ENOENT') return null;
+    if (error.code === 'ENOENT') return false;
     throw error;
   }
 }
 
-test('one JSON reasoning loop confirms cross-user deletion in an isolated lab', async () => {
-  const originalData = path.resolve(__dirname, '..', '..', 'vul-web-1', 'data', 'posts.json');
-  const originalBefore = await snapshot(originalData);
-  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ca3p-agent-output-'));
-  let target;
+async function listRelativeFiles(directory, root = directory) {
+  const files = [];
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listRelativeFiles(absolute, root));
+    } else if (entry.isFile()) {
+      files.push(path.relative(root, absolute).split(path.sep).join('/'));
+    }
+  }
+  return files.sort();
+}
 
-  try {
-    target = await startIsolatedLab();
-    assert.notEqual(new URL(target.baseUrl).port, '0', 'The child must report its OS-assigned port');
-    const result = await runOnce({
-      harnessCapability: target.capability,
-      outputRoot,
-      targetMode: 'isolated_local_lab',
-      maxIterations: 1,
-    });
+test('agent completes exactly one loop through serialized external JSON contracts', async () => {
+  const gateway = createScriptedGateway();
+  const result = await runOnce({ gateway, targetOrigin: TARGET_ORIGIN });
 
-    assert.equal(result.report.status, 'completed');
-    assert.equal(result.report.iterations, 1);
-    assert.deepEqual(result.report.progress, {
-      iterationStarted: 1,
-      actionAttempted: true,
-      actionCompleted: true,
-      verificationCompleted: true,
-    });
-    assert.equal(result.report.finding.status, 'confirmed');
-    assert.equal(result.report.finding.actorId, 'alice');
-    assert.equal(result.report.finding.ownerId, 'bob');
-    assert.deepEqual(result.report.finding.checks, {
-      differentUsers: true,
-      existedBefore: true,
-      deleteAccepted: true,
-      absentAfter: true,
-    });
-    assert.equal(result.report.metrics.requestCount, 6);
-    assert.equal(result.report.finding.evidenceRefs.length, 6);
+  assert.equal(result.report.status, 'completed');
+  assert.equal(result.report.iterations, 1);
+  assert.equal(result.report.finding.status, 'confirmed');
+  assert.deepEqual(result.report.progress, {
+    iterationStarted: 1,
+    actionAttempted: true,
+    actionCompleted: true,
+    verificationCompleted: true,
+  });
+  assert.equal(result.report.metrics.requestCount, 6);
+  assert.equal(result.report.finding.evidenceRefs.length, 6);
+  assert.equal(gateway.events.length, 9);
+  assert.equal(gateway.finalReport.runId, result.report.runId);
 
-    const storedReport = JSON.parse(await fs.readFile(result.artifacts.reportFile, 'utf8'));
-    assert.equal(storedReport.runId, result.report.runId);
-    const eventLines = (await fs.readFile(result.artifacts.eventsFile, 'utf8')).trim().split('\n');
-    assert.equal(eventLines.length, 9);
-    eventLines.forEach(line => JSON.parse(line));
+  const externalReceivers = new Set(['web_explorer', 'vulnerability_db', 'pentest_db']);
+  gateway.requests.forEach(({ raw, envelope }) => {
+    assert.equal(typeof raw, 'string');
+    assert.deepEqual(JSON.parse(raw), envelope);
+    assert.ok(externalReceivers.has(envelope.receiver));
+  });
+  gateway.rawResponses.forEach(raw => {
+    assert.equal(typeof raw, 'string');
+    JSON.parse(raw);
+  });
 
-    const persistedText = `${await fs.readFile(result.artifacts.eventsFile, 'utf8')}\n${JSON.stringify(storedReport)}`;
-    assert.equal(persistedText.includes('board_user='), false, 'Cookies must never be persisted');
-  } finally {
-    if (target) await target.stop();
-    await fs.rm(outputRoot, { recursive: true, force: true });
+  const deleteRequests = gateway.requests.filter(({ envelope }) => (
+    envelope.receiver === 'web_explorer' && envelope.payload.method === 'DELETE'
+  ));
+  assert.equal(deleteRequests.length, 1, 'The agent must emit exactly one mutating action');
+  assert.equal(
+    gateway.requests.some(({ envelope }) => envelope.receiver === 'rule_reasoner'),
+    false,
+    'Reasoning is internal to the agent, not an external module',
+  );
+});
+
+test('production contains only agent core and external contracts, not module implementations', async () => {
+  const root = path.resolve(__dirname, '..');
+  const sourceDir = path.join(root, 'src');
+  const productionFiles = await listRelativeFiles(sourceDir);
+  assert.deepEqual(productionFiles, [
+    'action-policy.js',
+    'index.js',
+    'orchestrator.js',
+    'protocol.js',
+    'reasoning-engine.js',
+  ]);
+
+  const forbidden = [
+    'src/modules/web-explorer.js',
+    'src/modules/vulnerability-db.js',
+    'src/modules/pentest-db.js',
+    'src/modules/scope-guard.js',
+    'src/target-harness.js',
+    'knowledge/vulnerabilities.json',
+  ];
+  for (const relative of forbidden) {
+    assert.equal(await exists(path.join(root, relative)), false, `${relative} must remain external`);
   }
 
-  assert.ok(target, 'The isolated target must have started');
-  await assert.rejects(
-    () => fs.stat(target.tempDir),
-    error => error.code === 'ENOENT',
-    'The isolated target directory must be removed',
-  );
-  assert.ok(
-    target.child.exitCode !== null || target.child.signalCode !== null,
-    'The isolated target process must be stopped',
-  );
-
-  const originalAfter = await snapshot(originalData);
-  if (originalBefore === null) {
-    assert.equal(originalAfter, null, 'The original site data file must not be created');
-  } else {
-    assert.deepEqual(originalAfter, originalBefore, 'The original site data file must not change');
-  }
+  const sourceText = (await Promise.all(productionFiles.map(file => (
+    fs.readFile(path.join(sourceDir, file), 'utf8')
+  )))).join('\n');
+  assert.doesNotMatch(sourceText, /node:(?:fs|child_process|http|https|net|tls)/);
+  assert.doesNotMatch(sourceText, /\bfetch\s*\(/);
+  assert.doesNotMatch(sourceText, /class\s+(?:WebExplorer|VulnerabilityDb|PentestDb|ScopeGuard)/);
+  assert.doesNotMatch(sourceText, /startIsolatedLab|withIsolatedLab/);
+  assert.doesNotMatch(sourceText, /test-support/);
 });
 
-test('isolated harness stops the process and removes temp data when its task fails', async () => {
-  let captured;
-  await assert.rejects(
-    () => withIsolatedLab(async target => {
-      captured = target;
-      throw new Error('deliberate task failure');
-    }),
-    /deliberate task failure/,
-  );
-  assert.ok(captured);
-  assert.ok(captured.child.exitCode !== null || captured.child.signalCode !== null);
-  await assert.rejects(() => fs.stat(captured.tempDir), error => error.code === 'ENOENT');
-});
-
-test('scope guard returns a JSON error envelope for a different origin', async () => {
-  const guard = new ScopeGuard({ allowedOrigin: 'http://127.0.0.1:3000' });
+test('gateway distinguishes transport failures from external module errors', async () => {
   const request = createEnvelope({
-    runId: 'run-test',
-    iteration: 0,
-    sender: 'web_explorer',
-    receiver: 'scope_guard',
-    type: 'scope.request',
-    payload: {
-      operation: 'authorize_http',
-      method: 'GET',
-      url: 'http://127.0.0.1:3001/api/posts',
-    },
-    policyContext: { targetMode: 'isolated_local_lab' },
+    runId: 'run-gateway-errors',
+    iteration: 1,
+    sender: 'agent',
+    receiver: 'vulnerability_db',
+    type: 'module.request',
+    payload: { operation: 'match' },
   });
-  const response = await invokeJson(guard, request);
+
+  const transportFailure = await invokeJson({
+    exchange: async () => { throw new Error('offline'); },
+  }, request);
+  assert.equal(transportFailure.type, 'module.error');
+  assert.equal(transportFailure.payload.error.code, 'TRANSPORT_FAILURE');
+  assert.equal(transportFailure.payload.error.source, 'agent_gateway');
+
+  const externalFailure = await invokeJson({
+    exchange: async raw => {
+      const inbound = parseEnvelope(raw, 'vulnerability_db');
+      return JSON.stringify(replyTo(inbound, 'vulnerability_db', 'module.error', {
+        error: { code: 'EXTERNAL_FAILURE', message: 'external rejection', source: 'external_module' },
+      }));
+    },
+  }, request);
+  assert.equal(externalFailure.payload.error.code, 'EXTERNAL_FAILURE');
+  assert.equal(externalFailure.payload.error.source, 'external_module');
+});
+
+test('external modules cannot impersonate agent gateway error provenance', async () => {
+  const request = createEnvelope({
+    runId: 'run-error-provenance',
+    iteration: 1,
+    sender: 'agent',
+    receiver: 'vulnerability_db',
+    type: 'module.request',
+    payload: { operation: 'match' },
+  });
+  const response = await invokeJson({
+    exchange: async raw => {
+      const inbound = parseEnvelope(raw, 'vulnerability_db');
+      return JSON.stringify(replyTo(inbound, 'vulnerability_db', 'module.error', {
+        error: {
+          code: 'TRANSPORT_FAILURE',
+          message: 'spoofed gateway failure',
+          source: 'agent_gateway',
+        },
+      }));
+    },
+  }, request);
+
+  assert.throws(() => assertModuleSuccess(response), error => {
+    assert.equal(error.source, 'external_module');
+    assert.equal(error.externalModule, 'vulnerability_db');
+    assert.equal(error.code, 'EXTERNAL_MODULE_FAILURE');
+    assert.equal(error.reportedCode, 'TRANSPORT_FAILURE');
+    return true;
+  });
+});
+
+test('gateway enforces module-specific response types and evidence payloads', async () => {
+  const storageRequest = createEnvelope({
+    runId: 'run-wrong-response-type',
+    iteration: 1,
+    sender: 'agent',
+    receiver: 'pentest_db',
+    type: 'storage.request',
+    payload: { operation: 'append', event: {} },
+  });
+  const wrongType = await invokeJson({
+    exchange: async raw => {
+      const inbound = parseEnvelope(raw, 'pentest_db');
+      return JSON.stringify(replyTo(inbound, 'pentest_db', 'web.result', {}));
+    },
+  }, storageRequest);
+  assert.equal(wrongType.payload.error.code, 'PROTOCOL_FAILURE');
+  assert.match(wrongType.payload.error.message, /Expected storage\.appended/);
+
+  const webRequest = createEnvelope({
+    runId: 'run-missing-evidence',
+    iteration: 1,
+    sender: 'agent',
+    receiver: 'web_explorer',
+    type: 'module.request',
+    payload: { operation: 'http_request' },
+  });
+  const missingEvidence = await invokeJson({
+    exchange: async raw => {
+      const inbound = parseEnvelope(raw, 'web_explorer');
+      return JSON.stringify(replyTo(inbound, 'web_explorer', 'web.result', {
+        operation: 'http_request',
+        response: { status: 200, ok: true, bodyJson: {} },
+      }));
+    },
+  }, webRequest);
+  assert.equal(missingEvidence.payload.error.code, 'PROTOCOL_FAILURE');
+  assert.match(missingEvidence.payload.error.message, /HTTP evidence contract/);
+
+  const knowledgeRequest = createEnvelope({
+    runId: 'run-invalid-candidate',
+    iteration: 1,
+    sender: 'agent',
+    receiver: 'vulnerability_db',
+    type: 'module.request',
+    payload: { operation: 'match' },
+  });
+  const invalidCandidate = await invokeJson({
+    exchange: async raw => {
+      const inbound = parseEnvelope(raw, 'vulnerability_db');
+      return JSON.stringify(replyTo(inbound, 'vulnerability_db', 'knowledge.result', {
+        candidates: [{ resource: { id: 4, ownerId: 'bob' } }],
+      }));
+    },
+  }, knowledgeRequest);
+  assert.equal(invalidCandidate.payload.error.code, 'PROTOCOL_FAILURE');
+  assert.match(invalidCandidate.payload.error.message, /valid candidate contracts/);
+});
+
+test('gateway calls time out instead of blocking the agent indefinitely', async () => {
+  const request = createEnvelope({
+    runId: 'run-gateway-timeout',
+    iteration: 0,
+    sender: 'agent',
+    receiver: 'web_explorer',
+    type: 'module.request',
+    payload: { operation: 'http_request' },
+  });
+  const response = await invokeJson({
+    exchange: async () => new Promise(() => {}),
+  }, request, { timeoutMs: 5 });
+
+  assert.equal(response.payload.error.code, 'TRANSPORT_FAILURE');
+  assert.match(response.payload.error.message, /timed out/);
+
+  const nonErrorRejection = await invokeJson({
+    exchange: async () => Promise.reject('string rejection'),
+  }, request);
+  assert.equal(nonErrorRejection.payload.error.code, 'TRANSPORT_FAILURE');
+  assert.equal(nonErrorRejection.payload.error.message, 'string rejection');
+});
+
+test('invalid or non-serialized module responses become correlated protocol errors', async () => {
+  const request = createEnvelope({
+    runId: 'run-invalid-response',
+    iteration: 0,
+    sender: 'agent',
+    receiver: 'web_explorer',
+    type: 'module.request',
+    payload: { operation: 'http_request' },
+  });
+  const response = await invokeJson({ exchange: async () => ({ not: 'serialized' }) }, request);
   assert.equal(response.type, 'module.error');
-  assert.match(response.payload.error.message, /outside the exact allowed scope/);
+  assert.equal(response.sender, 'agent');
+  assert.equal(response.receiver, 'agent');
   assert.equal(response.correlationId, request.messageId);
-  assert.equal(guard.metrics().requestCount, 0);
+  assert.equal(response.payload.error.code, 'PROTOCOL_FAILURE');
+  assert.throws(() => parseEnvelope({}, 'web_explorer'), /serialized JSON only/);
 });
 
-test('scope guard rejects non-allowlisted paths and enforces its request budget', async () => {
-  const guard = new ScopeGuard({ allowedOrigin: 'http://127.0.0.1:3000', maxRequests: 1 });
-  const requestFor = url => createEnvelope({
-    runId: 'run-guard',
-    iteration: 0,
-    sender: 'web_explorer',
-    receiver: 'scope_guard',
-    type: 'scope.request',
-    payload: { operation: 'authorize_http', method: 'GET', url },
-    policyContext: { targetMode: 'isolated_local_lab' },
-  });
-
-  const badPath = await invokeJson(guard, requestFor('http://127.0.0.1:3000/admin'));
-  assert.equal(badPath.type, 'module.error');
-  assert.equal(guard.metrics().requestCount, 0);
-
-  const allowed = await invokeJson(guard, requestFor('http://127.0.0.1:3000/api/posts'));
-  assert.equal(allowed.type, 'scope.authorized');
-  const overBudget = await invokeJson(guard, requestFor('http://127.0.0.1:3000/api/posts'));
-  assert.equal(overBudget.type, 'module.error');
-  assert.match(overBudget.payload.error.message, /budget exhausted/);
-  assert.equal(guard.metrics().requestCount, 1);
-});
-
-test('scope guard rejects non-allowlisted methods and malformed DELETE queries', async () => {
-  const guard = new ScopeGuard({ allowedOrigin: 'http://127.0.0.1:3000' });
-  const requestFor = (method, url) => createEnvelope({
-    runId: 'run-guard-method',
-    iteration: 0,
-    sender: 'web_explorer',
-    receiver: 'scope_guard',
-    type: 'scope.request',
-    payload: { operation: 'authorize_http', method, url },
-    policyContext: { targetMode: 'isolated_local_lab' },
-  });
-
-  const patch = await invokeJson(
-    guard,
-    requestFor('PATCH', 'http://127.0.0.1:3000/api/posts/1'),
-  );
-  assert.equal(patch.type, 'module.error');
-  assert.match(patch.payload.error.message, /not allowlisted/);
-
-  const missingAuthor = await invokeJson(
-    guard,
-    requestFor('DELETE', 'http://127.0.0.1:3000/api/posts/1'),
-  );
-  assert.equal(missingAuthor.type, 'module.error');
-  assert.match(missingAuthor.payload.error.message, /exactly one non-empty authorId/);
-
-  const extraQuery = await invokeJson(
-    guard,
-    requestFor('DELETE', 'http://127.0.0.1:3000/api/posts/1?authorId=bob&force=1'),
-  );
-  assert.equal(extraQuery.type, 'module.error');
-  assert.equal(guard.metrics().requestCount, 0);
-});
-
-test('web explorer never calls fetch when scope guard rejects the target', async () => {
-  let fetchCalls = 0;
-  const guard = new ScopeGuard({ allowedOrigin: 'http://127.0.0.1:3000' });
-  const explorer = new WebExplorer({
-    baseUrl: 'http://127.0.0.1:3000',
-    scopeGuard: guard,
-    fetchImpl: async () => {
-      fetchCalls += 1;
-      throw new Error('fetch must not run');
-    },
-  });
+test('outbound messages over the JSON size limit are rejected before gateway dispatch', async () => {
+  let calls = 0;
   const request = createEnvelope({
-    runId: 'run-web-scope',
+    runId: 'run-oversized-request',
     iteration: 0,
-    sender: 'orchestrator',
+    sender: 'agent',
     receiver: 'web_explorer',
     type: 'module.request',
-    payload: {
-      operation: 'http_request',
-      method: 'GET',
-      path: 'http://127.0.0.1:3001/api/posts',
-    },
+    payload: { oversized: 'x'.repeat(MAX_MESSAGE_BYTES) },
   });
-  const response = await invokeJson(explorer, request);
+  const response = await invokeJson({
+    exchange: async () => { calls += 1; },
+  }, request);
+
+  assert.equal(calls, 0);
   assert.equal(response.type, 'module.error');
-  assert.match(response.payload.error.message, /outside the exact allowed scope/);
-  assert.equal(fetchCalls, 0);
+  assert.equal(response.sender, 'agent');
+  assert.equal(response.payload.error.code, 'PROTOCOL_FAILURE');
+  assert.match(response.payload.error.message, /exceeds 1 MB/);
 });
 
-test('web explorer stops reading a streamed response above the 1 MB limit', async () => {
-  const guard = new ScopeGuard({ allowedOrigin: 'http://127.0.0.1:3000' });
-  const oversizedStream = new ReadableStream({
-    start(controller) {
-      controller.enqueue(new Uint8Array(600_000));
-      controller.enqueue(new Uint8Array(500_001));
-    },
-  });
-  const explorer = new WebExplorer({
-    baseUrl: 'http://127.0.0.1:3000',
-    scopeGuard: guard,
-    fetchImpl: async () => new Response(oversizedStream, {
-      status: 200,
-      headers: { 'content-type': 'application/octet-stream' },
-    }),
-  });
+test('a mismatched external response correlation becomes an agent protocol error', async () => {
   const request = createEnvelope({
-    runId: 'run-web-limit',
-    iteration: 0,
-    sender: 'orchestrator',
+    runId: 'run-wrong-correlation',
+    iteration: 1,
+    sender: 'agent',
     receiver: 'web_explorer',
     type: 'module.request',
-    payload: { operation: 'http_request', method: 'GET', path: '/api/posts' },
+    payload: { operation: 'http_request' },
   });
-  const response = await invokeJson(explorer, request);
+  const response = await invokeJson({
+    exchange: async raw => {
+      const inbound = parseEnvelope(raw, 'web_explorer');
+      const outbound = replyTo(inbound, 'web_explorer', 'web.result', {});
+      outbound.correlationId = 'wrong-correlation-id';
+      return JSON.stringify(outbound);
+    },
+  }, request);
+
   assert.equal(response.type, 'module.error');
-  assert.match(response.payload.error.message, /exceeded the 1 MB lab limit/);
-  assert.equal(guard.metrics().requestCount, 1);
+  assert.equal(response.sender, 'agent');
+  assert.equal(response.payload.error.code, 'PROTOCOL_FAILURE');
+  assert.match(response.payload.error.message, /correlation mismatch/);
 });
 
-test('invalid module output is normalized to a correlated JSON error envelope', async () => {
-  const request = createEnvelope({
-    runId: 'run-invalid-module',
-    iteration: 0,
-    sender: 'orchestrator',
-    receiver: 'web_explorer',
-    type: 'module.request',
-    payload: { operation: 'noop' },
-  });
-  const response = await invokeJson({ handle: async () => '{"not":"an envelope"}' }, request);
-  assert.equal(response.type, 'module.error');
-  assert.equal(response.correlationId, request.messageId);
-  assert.equal(response.payload.error.retryable, false);
-});
-
-test('orchestrator refuses more than one reasoning iteration', async () => {
+test('orchestrator refuses a second iteration before contacting the gateway', async () => {
+  let calls = 0;
   await assert.rejects(
     () => runOnce({
-      outputRoot: os.tmpdir(),
+      gateway: { exchange: async () => { calls += 1; } },
+      targetOrigin: TARGET_ORIGIN,
       maxIterations: 2,
     }),
     /maxIterations to equal 1/,
   );
+  assert.equal(calls, 0);
 });
 
-test('orchestrator rejects a forged or stopped isolated-lab capability', async () => {
-  await assert.rejects(
-    () => runOnce({
-      harnessCapability: Object.freeze({}),
-      outputRoot: os.tmpdir(),
-    }),
-    /live isolated-lab capability/,
-  );
-
-  const target = await startIsolatedLab();
-  await target.stop();
-  await assert.rejects(
-    () => runOnce({ harnessCapability: target.capability, outputRoot: os.tmpdir() }),
-    /live isolated-lab capability|no longer active/,
-  );
-});
-
-test('isolated-lab capabilities are single-use', async () => {
-  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ca3p-agent-once-output-'));
-  const target = await startIsolatedLab();
+test('failure after the action preserves progress and never retries DELETE', async () => {
+  const gateway = createScriptedGateway({ failOn: 'verify_transport' });
+  let caught;
   try {
-    await runOnce({ harnessCapability: target.capability, outputRoot });
-    await assert.rejects(
-      () => runOnce({ harnessCapability: target.capability, outputRoot }),
-      /live isolated-lab capability/,
-    );
-  } finally {
-    await target.stop();
-    await fs.rm(outputRoot, { recursive: true, force: true });
+    await runOnce({ gateway, targetOrigin: TARGET_ORIGIN });
+  } catch (error) {
+    caught = error;
   }
+  assert.ok(caught);
+  assert.match(caught.message, /verification transport failure/);
+  assert.equal(caught.failureReport.iterations, 1);
+  assert.deepEqual(caught.failureReport.progress, {
+    iterationStarted: 1,
+    actionAttempted: true,
+    actionCompleted: true,
+    verificationCompleted: false,
+  });
+  assert.deepEqual(gateway.finalReport.progress, caught.failureReport.progress);
+  const deletes = gateway.requests.filter(({ envelope }) => envelope.payload.method === 'DELETE');
+  assert.equal(deletes.length, 1);
 });
 
-test('failure after the DELETE records the action and the started iteration', async () => {
-  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ca3p-agent-failure-output-'));
-  const target = await startIsolatedLab();
-  const realFetch = global.fetch;
-  let deleteCompleted = false;
-  let failedRunId;
-
-  const failingFetch = async (url, options = {}) => {
-    const method = String(options.method || 'GET').toUpperCase();
-    if (deleteCompleted && method === 'GET' && String(url).endsWith('/api/posts')) {
-      throw new Error('forced verification failure after action');
-    }
-    const response = await realFetch(url, options);
-    if (method === 'DELETE') deleteCompleted = true;
-    return response;
-  };
-
-  try {
-    await assert.rejects(
-      async () => {
-        try {
-          await runOnce({
-            harnessCapability: target.capability,
-            outputRoot,
-            fetchImpl: failingFetch,
-          });
-        } catch (error) {
-          failedRunId = error.runId;
-          throw error;
-        }
-      },
-      /forced verification failure after action/,
-    );
-
-    assert.ok(failedRunId);
-    const failureReport = JSON.parse(
-      await fs.readFile(path.join(outputRoot, failedRunId, 'report.json'), 'utf8'),
-    );
-    assert.equal(failureReport.status, 'failed');
-    assert.equal(failureReport.iterations, 1);
-    assert.deepEqual(failureReport.progress, {
-      iterationStarted: 1,
-      actionAttempted: true,
-      actionCompleted: true,
-      verificationCompleted: false,
-    });
-    assert.equal(failureReport.metrics.iterations, 1);
-
-    const persistedTarget = JSON.parse(await fs.readFile(target.dataFile, 'utf8'));
-    assert.equal(
-      persistedTarget.posts.some(post => post.title === `agent-canary-${failedRunId}`),
-      false,
-      'The failure report must not hide that the DELETE changed the target',
-    );
-  } finally {
-    await target.stop();
-    await fs.rm(outputRoot, { recursive: true, force: true });
-  }
+test('external module.error is propagated with module provenance', async () => {
+  const gateway = createScriptedGateway({ failOn: 'knowledge_module_error' });
+  await assert.rejects(
+    () => runOnce({ gateway, targetOrigin: TARGET_ORIGIN }),
+    error => {
+      assert.equal(error.code, 'EXTERNAL_FAILURE');
+      assert.equal(error.source, 'external_module');
+      assert.equal(error.failureReport.progress.actionAttempted, false);
+      return true;
+    },
+  );
 });
 
-test('module boundary rejects non-serialized input', () => {
-  assert.throws(() => parseEnvelope({}, 'web_explorer'), /serialized JSON only/);
+test('internal action policy blocks out-of-scope actions before gateway dispatch', () => {
+  const policy = new ActionPolicy({ targetOrigin: TARGET_ORIGIN, maxRequests: 2 });
+  assert.throws(() => policy.authorize('loop.observe', {
+    operation: 'http_request',
+    method: 'GET',
+    path: 'http://127.0.0.1:3001/api/posts',
+    session: 'attacker',
+  }), /outside the exact allowed scope/);
+  assert.throws(() => policy.authorize('loop.act', {
+    operation: 'http_request',
+    method: 'DELETE',
+    path: '/api/posts/4',
+    session: 'attacker',
+    query: { authorId: 'bob' },
+  }), /has not been bound/);
+  policy.bindDeleteTarget({ resourceId: 4, ownerId: 'bob' });
+  assert.throws(() => policy.authorize('loop.act', {
+    operation: 'http_request',
+    method: 'DELETE',
+    path: '/api/posts/999',
+    session: 'attacker',
+    query: { authorId: 'bob' },
+  }), /does not match the bound canary/);
+  assert.throws(() => policy.authorize('loop.act', {
+    operation: 'http_request',
+    method: 'POST',
+    path: '/api/posts',
+    session: 'fixture',
+    body: { title: 'injected', content: 'unexpected mutation' },
+  }), /does not match the allowed action for loop\.act/);
+  assert.equal(policy.metrics().requestCount, 0);
+});
+
+test('reasoning engine rejects an external candidate that swaps the observed canary target', () => {
+  const engine = new RuleReasoningEngine();
+  const plan = engine.plan({
+    expectedTarget: { resourceId: 4, ownerId: 'bob', attackerId: 'alice' },
+    candidates: [{
+      attackerId: 'alice',
+      resource: { id: 999, ownerId: 'bob' },
+      actionTemplate: { method: 'DELETE', pathTemplate: '/api/posts/{resourceId}' },
+    }],
+  });
+
+  assert.equal(plan.state, 'stop');
+  assert.equal(plan.action, null);
+  assert.match(plan.decisionSummary, /일치하지 않아/);
 });
