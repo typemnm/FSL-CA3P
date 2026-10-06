@@ -41,8 +41,8 @@ function icon(name) { return `<svg viewBox="0 0 24 24" fill="none" stroke="curre
 function hydrateIcons(root = document) { root.querySelectorAll('[data-icon]').forEach((el) => { el.innerHTML = icon(el.dataset.icon); }); }
 hydrateIcons();
 
-const STORAGE = 'kucis.loop.sessions.v1';
-const SETTINGS = 'kucis.loop.settings.v1';
+const STORAGE = 'ca3p.loop.sessions.v1';
+const SETTINGS = 'ca3p.loop.settings.v1';
 function readJSON(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
 function isObject(value) { return value && typeof value === 'object' && !Array.isArray(value); }
 function isEvent(value) {
@@ -66,7 +66,7 @@ const saved = readJSON(STORAGE, []);
 let history = Array.isArray(saved) ? saved.filter(isRun).slice(0, 12) : [];
 const storedSettings = readJSON(SETTINGS, {});
 const settings = { motion: storedSettings?.motion !== false, autoScroll: storedSettings?.autoScroll !== false, speed: [900,1800,3000].includes(Number(storedSettings?.speed)) ? Number(storedSettings.speed) : 1800 };
-let run = history.length ? structuredClone(history[0]) : createRun('https://demo.kucis.local', { initialSteps: 8 });
+let run = history.length ? structuredClone(history[0]) : createRun('https://demo.ca3p.local', { initialSteps: 8 });
 if (history.length && run.status === 'running') run.status = 'paused';
 let inspectedRun = null;
 let selectedModule = 'reasoning';
@@ -281,7 +281,7 @@ $('export-button').addEventListener('click', () => {
   const item = currentRun();
   const payload = { schemaVersion: 1, mode: 'local-simulation', simulated: true, targetContacted: false, exportedAt: new Date().toISOString(), session: item };
   const url = URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)], { type:'application/json' }));
-  const link = document.createElement('a'); link.href = url; link.download = `kucis-${item.id}.json`; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify('모의 실행 기록의 JSON 다운로드를 요청했습니다.');
+  const link = document.createElement('a'); link.href = url; link.download = `ca3p-${item.id}.json`; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify('모의 실행 기록의 JSON 다운로드를 요청했습니다.');
 });
 $('session-list').addEventListener('click', (event) => {
   const button = event.target.closest('[data-session]'); if (!button) return;

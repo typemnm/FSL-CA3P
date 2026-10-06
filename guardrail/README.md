@@ -1,4 +1,4 @@
-# FSL-CA3P Guardrail Evaluator
+# CA3P Guardrail Evaluator
 
 `fsl-ca3p-guardrail-ruleset.json`을 실행하는 Node.js 18+ 평가기입니다. 원본 `FSL-CA3P` 저장소를 수정하지 않은 독립 패키지이며 외부 패키지를 사용하지 않습니다.
 

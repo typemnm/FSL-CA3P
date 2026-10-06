@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#080d0d">
-  <meta name="description" content="KUCIS 에이전트 루프의 모듈 요청·응답과 실시간 진행 상태를 살펴보는 로컬 시뮬레이션 대시보드.">
-  <title>KUCIS — Agent Loop</title>
+  <meta name="description" content="CA3P 에이전트 루프의 모듈 요청·응답과 실시간 진행 상태를 살펴보는 로컬 시뮬레이션 대시보드.">
+  <title>CA3P — Agent Loop</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
   <script type="module" src="./app.js"></script>
@@ -15,8 +15,8 @@
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
-      <a class="brand" href="#dashboard" aria-label="KUCIS 대시보드"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 8h9l9 8-9 8H5l9-8-9-8Z" fill="currentColor"/><path d="m20 8 9 8-9 8" stroke="currentColor" stroke-width="3"/></svg><span>KUCIS<span class="brand-dot">®</span></span></a>
-      <div class="workspace-switch"><span class="workspace-logo">K</span><div><strong>Agent workspace</strong><small>로컬 워크스페이스</small></div><span data-icon="chevrons" class="muted"></span></div>
+      <a class="brand" href="#dashboard" aria-label="CA3P 대시보드"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 8h9l9 8-9 8H5l9-8-9-8Z" fill="currentColor"/><path d="m20 8 9 8-9 8" stroke="currentColor" stroke-width="3"/></svg><span>CA3P<span class="brand-dot">®</span></span></a>
+      <div class="workspace-switch"><span class="workspace-logo">C</span><div><strong>Agent workspace</strong><small>로컬 워크스페이스</small></div><span data-icon="chevrons" class="muted"></span></div>
       <div class="nav-caption">WORKSPACE</div>
       <nav class="primary-nav" aria-label="주 메뉴">
         <button class="nav-item active" data-view="dashboard"><span data-icon="dashboard"></span><span>대시보드</span><span class="nav-active-dot"></span></button>
@@ -30,14 +30,14 @@
       <div class="sidebar-bottom">
         <div class="local-note"><span data-icon="shield"></span><strong>내 컴퓨터에서 실행</strong><p>모든 실행은 모의 데이터로 진행되며<br>입력한 사이트에 접속하지 않습니다.</p></div>
         <button class="nav-item" id="settings-button"><span data-icon="settings"></span><span>워크스페이스 설정</span></button>
-        <div class="user-profile"><div class="avatar">K</div><div><strong>KUCIS Research</strong><small>Local operator</small></div><span class="tiny-dot green"></span></div>
+        <div class="user-profile"><div class="avatar">C</div><div><strong>CA3P Research</strong><small>Local operator</small></div><span class="tiny-dot green"></span></div>
       </div>
     </aside>
 
     <div class="main-shell">
       <header class="topbar">
         <div class="breadcrumb"><button class="icon-button mobile-menu" id="menu-button" aria-label="메뉴 열기" aria-expanded="false"><span data-icon="menu"></span></button><span data-icon="grid"></span><span>Workspace</span><span class="breadcrumb-divider">/</span><strong id="breadcrumb-title">대시보드</strong></div>
-        <div class="topbar-actions"><span class="simulation-label"><span class="tiny-dot green"></span>SIMULATION</span><span class="topbar-divider"></span><button class="icon-button" id="notifications-button" aria-label="최근 이벤트 보기" aria-expanded="false"><span data-icon="bell"></span><i class="notification-dot"></i></button><div class="avatar small">K</div></div>
+        <div class="topbar-actions"><span class="simulation-label"><span class="tiny-dot green"></span>SIMULATION</span><span class="topbar-divider"></span><button class="icon-button" id="notifications-button" aria-label="최근 이벤트 보기" aria-expanded="false"><span data-icon="bell"></span><i class="notification-dot"></i></button><div class="avatar small">C</div></div>
         <div class="notification-popover" id="notification-popover" hidden><strong>최근 이벤트</strong><div id="notification-list"></div></div>
       </header>
 
@@ -51,7 +51,7 @@
         <section class="view" id="view-dashboard">
           <form class="target-panel" id="target-form" novalidate>
             <div class="target-label"><span data-icon="globe"></span><label for="target-url">TARGET URL</label></div>
-            <div class="target-input-wrap"><input id="target-url" type="url" placeholder="https://example.com" value="https://demo.kucis.local" autocomplete="off" spellcheck="false" aria-describedby="target-help url-error"><span class="input-shortcut">Ctrl K</span></div>
+            <div class="target-input-wrap"><input id="target-url" type="url" placeholder="https://example.com" value="https://demo.ca3p.local" autocomplete="off" spellcheck="false" aria-describedby="target-help url-error"><span class="input-shortcut">Ctrl K</span></div>
             <span class="target-mode" id="target-help">모의 실행</span>
             <button type="submit" class="button run-button" id="run-button"><span data-icon="play"></span><span>루프 시작</span></button>
             <p class="url-error" id="url-error" role="alert" hidden></p>
@@ -94,7 +94,7 @@
         <section class="view" id="view-modules" hidden><div class="module-grid" id="module-grid"></div><section class="panel module-note"><span data-icon="exchange"></span><div><h2>하나의 루프, 연결된 데이터</h2><p>각 모듈의 요청과 응답은 Correlation ID로 연결됩니다. 카드에서 최신 데이터를 열어 입력, 출력, 지연 시간을 확인하세요. 현재 모듈은 모두 로컬 시뮬레이터입니다.</p></div></section></section>
         <section class="view" id="view-reports" hidden><div id="report-content"></div></section>
       </main>
-      <footer class="app-footer"><span>KUCIS / AGENT LOOP</span><span>LOCAL WORKSPACE<span class="tiny-dot green"></span></span></footer>
+      <footer class="app-footer"><span>CA3P / AGENT LOOP</span><span>LOCAL WORKSPACE<span class="tiny-dot green"></span></span></footer>
     </div>
   </div>
   <dialog id="settings-dialog"><form method="dialog"><div class="dialog-heading"><div><div class="eyebrow">PREFERENCES</div><h2>워크스페이스 설정</h2></div><button class="icon-button" aria-label="설정 닫기"><span data-icon="close"></span></button></div><label class="setting-row"><span><strong>별빛 배경</strong><small>DESIGN.md 기반의 배경 애니메이션</small></span><input id="motion-setting" type="checkbox" checked></label><label class="setting-row"><span><strong>자동 이벤트 표시</strong><small>새 이벤트가 들어오면 최신 위치로 이동</small></span><input id="scroll-setting" type="checkbox" checked></label><label class="setting-row"><span><strong>시뮬레이션 속도</strong><small>모듈 이벤트 사이의 간격</small></span><select id="speed-setting"><option value="1800">기본 · 1.8초</option><option value="900">빠르게 · 0.9초</option><option value="3000">천천히 · 3초</option></select></label><p class="settings-note">설정과 실행 이력은 이 브라우저에만 저장됩니다.<br>실제 에이전트·대상 사이트에 연결하지 않습니다.</p><button class="button primary dialog-done">완료</button></form></dialog>

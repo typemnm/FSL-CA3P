@@ -1,4 +1,4 @@
-# KUCIS Agent Loop — 로컬 대시보드
+# CA3P Agent Loop — 로컬 대시보드
 
 `DESIGN.md`의 검정 배경, 민트·제이드 별빛과 주변광을 적용한 에이전트 텔레메트리 대시보드입니다. 참조 문서의 장면 복제 지시와 구분하여 대시보드 UI를 새로 구성했습니다.
 
@@ -7,7 +7,7 @@
 Node.js만 필요하며 패키지를 설치할 필요가 없습니다.
 
 ```powershell
-cd C:\Users\Admin\Desktop\kucis2\FSL-CA3P\agent-dashboard
+cd agent-dashboard
 npm run dev
 ```
 

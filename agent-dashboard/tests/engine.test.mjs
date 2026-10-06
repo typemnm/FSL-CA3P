@@ -48,7 +48,7 @@ test('pause, stop and completion freeze events and elapsed time', () => {
 });
 
 test('initial demo events stay in the past and elapsed time formats consistently', () => {
-  const run = createRun('https://demo.kucis.local', { initialSteps: 8 });
+  const run = createRun('https://demo.ca3p.local', { initialSteps: 8 });
   assert.equal(run.step, 8);
   assert.ok(Date.parse(run.events.at(-1).time) <= Date.now());
   assert.equal(formatElapsed(run.elapsedMs), '00:13');
