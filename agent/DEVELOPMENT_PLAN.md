@@ -12,7 +12,7 @@ flowchart LR
 
     subgraph A[구현 범위: Agent]
         O[Orchestrator]
-        R[Reasoner / 향후 LLM·LangChain]
+        R[Rule / DeepSeek Reasoner]
         G[Action Policy]
         J[JSON Gateway Client]
         O <--> R
@@ -50,12 +50,12 @@ flowchart LR
 |---|---|---|
 | 보안 작업은 여러 단계와 도구 의존성을 가진다. | 관찰·지식·판단·행동·검증·반영을 상태로 분리한다. | 이 순서의 공격 성공률은 별도 평가가 필요하다. |
 | LLM 요약은 누락과 사실성 문제가 있다. | finding을 외부 모듈이 제공한 evidence ID와 연결한다. | evidence 자체의 진실성은 제공 모듈 책임이다. |
-| 도구 연동과 간접 주입은 피해를 확대할 수 있다. | 외부 응답을 비신뢰 데이터로 취급하고 Action Policy가 실행 전 검사한다. | 현재 규칙 기반 Reasoner에는 모델 주입 평가가 적용되지 않는다. |
+| 도구 연동과 간접 주입은 피해를 확대할 수 있다. | 외부 응답을 비신뢰 데이터로 취급하고 Action Policy가 실행 전 검사한다. DeepSeek 경로는 외부 후보를 allowlist view로 투영하고 내부 ID 승인만 허용한다. | 실제 모델의 품질과 새로운 주입 변형 평가는 계속 필요하다. |
 | 정상 기능과 보안 속성을 함께 평가해야 한다. | 루프 성공, JSON 계약, 범위 위반, 오류 후 재시도 부재를 각각 테스트한다. | scripted gateway 테스트를 실제 E2E로 해석할 수 없다. |
 
 ## 3. 외부 통신 계약
 
-에이전트가 요구하는 포트는 하나다.
+에이전트가 외부 운영 모듈에 요구하는 포트는 하나다. 선택형 DeepSeek provider는 이 포트의 receiver가 아니라 Agent 내부의 별도 전용 client다.
 
 ```text
 gateway.exchange(serializedRequest: string, { signal }?) -> Promise<serializedResponse: string>
@@ -110,13 +110,14 @@ Agent 단독 테스트는 이 요청 순서와 JSON 계약, DELETE 1회, `iterat
 - 외부 모듈 부재를 검사하는 production-boundary 테스트
 - scripted gateway 기반 계약·성공·실패 테스트
 
-### Phase 1 — LLM/LangChain
+### Phase 1 — DeepSeek Reasoning Adapter
 
-- Reasoning Engine 인터페이스를 구현하는 structured-output 어댑터
-- action catalog ID만 선택하도록 출력 제한
-- 모델 출력 스키마 검증과 재시도 상한
-- 모델·프롬프트 버전, 비용과 지연을 외부 펜테스팅 DB에 전달
-- 악성 외부 응답과 prompt injection 회귀 테스트
+- 구현 완료: Reasoning Engine 인터페이스를 구현하는 DeepSeek JSON Output 어댑터
+- 구현 완료: candidate ID와 고정 action catalog ID만 선택하도록 출력 제한
+- 구현 완료: 모델 출력 strict schema, timeout, 제한된 재시도와 sanitized 오류
+- 구현 완료: 고정 provider·설정 모델·검증된 finish reason·정수 token usage만 내부 이벤트에 전달
+- 구현 완료: fake fetch/client 기반 오류·prompt injection·비동기 회귀 테스트
+- 후속 선택 사항: LangChain 도입 필요성을 별도로 평가하되 현재 직접 client 경계는 유지
 
 ### Phase 2 — 외부 모듈 통합
 
@@ -134,7 +135,7 @@ Agent 단독 테스트는 이 요청 순서와 JSON 계약, DELETE 1회, `iterat
 ## 7. Agent 완료 기준
 
 - Production 소스에 Web Explorer·취약점 DB·펜테스팅 DB 구현이 없다.
-- Production 소스가 HTTP, 파일 저장, 자식 프로세스 또는 실제 타깃을 직접 사용하지 않는다.
+- Production 소스는 타깃·외부 운영 모듈용 HTTP, 파일 저장, 자식 프로세스 또는 실제 타깃을 직접 사용하지 않는다. 직접 HTTP는 선택형 `DeepSeekClient`에만 한정한다.
 - 모든 외부 요청·응답이 직렬화된 JSON envelope다.
 - 외부 receiver는 세 모듈로 제한된다.
 - Agent가 `observe → knowledge → think → act → verify → reflect → stop`을 한 번 수행한다.

@@ -1,0 +1,12 @@
+{
+  "name": "kucis-agent-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "test": "node --test tests/engine.test.mjs",
+    "check": "node --check server.mjs && node --check dist/app.js && node --check dist/engine.js && node --check dist/starfield.js"
+  }
+}

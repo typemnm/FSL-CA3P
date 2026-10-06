@@ -35,9 +35,10 @@ flowchart LR
     C <-->|JSON request / response| W[외부 Web Explorer]
     C <-->|JSON request / response| V[외부 Vulnerability DB]
     C <-->|JSON request / response| D[외부 Pentesting DB]
+    R <-.->|JSON / HTTPS| DS[외부 DeepSeek API<br/>선택적 Reasoning Provider]
 ```
 
-`gateway.exchange(serializedRequest)`가 유일한 외부 포트다. 전송 방식은 HTTP, 메시지 큐, stdio 등으로 교체할 수 있으며 에이전트 코어는 이를 알지 못한다. 상세 계약은 [EXTERNAL_MODULE_CONTRACTS.md](./EXTERNAL_MODULE_CONTRACTS.md)에 있다.
+`gateway.exchange(serializedRequest)`는 Web Explorer·취약점 DB·펜테스팅 DB를 위한 유일한 외부 모듈 포트다. 선택형 DeepSeek Provider만 별도의 전용 client를 사용한다. gateway 전송 방식은 HTTP, 메시지 큐, stdio 등으로 교체할 수 있으며 에이전트 코어는 이를 알지 못한다. 상세 계약은 [EXTERNAL_MODULE_CONTRACTS.md](./EXTERNAL_MODULE_CONTRACTS.md)에 있다.
 
 ## 에이전트 루프
 
@@ -49,29 +50,56 @@ flowchart LR
 6. Web Explorer에 재관찰을 요청하고 에이전트 내부에서 결과를 판정한다.
 7. 각 단계와 최종 보고서를 펜테스팅 DB에 JSON으로 전달한다.
 
-Reasoning Engine은 현재 재현 가능한 규칙 기반 구현이다. 향후 LLM/LangChain 어댑터는 이 내부 인터페이스를 대체하며, 외부 모듈 계약에는 영향을 주지 않는다.
+기본 Reasoning Engine은 재현 가능한 규칙 기반 구현이다. 선택적으로 DeepSeek 어댑터를 주입할 수 있으며 외부 모듈 JSON 계약에는 영향을 주지 않는다.
 
-## DeepSeek API 연결 계획 (미구현)
+## DeepSeek API 어댑터
 
-**현재 DeepSeek API는 연결되어 있지 않다.** DeepSeek 어댑터, API client 의존성, 키 로딩 코드가 없으므로 `DEEPSEEK_API_KEY`를 설정해도 현 버전은 사용하지 않는다. 다만 DeepSeek가 제공하는 OpenAI 호환 API를 Agent 내부 Reasoning Engine 어댑터로 연결할 수 있다. 공식 기본 endpoint와 JSON 출력 방식은 [DeepSeek API 문서](https://api-docs.deepseek.com/guides/codex)와 [JSON Output 문서](https://api-docs.deepseek.com/guides/json_mode/)를 기준으로 한다.
+DeepSeek의 OpenAI 호환 Chat Completions API를 Agent 내부 Reasoning Provider로 연결했다. 공식 기본 endpoint는 `https://api.deepseek.com/chat/completions`이고 기본 모델은 현재 공식 Quick Start의 `deepseek-flash`다. 구현 기준은 [DeepSeek API 문서](https://api-docs.deepseek.com/guides/codex), [JSON Output 문서](https://api-docs.deepseek.com/guides/json_mode/), [오류 코드 문서](https://api-docs.deepseek.com/quick_start/error_codes/)다.
 
-예정된 연결 경계는 다음과 같다.
+연결 경계는 다음과 같다.
 
 ```text
-Orchestrator -> DeepSeekReasoningEngine (예정) -> 주입된 API client -> DeepSeek API
-             -> Action Policy -> 외부 Web Explorer
+Orchestrator -> DeepSeekReasoningEngine -> RuleReasoningEngine -> canonical baseline
+                    |                                      |
+                    |<-------------------------------------+
+                    v
+             DeepSeekClient -> DeepSeek API -> ID 승인/중단
+                    |
+                    v
+             기존 canonical action -> Action Policy -> Web Explorer
 ```
 
-초기 통합 원칙은 다음과 같다.
+안전 경계는 다음과 같다.
 
-- `plan()` 호출만 DeepSeek에 위임하고 증거 기반 `reflect()`와 finding 확정은 결정론적 로컬 코드에 유지한다.
-- 모델은 임의 URL, HTTP method 또는 body를 만들지 않고 검증된 후보와 action catalog ID만 구조화 JSON으로 선택한다.
-- DeepSeek JSON Output을 파싱한 뒤 Agent가 로컬 도메인 schema를 별도로 검증하며, 출력이 비어 있거나 잘렸거나 검증에 실패하면 행동 없이 종료한다.
+- `plan()`의 후보 선택만 DeepSeek에 위임하고 증거 기반 `reflect()`와 finding 확정은 결정론적 로컬 코드에 유지한다.
+- 모델은 임의 URL, HTTP method, body 또는 query를 만들 수 없다. 허용된 `candidateId`와 고정 `actionCatalogId`만 선택한다.
+- 기존 `RuleReasoningEngine`이 모델 호출 전에 canonical action을 만들고, 모델은 내부 `candidateId`와 고정 `actionCatalogId`만 승인하거나 중단한다. 외부 DB의 `knowledgeId`는 모델 prompt의 ID로 사용하지 않는다.
+- 모델 JSON은 정확한 키·enum·ID·길이를 로컬에서 재검증한다. 빈 응답, 잘린 응답, 추가 필드, 알 수 없는 ID와 schema 오류는 행동 전에 실패한다.
 - 모든 모델 제안은 기존 Action Policy를 통과해야 하며, 정책이 실제 실행 권한의 최종 결정자다.
-- API 키, 쿠키, Authorization header와 raw chain-of-thought는 prompt, 이벤트, 보고서에 저장하지 않는다.
-- 모델 호출 timeout과 제한된 재시도는 부작용 행동 전에만 적용하며 DELETE 같은 변경 행동은 재시도하지 않는다.
+- API 키, Authorization header, provider request ID, 원문 모델 응답과 raw chain-of-thought는 이벤트나 보고서에 저장하지 않는다. 로컬에서 고정한 provider·설정 모델, 검증된 종료 상태와 정수 token usage만 기록할 수 있다.
+- 모델 호출 timeout과 최대 2회의 제한된 재시도는 부작용 행동 전에만 적용한다. DELETE 같은 변경 행동은 기존과 같이 재시도하지 않는다.
 
-실제 연결을 구현할 때는 `plan()`/`reflect()` 호출의 비동기 지원, 주입식 DeepSeek client, 출력 schema, fake-client 테스트와 opt-in live smoke test가 추가로 필요하다. API 키는 저장소 파일이 아니라 `DEEPSEEK_API_KEY` 환경변수 또는 별도 secret manager에서만 공급한다.
+설정은 `agent/.env` 또는 프로세스 환경변수에서 읽으며 프로세스 환경변수가 우선한다.
+
+| 변수 | 기본값 | 제약 |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | 없음 | 필수, 출력·커밋 금지 |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | `deepseek-flash` 또는 `deepseek-v4-pro` |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 공식 HTTPS host, 또는 명시적인 loopback HTTP만 허용 |
+| `DEEPSEEK_TIMEOUT_MS` | `60000` | 1~600000ms |
+| `DEEPSEEK_MAX_RETRIES` | `1` | 0~2 |
+| `DEEPSEEK_MAX_TOKENS` | `512` | 64~8192 |
+
+실제 API를 사용하는 opt-in 데모는 다음 명령이다. 이 명령은 **과금될 수 있는 DeepSeek 모델 호출**을 수행하며, 일시적 오류에는 설정된 한도 안에서 HTTP 요청이 재시도될 수 있다. Web Explorer와 DB는 여전히 scripted test double이므로 실제 사이트를 공격하지 않는다.
+
+```powershell
+cd .\agent
+npm run demo:deepseek
+```
+
+기본 `npm test`와 `npm run demo`는 DeepSeek 네트워크를 호출하지 않는다. 세부 설계와 rollout은 [DEEPSEEK_ADAPTER_PLAN.md](./DEEPSEEK_ADAPTER_PLAN.md)에 있다.
+
+2026-10-06 실제 API contract test 결과와 sanitized 실행 화면은 [DEEPSEEK_LIVE_API_TEST_REPORT_2026-10-06.md](./DEEPSEEK_LIVE_API_TEST_REPORT_2026-10-06.md)에 기록했다. 이 테스트에서 DeepSeek Provider만 실제 연결했고 외부 운영 모듈은 scripted test double을 사용했다. `targetOrigin`은 scope 입력으로만 사용했으며 실제 target 접속은 없었다.
 
 ## 실행과 검증
 
@@ -89,8 +117,11 @@ npm run demo
 
 - `src/orchestrator.js`: 외부 결과를 받아 단일 사고 루프 실행
 - `src/reasoning-engine.js`: 에이전트 내부 plan/reflect
+- `src/deepseek-client.js`: timeout·재시도·JSON Output 검증을 포함한 DeepSeek 전용 HTTP client
+- `src/deepseek-reasoning-engine.js`: 모델 ID 선택을 로컬 canonical action으로 변환하는 어댑터
+- `src/deepseek-config.js`: `.env`/환경변수 설정 로딩과 어댑터 factory
 - `src/action-policy.js`: 외부로 보내기 전 행동 범위와 요청 예산 검사
 - `src/protocol.js`: JSON envelope, 상관관계, 오류 정규화
 - `src/index.js`: 공개 API
 
-Production 소스에는 HTTP 클라이언트·서버, 파일 DB, 자식 프로세스, 외부 모듈 concrete class가 없다.
+Production 소스에는 타깃 사이트·외부 모듈용 HTTP client/server, 파일 DB, 자식 프로세스 또는 외부 모듈 concrete class가 없다. 유일한 직접 HTTP client는 Agent 내부 선택형 DeepSeek Provider 전용이다.

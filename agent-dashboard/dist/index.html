@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080d0d">
+  <meta name="description" content="KUCIS 에이전트 루프의 모듈 요청·응답과 실시간 진행 상태를 살펴보는 로컬 시뮬레이션 대시보드.">
+  <title>KUCIS — Agent Loop</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <canvas id="starfield" aria-hidden="true"></canvas>
+  <a class="skip-link" href="#main">본문으로 건너뛰기</a>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#dashboard" aria-label="KUCIS 대시보드"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 8h9l9 8-9 8H5l9-8-9-8Z" fill="currentColor"/><path d="m20 8 9 8-9 8" stroke="currentColor" stroke-width="3"/></svg><span>KUCIS<span class="brand-dot">®</span></span></a>
+      <div class="workspace-switch"><span class="workspace-logo">K</span><div><strong>Agent workspace</strong><small>로컬 워크스페이스</small></div><span data-icon="chevrons" class="muted"></span></div>
+      <div class="nav-caption">WORKSPACE</div>
+      <nav class="primary-nav" aria-label="주 메뉴">
+        <button class="nav-item active" data-view="dashboard"><span data-icon="dashboard"></span><span>대시보드</span><span class="nav-active-dot"></span></button>
+        <button class="nav-item" data-view="sessions"><span data-icon="layers"></span><span>실행 이력</span><span class="nav-count" id="history-count">0</span></button>
+        <button class="nav-item" data-view="modules"><span data-icon="box"></span><span>모듈 탐색</span></button>
+        <button class="nav-item" data-view="reports"><span data-icon="file"></span><span>리포트</span></button>
+      </nav>
+      <div class="nav-caption connection-caption">ENVIRONMENT</div>
+      <div class="environment-item"><span class="tiny-dot green"></span><span>Local simulator</span><span class="mono">v1.0</span></div>
+      <div class="environment-item"><span class="tiny-dot gray"></span><span>Agent gateway</span><span class="environment-state">미연결</span></div>
+      <div class="sidebar-bottom">
+        <div class="local-note"><span data-icon="shield"></span><strong>내 컴퓨터에서 실행</strong><p>모든 실행은 모의 데이터로 진행되며<br>입력한 사이트에 접속하지 않습니다.</p></div>
+        <button class="nav-item" id="settings-button"><span data-icon="settings"></span><span>워크스페이스 설정</span></button>
+        <div class="user-profile"><div class="avatar">K</div><div><strong>KUCIS Research</strong><small>Local operator</small></div><span class="tiny-dot green"></span></div>
+      </div>
+    </aside>
+
+    <div class="main-shell">
+      <header class="topbar">
+        <div class="breadcrumb"><button class="icon-button mobile-menu" id="menu-button" aria-label="메뉴 열기" aria-expanded="false"><span data-icon="menu"></span></button><span data-icon="grid"></span><span>Workspace</span><span class="breadcrumb-divider">/</span><strong id="breadcrumb-title">대시보드</strong></div>
+        <div class="topbar-actions"><span class="simulation-label"><span class="tiny-dot green"></span>SIMULATION</span><span class="topbar-divider"></span><button class="icon-button" id="notifications-button" aria-label="최근 이벤트 보기" aria-expanded="false"><span data-icon="bell"></span><i class="notification-dot"></i></button><div class="avatar small">K</div></div>
+        <div class="notification-popover" id="notification-popover" hidden><strong>최근 이벤트</strong><div id="notification-list"></div></div>
+      </header>
+
+      <main id="main" tabindex="-1">
+        <section class="page-heading">
+          <div><div class="eyebrow"><span class="eyebrow-line"></span>AGENT OPERATIONS</div><h1 id="page-title">Observe. Decide. <span>Iterate.</span></h1><p id="page-subtitle">에이전트의 모든 판단과 흐름을, 한눈에.</p></div>
+          <div class="heading-actions"><button class="button secondary" id="export-button"><span data-icon="download"></span>내보내기</button><button class="button primary" id="new-session-button"><span data-icon="plus"></span>새 실행</button></div>
+        </section>
+
+        <div class="history-banner" id="history-banner" hidden><span><span data-icon="layers"></span>저장된 실행을 보고 있습니다.</span><button class="text-button" id="return-current-button">현재 실행으로 돌아가기<span data-icon="exchange"></span></button></div>
+        <section class="view" id="view-dashboard">
+          <form class="target-panel" id="target-form" novalidate>
+            <div class="target-label"><span data-icon="globe"></span><label for="target-url">TARGET URL</label></div>
+            <div class="target-input-wrap"><input id="target-url" type="url" placeholder="https://example.com" value="https://demo.kucis.local" autocomplete="off" spellcheck="false" aria-describedby="target-help url-error"><span class="input-shortcut">Ctrl K</span></div>
+            <span class="target-mode" id="target-help">모의 실행</span>
+            <button type="submit" class="button run-button" id="run-button"><span data-icon="play"></span><span>루프 시작</span></button>
+            <p class="url-error" id="url-error" role="alert" hidden></p>
+          </form>
+
+          <div class="stats-grid">
+            <div class="stat-card"><div class="stat-label">루프 상태<span data-icon="pulse"></span></div><div class="stat-value status-stat"><span class="status-orb" id="status-orb"></span><span id="run-status">진행 중</span></div><div class="stat-foot" id="run-context">로컬 시뮬레이션</div></div>
+            <div class="stat-card"><div class="stat-label">현재 반복<span data-icon="repeat"></span></div><div class="stat-value"><span id="iteration-value">01</span><span class="stat-unit">/ 03</span></div><div class="stat-foot"><span class="mint" id="step-label">관찰 단계</span><span class="stat-foot-divider">·</span><span>최대 18 단계</span></div></div>
+            <div class="stat-card"><div class="stat-label">모듈 이벤트<span data-icon="exchange"></span></div><div class="stat-value"><span id="event-count">0</span><span class="mini-spark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div><div class="stat-foot"><span class="tiny-dot green"></span>요청과 응답 동시 추적</div></div>
+            <div class="stat-card"><div class="stat-label">실행 시간<span data-icon="clock"></span></div><div class="stat-value mono" id="elapsed-value">00:00</div><div class="stat-foot">단계 예산<span class="stat-foot-divider">·</span><span class="mint">18 steps</span></div></div>
+          </div>
+
+          <div class="live-grid">
+            <section class="panel loop-panel">
+              <div class="panel-heading"><div><h2><span data-icon="orbit"></span>Agent loop</h2><span class="panel-subtitle">모듈을 선택해 데이터 흐름을 확인하세요</span></div><div class="loop-actions"><span class="live-label" id="live-label"><span class="tiny-dot green"></span>LIVE</span><button class="icon-button" id="pause-button" aria-label="루프 일시정지"><span data-icon="pause"></span></button><button class="icon-button" id="stop-button" aria-label="루프 중지"><span data-icon="stop"></span></button></div></div>
+              <div class="loop-graph" id="loop-graph">
+                <div class="graph-coordinates graph-coordinates-top"><span>ORCHESTRATION MAP</span><span>06 NODES · 01 AGENT</span></div>
+                <svg class="graph-lines" viewBox="0 0 780 380" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="line-gradient"><stop stop-color="#5fe6a0" stop-opacity=".14"/><stop offset=".5" stop-color="#5fe6a0" stop-opacity=".6"/><stop offset="1" stop-color="#5fe6a0" stop-opacity=".14"/></linearGradient></defs><ellipse cx="390" cy="185" rx="252" ry="115" class="orbit-line"/><path d="M145 94 390 185 635 94M130 235 390 185 650 235M390 185 390 56M390 185 390 319" class="connection-line"/><path d="M145 94 390 56 635 94 650 235 390 319 130 235Z" class="cycle-line"/><circle r="3" class="traveler"><animateMotion dur="12s" repeatCount="indefinite" path="M145 94 390 56 635 94 650 235 390 319 130 235Z"/></circle></svg>
+                <button class="graph-node node-browser" data-module="browser"><span class="node-icon" data-icon="globe"></span><span class="node-copy"><strong>Web Explorer</strong><small>사이트 관찰</small></span><span class="node-status" data-node-status="browser"></span></button>
+                <button class="graph-node node-knowledge" data-module="knowledge"><span class="node-icon" data-icon="database"></span><span class="node-copy"><strong>Knowledge DB</strong><small>지식 조회</small></span><span class="node-status" data-node-status="knowledge"></span></button>
+                <button class="graph-node node-reasoning" data-module="reasoning"><span class="node-icon" data-icon="brain"></span><span class="node-copy"><strong>Reasoning</strong><small>에이전트 판단</small></span><span class="node-status" data-node-status="reasoning"></span></button>
+                <button class="graph-node node-policy" data-module="policy"><span class="node-icon" data-icon="shield"></span><span class="node-copy"><strong>Guardrail</strong><small>정책 검사</small></span><span class="node-status" data-node-status="policy"></span></button>
+                <button class="graph-node node-observer" data-module="observer"><span class="node-icon" data-icon="scan"></span><span class="node-copy"><strong>Observer</strong><small>결과 검토</small></span><span class="node-status" data-node-status="observer"></span></button>
+                <button class="graph-node node-recorder" data-module="recorder"><span class="node-icon" data-icon="layers"></span><span class="node-copy"><strong>Session DB</strong><small>실행 기록</small></span><span class="node-status" data-node-status="recorder"></span></button>
+                <div class="agent-core"><div class="core-halo"></div><div class="core-symbol"><svg viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="m20 5 14 8v14l-14 8-14-8V13l14-8Z" stroke="currentColor" stroke-width="1.5"/><path d="m20 13 7 4v7l-7 4-7-4v-7l7-4ZM20 5v8M34 13l-7 4M34 27l-7-3M20 35v-7M6 27l7-3M6 13l7 4" stroke="currentColor" stroke-width="1.2"/></svg></div><strong>Orchestrator</strong><span id="core-state">LOOP RUNNING</span></div>
+                <div class="graph-legend"><span><i class="tiny-dot green"></i>완료</span><span><i class="tiny-dot violet"></i>현재 단계</span><span><i class="tiny-dot gray"></i>대기</span></div>
+                <div class="graph-coordinate-bottom">LOCAL TELEMETRY<span>SIMULATED DATA</span></div>
+              </div>
+              <div class="loop-progress"><div class="progress-copy"><span><span class="tiny-dot green"></span><strong id="progress-label">루프 진행</strong></span><span class="mono" id="progress-number">0 / 18 steps</span></div><div class="progress-track"><div id="progress-fill"></div></div></div>
+            </section>
+
+            <section class="panel activity-panel"><div class="panel-heading"><div><h2><span class="tiny-dot green"></span>Live activity</h2><span class="panel-subtitle">실시간 이벤트 스트림</span></div><span class="activity-counter mono" id="activity-counter">00</span></div><div class="activity-toolbar"><span data-icon="search"></span><input id="event-search" type="search" aria-label="이벤트 검색" placeholder="이벤트 검색…"><button class="icon-button" id="autoscroll-button" title="최신 이벤트 자동 표시" aria-label="최신 이벤트 자동 표시" aria-pressed="true"><span data-icon="arrow-down"></span></button></div><div class="activity-list" id="activity-list" role="log" aria-label="모의 실행 이벤트"></div><div class="activity-footer"><span class="tiny-dot green"></span><span>브라우저 내부 이벤트</span><span class="mono" id="stream-status">stream active</span></div></section>
+          </div>
+
+          <section class="panel inspector-panel" id="inspector-panel"><div class="panel-heading"><div><h2><span data-icon="code"></span>Trace inspector</h2><span class="panel-subtitle">선택한 모듈의 요청·응답과 에이전트 입출력</span></div><span class="trace-badge" id="selected-module-name">Reasoning</span></div><div class="inspector-toolbar"><div class="inspector-tabs" role="tablist" aria-label="추적 데이터"><button class="inspector-tab active" data-tab="request" role="tab" aria-selected="true">요청<span id="request-tab-count">01</span></button><button class="inspector-tab" data-tab="response" role="tab" aria-selected="false">응답<span id="response-tab-count">01</span></button><button class="inspector-tab" data-tab="agent" role="tab" aria-selected="false">Agent I/O<span data-icon="sparkles"></span></button></div><div class="trace-meta"><span class="mono" id="trace-latency">—</span><span class="trace-divider"></span><button class="text-button" id="copy-button"><span data-icon="copy"></span>복사</button></div></div><div class="inspector-body"><aside class="trace-context"><span class="context-label">MODULE CONTEXT</span><strong id="context-module">Reasoning Engine</strong><p id="context-role">관찰 결과를 바탕으로 다음 검토 항목을 결정합니다.</p><dl><dt>Correlation ID</dt><dd class="mono" id="correlation-value">—</dd><dt>데이터 소스</dt><dd><span class="tiny-dot green"></span>Local simulation</dd><dt>상태</dt><dd id="trace-state">응답 수신</dd></dl></aside><div class="code-area"><div class="code-file"><span class="tiny-dot violet"></span><span id="code-filename">request.json</span><span class="code-format">JSON</span></div><pre id="trace-code" tabindex="0" aria-label="선택한 추적 데이터"></pre></div></div></section>
+          <div class="dashboard-footer"><span><span class="tiny-dot green"></span>모든 시스템 로컬 실행</span><span>Made for the loop. <span class="mint">Built for clarity.</span></span></div>
+        </section>
+
+        <section class="view" id="view-sessions" hidden><section class="panel alternate-panel"><div class="panel-heading"><div><h2><span data-icon="layers"></span>Session history</h2><span class="panel-subtitle">이 브라우저에 저장한 최근 12개 모의 실행</span></div><span class="local-chip">LOCAL STORAGE</span></div><div class="session-list" id="session-list"></div></section></section>
+        <section class="view" id="view-modules" hidden><div class="module-grid" id="module-grid"></div><section class="panel module-note"><span data-icon="exchange"></span><div><h2>하나의 루프, 연결된 데이터</h2><p>각 모듈의 요청과 응답은 Correlation ID로 연결됩니다. 카드에서 최신 데이터를 열어 입력, 출력, 지연 시간을 확인하세요. 현재 모듈은 모두 로컬 시뮬레이터입니다.</p></div></section></section>
+        <section class="view" id="view-reports" hidden><div id="report-content"></div></section>
+      </main>
+      <footer class="app-footer"><span>KUCIS / AGENT LOOP</span><span>LOCAL WORKSPACE<span class="tiny-dot green"></span></span></footer>
+    </div>
+  </div>
+  <dialog id="settings-dialog"><form method="dialog"><div class="dialog-heading"><div><div class="eyebrow">PREFERENCES</div><h2>워크스페이스 설정</h2></div><button class="icon-button" aria-label="설정 닫기"><span data-icon="close"></span></button></div><label class="setting-row"><span><strong>별빛 배경</strong><small>DESIGN.md 기반의 배경 애니메이션</small></span><input id="motion-setting" type="checkbox" checked></label><label class="setting-row"><span><strong>자동 이벤트 표시</strong><small>새 이벤트가 들어오면 최신 위치로 이동</small></span><input id="scroll-setting" type="checkbox" checked></label><label class="setting-row"><span><strong>시뮬레이션 속도</strong><small>모듈 이벤트 사이의 간격</small></span><select id="speed-setting"><option value="1800">기본 · 1.8초</option><option value="900">빠르게 · 0.9초</option><option value="3000">천천히 · 3초</option></select></label><p class="settings-note">설정과 실행 이력은 이 브라우저에만 저장됩니다.<br>실제 에이전트·대상 사이트에 연결하지 않습니다.</p><button class="button primary dialog-done">완료</button></form></dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>

@@ -174,7 +174,7 @@ async function runOnce({
           attackerId: attacker.id,
         },
       };
-      const plan = reasoningEngine.plan(planInput);
+      const plan = await reasoningEngine.plan(planInput);
       await recordInternalEvent(iteration, 'loop.think', planInput, plan);
       if (plan.state !== 'act' || !plan.action) {
         throw new Error(`Reasoning engine stopped before action: ${plan.decisionSummary}`);
@@ -225,7 +225,7 @@ async function runOnce({
           verification.payload.evidenceId,
         ],
       };
-      reflection = reasoningEngine.reflect(reflectionInput);
+      reflection = await reasoningEngine.reflect(reflectionInput);
       await recordInternalEvent(iteration, 'loop.reflect', reflectionInput, reflection);
     }
 

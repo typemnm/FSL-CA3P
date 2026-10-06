@@ -82,12 +82,15 @@ test('agent completes exactly one loop through serialized external JSON contract
   );
 });
 
-test('production contains only agent core and external contracts, not module implementations', async () => {
+test('production contains only agent core, DeepSeek adapter, and external contracts', async () => {
   const root = path.resolve(__dirname, '..');
   const sourceDir = path.join(root, 'src');
   const productionFiles = await listRelativeFiles(sourceDir);
   assert.deepEqual(productionFiles, [
     'action-policy.js',
+    'deepseek-client.js',
+    'deepseek-config.js',
+    'deepseek-reasoning-engine.js',
     'index.js',
     'orchestrator.js',
     'protocol.js',
@@ -106,14 +109,36 @@ test('production contains only agent core and external contracts, not module imp
     assert.equal(await exists(path.join(root, relative)), false, `${relative} must remain external`);
   }
 
-  const sourceText = (await Promise.all(productionFiles.map(file => (
+  const coreFiles = productionFiles.filter(file => !file.startsWith('deepseek-'));
+  const coreSourceText = (await Promise.all(coreFiles.map(file => (
     fs.readFile(path.join(sourceDir, file), 'utf8')
   )))).join('\n');
-  assert.doesNotMatch(sourceText, /node:(?:fs|child_process|http|https|net|tls)/);
-  assert.doesNotMatch(sourceText, /\bfetch\s*\(/);
-  assert.doesNotMatch(sourceText, /class\s+(?:WebExplorer|VulnerabilityDb|PentestDb|ScopeGuard)/);
-  assert.doesNotMatch(sourceText, /startIsolatedLab|withIsolatedLab/);
-  assert.doesNotMatch(sourceText, /test-support/);
+  assert.doesNotMatch(coreSourceText, /node:(?:fs|child_process|http|https|net|tls)/);
+  assert.doesNotMatch(coreSourceText, /\bfetch\s*\(/);
+
+  const productionSourceText = (await Promise.all(productionFiles.map(file => (
+    fs.readFile(path.join(sourceDir, file), 'utf8')
+  )))).join('\n');
+  assert.doesNotMatch(productionSourceText, /node:(?:child_process|http|https|net|tls)/);
+  assert.doesNotMatch(productionSourceText, /class\s+(?:WebExplorer|VulnerabilityDb|PentestDb|ScopeGuard)/);
+  assert.doesNotMatch(productionSourceText, /startIsolatedLab|withIsolatedLab/);
+  assert.doesNotMatch(productionSourceText, /test-support/);
+
+  const deepSeekClientText = await fs.readFile(path.join(sourceDir, 'deepseek-client.js'), 'utf8');
+  assert.match(deepSeekClientText, /globalThis\.fetch/);
+  const nonClientSourceText = (await Promise.all(
+    productionFiles
+      .filter(file => file !== 'deepseek-client.js')
+      .map(file => fs.readFile(path.join(sourceDir, file), 'utf8')),
+  )).join('\n');
+  assert.doesNotMatch(nonClientSourceText, /globalThis\.fetch/);
+
+  const nonConfigSourceText = (await Promise.all(
+    productionFiles
+      .filter(file => file !== 'deepseek-config.js')
+      .map(file => fs.readFile(path.join(sourceDir, file), 'utf8')),
+  )).join('\n');
+  assert.doesNotMatch(nonConfigSourceText, /node:fs/);
 });
 
 test('gateway distinguishes transport failures from external module errors', async () => {
@@ -415,4 +440,92 @@ test('reasoning engine rejects an external candidate that swaps the observed can
   assert.equal(plan.state, 'stop');
   assert.equal(plan.action, null);
   assert.match(plan.decisionSummary, /일치하지 않아/);
+});
+
+test('orchestrator awaits asynchronous planning and reflection engines', async () => {
+  const local = new RuleReasoningEngine();
+  const calls = { plan: 0, reflect: 0 };
+  const reasoningEngine = {
+    async plan(input) {
+      calls.plan += 1;
+      await Promise.resolve();
+      return local.plan(input);
+    },
+    async reflect(input) {
+      calls.reflect += 1;
+      await Promise.resolve();
+      return local.reflect(input);
+    },
+  };
+  const gateway = createScriptedGateway();
+  const result = await runOnce({
+    gateway,
+    reasoningEngine,
+    targetOrigin: TARGET_ORIGIN,
+  });
+
+  assert.equal(result.report.status, 'completed');
+  assert.deepEqual(calls, { plan: 1, reflect: 1 });
+  const thinkEvent = gateway.events.find(event => event.stage === 'loop.think');
+  const reflectEvent = gateway.events.find(event => event.stage === 'loop.reflect');
+  assert.equal(thinkEvent.response.payload.state, 'act');
+  assert.equal(reflectEvent.response.payload.finding.status, 'confirmed');
+});
+
+test('an asynchronous planning failure stops before any mutating action', async () => {
+  const gateway = createScriptedGateway();
+  const planningError = Object.assign(new Error('invalid model decision'), {
+    code: 'DEEPSEEK_SCHEMA_ERROR',
+    source: 'deepseek_api',
+  });
+
+  await assert.rejects(
+    () => runOnce({
+      gateway,
+      targetOrigin: TARGET_ORIGIN,
+      reasoningEngine: {
+        plan: async () => { throw planningError; },
+        reflect: () => { throw new Error('reflect must not run'); },
+      },
+    }),
+    error => {
+      assert.equal(error.code, 'DEEPSEEK_SCHEMA_ERROR');
+      assert.equal(error.failureReport.progress.actionAttempted, false);
+      return true;
+    },
+  );
+  const deletes = gateway.requests.filter(({ envelope }) => envelope.payload.method === 'DELETE');
+  assert.equal(deletes.length, 0);
+});
+
+test('an asynchronous reflection failure never retries the completed DELETE', async () => {
+  const gateway = createScriptedGateway();
+  const local = new RuleReasoningEngine();
+  const reflectionError = Object.assign(new Error('reflection failed'), {
+    code: 'REFLECTION_FAILURE',
+    source: 'agent',
+  });
+
+  await assert.rejects(
+    () => runOnce({
+      gateway,
+      targetOrigin: TARGET_ORIGIN,
+      reasoningEngine: {
+        plan: input => local.plan(input),
+        reflect: async () => { throw reflectionError; },
+      },
+    }),
+    error => {
+      assert.equal(error.code, 'REFLECTION_FAILURE');
+      assert.deepEqual(error.failureReport.progress, {
+        iterationStarted: 1,
+        actionAttempted: true,
+        actionCompleted: true,
+        verificationCompleted: true,
+      });
+      return true;
+    },
+  );
+  const deletes = gateway.requests.filter(({ envelope }) => envelope.payload.method === 'DELETE');
+  assert.equal(deletes.length, 1);
 });

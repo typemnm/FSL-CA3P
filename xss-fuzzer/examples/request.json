@@ -1,8 +1,0 @@
-{
-  "html": "<form id=search><input id=q name=q><button>Search</button></form><div id=out></div>",
-  "js": "document.querySelector('#search').addEventListener('submit', e => { e.preventDefault(); document.querySelector('#out').innerHTML = document.querySelector('#q').value; });",
-  "profile": "generic",
-  "queryParams": [],
-  "maxCases": 10,
-  "settleMs": 200
-}
