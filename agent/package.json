@@ -1,0 +1,13 @@
+{
+  "name": "ca3p-local-pentest-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "외부 모듈과 JSON 계약으로만 통신하는 펜테스팅 에이전트 코어 MVP",
+  "scripts": {
+    "demo": "node test-support/contract-demo.js",
+    "test": "node --test test/run-once.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
