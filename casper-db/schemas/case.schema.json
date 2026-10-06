@@ -1,0 +1,238 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "target_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Target Id",
+      "type": "string"
+    },
+    "endpoint": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Endpoint",
+      "type": "string"
+    },
+    "method": {
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "HEAD",
+        "OPTIONS"
+      ],
+      "title": "Method",
+      "type": "string"
+    },
+    "case_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "vulnerability_type": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Vulnerability Type",
+      "type": "string"
+    },
+    "reported_on": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reported On"
+    },
+    "vulnerability_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Vulnerability Url"
+    },
+    "severity": {
+      "anyOf": [
+        {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Severity"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    },
+    "remediation": {
+      "items": {
+        "maxLength": 4000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 30,
+      "title": "Remediation",
+      "type": "array"
+    },
+    "prior_evidence": {
+      "anyOf": [
+        {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Prior Evidence"
+    },
+    "parameter": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Parameter",
+      "type": "string"
+    },
+    "parameter_location": {
+      "default": "unknown",
+      "enum": [
+        "query",
+        "body",
+        "path",
+        "header",
+        "cookie",
+        "fragment",
+        "unknown"
+      ],
+      "title": "Parameter Location",
+      "type": "string"
+    },
+    "preconditions": {
+      "items": {
+        "maxLength": 4000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 30,
+      "minItems": 1,
+      "title": "Preconditions",
+      "type": "array"
+    },
+    "procedure": {
+      "items": {
+        "maxLength": 4000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 30,
+      "minItems": 1,
+      "title": "Procedure",
+      "type": "array"
+    },
+    "payload": {
+      "anyOf": [
+        {
+          "maxLength": 20000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Payload"
+    },
+    "success_condition": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Success Condition",
+      "type": "string"
+    },
+    "source_report": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Source Report",
+      "type": "string"
+    },
+    "status": {
+      "default": "draft",
+      "enum": [
+        "draft",
+        "ready"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "patch_status": {
+      "default": "unknown",
+      "enum": [
+        "unknown",
+        "unpatched",
+        "patched"
+      ],
+      "title": "Patch Status",
+      "type": "string"
+    },
+    "source": {
+      "default": "unknown",
+      "enum": [
+        "synthetic",
+        "manual",
+        "imported",
+        "unknown"
+      ],
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "target_id",
+    "endpoint",
+    "method",
+    "case_id",
+    "title",
+    "vulnerability_type",
+    "parameter",
+    "preconditions",
+    "procedure",
+    "success_condition",
+    "source_report"
+  ],
+  "title": "Case",
+  "type": "object"
+}
