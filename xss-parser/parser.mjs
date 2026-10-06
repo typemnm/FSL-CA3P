@@ -1,283 +1,101 @@
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 import { readDom } from './dom.mjs';
-import { findScriptHints } from './script-hints.mjs';
+import { analyzeScript } from './script-hints.mjs';
 
 const CHROME_ON_MAC = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const ACTION_LINK = /(?:logout|log-out|signout|sign-out|delete|remove|destroy|unsubscribe|탈퇴|로그아웃|삭제)/i;
-
-function isLoopback(url) {
-  return ['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname);
-}
 
 function checkLocalUrl(value) {
   let url;
-  try { url = new URL(value); } catch { throw new Error('A valid --url is required (for example http://127.0.0.1:3000/).'); }
-  if (!['http:', 'https:'].includes(url.protocol) || !isLoopback(url) || url.username || url.password) {
+  try { url = new URL(value); } catch { throw new Error('Provide a valid local --url.'); }
+  if (!['http:', 'https:'].includes(url.protocol) ||
+    !['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname) ||
+    url.username || url.password) {
     throw new Error('--url must be an http(s) loopback URL: localhost, 127.0.0.1, or [::1].');
   }
   return url;
 }
 
-function maskedPath(pathname) {
-  return pathname.split('/').map(part => {
+function displayUrl(value) {
+  const url = new URL(value);
+  const path = url.pathname.split('/').map(part => {
     if (/^\d+$/.test(part)) return '{number}';
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(part)) return '{uuid}';
     if (/^[a-z0-9_-]{24,}$/i.test(part)) return '{token}';
     return part;
   }).join('/');
-}
-
-function displayUrl(value) {
-  const url = value instanceof URL ? value : new URL(value);
   const names = [...new Set(url.searchParams.keys())];
-  return url.origin + maskedPath(url.pathname) +
-    (names.length ? '?' + names.map(name => encodeURIComponent(name) + '={value}').join('&') : '') +
-    (url.hash ? '#{fragment}' : '');
+  return url.origin + path + (names.length ? '?' + names.map(name =>
+    encodeURIComponent(name) + '={value}').join('&') : '') + (url.hash ? '#{fragment}' : '');
 }
 
-function bodyKeys(request) {
-  const raw = request.postData();
-  if (!raw || raw.length > 100_000) return [];
+function displayStaticApiUrl(value) {
+  return displayUrl(value).replace(/%7B([a-zA-Z_$][\w.$]*)%7D/gi, '{$1}');
+}
+
+function rememberQueryValues(values, value) {
   try {
-    const contentType = request.headers()['content-type'] || '';
-    if (contentType.includes('application/json')) {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ?
-        Object.keys(parsed).slice(0, 40) : [];
-    }
-    if (contentType.includes('application/x-www-form-urlencoded')) {
-      return [...new Set(new URLSearchParams(raw).keys())].slice(0, 40);
-    }
-  } catch { /* A malformed body is still recorded as an observed request. */ }
-  return [];
+    for (const item of new URL(value).searchParams.values()) if (item.length >= 4) values.add(item);
+  } catch { /* Ignore non-URLs. */ }
 }
 
-function observedRequest(request) {
-  const url = new URL(request.url());
-  return {
-    method: request.method(),
-    url: displayUrl(url),
-    resourceType: request.resourceType(),
-    queryParameters: [...new Set(url.searchParams.keys())],
-    bodyKeys: bodyKeys(request),
-    status: null
-  };
-}
-
-function queryInputs(pageUrl, links, requests, scriptHints, seedOrigin) {
-  const found = new Map();
-  const add = (value, source) => {
-    let url;
-    try { url = new URL(value); } catch { return; }
-    if (url.origin !== seedOrigin) return;
-    for (const name of new Set(url.searchParams.keys())) {
-      const key = maskedPath(url.pathname) + '\u0000' + name;
-      const entry = found.get(key) || { name, targetUrl: displayUrl(url), evidence: [] };
-      if (!entry.evidence.includes(source)) entry.evidence.push(source);
-      found.set(key, entry);
-    }
-  };
-  add(pageUrl, 'current-url');
-  for (const link of links) add(link.href, 'link');
-  for (const request of requests) {
-    if (['document', 'fetch', 'xhr'].includes(request.resourceType)) add(request.rawUrl, 'network-request');
+function redactValues(value, values) {
+  if (typeof value === 'string') {
+    let result = value;
+    for (const secret of values) result = result.replaceAll(secret, '{query-value}');
+    return result;
   }
-  for (const hint of scriptHints) add(hint.endpointUrlTemplate, 'static-js-hint');
-  return [...found.values()];
-}
-
-function pathSegments(pathname) {
-  return pathname.split('/').filter(Boolean).map((value, index) => ({
-    index,
-    shape: /^\d+$/.test(value) ? 'number' :
-      /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(value) ? 'uuid' :
-      /^[a-z0-9_-]{24,}$/i.test(value) ? 'token-like' : 'literal',
-    possibleVariable: /^\d+$/.test(value) || /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(value) ||
-      /^[a-z0-9_-]{24,}$/i.test(value)
-  }));
-}
-
-function buildPage(id, pageUrl, responseStatus, dom, requestRecords, errors, seedOrigin, rawScriptHints, scriptErrors) {
-  const url = new URL(pageUrl);
-  const scriptHints = rawScriptHints.map((hint, index) => {
-    const { endpointPattern, ...rest } = hint;
-    return {
-      id: id + '-script-hint-' + (index + 1),
-      ...rest,
-      endpointUrlTemplate: displayUrl(new URL(endpointPattern, seedOrigin))
-    };
-  });
-  const forms = dom.forms.map((form, index) => ({
-    id: id + '-form-' + (index + 1),
-    selector: form.selector,
-    htmlId: form.htmlId,
-    name: form.name,
-    submission: {
-      htmlDefault: {
-        method: form.method,
-        actionUrl: displayUrl(form.actionUrl),
-        enctype: form.enctype
-      },
-      actualSubmissionObserved: false,
-      possibleScriptEndpointHints: [],
-      evidence: 'HTML attributes are a fallback; JavaScript may send data elsewhere'
-    },
-    fields: [],
-    controlIds: []
-  }));
-  const standaloneFields = [];
-  for (const [index, raw] of dom.fields.entries()) {
-    const { formIndex, ...field } = raw;
-    const parent = formIndex === null ? null : forms[formIndex];
-    const item = { id: id + '-field-' + (index + 1), ...field, formId: parent?.id || null, evidence: 'rendered DOM' };
-    if (parent) parent.fields.push(item);
-    else standaloneFields.push(item);
+  if (Array.isArray(value)) return value.map(item => redactValues(item, values));
+  if (value && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) value[key] = redactValues(item, values);
   }
-  for (const form of forms) {
-    const fieldNames = new Set(form.fields.map(field => field.name).filter(Boolean));
-    form.submission.possibleScriptEndpointHints = scriptHints.flatMap(hint => {
-      const matchedFieldNames = hint.bodyKeys.filter(name => fieldNames.has(name));
-      return matchedFieldNames.length ?
-        [{ hintId: hint.id, matchedFieldNames, evidence: 'field-name overlap only; not a confirmed form binding' }] : [];
-    });
-  }
-  const controls = dom.controls.map((raw, index) => {
-    const { formIndex, ...control } = raw;
-    const parent = formIndex === null ? null : forms[formIndex];
-    const item = { id: id + '-control-' + (index + 1), ...control, formId: parent?.id || null };
-    if (parent) parent.controlIds.push(item.id);
-    return item;
-  });
-  const links = dom.links.flatMap(link => {
-    let target;
-    try { target = new URL(link.href); } catch { return []; }
-    if (target.origin !== seedOrigin) return [];
-    const actionLike = ACTION_LINK.test(target.pathname + ' ' + link.text);
-    return [{
-      url: displayUrl(target),
-      text: link.text,
-      crawlEligible: !actionLike,
-      ...(actionLike ? { skipReason: 'action-like link' } : {})
-    }];
-  });
-  const requestOutput = requestRecords.map(({ rawUrl, ...record }) => record);
-  const queryParameters = queryInputs(pageUrl, dom.links, requestRecords, scriptHints, seedOrigin);
-  const fragmentSources = [];
-  if (url.hash) fragmentSources.push('current-url');
-  if (dom.links.some(link => {
-    try { const target = new URL(link.href); return target.origin === seedOrigin && !!target.hash; }
-    catch { return false; }
-  })) fragmentSources.push('link');
-  return {
-    id,
-    url: displayUrl(url),
-    title: dom.title,
-    status: responseStatus,
-    path: { pathname: maskedPath(url.pathname), segments: pathSegments(url.pathname) },
-    forms,
-    standaloneFields,
-    controls,
-    urlInputs: {
-      queryParameters,
-      fragment: { observed: fragmentSources.length > 0, evidence: fragmentSources }
-    },
-    links,
-    observedRequests: requestOutput,
-    scriptEndpointHints: scriptHints,
-    scriptAnalysisErrors: scriptErrors,
-    counts: {
-      ...dom.counts,
-      truncated: {
-        forms: dom.counts.forms > dom.forms.length,
-        fields: dom.counts.fields > dom.fields.length,
-        controls: dom.counts.controls > dom.controls.length,
-        links: dom.counts.links > dom.links.length
-      }
-    },
-    errors
-  };
-}
-
-function collectInputPoints(pages) {
-  const points = [];
-  for (const [pageIndex, page] of pages.entries()) {
-    for (const [formIndex, form] of page.forms.entries()) {
-      for (const [fieldIndex, field] of form.fields.entries()) {
-        points.push({
-          id: field.id,
-          kind: 'dom-field',
-          pageId: page.id,
-          ref: '/pages/' + pageIndex + '/forms/' + formIndex + '/fields/' + fieldIndex,
-          name: field.name,
-          label: field.label,
-          type: field.type,
-          selector: field.selector,
-          userEditable: field.userEditable,
-          submission: form.submission,
-          evidence: 'rendered DOM'
-        });
-      }
-    }
-    for (const [fieldIndex, field] of page.standaloneFields.entries()) {
-      points.push({
-        id: field.id,
-        kind: 'dom-field',
-        pageId: page.id,
-        ref: '/pages/' + pageIndex + '/standaloneFields/' + fieldIndex,
-        name: field.name,
-        label: field.label,
-        type: field.type,
-        selector: field.selector,
-        userEditable: field.userEditable,
-        submission: null,
-        evidence: 'rendered DOM'
-      });
-    }
-    for (const [queryIndex, param] of page.urlInputs.queryParameters.entries()) {
-      points.push({
-        id: page.id + '-query-' + (queryIndex + 1),
-        kind: 'url-query',
-        pageId: page.id,
-        ref: '/pages/' + pageIndex + '/urlInputs/queryParameters/' + queryIndex,
-        name: param.name,
-        targetUrl: param.targetUrl,
-        evidence: param.evidence
-      });
-    }
-    for (const [segmentIndex, segment] of page.path.segments.entries()) {
-      if (!segment.possibleVariable) continue;
-      points.push({
-        id: page.id + '-path-' + (segmentIndex + 1),
-        kind: 'url-path-segment',
-        pageId: page.id,
-        ref: '/pages/' + pageIndex + '/path/segments/' + segmentIndex,
-        name: 'path[' + segment.index + ']',
-        shape: segment.shape,
-        targetUrl: page.url,
-        evidence: 'visited URL shape heuristic'
-      });
-    }
-    if (page.urlInputs.fragment.observed) {
-      points.push({
-        id: page.id + '-fragment',
-        kind: 'url-fragment',
-        pageId: page.id,
-        ref: '/pages/' + pageIndex + '/urlInputs/fragment',
-        name: 'location.hash',
-        evidence: page.urlInputs.fragment.evidence
-      });
-    }
-  }
-  return points;
+  return value;
 }
 
 function validateOptions(options) {
-  for (const [name, min, max] of [['maxPages', 1, 30], ['waitMs', 0, 5000], ['timeoutMs', 1000, 30000]]) {
-    if (options[name] !== undefined &&
-      (!Number.isInteger(options[name]) || options[name] < min || options[name] > max)) {
-      throw new Error(name + ' must be an integer from ' + min + ' to ' + max + '.');
+  for (const [key, min, max] of [['maxPages', 1, 30], ['waitMs', 0, 5000], ['timeoutMs', 1000, 30000]]) {
+    if (options[key] !== undefined &&
+      (!Number.isInteger(options[key]) || options[key] < min || options[key] > max)) {
+      throw new Error(key + ' must be an integer from ' + min + ' to ' + max + '.');
+    }
+  }
+}
+
+function pageFromDom(id, pageUrl, dom, queryValues) {
+  const areas = dom.areas.map((area, index) => ({
+    id: id + '-area-' + (index + 1),
+    name: area.name,
+    kind: area.kind,
+    selector: area.selector,
+    parent: area.parentIndex === null ? null : id + '-area-' + (area.parentIndex + 1),
+    forms: area.forms.map(form => {
+      rememberQueryValues(queryValues, form.htmlAction);
+      return { ...form, htmlAction: displayUrl(form.htmlAction) };
+    }),
+    fields: area.fields,
+    buttons: area.buttons,
+    links: area.links.map(link => {
+      rememberQueryValues(queryValues, link.url);
+      return { text: link.text, url: displayUrl(link.url), visited: false };
+    }),
+    outputs: area.outputs
+  }));
+  return { id, url: displayUrl(pageUrl), title: dom.title, areas, posts: dom.posts };
+}
+
+function compactReport(report) {
+  for (const page of report.pages) {
+    for (const area of page.areas) {
+      for (const form of area.forms) if (!form.fields.length) delete form.fields;
+      for (const key of ['forms', 'fields', 'buttons', 'links', 'outputs']) {
+        if (!area[key].length) delete area[key];
+      }
+    }
+    for (const post of page.posts || []) if (!post.buttons.length) delete post.buttons;
+    for (const key of ['areas', 'posts', 'behaviors', 'renderRules', 'observedRequests']) {
+      if (Array.isArray(page[key]) && !page[key].length) delete page[key];
     }
   }
 }
@@ -290,176 +108,182 @@ export async function scan(inputUrl, options = {}) {
   const timeoutMs = options.timeoutMs ?? 10000;
   const chromePath = options.browserPath || process.env.XSS_PARSER_BROWSER_PATH ||
     (existsSync(CHROME_ON_MAC) ? CHROME_ON_MAC : undefined);
-  const browser = await chromium.launch({
-    headless: !options.headed,
-    ...(chromePath ? { executablePath: chromePath } : {})
-  });
-  const report = {
-    schemaVersion: '1.0',
-    tool: 'xss-parser',
-    target: {
-      startUrl: displayUrl(seed),
-      origin: seed.origin,
-      scope: 'same-origin links; loopback-only browser requests'
-    },
-    scan: {
-      mode: 'passive',
-      maxPages,
-      waitMs,
-      timeoutMs,
-      writeMethodsBlocked: true,
-      formSubmissionPerformed: false,
-      clickedControls: false,
-      headed: !!options.headed
-    },
-    summary: {},
-    pages: [],
-    inputPoints: [],
-    blockedRequests: [],
-    limitations: [
-      'Input points are observed surfaces, not proven vulnerabilities.',
-      'No form submission, button clicks, authentication, or write-method requests are performed.',
-      'JavaScript may override HTML form action and method. Static endpoint hints and field-name matches are unconfirmed.',
-      'Unvisited routes, authenticated content, shadow DOM, and delayed UI may be missed.'
-    ]
-  };
+  const browser = await chromium.launch({ headless: !options.headed,
+    ...(chromePath ? { executablePath: chromePath } : {}) });
+  const report = { schemaVersion: '3.4', startUrl: displayUrl(seed), pages: [], summary: {} };
+  const queryValues = new Set();
+  rememberQueryValues(queryValues, seed.href);
+  const queue = [seed.href];
+  const queued = new Set(queue);
+  const visited = new Set();
+  let elementListsTruncated = false;
+  let scriptListsTruncated = false;
+  let activeScriptBodies = null;
   const context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false });
   context.setDefaultTimeout(timeoutMs);
-  await context.routeWebSocket('**/*', socket => {
-    report.blockedRequests.push({ method: 'WS', url: displayUrl(socket.url()), reason: 'websocket' });
-    socket.close();
-  });
+  await context.routeWebSocket('**/*', socket => socket.close());
   await context.route('**/*', async route => {
     const request = route.request();
     const url = new URL(request.url());
-    const method = request.method();
-    const reason = !isLoopback(url) ? 'non-loopback' : !SAFE_METHODS.has(method) ? 'write-method' : null;
-    if (reason) {
-      report.blockedRequests.push({ method, url: displayUrl(url), reason });
+    if (url.origin !== seed.origin || !READ_METHODS.has(request.method())) {
       await route.abort();
-    } else {
-      await route.continue();
+      return;
+    }
+    try {
+      const response = await route.fetch({ maxRedirects: 0, timeout: timeoutMs });
+      if (activeScriptBodies && request.resourceType() === 'script') {
+        if (activeScriptBodies.size >= 30 || Number(response.headers()['content-length'] || 0) > 1_000_000) {
+          scriptListsTruncated = true;
+        } else {
+          const body = await response.body();
+          if (body.length <= 1_000_000) activeScriptBodies.set(request.url(), body.toString('utf8'));
+          else scriptListsTruncated = true;
+        }
+      }
+      if (response.status() >= 300 && response.status() < 400) {
+        await route.fulfill({ status: 403, body: '' });
+      } else {
+        await route.fulfill({ response });
+      }
+    } catch {
+      await route.abort();
     }
   });
-  const queue = [seed.href];
-  const queued = new Set([new URL(seed.href).origin + seed.pathname + seed.search]);
-  const visited = new Set();
   try {
     while (queue.length && report.pages.length < maxPages) {
       const next = queue.shift();
-      const keyUrl = new URL(next);
-      keyUrl.hash = '';
-      const key = keyUrl.href;
-      if (visited.has(key)) continue;
-      visited.add(key);
+      if (visited.has(next)) continue;
+      visited.add(next);
       const page = await context.newPage();
       page.setDefaultNavigationTimeout(timeoutMs);
-      const requestRecords = [];
-      const requestMap = new WeakMap();
-      const scriptTasks = [];
-      const errors = [];
-      page.on('request', request => {
-        const record = { ...observedRequest(request), rawUrl: request.url() };
-        requestRecords.push(record);
-        requestMap.set(request, record);
-      });
+      const id = 'page-' + (report.pages.length + 1);
+      const scriptBodies = new Map();
+      const observedRequests = [];
+      activeScriptBodies = scriptBodies;
       page.on('response', response => {
-        const record = requestMap.get(response.request());
-        if (record) record.status = response.status();
-        if (response.request().resourceType() === 'script' && scriptTasks.length < 30) {
-          scriptTasks.push(response.text().then(source => ({
-            source,
-            scriptUrl: displayUrl(response.url())
-          })).catch(error => ({ error: error.message.slice(0, 150), scriptUrl: displayUrl(response.url()) })));
-        }
+        const request = response.request();
+        if (!['fetch', 'xhr'].includes(request.resourceType())) return;
+        if (observedRequests.length >= 30) { scriptListsTruncated = true; return; }
+        try {
+          if (new URL(request.url()).origin !== seed.origin || !READ_METHODS.has(request.method())) return;
+          rememberQueryValues(queryValues, request.url());
+          observedRequests.push({ method: request.method(), url: displayUrl(request.url()),
+            status: response.status() });
+        } catch { /* Ignore malformed request URLs. */ }
       });
-      page.on('pageerror', error => {
-        if (errors.length < 20) errors.push('Page script error: ' + error.message.slice(0, 250));
-      });
-      let status = null;
       try {
-        const response = await page.goto(next, { waitUntil: 'domcontentloaded' });
-        status = response?.status() ?? null;
+        await page.goto(next, { waitUntil: 'domcontentloaded' });
         if (waitMs) await page.waitForTimeout(waitMs);
-        const dom = await page.evaluate(readDom);
-        const scriptResponses = await Promise.all(scriptTasks);
-        const rawScriptHints = [];
-        const scriptErrors = [];
-        for (const script of [
-          ...scriptResponses,
-          ...dom.inlineScripts.map((source, index) => ({
-            source,
-            scriptUrl: displayUrl(page.url()) + ' [inline ' + (index + 1) + ']'
-          }))
-        ]) {
-          if (script.error) {
-            scriptErrors.push({ scriptUrl: script.scriptUrl, message: script.error });
+        if (new URL(page.url()).origin !== seed.origin) throw new Error('Navigation left the start origin.');
+        const dom = await page.evaluate(readDom, { includeBodyPreview: !options.hideBody });
+        elementListsTruncated ||= dom.counts.areas > 100 || dom.counts.forms > 80 ||
+          dom.counts.fields > 250 || dom.counts.buttons > 150 ||
+          dom.counts.links > 250 || dom.counts.outputs > 100 || dom.counts.posts > 50;
+        const reportPage = pageFromDom(id, page.url(), dom, queryValues);
+        const scripts = await page.evaluate(() => [...document.scripts].map((script, index) => ({
+          url: script.src || location.href + '#inline-' + (index + 1),
+          source: script.src ? null : (script.textContent || '').slice(0, 1_000_001),
+          external: !!script.src,
+          type: script.type
+        })));
+        let externalCount = 0, inlineCount = 0;
+        const behaviors = [];
+        for (const script of scripts) {
+          if (script.type && !['module', 'text/javascript', 'application/javascript'].includes(script.type)) continue;
+          if (script.external ? ++externalCount > 30 : ++inlineCount > 20) {
+            scriptListsTruncated = true;
             continue;
           }
-          const result = findScriptHints(script.source, script.scriptUrl);
-          rawScriptHints.push(...result.hints);
-          if (result.error) scriptErrors.push({ scriptUrl: script.scriptUrl, message: result.error });
+          if (new URL(script.url).origin !== seed.origin) continue;
+          const source = script.external ? scriptBodies.get(script.url) : script.source;
+          if (!source) { scriptListsTruncated = true; continue; }
+          const result = analyzeScript(source, script.url, page.url());
+          scriptListsTruncated ||= result.truncated;
+          for (const behavior of result.behaviors) {
+            if (behaviors.length >= 60) { scriptListsTruncated = true; break; }
+            behaviors.push({ ...behavior, script: displayUrl(behavior.script),
+              api: behavior.api.map(api => ({ ...api, url: displayStaticApiUrl(api.url) })) });
+          }
         }
-        const pageId = 'page-' + (report.pages.length + 1);
-        const built = buildPage(
-          pageId, page.url(), status, dom, requestRecords, errors, seed.origin, rawScriptHints, scriptErrors
-        );
-        report.pages.push(built);
-        for (const link of dom.links) {
-          let target;
-          try { target = new URL(link.href); } catch { continue; }
-          if (target.origin !== seed.origin || ACTION_LINK.test(target.pathname + ' ' + link.text)) continue;
-          target.hash = '';
-          const targetKey = target.href;
-          if (!queued.has(targetKey) && !visited.has(targetKey)) {
-            queue.push(targetKey);
-            queued.add(targetKey);
+        reportPage.behaviors = behaviors;
+        reportPage.observedRequests = observedRequests;
+        const renderRules = [];
+        const ruleIds = new Map();
+        for (const behavior of behaviors) {
+          const refs = [];
+          for (const update of behavior.updates) {
+            const key = JSON.stringify(update);
+            let ruleId = ruleIds.get(key);
+            if (!ruleId) {
+              ruleId = id + '-render-' + (renderRules.length + 1);
+              ruleIds.set(key, ruleId);
+              renderRules.push({ id: ruleId, ...update, evidence: 'static-js' });
+            }
+            refs.push(ruleId);
+          }
+          delete behavior.updates;
+          if (refs.length) behavior.renderRefs = refs;
+        }
+        reportPage.renderRules = renderRules;
+        const bodyRenderRules = renderRules.filter(rule =>
+          ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'textContent'].includes(rule.operation));
+        for (const post of reportPage.posts) {
+          if (!post.body) continue;
+          const matched = bodyRenderRules.find(rule => post.body.matchSelectors.includes(rule.selector) ||
+            post.body.selector === rule.selector);
+          if (matched) post.body.renderRef = matched.id;
+          delete post.body.matchSelectors;
+        }
+        report.pages.push(reportPage);
+        for (const area of dom.areas) {
+          for (const link of area.links) {
+            let target;
+            try { target = new URL(link.url); } catch { continue; }
+            if (target.origin !== seed.origin || ACTION_LINK.test(target.pathname + ' ' + link.text)) continue;
+            target.hash = '';
+            if (!queued.has(target.href) && !visited.has(target.href)) {
+              queue.push(target.href);
+              queued.add(target.href);
+            }
           }
         }
       } catch (error) {
-        report.pages.push({
-          id: 'page-' + (report.pages.length + 1),
-          url: displayUrl(next),
-          title: null,
-          status,
-          path: { pathname: maskedPath(keyUrl.pathname), segments: pathSegments(keyUrl.pathname) },
-          forms: [],
-          standaloneFields: [],
-          controls: [],
-          urlInputs: { queryParameters: [], fragment: { observed: false, evidence: [] } },
-          links: [],
-          observedRequests: requestRecords.map(({ rawUrl, ...record }) => record),
-          scriptEndpointHints: [],
-          scriptAnalysisErrors: [],
-          counts: { forms: 0, fields: 0, controls: 0, links: 0, truncated: {} },
-          errors: [error.message.slice(0, 300), ...errors]
-        });
+        report.pages.push({ id, url: displayUrl(next), title: null, areas: [],
+          error: error.message.slice(0, 180) });
       } finally {
+        activeScriptBodies = null;
         await page.close();
       }
     }
-    report.inputPoints = collectInputPoints(report.pages);
+    const visitedUrls = new Set(report.pages.filter(page => !page.error).map(page => page.url));
+    for (const page of report.pages) {
+      for (const area of page.areas) {
+        for (const link of area.links) {
+          const withoutHash = new URL(link.url);
+          withoutHash.hash = '';
+          link.visited = visitedUrls.has(withoutHash.href);
+        }
+      }
+    }
+    const allAreas = report.pages.flatMap(page => page.areas);
     report.summary = {
-      pagesVisited: report.pages.length,
-      formsFound: report.pages.reduce((sum, page) => sum + page.forms.length, 0),
-      fieldsFound: report.inputPoints.filter(point => point.kind === 'dom-field').length,
-      editableFields: report.inputPoints.filter(point => point.kind === 'dom-field' && point.userEditable).length,
-      urlQueryParameters: report.inputPoints.filter(point => point.kind === 'url-query').length,
-      urlQueryParametersObserved: report.inputPoints.filter(point =>
-        point.kind === 'url-query' && point.evidence.some(source => source !== 'static-js-hint')).length,
-      urlQueryParametersStaticOnly: report.inputPoints.filter(point =>
-        point.kind === 'url-query' && point.evidence.every(source => source === 'static-js-hint')).length,
-      urlPathSegments: report.inputPoints.filter(point => point.kind === 'url-path-segment').length,
-      urlFragments: report.inputPoints.filter(point => point.kind === 'url-fragment').length,
-      controlsFound: report.pages.reduce((sum, page) => sum + page.controls.length, 0),
-      observedRequests: report.pages.reduce((sum, page) => sum + page.observedRequests.length, 0),
-      scriptEndpointHints: report.pages.reduce((sum, page) => sum + page.scriptEndpointHints.length, 0),
-      blockedRequests: report.blockedRequests.length,
-      errors: report.pages.reduce((sum, page) => sum + page.errors.length, 0),
-      truncated: queue.length > 0 || report.pages.some(page =>
-        Object.values(page.counts.truncated).some(Boolean))
+      scope: 'visited-client-pages',
+      pages: report.pages.length,
+      areas: allAreas.length,
+      forms: allAreas.reduce((sum, area) => sum + area.forms.length, 0),
+      fields: allAreas.reduce((sum, area) => sum + area.fields.length +
+        area.forms.reduce((count, form) => count + form.fields.length, 0), 0),
+      buttons: allAreas.reduce((sum, area) => sum + area.buttons.length, 0),
+      links: allAreas.reduce((sum, area) => sum + area.links.length, 0),
+      outputs: allAreas.reduce((sum, area) => sum + area.outputs.reduce((count, output) => count + output.count, 0), 0),
+      posts: report.pages.reduce((sum, page) => sum + (page.posts?.length || 0), 0),
+      behaviors: report.pages.reduce((sum, page) => sum + (page.behaviors?.length || 0), 0),
+      observedRequests: report.pages.reduce((sum, page) => sum + (page.observedRequests?.length || 0), 0),
+      errors: report.pages.filter(page => page.error).length,
+      truncated: queue.length > 0 || elementListsTruncated || scriptListsTruncated
     };
-    return report;
+    compactReport(report);
+    return redactValues(report, queryValues);
   } finally {
     await context.close();
     await browser.close();

@@ -1,19 +1,16 @@
-# xss-parser: 로컬 웹사이트 입력 지점 → JSON
+# xss-parser: 방문한 페이지의 화면·클라이언트 동작 지도
 
-이 도구는 **실행 중인 로컬 웹사이트의 URL**을 받아, 사람이 값을 넣거나 조작할 수 있는 지점을 JSON으로 정리합니다. 게시판 글쓰기, 댓글, 검색, 로그인, 파일 선택, 드롭다운, 숨은 폼 필드, URL 쿼리·해시 등을 같은 방식으로 기록하는 것이 목표입니다. 결과는 이후 AI가 살펴볼 **사이트 지도**이며, 취약점 판정이나 공격 결과가 아닙니다. 기존 `xss-fuzzer`와 별도의 프로그램입니다.
+실행 중인 로컬 웹사이트 URL을 받아 **방문할 수 있었던 페이지의 클라이언트 구조**를 JSON 한 파일로 정리합니다. 기본 구조는 `pages → areas → forms / fields / buttons / links / outputs`이며, 화면에 나타난 `article` 카드의 개별 정보는 `posts`로 기록합니다. **동작 힌트** `behaviors`는 공통 화면 갱신 규칙 `renderRules`를 ID로 참조하고, 페이지 로드 중 **실제로 응답을 받은 요청**은 `observedRequests`에 기록합니다. AI가 화면의 입력칸, 버튼, 게시글, 결과 영역을 보고 관련 API 주소를 찾되, 코드에서 추정한 경로를 실행 결과로 착각하지 않도록 구분했습니다. 서버 전체의 경로·권한·저장 구조를 그리는 도구는 아닙니다.
 
-현재 출력 형식은 **초안 v1**입니다. 사이트별 사용 결과를 보며 키를 바꿀 수 있도록 `schemaVersion`을 넣었습니다. JSON은 `pages`에 페이지별 트리로 담고, `inputPoints`에 입력 지점의 짧은 목록과 트리 위치(`ref`)를 한 번 더 담습니다. AI는 목록에서 관심 지점을 찾은 뒤 `ref`가 가리키는 상세 정보와 근거를 읽을 수 있습니다.
+이 도구는 파서입니다. 입력값 주입, 버튼 클릭, 폼 제출, 취약점 판정은 하지 않습니다.
 
-## 설치와 실행
+## 실행
 
-Node.js 20 이상과 Chrome 또는 Chromium이 필요합니다. macOS에 Chrome이 설치되어 있으면 자동으로 사용합니다.
+Node.js 20 이상과 Chrome 또는 Chromium이 필요합니다. macOS에 Chrome이 있으면 자동으로 사용합니다. 없으면 `npx playwright install chromium`으로 Chromium을 설치하세요. 저장소의 `xss-parser` 폴더에서 터미널 두 개를 엽니다.
 
-이 폴더에 복사된 `vul-web-1/` 게시판을 먼저 켭니다. 터미널을 두 개 열어 각각 저장소 최상위 폴더에 서 실행하세요.
-
-터미널 1 — 게시판 서버(계속 켜둡니다):
+터미널 1 — 포함된 실습 게시판 실행:
 
 ```sh
-cd xss-parser
 npm install
 npm start
 ```
@@ -21,155 +18,123 @@ npm start
 터미널 2 — 파서 실행:
 
 ```sh
-cd xss-parser
 npm run parse -- --url http://127.0.0.1:3000/ --out report.json
 ```
 
-`report.json`은 두 번째 터미널의 현재 폴더에 만들어집니다. 같은 이름의 파일이 있으면 덮어쓰며, Git에는 포함되지 않습니다. `--out`을 생략하면 JSON이 터미널에만 출력됩니다. Chrome이 없다면 `npx playwright install chromium`을 실행할 수 있습니다.
+`report.json`은 현재 폴더에 저장됩니다. `--out`을 빼면 결과가 터미널에 출력됩니다. `npm run parse --` 뒤의 옵션은 파서로 전달됩니다. 검증은 `npm test`로 실행합니다.
 
-Chrome 창을 보면서 첫 페이지만 읽으려면 다음처럼 실행합니다. 창은 파싱이 끝나면 닫힙니다.
+| 옵션 | 설명 |
+| --- | --- |
+| `--url URL` | **필수.** 시작 주소. `localhost`, `127.0.0.1`, `[::1]`의 HTTP(S)만 허용 |
+| `--out FILE` | JSON 저장 경로. 생략하면 터미널 출력 |
+| `--max-pages N` | 같은 출처에서 방문할 최대 페이지 수. 기본 10, 범위 1~30 |
+| `--wait-ms N` | 페이지가 열린 뒤 동적 화면을 기다릴 시간(ms). 기본 500, 범위 0~5000 |
+| `--timeout-ms N` | 페이지 이동 제한 시간(ms). 기본 10000, 범위 1000~30000 |
+| `--browser FILE` | Chrome/Chromium 실행 파일 경로 |
+| `--headed` | 파싱 중 브라우저 창 표시 |
+| `--hide-body` | `posts[].body.preview`를 `null`로 출력하여 게시글 본문 미리보기를 가림 |
+| `--help`, `-h` | 도움말 |
 
-```sh
-npm run parse -- --url http://127.0.0.1:3000/ --headed --max-pages 1 --wait-ms 2000 --out report.json
-```
-
-여기서 `--max-pages 1`은 첫 페이지만 읽고, `--wait-ms 2000`은 화면이 뜬 뒤 2초 기다린다는 뜻입니다. 파서 자체를 검증하려면 별도의 로컬 시험 서버를 사용하는 `npm test`를 실행합니다.
-
-## 입력과 명령어 옵션
-
-**필수 입력은 로컬 URL 하나**입니다. `localhost`, `127.0.0.1`, `[::1]`의 HTTP(S) 주소만 받습니다. 예: `http://127.0.0.1:3000/`. URL에 이미 쿼리나 해시가 있다면 이름을 기록하지만 값은 JSON에서 가립니다.
-
-| 옵션 | 필수 여부 | 뜻 |
-| --- | --- | --- |
-| `--url URL` | 필수 | 첫 페이지의 로컬 주소 |
-| `--out FILE` | 선택 | 결과 JSON 파일. 생략 시 표준 출력 |
-| `--max-pages N` | 선택 | 같은 출처의 링크를 따라갈 최대 페이지 수. 기본 10, 범위 1~30 |
-| `--wait-ms N` | 선택 | 각 페이지가 뜬 뒤 JavaScript 화면 갱신을 기다릴 시간. 기본 500ms, 범위 0~5000 |
-| `--timeout-ms N` | 선택 | 페이지 이동 제한 시간. 기본 10000ms, 범위 1000~30000 |
-| `--browser FILE` | 선택 | Chrome/Chromium 실행 파일 경로를 직접 지정 |
-| `--headed` | 선택 | Chrome 창을 화면에 표시. 기본은 창이 안 보이는 실행 |
-| `--help`, `-h` | 선택 | 도움말 출력 |
-
-`--headed`만 값 없이 쓰는 스위치입니다. 나머지 옵션은 뒤에 값이 옵니다. `npm start`는 복사된 게시판 서버를 켜고, `npm run parse -- --url ...`은 파서를 실행합니다. 가운데 `--`는 뒤의 옵션을 `cli.mjs`에 전달한다는 뜻입니다.
-
-## 무엇을 읽는가
-
-1. Playwright가 로컬 주소를 Chrome에서 열고, 같은 출처의 일반 링크를 최대 `--max-pages`만큼 따라갑니다. 삭제·로그아웃처럼 보이는 링크는 이동 대상에서 제외합니다.
-2. 렌더링된 DOM에서 `form`, `input`, `textarea`, `select`, `contenteditable`, 일부 ARIA 입력 역할과 버튼을 읽습니다. JavaScript가 만들어 놓은 입력창도 대기 시간 안에 나타나면 포함됩니다.
-3. 현재 URL, 같은 출처 링크, 실제 네트워크 요청, JavaScript 코드의 API 힌트에서 **쿼리 매개변수 이름**을 모읍니다. URL 경로의 숫자·UUID·긴 토큰 모양도 별도 힌트로 표시합니다.
-4. 화면을 여는 동안 브라우저가 시도한 요청의 메서드·경로·응답 상태·쿼리 키·본문의 최상위 키를 기록합니다. 차단된 요청은 서버에 도착하지 않으며 응답 상태가 `null`일 수 있습니다. 요청 본문 값과 URL 쿼리 값은 출력하지 않습니다.
-5. 읽어 온 외부·인라인 JavaScript를 Acorn으로 파싱해 `fetch('/...')`, `api('/...', {method:'POST', ...})`처럼 주소가 코드에 드러난 호출을 찾습니다. 폼 필드 이름과 JSON 본문 키가 같으면 연결 **가능성**을 표시합니다. 이 힌트는 실행을 관측한 요청과 구분합니다.
-
-폼을 제출하거나 버튼을 누르지 않습니다. POST·PUT·PATCH·DELETE 같은 쓰기 요청은 페이지 JavaScript가 자동으로 만들더라도 브라우저 단계에서 차단합니다. 외부 인터넷 주소 요청도 차단하며, 같은 컴퓨터의 다른 로컬 포트로 가는 읽기 요청은 허용합니다. 화면의 GET 링크는 방문할 수 있으므로, 실습용 복제 사이트에서 사용하는 편이 좋습니다.
-
-## JSON 구조와 각 키의 의미
-
-아래는 주요 키만 남긴 축약 예시입니다. 실제 결과에는 이보다 많은 키와 항목이 들어갑니다.
+## JSON 구성
 
 ```json
 {
-  "schemaVersion": "1.0",
-  "tool": "xss-parser",
-  "target": { "startUrl": "http://127.0.0.1:3000/", "origin": "http://127.0.0.1:3000" },
-  "summary": { "pagesVisited": 1, "formsFound": 1, "fieldsFound": 2 },
-  "pages": [
-    {
-      "id": "page-1",
-      "url": "http://127.0.0.1:3000/",
-      "forms": [
-        {
-          "id": "page-1-form-1",
-          "submission": {
-            "htmlDefault": { "method": "GET", "actionUrl": "http://127.0.0.1:3000/" },
-            "actualSubmissionObserved": false,
-            "possibleScriptEndpointHints": [
-              { "hintId": "page-1-script-hint-5", "matchedFieldNames": ["title", "content"] }
-            ]
-          },
-          "fields": [
-            { "id": "page-1-field-1", "name": "title", "type": "text", "selector": "#post-title" },
-            { "id": "page-1-field-2", "name": "content", "type": "textarea", "selector": "#post-content" }
-          ]
-        }
-      ],
-      "scriptEndpointHints": [
-        { "id": "page-1-script-hint-5", "declaredMethod": "POST",
-          "endpointUrlTemplate": "http://127.0.0.1:3000/api/posts",
-          "bodyKeys": ["title", "content"] }
-      ]
-    }
-  ],
-  "inputPoints": [
-    { "id": "page-1-field-1", "kind": "dom-field",
-      "ref": "/pages/0/forms/0/fields/0", "name": "title", "selector": "#post-title" },
-    { "id": "page-1-field-2", "kind": "dom-field",
-      "ref": "/pages/0/forms/0/fields/1", "name": "content", "selector": "#post-content" }
-  ]
+  "schemaVersion": "3.4",
+  "startUrl": "http://127.0.0.1:3000/",
+  "pages": [{
+    "id": "page-1",
+    "url": "http://127.0.0.1:3000/",
+    "title": "모아 · 작은 게시판",
+    "areas": [{
+      "id": "page-1-area-1",
+      "name": "새 글 쓰기",
+      "kind": "section",
+      "selector": "section.compose-panel",
+      "parent": null,
+      "forms": [{
+        "selector": "#post-form",
+        "htmlMethod": "GET",
+        "htmlAction": "http://127.0.0.1:3000/",
+        "fields": [{ "selector": "#post-title", "name": "title", "label": "제목", "type": "text", "required": true, "editable": true, "visible": true }]
+      }],
+      "buttons": [{ "selector": "#publish-button", "label": "게시글 올리기", "type": "submit", "visible": true, "form": "#post-form" }]
+    }],
+    "posts": [{
+      "selector": "#post-list > article:nth-of-type(1)",
+      "id": "3",
+      "idSource": "visible-label",
+      "author": "밥",
+      "title": "오늘의 첫 인사 👋",
+      "body": {
+        "selector": "#post-list > article:nth-of-type(1) > div:nth-of-type(2)",
+        "preview": "반갑습니다! 여러분의 이야기가 궁금해요.",
+        "length": 22,
+        "previewTruncated": false,
+        "renderRef": "page-1-render-1"
+      }
+    }],
+    "behaviors": [{
+      "trigger": { "event": "submit", "selector": "#post-form" },
+      "api": [{ "method": "POST", "url": "http://127.0.0.1:3000/api/posts", "bodyKeys": ["title", "content"] }],
+      "renderRefs": ["page-1-render-1"],
+      "evidence": "static-js",
+      "script": "http://127.0.0.1:3000/app.js"
+    }],
+    "renderRules": [{ "id": "page-1-render-1", "selector": ".post-content", "operation": "innerHTML", "value": "post.content", "evidence": "static-js" }],
+    "observedRequests": [{ "method": "GET", "url": "http://127.0.0.1:3000/api/posts", "status": 200 }]
+  }],
+  "summary": { "scope": "visited-client-pages", "pages": 1, "areas": 1, "forms": 1, "fields": 1, "buttons": 1, "links": 0, "outputs": 0, "posts": 1, "behaviors": 1, "observedRequests": 1, "errors": 0, "truncated": false }
 }
 ```
 
-| 최상위 키 | 의미 |
+위는 **구조를 설명하기 위해 항목을 덜어낸 예시**입니다. 실제 게시판 결과에는 다른 영역, `content` 입력칸, 나머지 게시글, 더 많은 동작·요청과 렌더링 규칙이 있습니다. 예시의 개수는 일부 항목만 보여줍니다. 빈 `forms`, `fields`, `buttons`, `links`, `outputs`, `posts`, `behaviors`, `renderRules`, `observedRequests` 목록은 키 자체를 생략합니다.
+
+| 키 | 의미 |
 | --- | --- |
-| `schemaVersion`, `tool` | 출력 형식 버전과 생성 프로그램 |
-| `target` | 시작 URL, 출처(origin), 탐색 범위. URL 값은 가린 형태 |
-| `scan` | 읽기 중심 실행 설정: 최대 페이지, 대기 시간, 쓰기 요청 차단 여부, 창 표시 여부 |
-| `summary` | 방문 페이지·폼·필드·URL 매개변수·버튼·요청·오류 개수와 `truncated` 여부. URL 쿼리는 실제 관측(`urlQueryParametersObserved`)과 정적 힌트만 있는 경우(`urlQueryParametersStaticOnly`)도 따로 셈 |
-| `pages` | 방문 페이지별 상세 트리. 페이지 하나에 폼, 독립 필드, 버튼, URL 입력, 링크, 요청, JS 힌트를 모음 |
-| `inputPoints` | AI가 빠르게 훑을 입력 지점 목록. `ref`는 상세 항목의 JSON Pointer 경로 |
-| `blockedRequests` | 범위 밖 요청 또는 POST 등 차단한 요청과 이유 |
-| `limitations` | 이 실행 결과를 해석할 때의 한계 |
+| `schemaVersion` | 결과 형식 버전 |
+| `startUrl` | 시작 주소. URL 쿼리 값은 `{value}`로 가림 |
+| `pages[]` | 방문 페이지. `id`, `url`, `title`과 수집된 `areas`, `posts`, `behaviors`, `renderRules`, `observedRequests`가 있음. 방문 실패 시 `error` 추가 |
+| `areas[]` | `header`, `nav`, `main`, `section`, `aside`, `footer`, `dialog` 등 화면 영역. `parent`는 부모 영역 ID |
+| `forms[]` | 폼 위치와 소속 입력칸. `htmlMethod`·`htmlAction`은 **HTML 속성 또는 브라우저 기본값**이며 실제 JS 요청이 아님 |
+| `fields[]` | 폼 밖의 입력칸. 폼 소속 입력칸은 `forms[].fields[]`에만 있음. 현재 입력값은 저장하지 않음 |
+| `buttons[]` | 버튼의 이름·종류·위치. 소속 폼이 있으면 `form` 선택자 포함 |
+| `links[]` | 링크의 주소와 `visited` 여부. `visited`는 파서가 방문했다는 뜻 |
+| `outputs[]` | 글 목록, 게시글, 표, 상태 메시지 등의 위치와 반복 개수 `count` |
+| `posts[]` | 렌더링된 `article` 카드별 위치·ID·표시 작성자·제목·본문 미리보기·표시된 버튼. 게시글이 아닌 `article`도 포함될 수 있음 |
+| `behaviors[]` | JS에서 찾은 **가능한** 이벤트 → API 호출 경로와 화면 갱신 규칙 ID `renderRefs`. 실행하지 않은 정적 힌트 |
+| `renderRules[]` | 중복 제거한 화면 갱신 규칙. `id`, DOM `selector`, `operation`, 코드상 입력 표현 `value`, 근거 `evidence`를 포함 |
+| `observedRequests[]` | 페이지를 열 때 응답을 받은 fetch/XHR의 메서드·주소·상태. 응답 본문은 저장하지 않음 |
+| `summary` | `scope: "visited-client-pages"`는 방문한 클라이언트 페이지 범위라는 뜻. 각 항목의 수, 방문 오류, 수집 제한 여부도 포함 |
 
-| `pages[]` 내부 키 | 의미 |
-| --- | --- |
-| `id`, `url`, `title`, `status` | 페이지 식별자, 값이 가려진 URL, 제목, 최초 문서 HTTP 상태 |
-| `path` | 경로와 세그먼트의 모양. `possibleVariable`은 숫자·UUID·긴 토큰 모양의 **추정** |
-| `forms` | 폼 목록. 각각 `fields`와 `controlIds`를 가짐 |
-| `standaloneFields` | 폼 바깥에 있는 입력 요소 |
-| `controls` | 제출·새로고침·계정 변경 등에 쓰이는 버튼과 위치. 파서는 누르지 않음 |
-| `urlInputs.queryParameters` | 쿼리 이름과 발견 출처: `current-url`, `link`, `network-request`, `static-js-hint` |
-| `urlInputs.fragment` | URL 해시가 현재 주소나 링크에서 실제로 보였는지 |
-| `links` | 같은 출처 링크. `crawlEligible:false`면 이동을 생략한 이유가 붙음 |
-| `observedRequests` | 브라우저가 시도한 요청. `method`, 가린 `url`, `resourceType`, `queryParameters`, `bodyKeys`, `status`를 기록함. 차단되거나 실패한 요청은 `status`가 `null`일 수 있으며 차단 사유는 `blockedRequests`에 있음 |
-| `scriptEndpointHints` | Acorn이 JS 코드에서 찾은 API 호출 모양. `declaredMethod`, 주소 템플릿, 본문 키, 파일·줄 번호. **실제 호출 증거는 아님** |
-| `scriptAnalysisErrors`, `errors` | JS 구문 분석 오류와 페이지 실행/이동 오류 |
-| `counts.truncated` | 페이지가 너무 커서 일부 요소 목록이 잘렸는지 |
+`behaviors[].trigger`의 `selector`를 `areas`의 폼·버튼과 맞춰 읽으세요. `api[].bodyKeys`는 코드에 명시된 요청 본문의 키이며, 입력칸 이름과 같더라도 **실제 값이 전송됨을 증명하지 않습니다**. `renderRefs[]`의 ID를 같은 페이지의 `renderRules[]`에서 찾으면 화면 갱신 종류와 대상 선택자를 볼 수 있습니다. 게시글 본문의 `renderRef`도 같은 규칙을 가리킵니다. 규칙의 `selector: null`이면 코드에서 출력 동작은 찾았지만 특정 화면 요소까지 연결하지 못했다는 뜻입니다. `innerHTML`을 찾았다고 XSS로 판정하지 않습니다. `evidence: "static-js"`는 버튼을 누르지 않고 코드의 함수 호출을 제한적으로 따라갔다는 표시입니다. `observedRequests`의 GET은 페이지 로드에서 직접 관찰된 결과이며 특정 버튼과 연결했다는 뜻이 아닙니다.
 
-| 필드·폼 키 | 의미 |
-| --- | --- |
-| `id`, `selector` | 결과 안의 ID와 화면에서 요소를 찾는 CSS 선택자 |
-| `name`, `htmlId`, `label`, `placeholder` | HTML 속성과 화면에 보이는 이름. 없으면 `null` |
-| `tag`, `type` | `input`/`textarea`/`select`/사용자 정의 입력과 세부 종류. `password`, `search`, `file` 등 포함 |
-| `required`, `disabled`, `readOnly`, `visible`, `userEditable` | 필수·비활성·읽기 전용·화면 표시·직접 수정 가능 상태. 숨은 필드는 기록하되 직접 수정 가능으로 표시하지 않음 |
-| `constraints`, `options` | 길이, 패턴, 최소·최대, 파일 종류, 자동완성, `select` 선택지 등 |
-| `submission.htmlDefault` | HTML 속성 기준의 기본 전송 방식. JS가 가로채면 실제 요청과 다를 수 있음 |
-| `submission.actualSubmissionObserved` | 폼을 실제 제출해 관측했는지. 현 버전은 항상 `false` |
-| `submission.possibleScriptEndpointHints` | 폼 필드 이름과 JS 요청 본문 키가 겹친 힌트. **연결 확인이 아닌 이름 비교** |
+`posts[].id`는 카드의 `data-*`, 화면의 `NO. 3` 같은 표시, DOM ID에서 읽은 값입니다. `idSource`는 `dom-attribute`, `visible-label`, `dom-id` 중 어느 근거인지 나타냅니다. 특히 `visible-label`은 **화면의 번호일 뿐 API의 실제 글 ID로 확인된 값이 아닙니다**. 빈 값은 `null`입니다. `author`는 **화면에 표시된 이름**이며 내부 계정 ID나 소유권 확인 결과가 아닙니다. `buttons`는 그 카드에서 **현재 보이는** 버튼만 담습니다. 키가 없으면 그 카드에서 보이는 버튼을 찾지 못했다는 뜻이며, 삭제 기능 자체가 없다는 뜻은 아닙니다.
 
-`ref: "/pages/0/forms/0/fields/1"`은 첫 번째 페이지의 첫 번째 폼에 있는 두 번째 필드를 가리킵니다. 경로의 숫자는 0부터 셉니다. `summary.scriptEndpointHints`는 JS에서 찾은 호출 **위치**의 수로, 서로 다른 API 주소의 수가 아닙니다.
+`posts[].body.preview`는 HTML 태그를 제외한 화면 텍스트 앞 160자이며, 민감한 글을 분석할 때는 `--hide-body`로 `null` 처리할 수 있습니다. `length`는 화면 텍스트 길이이고 `previewTruncated`는 미리보기가 잘렸는지 나타냅니다. `renderRef`가 가리키는 규칙의 `operation: "innerHTML"`은 같은 선택자에 대한 JS 코드 힌트입니다. 실제 브라우저 동작과 데이터 흐름을 검증한 결과는 아닙니다.
 
-`inputPoints[].kind`는 `dom-field`, `url-query`, `url-fragment`, `url-path-segment` 중 하나입니다. 경로 세그먼트는 숫자·UUID·긴 토큰처럼 변수로 보일 때만 목록에 추가하는 **모양 기반 추정**입니다. `evidence`가 DOM인지, 링크인지, 실제 요청인지, 정적 JS 힌트인지 구분해야 합니다. `candidate`, `confirmed`처럼 취약점 판정을 암시하는 키는 이 파서에서 쓰지 않습니다.
+정적 API 경로에 `{post.id}`처럼 중괄호가 있으면 JavaScript 표현식이 만드는 **동적 자리**를 뜻합니다. `posts[].id`와 모양이 맞더라도 해당 글에 대한 삭제 요청을 실행·확인한 것은 아닙니다. 예를 들어 `/api/posts/{post.id}`는 코드에서 게시글 ID를 URL에 넣는 형태를 읽었다는 뜻입니다.
 
-실습 게시판에서는 제목 `title`과 본문 `content`가 DOM 필드로 잡힙니다. HTML 폼의 기본 메서드는 GET이지만, JS에는 `POST /api/posts`와 `{title, content}`가 나타납니다. 출력은 이 차이를 각각 `htmlDefault`와 `scriptEndpointHints`에 기록합니다. 본문 XSS가 실제로 가능한지는 이 파서가 판정하지 않습니다.
+실습 게시판에서는 폼의 `htmlMethod: "GET"`, `htmlAction: "/"`와 별도로, `submit` 동작에 `POST /api/posts` 및 `bodyKeys: ["title", "content"]`가 나타납니다. 글 목록을 갱신하는 코드와 `post.content`를 `innerHTML`에 넣는 코드도 정적 힌트로 보입니다. 이것만으로 서버에 실제 글을 올렸거나 XSS가 실행되었다고 말할 수는 없습니다.
 
-## 코드 흐름
+`vul-web-1`의 페이지 로드에서는 `GET /api/session`, `GET /api/posts` 응답을 직접 관찰합니다. 글 작성 → `POST /api/posts` → 목록 재조회, 새로고침 → `GET /api/posts`, 계정 전환 → `POST /api/session` → 재조회, 글 삭제 → `DELETE /api/posts/{post.id}` → 재조회는 **JavaScript에서 찾은 가능한 경로**입니다. 파서는 이 버튼들을 누르지 않습니다.
+
+## 코드 흐름과 제한
 
 ```mermaid
-flowchart TD
-  A["cli.mjs: --url 및 옵션 읽기"] --> B["parser.mjs: 로컬 URL 검사"]
-  B --> C["Playwright: Chrome 실행"]
-  C --> D["같은 출처 링크를 제한적으로 순회"]
-  D --> E["dom.mjs: 렌더링된 폼·필드·버튼·링크 읽기"]
-  D --> F["parser.mjs: 실제 네트워크 요청 관측"]
-  D --> G["script-hints.mjs: Acorn으로 JS API 호출 힌트 찾기"]
-  E --> H["페이지별 pages 트리"]
-  F --> H
-  G --> H
-  H --> I["inputPoints 목록과 summary 만들기"]
-  I --> J["표준 출력 또는 --out JSON 파일"]
+flowchart LR
+  A["cli.mjs: URL·옵션"] --> B["parser.mjs: 로컬·동일 출처 제한"]
+  B --> C["Playwright: 페이지 열기"]
+  C --> D["dom.mjs: 화면 구성요소·개별 article 카드"]
+  C --> E["script-hints.mjs: 이벤트·API·DOM 변경 정적 힌트"]
+  C --> F["페이지 로드 중 fetch/XHR 응답"]
+  D --> G["pages + summary JSON"]
+  E --> H["renderRules: 공통 화면 갱신 규칙"]
+  H --> G
+  F --> G
 ```
 
-- `cli.mjs`: 사람이 입력한 명령어를 분해하고 JSON을 출력합니다.
-- `parser.mjs`: 브라우저 실행, 범위 제한, 링크 순회, 요청 기록, 결과 조립을 맡습니다.
-- `dom.mjs`: 브라우저 화면 안에서 실제 HTML 요소를 읽습니다.
-- `script-hints.mjs`: 읽어 온 JavaScript의 API 호출 **형태**만 분석합니다.
-- `test/parser.test.mjs`: 검색·폼·숨은 필드·동적 입력창·차단된 POST를 가진 작은 로컬 사이트로 동작을 검증합니다.
+시작 URL과 같은 **origin(프로토콜·호스트·포트)**의 링크만 제한적으로 방문합니다. 폼 제출·클릭·값 주입은 하지 않습니다. 다른 출처 요청, POST/PUT/PATCH/DELETE, WebSocket, 리다이렉트는 차단합니다. **GET도 서버 구현에 따라 상태를 바꿀 수 있고**, 삭제·로그아웃처럼 보이는 링크를 거르는 이름 규칙은 완전하지 않습니다. 신뢰할 수 있는 실습용 로컬 사이트에서 사용하세요.
+
+정적 분석은 페이지가 로드한 JS와 인라인 스크립트에서 직접적인 이벤트 등록, 명시적 API 주소, 함수 이름으로 따라갈 수 있는 호출, DOM 변경 구문을 찾습니다. 조건문·예외 처리의 여러 가능성을 모두 포함할 수 있어 **실제 실행 순서나 데이터 흐름을 증명하지 않습니다**. 동적 API 주소, 복잡한 번들·간접 호출, 로그인 뒤 화면, 클릭해야 열리는 UI, shadow DOM, 브라우저 밖 서버 코드는 놓칠 수 있습니다. 따라서 `summary.truncated: false`도 **수집 제한에 걸리지 않았다는 뜻일 뿐 웹 전체를 확인했다는 뜻은 아닙니다**. 외부 스크립트 30개, 인라인 스크립트 20개, 스크립트당 1MB, 페이지당 응답 관측 30개, 페이지당 동작 60개, 페이지당 `article` 카드 50개를 넘으면 `summary.truncated`가 `true`입니다. 화면 영역 등에도 개수 제한이 있습니다.
+
+URL 쿼리의 **이름**만 남기고 값은 가립니다. 입력 필드의 현재 값과 요청·응답 본문은 저장하지 않습니다. `posts[].body.preview`는 화면에서 읽은 텍스트이므로 공개 가능한 결과만 공유하세요. 페이지 방문이 실패하면 해당 페이지에 `error`를 남깁니다. 명령 자체가 실패하면 `{"schemaVersion":"3.4","error":{"code":"PARSER_ERROR","message":"..."}}`와 종료 코드 1을 반환합니다.
