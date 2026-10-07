@@ -1,0 +1,4 @@
+runs/
+.env
+.env.*
+!.env.example

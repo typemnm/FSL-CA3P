@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#080d0d">
+  <meta name="description" content="CA3P 에이전트 코어의 모의 실행과 격리된 로컬 실습 실행을 관측하는 대시보드.">
+  <title>CA3P — Agent Loop</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <canvas id="starfield" aria-hidden="true"></canvas>
+  <a class="skip-link" href="#main">본문으로 건너뛰기</a>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#dashboard" aria-label="CA3P 대시보드"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 8h9l9 8-9 8H5l9-8-9-8Z" fill="currentColor"/><path d="m20 8 9 8-9 8" stroke="currentColor" stroke-width="3"/></svg><span>CA3P<span class="brand-dot">®</span></span></a>
+      <div class="workspace-switch"><span class="workspace-logo">C</span><div><strong>Agent workspace</strong><small>로컬 워크스페이스</small></div><span data-icon="chevrons" class="muted"></span></div>
+      <div class="nav-caption">WORKSPACE</div>
+      <nav class="primary-nav" aria-label="주 메뉴">
+        <button class="nav-item active" data-view="dashboard"><span data-icon="dashboard"></span><span>대시보드</span><span class="nav-active-dot"></span></button>
+        <button class="nav-item" data-view="sessions"><span data-icon="layers"></span><span>실행 이력</span><span class="nav-count" id="history-count">0</span></button>
+        <button class="nav-item" data-view="modules"><span data-icon="box"></span><span>모듈 탐색</span></button>
+        <button class="nav-item" data-view="reports"><span data-icon="file"></span><span>리포트</span></button>
+      </nav>
+      <div class="nav-caption connection-caption">ENVIRONMENT</div>
+      <div class="environment-item"><span class="tiny-dot gray" id="connection-dot"></span><span id="connection-status">런타임 연결 중</span></div>
+      <div class="environment-item"><span class="tiny-dot green"></span><span>Core + local gateway</span><span class="environment-state">로컬</span></div>
+      <div class="sidebar-bottom">
+        <div class="local-note"><span data-icon="shield"></span><strong>두 가지 로컬 실행</strong><p>고정 fixture 코어 실행 또는<br>서버가 만든 격리 실습 게시판 + DeepSeek.<br>입력 URL은 실습 대상이 아닙니다.</p></div>
+        <button class="nav-item" id="settings-button"><span data-icon="settings"></span><span>워크스페이스 설정</span></button>
+        <div class="user-profile"><div class="avatar">C</div><div><strong>CA3P Research</strong><small>Local operator</small></div><span class="tiny-dot green"></span></div>
+      </div>
+    </aside>
+
+    <div class="main-shell">
+      <header class="topbar">
+        <div class="breadcrumb"><button class="icon-button mobile-menu" id="menu-button" aria-label="메뉴 열기" aria-expanded="false"><span data-icon="menu"></span></button><span data-icon="grid"></span><span>Workspace</span><span class="breadcrumb-divider">/</span><strong id="breadcrumb-title">대시보드</strong></div>
+        <div class="topbar-actions"><span class="simulation-label"><span class="tiny-dot green"></span><span id="execution-label">CORE / FIXTURE</span></span><span class="topbar-divider"></span><button class="icon-button" id="notifications-button" aria-label="최근 이벤트 보기" aria-expanded="false"><span data-icon="bell"></span><i class="notification-dot"></i></button><div class="avatar small">C</div></div>
+        <div class="notification-popover" id="notification-popover" hidden><strong>최근 이벤트</strong><div id="notification-list"></div></div>
+      </header>
+
+      <main id="main" tabindex="-1">
+        <section class="page-heading">
+          <div><div class="eyebrow"><span class="eyebrow-line"></span>AGENT OPERATIONS</div><h1 id="page-title">Observe. Decide. <span>Iterate.</span></h1><p id="page-subtitle">에이전트의 모든 판단과 흐름을, 한눈에.</p></div>
+          <div class="heading-actions"><button class="button secondary" id="export-button"><span data-icon="download"></span>내보내기</button><button class="button primary" id="new-session-button"><span data-icon="plus"></span>새 실행</button></div>
+        </section>
+
+        <div class="history-banner" id="history-banner" hidden><span><span data-icon="layers"></span>저장된 실행을 보고 있습니다.</span><button class="text-button" id="return-current-button">현재 실행으로 돌아가기<span data-icon="exchange"></span></button></div>
+        <div class="runtime-notice" id="connection-notice" role="status">런타임 연결 중입니다.</div>
+        <p class="runtime-error" id="runtime-error" role="alert" hidden></p>
+        <section class="view" id="view-dashboard">
+          <form class="target-panel" id="target-form" novalidate>
+            <div class="target-label"><span data-icon="globe"></span><label for="target-url">DISPLAY URL</label></div>
+            <div class="target-input-wrap"><input id="target-url" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false" aria-describedby="target-help runtime-scope url-error"><span class="input-shortcut">Ctrl K</span></div>
+            <span class="target-mode" id="target-help">표시용 · 접속 없음</span>
+            <button type="submit" class="button run-button" id="run-button" disabled><span data-icon="play"></span><span>모의 코어 시작</span></button>
+            <p class="url-error" id="url-error" role="alert" hidden></p>
+          </form>
+          <p class="runtime-scope" id="runtime-scope">이 모의 실행은 실제 RunOnce + RuleReasoningEngine을 사용합니다. 외부 모듈은 scripted fixture gateway이며, 입력 URL은 기록의 표시용 메타데이터입니다. 이 모드에서는 LLM·파서·fuzzer·대상 사이트에 연결하지 않습니다.</p>
+          <div class="lab-launch">
+            <div class="lab-launch-copy"><strong>저장형 XSS 1회 실습 + DeepSeek</strong><p>서버가 격리된 로컬 게시판을 열어 시험 글 한 건을 게시하고 브라우저 실행 여부를 확인합니다. 위 입력 URL은 사용하지 않습니다.</p><small class="lab-cost">DeepSeek API 호출은 과금될 수 있습니다.</small><small id="lab-readiness" aria-live="polite">DeepSeek 설정을 확인하는 중입니다.</small></div>
+            <button type="button" class="button lab-run-button" id="lab-run-button" disabled><span data-icon="play"></span>로컬 실습 시작</button>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-card"><div class="stat-label">루프 상태<span data-icon="pulse"></span></div><div class="stat-value status-stat"><span class="status-orb stopped" id="status-orb"></span><span id="run-status">대기 중</span></div><div class="stat-foot" id="run-context">서버 상태 수신 대기</div></div>
+            <div class="stat-card"><div class="stat-label">코어 실행<span data-icon="repeat"></span></div><div class="stat-value"><span id="iteration-value">01</span><span class="stat-unit">/ 01</span></div><div class="stat-foot"><span class="mint" id="step-label">첫 이벤트 대기</span><span class="stat-foot-divider">·</span><span id="total-event-count">25 이벤트</span></div></div>
+            <div class="stat-card"><div class="stat-label">모듈 이벤트<span data-icon="exchange"></span></div><div class="stat-value"><span id="event-count">0</span><span class="mini-spark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div><div class="stat-foot"><span class="tiny-dot green"></span>요청과 응답 동시 추적</div></div>
+            <div class="stat-card"><div class="stat-label">실행 시간<span data-icon="clock"></span></div><div class="stat-value mono" id="elapsed-value">00:00</div><div class="stat-foot">서버 실측<span class="stat-foot-divider">·</span><span class="mint" id="elapsed-source">fixture 실행</span></div></div>
+          </div>
+
+          <div class="live-grid">
+            <section class="panel loop-panel">
+              <div class="panel-heading"><div><h2><span data-icon="orbit"></span>Agent loop</h2><span class="panel-subtitle">5개 모듈 · 웹페이지 · Agent / RunOnce</span></div><div class="loop-actions"><span class="live-label" id="live-label"><span class="tiny-dot gray"></span>IDLE</span><button class="icon-button" id="pause-button" aria-label="일시정지 미지원" title="일시정지·재개 미지원" disabled><span data-icon="pause"></span></button><button class="icon-button" id="stop-button" aria-label="루프 중지" disabled><span data-icon="stop"></span></button></div></div>
+              <p class="pause-note">일시정지·재개는 지원하지 않습니다. 실행 중지는 가능합니다.</p>
+              <div class="loop-graph" id="loop-graph">
+                <div class="graph-coordinates graph-coordinates-top"><span>ORCHESTRATION MAP</span><span>05 MODULES · 01 SOURCE · 01 AGENT</span></div>
+                <svg class="graph-lines graph-lines-desktop" viewBox="0 0 780 380" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="desktop-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0 0 8 4 0 8Z" fill="#75c99a"/></marker><marker id="desktop-return-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0 0 8 4 0 8Z" fill="#d6ad7b"/></marker><marker id="desktop-db-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0 0 8 4 0 8Z" fill="#97b6cb"/></marker></defs><path class="flow-line flow-return" d="M588 72 H160" marker-end="url(#desktop-return-arrow)"/><path class="flow-line" d="M138 99 L185 151" marker-end="url(#desktop-arrow)"/><path class="flow-line" d="M302 179 H346" marker-end="url(#desktop-arrow)"/><path class="flow-line" d="M435 179 H478" marker-end="url(#desktop-arrow)"/><path class="flow-line" d="M600 151 L628 99" marker-end="url(#desktop-arrow)"/><path class="flow-line flow-bidirectional" d="M355 215 L284 277" marker-end="url(#desktop-db-arrow)"/><path class="flow-line flow-bidirectional" d="M294 283 L363 222" marker-end="url(#desktop-db-arrow)"/><path class="flow-line flow-bidirectional" d="M425 215 L496 277" marker-end="url(#desktop-db-arrow)"/><path class="flow-line flow-bidirectional" d="M486 283 L417 222" marker-end="url(#desktop-db-arrow)"/></svg>
+                <svg class="graph-lines graph-lines-mobile" viewBox="0 0 360 500" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="mobile-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0 0 8 4 0 8Z" fill="#75c99a"/></marker><marker id="mobile-return-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0 0 8 4 0 8Z" fill="#d6ad7b"/></marker><marker id="mobile-db-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0 0 8 4 0 8Z" fill="#97b6cb"/></marker></defs><path class="flow-line flow-return" d="M214 65 H145" marker-end="url(#mobile-return-arrow)"/><path class="flow-line" d="M74 90 L69 157" marker-end="url(#mobile-arrow)"/><path class="flow-line" d="M120 208 L145 240" marker-end="url(#mobile-arrow)"/><path class="flow-line" d="M215 240 L240 208" marker-end="url(#mobile-arrow)"/><path class="flow-line" d="M289 159 L279 91" marker-end="url(#mobile-arrow)"/><path class="flow-line flow-bidirectional" d="M145 292 L112 351" marker-end="url(#mobile-db-arrow)"/><path class="flow-line flow-bidirectional" d="M118 357 L151 298" marker-end="url(#mobile-db-arrow)"/><path class="flow-line flow-bidirectional" d="M174 310 V407" marker-end="url(#mobile-db-arrow)"/><path class="flow-line flow-bidirectional" d="M186 407 V310" marker-end="url(#mobile-db-arrow)"/></svg>
+                <div class="graph-webpage"><span class="node-icon" data-icon="globe"></span><span class="node-copy"><strong>Webpage</strong><small id="webpage-caption">표시용 URL</small></span></div>
+                <button class="graph-node node-parser" data-module="parser"><span class="node-icon" data-icon="scan"></span><span class="node-copy"><strong>xss-parser</strong><small>응답 분석</small></span><span class="node-status" data-node-status="parser"></span></button>
+                <button class="graph-node node-casper" data-module="casper"><span class="node-icon" data-icon="database"></span><span class="node-copy"><strong>casper-db</strong><small>이전 DB 조회</small></span><span class="node-status" data-node-status="casper"></span></button>
+                <button class="graph-node node-attack" data-module="attack"><span class="node-icon" data-icon="terminal"></span><span class="node-copy"><strong>attack-module</strong><small>curl 쓰기</small></span><span class="node-status" data-node-status="attack"></span></button>
+                <button class="graph-node node-guardrail" data-module="guardrail"><span class="node-icon" data-icon="shield"></span><span class="node-copy"><strong>guardrail</strong><small>요청 검사</small></span><span class="node-status" data-node-status="guardrail"></span></button>
+                <button class="graph-node node-pentest" data-module="pentest"><span class="node-icon" data-icon="archive"></span><span class="node-copy"><strong>pentest-db</strong><small>실행 기록</small></span><span class="node-status" data-node-status="pentest"></span></button>
+                <button class="agent-core" id="agent-core" type="button" aria-pressed="false"><span class="core-halo"></span><span class="core-symbol"><svg viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="m20 5 14 8v14l-14 8-14-8V13l14-8Z" stroke="currentColor" stroke-width="1.5"/><path d="m20 13 7 4v7l-7 4-7-4v-7l7-4ZM20 5v8M34 13l-7 4M34 27l-7-3M20 35v-7M6 27l7-3M6 13l7 4" stroke="currentColor" stroke-width="1.2"/></svg></span><strong>Agent / RunOnce</strong><span id="core-state">READY TO START</span></button>
+                <div class="graph-legend"><span><i class="tiny-dot green"></i>수신 기록</span><span><i class="tiny-dot violet"></i>최근 수신</span><span><i class="tiny-dot gray"></i>대기</span></div>
+                <div class="graph-coordinate-bottom">SERVER TELEMETRY<span>CORE + LOCAL MODULES</span></div>
+              </div>
+              <div class="loop-progress"><div class="progress-copy"><span><span class="tiny-dot green"></span><strong id="progress-label">첫 코어 이벤트 대기</strong></span><span class="mono" id="progress-number">0 / 25 events</span></div><div class="progress-track"><div id="progress-fill"></div></div></div>
+            </section>
+
+            <section class="panel activity-panel"><div class="panel-heading"><div><h2><span class="tiny-dot green"></span>Live activity</h2><span class="panel-subtitle">서버 SSE 이벤트 스트림</span></div><span class="activity-counter mono" id="activity-counter">00</span></div><div class="activity-toolbar"><span data-icon="search"></span><input id="event-search" type="search" aria-label="이벤트 검색" placeholder="이벤트 검색…"><button class="icon-button" id="autoscroll-button" title="최신 이벤트 자동 표시" aria-label="최신 이벤트 자동 표시" aria-pressed="true"><span data-icon="arrow-down"></span></button></div><div class="activity-list" id="activity-list" role="log" aria-label="에이전트 실행 이벤트"></div><div class="activity-footer"><span class="tiny-dot green"></span><span>서버에서 수신한 코어 이벤트</span><span class="mono" id="stream-status">SSE connecting</span></div></section>
+          </div>
+
+          <section class="panel inspector-panel" id="inspector-panel"><div class="panel-heading"><div><h2><span data-icon="code"></span>Trace inspector</h2><span class="panel-subtitle">선택한 노드의 요청·응답과 에이전트 입출력</span></div><span class="trace-badge" id="selected-module-name">xss-parser</span></div><div class="inspector-toolbar"><div class="inspector-tabs" role="tablist" aria-label="추적 데이터"><button class="inspector-tab active" data-tab="request" role="tab" aria-selected="true">요청<span id="request-tab-count">01</span></button><button class="inspector-tab" data-tab="response" role="tab" aria-selected="false">응답<span id="response-tab-count">01</span></button><button class="inspector-tab" data-tab="agent" role="tab" aria-selected="false">Agent I/O<span data-icon="sparkles"></span></button></div><div class="trace-meta"><span class="mono" id="trace-latency">—</span><span class="trace-divider"></span><button class="text-button" id="copy-button"><span data-icon="copy"></span>복사</button></div></div><div class="inspector-body"><aside class="trace-context"><span class="context-label">MODULE CONTEXT</span><strong id="context-module">xss-parser</strong><p id="context-role">사이트 응답을 분석합니다.</p><dl><dt>Correlation ID</dt><dd class="mono" id="correlation-value">—</dd><dt>데이터 소스</dt><dd id="trace-source">실행 전</dd><dt>상태</dt><dd id="trace-state">이벤트 대기</dd></dl></aside><div class="code-area"><div class="code-file"><span class="tiny-dot violet"></span><span id="code-filename">request.json</span><span class="code-format">JSON</span></div><pre id="trace-code" tabindex="0" aria-label="선택한 추적 데이터"></pre></div></div></section>
+          <div class="dashboard-footer"><span><span class="tiny-dot green"></span><span id="dashboard-mode">실제 코어 / 외부 모듈 fixture</span></span><span>Made for the loop. <span class="mint">Built for clarity.</span></span></div>
+        </section>
+
+        <section class="view" id="view-sessions" hidden><section class="panel alternate-panel"><div class="panel-heading"><div><h2><span data-icon="layers"></span>Session history</h2><span class="panel-subtitle">이 브라우저에 저장한 최근 12개 실행 스냅샷</span></div><span class="local-chip">LOCAL STORAGE</span></div><div class="session-list" id="session-list"></div></section></section>
+        <section class="view" id="view-modules" hidden><div class="module-grid" id="module-grid"></div><section class="panel module-note"><span data-icon="exchange"></span><div><h2>하나의 루프, 연결된 데이터</h2><p>xss-parser, casper-db, attack-module, guardrail, pentest-db의 요청과 응답은 Correlation ID로 연결됩니다. 중앙 Agent / RunOnce의 plan · reflect 입출력은 Trace inspector의 Agent I/O에서 확인합니다.</p></div></section></section>
+        <section class="view" id="view-reports" hidden><div id="report-content"></div></section>
+      </main>
+      <footer class="app-footer"><span>CA3P / AGENT LOOP</span><span>LOCAL WORKSPACE<span class="tiny-dot green"></span></span></footer>
+    </div>
+  </div>
+  <dialog id="settings-dialog"><form method="dialog"><div class="dialog-heading"><div><div class="eyebrow">PREFERENCES</div><h2>워크스페이스 설정</h2></div><button class="icon-button" aria-label="설정 닫기"><span data-icon="close"></span></button></div><label class="setting-row"><span><strong>별빛 배경</strong><small>DESIGN.md 기반의 배경 애니메이션</small></span><input id="motion-setting" type="checkbox" checked></label><label class="setting-row"><span><strong>자동 이벤트 표시</strong><small>새 이벤트가 들어오면 최신 위치로 이동</small></span><input id="scroll-setting" type="checkbox" checked></label><label class="setting-row"><span><strong>Fixture 응답 지연</strong><small>다음 실행의 gateway 응답마다 적용</small></span><select id="speed-setting"><option value="1800">기본 · 1.8초</option><option value="900">빠르게 · 0.9초</option><option value="3000">천천히 · 3초</option></select></label><p class="settings-note">설정과 수신한 이력은 이 브라우저에 저장됩니다.<br>현재 실행 상태는 로컬 서버에서 받아옵니다. 실행 중 설정을 변경해도 응답 지연은 다음 실행부터 적용됩니다.</p><button class="button primary dialog-done">완료</button></form></dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>

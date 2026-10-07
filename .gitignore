@@ -1,0 +1,14 @@
+# Excluded from the local develop integration; source remains on disk.
+/xss-fuzzer/
+
+# Local generated files and credentials.
+node_modules/
+.env
+.env.*
+!.env.example
+/agent-dashboard/.openai/
+/agent-dashboard/previews/
+/casper-db/data/*.sqlite3
+/casper-db/data/*.sqlite3-shm
+/casper-db/data/*.sqlite3-wal
+/reports/pentest-db-runs/

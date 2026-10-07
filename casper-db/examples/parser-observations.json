@@ -1,0 +1,23 @@
+[
+  {
+    "target_id": "LAB-DEMO",
+    "endpoint": "/search",
+    "method": "GET",
+    "parameter": "q",
+    "parameter_location": "query"
+  },
+  {
+    "target_id": "LAB-DEMO",
+    "endpoint": "/search",
+    "method": "GET",
+    "parameter": "page",
+    "parameter_location": "query"
+  },
+  {
+    "target_id": "LAB-DEMO",
+    "endpoint": "/about",
+    "method": "GET",
+    "parameter": "q",
+    "parameter_location": "query"
+  }
+]
