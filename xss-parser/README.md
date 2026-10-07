@@ -4,6 +4,12 @@
 
 이 도구는 파서입니다. 입력값 주입, 버튼 클릭, 폼 제출, 취약점 판정은 하지 않습니다.
 
+## Agent Loop 연결 범위
+
+로컬 Agent Loop는 [`xss-parser` 어댑터](../agent-dashboard/integrations/xss-parser.mjs)를 통해 격리된 `vul-web-1` 게시판의 한 페이지를 실제 Chromium으로 검사한다. 기본 XSS 실습에서는 canary 게시 전에 폼·POST 입력·HTML 렌더링 위치를 읽기 전용으로 관찰하고, 게시 후 어댑터의 별도 Chromium 관찰기가 같은 게시글의 고유 마커 콜백 실행을 확인한다. 레거시 삭제 권한 실습은 삭제 전후 읽기 전용 보고서의 표시 ID·제목을 준비 응답과 교차 확인한다. 표시된 작성자 이름은 권한 판단에 쓰는 신뢰된 사용자 ID가 아니다.
+
+파서 본체의 `scan()`은 XSS payload를 제출하거나 실행 여부를 판정하지 않는다. 기본 XSS 실습의 제출은 별도 `attack-module`이 맡고, 어댑터의 실행 관찰기가 브라우저 콜백 증거를 반환하며 Agent가 최종 판정한다. 화면에 입력한 임의 URL은 현재 루프의 parser 대상이 아니며, 서버가 만든 임시 로컬 게시판만 검사한다.
+
 ## 실행
 
 Node.js 20 이상과 Chrome 또는 Chromium이 필요합니다. macOS에 Chrome이 있으면 자동으로 사용합니다. 없으면 `npx playwright install chromium`으로 Chromium을 설치하세요. 저장소의 `xss-parser` 폴더에서 터미널 두 개를 엽니다.

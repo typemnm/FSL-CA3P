@@ -696,6 +696,61 @@ test('DeepSeekReasoningEngine preserves a strict model stop decision without pro
   assert.equal(client.calls.length, 1);
 });
 
+test('DeepSeek curl mode emits model-authored structured curl JSON for the allowed DELETE', async () => {
+  const client = {
+    calls: [],
+    async completeJson(input) {
+      this.calls.push(input);
+      return {
+        value: { ...VALID_DECISION, curl: { ...input.userPayload.allowedCurl } },
+        metadata: { provider: 'deepseek', model: 'deepseek-flash' },
+      };
+    },
+  };
+  const engine = new DeepSeekReasoningEngine({ client, curlMode: true });
+  const gateway = createScriptedGateway();
+  const result = await runOnce({
+    gateway,
+    reasoningEngine: engine,
+    targetOrigin: 'http://127.0.0.1:3000',
+  });
+
+  assert.equal(result.report.finding.status, 'confirmed');
+  assert.deepEqual(client.calls[0].userPayload.allowedCurl, {
+    method: 'DELETE',
+    url: 'http://127.0.0.1:3000/api/posts/4?authorId=bob',
+  });
+  assert.deepEqual(
+    gateway.requests.find(({ envelope }) => envelope.receiver === 'attack-module'
+      && envelope.payload.curl.method === 'DELETE').envelope.payload.curl,
+    client.calls[0].userPayload.allowedCurl,
+  );
+});
+
+test('DeepSeek curl mode rejects altered URLs, methods, flags, and missing curl JSON', async t => {
+  const allowed = { method: 'DELETE', url: 'http://127.0.0.1:3000/api/posts/4?authorId=bob' };
+  const cases = [
+    ['remote URL', { ...VALID_DECISION, curl: { ...allowed, url: 'https://example.com/' } }],
+    ['changed path', { ...VALID_DECISION, curl: { ...allowed, url: 'http://127.0.0.1:3000/api/posts/999?authorId=bob' } }],
+    ['changed method', { ...VALID_DECISION, curl: { ...allowed, method: 'POST' } }],
+    ['extra flags', { ...VALID_DECISION, curl: { ...allowed, flags: ['--config', 'secret'] } }],
+    ['shell command', { ...VALID_DECISION, curl: 'curl -X DELETE http://127.0.0.1:3000/' }],
+    ['missing curl', { ...VALID_DECISION }],
+  ];
+  for (const [name, value] of cases) {
+    await t.test(name, async () => {
+      const engine = new DeepSeekReasoningEngine({
+        client: fakeDecisionClient(value),
+        curlMode: true,
+      });
+      await expectDeepSeekError(engine.plan({
+        ...validPlanInput(),
+        targetOrigin: 'http://127.0.0.1:3000',
+      }), error => assert.equal(error.code, 'DEEPSEEK_SCHEMA_ERROR'));
+    });
+  }
+});
+
 test('DeepSeekReasoningEngine rejects unknown candidate and action catalog identifiers', async t => {
   const cases = [
     ['unknown candidate', { ...VALID_DECISION, candidateId: 'unobserved-candidate' }],
@@ -954,7 +1009,7 @@ test('a real DeepSeekClient authentication failure stays fail-closed through run
   assert.equal(caught.failureReport.progress.actionAttempted, false);
   assert.equal(gateway.finalReport.error.code, 'DEEPSEEK_AUTH_ERROR');
   assert.equal(gateway.finalReport.progress.actionAttempted, false);
-  const deletes = gateway.requests.filter(({ envelope }) => envelope.payload.method === 'DELETE');
+  const deletes = gateway.requests.filter(({ envelope }) => envelope.payload.curl?.method === 'DELETE');
   assert.equal(deletes.length, 0, 'a precomputed local baseline must never become an error fallback');
 
   const externallyRecorded = JSON.stringify({

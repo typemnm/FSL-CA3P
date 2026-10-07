@@ -7,16 +7,19 @@ const MAX_MESSAGE_BYTES = 1_000_000;
 const DEFAULT_GATEWAY_TIMEOUT_MS = 10_000;
 const MODULE_NAMES = new Set([
   'agent',
-  'web_explorer',
-  'vulnerability_db',
-  'pentest_db',
+  'xss-parser',
+  'attack-module',
+  'casper-db',
+  'pentest-db',
 ]);
 const MESSAGE_TYPES = new Set([
   'module.request',
   'module.error',
-  'web.result',
-  'knowledge.result',
+  'parser.result',
+  'attack.result',
+  'history.result',
   'storage.request',
+  'storage.attack_info',
   'storage.appended',
   'storage.finalized',
 ]);
@@ -29,22 +32,9 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.length > 0;
 }
 
-function isKnowledgeCandidate(candidate) {
-  return isObject(candidate)
-    && isNonEmptyString(candidate.knowledgeId)
-    && isNonEmptyString(candidate.cwe)
-    && isNonEmptyString(candidate.severity)
-    && isNonEmptyString(candidate.severityBasis)
-    && isNonEmptyString(candidate.attackerId)
-    && isObject(candidate.resource)
-    && ['string', 'number'].includes(typeof candidate.resource.id)
-    && isNonEmptyString(candidate.resource.ownerId)
-    && isObject(candidate.actionTemplate)
-    && isNonEmptyString(candidate.actionTemplate.method)
-    && isNonEmptyString(candidate.actionTemplate.pathTemplate)
-    && Array.isArray(candidate.successCriteria)
-    && candidate.successCriteria.every(isNonEmptyString)
-    && isObject(candidate.provenance);
+function urlHasOrigin(raw, origin) {
+  try { return new URL(raw).origin === origin; }
+  catch { return false; }
 }
 
 function createEnvelope({
@@ -165,11 +155,14 @@ function validateResponseContract(request, response) {
   }
 
   let expectedType;
-  if (request.receiver === 'web_explorer' && request.type === 'module.request') {
-    expectedType = 'web.result';
-  } else if (request.receiver === 'vulnerability_db' && request.type === 'module.request') {
-    expectedType = 'knowledge.result';
-  } else if (request.receiver === 'pentest_db' && request.type === 'storage.request') {
+  if (request.receiver === 'xss-parser' && request.type === 'module.request') {
+    expectedType = 'parser.result';
+  } else if (request.receiver === 'attack-module' && request.type === 'module.request') {
+    expectedType = 'attack.result';
+  } else if (request.receiver === 'casper-db' && request.type === 'module.request') {
+    expectedType = 'history.result';
+  } else if (request.receiver === 'pentest-db' && request.type === 'storage.request') {
+    if (request.payload.operation === 'get_attack_info') expectedType = 'storage.attack_info';
     if (request.payload.operation === 'append') expectedType = 'storage.appended';
     if (request.payload.operation === 'finalize') expectedType = 'storage.finalized';
   }
@@ -178,25 +171,109 @@ function validateResponseContract(request, response) {
     throw new Error(`Expected ${expectedType} response, received ${response.type}`);
   }
 
-  if (expectedType === 'web.result') {
-    const httpResponse = response.payload.response;
-    if (response.payload.operation !== 'http_request'
-      || !isObject(httpResponse)
-      || !Number.isInteger(httpResponse.status)
-      || httpResponse.status < 100
-      || httpResponse.status > 599
-      || typeof httpResponse.ok !== 'boolean'
-      || httpResponse.ok !== (httpResponse.status >= 200 && httpResponse.status < 300)
-      || !isObject(httpResponse.bodyJson)
-      || typeof response.payload.evidenceId !== 'string'
-      || response.payload.evidenceId.length === 0) {
-      throw new Error('web.result payload does not satisfy the HTTP evidence contract');
+  if (expectedType === 'parser.result') {
+    const payload = response.payload;
+    if (request.payload.operation === 'verify_stored_xss') {
+      const execution = payload.execution;
+      if (payload.operation !== 'verify_stored_xss'
+        || payload.phase !== 'after'
+        || !isObject(execution)
+        || execution.marker !== request.payload.marker
+        || execution.postId !== request.payload.postId
+        || !urlHasOrigin(execution.pageUrl, request.payload.origin)
+        || typeof execution.executed !== 'boolean'
+        || typeof execution.postVisible !== 'boolean'
+        || typeof execution.payloadPresent !== 'boolean'
+        || typeof execution.bindingCalled !== 'boolean'
+        || !Array.isArray(execution.errors)
+        || !execution.errors.every(error => typeof error === 'string')
+        || !isNonEmptyString(payload.evidenceId)) {
+        throw new Error('parser.result payload does not satisfy the browser execution contract');
+      }
+      return response;
+    }
+    const parserOrigin = (() => {
+      try { return new URL(payload.report?.startUrl).origin; }
+      catch { return null; }
+    })();
+    if (request.payload.operation !== 'parse_site'
+      || payload.operation !== 'parse_site'
+      || payload.phase !== request.payload.phase
+      || !['before', 'after'].includes(payload.phase)
+      || parserOrigin !== request.payload.origin
+      || payload.report?.schemaVersion !== '3.4'
+      || !Array.isArray(payload.report.pages)
+      || !payload.report.pages.every(page => isObject(page)
+        && urlHasOrigin(page.url, request.payload.origin))
+      || !Array.isArray(payload.observedPosts)
+      || !payload.observedPosts.every(post => isObject(post)
+        && (post.id === null || typeof post.id === 'string')
+        && (post.title === null || typeof post.title === 'string')
+        && (post.author === null || typeof post.author === 'string')
+        && urlHasOrigin(post.pageUrl, request.payload.origin))
+      || !Array.isArray(payload.errors)
+      || typeof payload.truncated !== 'boolean'
+      || !isNonEmptyString(payload.evidenceId)) {
+      throw new Error('parser.result payload does not satisfy the site observation contract');
     }
   }
-  if (expectedType === 'knowledge.result'
-    && (!Array.isArray(response.payload.candidates)
-      || !response.payload.candidates.every(isKnowledgeCandidate))) {
-    throw new Error('knowledge.result payload must contain valid candidate contracts');
+  if (expectedType === 'attack.result') {
+    const payload = response.payload;
+    const httpResponse = payload.response;
+    const matchingRequest = isObject(payload.request)
+      && payload.request.method === request.payload.curl?.method
+      && payload.request.url === request.payload.curl?.url
+      && payload.request.session === request.payload.session;
+    const validStatus = httpResponse?.status === null
+      || (Number.isInteger(httpResponse?.status)
+        && httpResponse.status >= 100 && httpResponse.status <= 599);
+    const expectedOk = httpResponse?.status !== null
+      && httpResponse?.status >= 200 && httpResponse?.status < 300;
+    const validError = payload.error === null
+      || (typeof payload.error === 'string' && payload.error.length > 0);
+    if (request.payload.operation !== 'execute_curl'
+      || payload.operation !== 'execute_curl'
+      || typeof payload.success !== 'boolean'
+      || !matchingRequest
+      || !isObject(httpResponse)
+      || !validStatus
+      || typeof httpResponse.ok !== 'boolean'
+      || httpResponse.ok !== expectedOk
+      || !isObject(httpResponse.bodyJson)
+      || !isObject(payload.guardrail)
+      || !['ALLOW', 'DENY'].includes(payload.guardrail.decision)
+      || !isNonEmptyString(payload.guardrail.ruleId)
+      || !isNonEmptyString(payload.guardrail.stage)
+      || (payload.success && payload.guardrail.decision !== 'ALLOW')
+      || !validError
+      || (payload.success && (!httpResponse.ok || payload.error !== null))
+      || (!payload.success && !payload.error)
+      || !isNonEmptyString(payload.evidenceId)) {
+      throw new Error('attack.result payload does not satisfy the curl result contract');
+    }
+  }
+  if (expectedType === 'history.result') {
+    const payload = response.payload;
+    if (request.payload.operation !== 'assess_xss_history'
+      || payload.operation !== 'assess_xss_history'
+      || !Array.isArray(payload.assessments)
+      || !payload.assessments.every(assessment => isObject(assessment)
+        && ['retest_candidate', 'manual_review', 'no_match'].includes(assessment.decision)
+        && Array.isArray(assessment.matches))
+      || !Number.isInteger(payload.readyCaseCount) || payload.readyCaseCount < 0
+      || !Array.isArray(payload.observations)
+      || !payload.observations.every(isObject)
+      || !isNonEmptyString(payload.evidenceId)) {
+      throw new Error('history.result payload does not satisfy the XSS assessment contract');
+    }
+  }
+  if (expectedType === 'storage.attack_info') {
+    const payload = response.payload;
+    if (payload.operation !== 'get_attack_info'
+      || (payload.attackInfo !== null && !isObject(payload.attackInfo))
+      || !isNonEmptyString(payload.evidenceId)) {
+      throw new Error('storage.attack_info payload does not satisfy the catalog contract');
+    }
   }
   if (expectedType === 'storage.appended' && response.payload.ok !== true) {
     throw new Error('storage.appended payload must acknowledge the write');

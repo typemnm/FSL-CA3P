@@ -6,7 +6,7 @@
   "scripts": {
     "demo": "node test-support/contract-demo.js",
     "demo:deepseek": "node test-support/deepseek-contract-demo.js",
-    "test": "node --test test/run-once.test.js test/deepseek-adapter.test.js test/deepseek-config.test.js"
+    "test": "node --test test/run-once.test.js test/deepseek-adapter.test.js test/deepseek-config.test.js test/stored-xss-reasoning.test.js"
   },
   "engines": {
     "node": ">=18"

@@ -1,5 +1,6 @@
-import { MODULES, createRun, tickRun, validateTarget, formatElapsed } from './engine.js';
+import { MODULES, validateTarget, formatElapsed } from './engine.js';
 import { initStarfield } from './starfield.js';
+import { createRuntimeClient } from './runtime-client.js';
 
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -16,6 +17,7 @@ const iconPaths = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/>',
   globe: '<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>',
+  terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 16h4"/>',
   play: '<path d="m8 4 12 8-12 8V4Z"/>',
   pause: '<path d="M8 5v14M16 5v14" stroke-width="3"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="1"/>',
@@ -41,66 +43,159 @@ function icon(name) { return `<svg viewBox="0 0 24 24" fill="none" stroke="curre
 function hydrateIcons(root = document) { root.querySelectorAll('[data-icon]').forEach((el) => { el.innerHTML = icon(el.dataset.icon); }); }
 hydrateIcons();
 
-const STORAGE = 'ca3p.loop.sessions.v1';
+// Keep earlier browser-only demo records intact under their original key.
+const STORAGE = 'ca3p.loop.core.sessions.v1';
 const SETTINGS = 'ca3p.loop.settings.v1';
 function readJSON(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
 function isObject(value) { return value && typeof value === 'object' && !Array.isArray(value); }
+const EVENT_CHANNELS = {
+  agent: { id: 'agent', name: 'Agent / RunOnce', role: '계획과 검증', icon: 'brain' },
+  webpage: { id: 'webpage', name: 'Webpage', role: '실습 대상', icon: 'globe' },
+  browser: { id: 'browser', name: '웹페이지 읽기 (이전 실행)', role: '사이트 읽기', icon: 'globe' },
+  knowledge: { id: 'knowledge', name: '지식 조회 (이전 실행)', role: '지식 조회', icon: 'database' },
+  reasoning: { id: 'reasoning', name: 'Agent 판단 (이전 실행)', role: '계획과 검증', icon: 'brain' },
+  policy: { id: 'policy', name: '정책 검사 (이전 실행)', role: '정책 검사', icon: 'shield' },
+  observer: { id: 'observer', name: 'Agent 검토 (이전 실행)', role: '관찰 검토', icon: 'scan' },
+  recorder: { id: 'recorder', name: '실행 기록 (이전 실행)', role: '실행 기록', icon: 'archive' },
+};
+const SECRET_FIELD = /^(?:authorization|proxy-authorization|cookie|set-cookie|(?:x[_-])?api[_-]?key|deepseek[_-]?api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?(?:id|token)|password|secret)$/i;
+function redactTelemetry(value, key = '') {
+  if (SECRET_FIELD.test(key)) return '[redacted]';
+  if (Array.isArray(value)) return value.map((item) => redactTelemetry(item));
+  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactTelemetry(item, name)]));
+  if (typeof value === 'string') return value.replace(/\bBearer\s+[^\s"',}]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:Set-)?Cookie\s*:\s*[^\r\n]+/gi, 'Cookie: [redacted]');
+  return value;
+}
 function isEvent(value) {
-  return isObject(value) && MODULES.some((module) => module.id === value.module) &&
+  return isObject(value) && (MODULES.some((module) => module.id === value.module) || Object.hasOwn(EVENT_CHANNELS, value.module)) &&
     ['id','time','title','detail','correlationId'].every((key) => typeof value[key] === 'string') &&
-    Number.isFinite(Date.parse(value.time)) && Number.isFinite(value.latency) && value.latency >= 0 &&
-    Number.isInteger(value.iteration) && value.iteration >= 1 && value.iteration <= 3 &&
+    Number.isFinite(Date.parse(value.time)) && (value.latency === null || (Number.isFinite(value.latency) && value.latency >= 0)) &&
+    Number.isInteger(value.iteration) && value.iteration >= 0 &&
     isObject(value.request) && isObject(value.response) &&
-    (value.module !== 'reasoning' || (isObject(value.agentInput) && isObject(value.agentOutput)));
+    (value.agentInput === undefined || isObject(value.agentInput)) &&
+    (value.agentOutput === undefined || isObject(value.agentOutput));
 }
 function isRun(value) {
-  return isObject(value) && typeof value.id === 'string' && validateTarget(value.target).ok &&
+  const fixture = value?.mode === 'core-fixture';
+  const lab = value?.mode === 'local-lab-deepseek';
+  return isObject(value) && (fixture || lab) && value.simulated === !lab &&
+    (fixture ? value.targetContacted === false : typeof value.targetContacted === 'boolean') &&
+    typeof value.id === 'string' && validateTarget(value.target).ok &&
     Number.isFinite(Date.parse(value.startedAt)) && Number.isFinite(value.elapsedMs) && value.elapsedMs >= 0 &&
-    Number.isInteger(value.step) && value.step >= 0 && value.step <= 18 && value.totalSteps === 18 &&
+    Number.isInteger(value.totalSteps) && value.totalSteps > 0 && value.totalSteps <= 128 &&
+    Number.isInteger(value.step) && value.step >= 0 && value.step <= value.totalSteps &&
     Array.isArray(value.events) && value.events.length === value.step && value.events.every(isEvent) &&
     isObject(value.snapshots) && Object.entries(value.snapshots).every(([id,event]) => isEvent(event) && id === event.module) &&
-    Array.isArray(value.reviewItems) && value.reviewItems.length <= 3 && value.reviewItems.every((item) => isObject(item) && ['id','title','description','evidence','evidenceId'].every((key) => typeof item[key] === 'string')) &&
-    ['running','paused','stopped','completed'].includes(value.status);
+    Array.isArray(value.reviewItems) && value.reviewItems.every((item) => isObject(item) &&
+      (item.simulated === undefined || item.simulated === value.simulated) &&
+      (item.vulnerabilityConfirmed === undefined || typeof item.vulnerabilityConfirmed === 'boolean') &&
+      ['id','title','description','evidence','evidenceId'].every((key) => typeof item[key] === 'string')) &&
+    ['preparing','running','stopping','stopped','completed','failed'].includes(value.status);
 }
 const saved = readJSON(STORAGE, []);
 let history = Array.isArray(saved) ? saved.filter(isRun).slice(0, 12) : [];
 const storedSettings = readJSON(SETTINGS, {});
 const settings = { motion: storedSettings?.motion !== false, autoScroll: storedSettings?.autoScroll !== false, speed: [900,1800,3000].includes(Number(storedSettings?.speed)) ? Number(storedSettings.speed) : 1800 };
-let run = history.length ? structuredClone(history[0]) : createRun('https://demo.ca3p.local', { initialSteps: 8 });
-if (history.length && run.status === 'running') run.status = 'paused';
+// Browser history is read-only context. Only the server can advance the current run.
+let run = { id: '', target: '', status: 'idle', startedAt: null, elapsedMs: 0, step: 0, totalSteps: 19, iterations: 1, events: [], snapshots: {}, reviewItems: [], mode: 'core-fixture', simulated: true, targetContacted: false };
+let instanceId = null;
+let labReadiness = { available: false };
+let connection = 'connecting';
+let controlPending = false;
 let inspectedRun = null;
-let selectedModule = 'reasoning';
+let selectedModule = 'parser';
 let selectedEventId = null;
 let activeTab = 'request';
 let activeView = 'dashboard';
-let accumulated = 0;
-let lastFrame = performance.now();
 let toastTimer;
 let stars;
-const statusNames = { running: '진행 중', paused: '일시정지', completed: '완료', stopped: '중지됨', idle: '대기 중' };
+const statusNames = { preparing: '실습 준비 중', running: '진행 중', stopping: '중지 처리 중', completed: '완료', stopped: '중지됨', failed: '실패', idle: '대기 중' };
 const moduleDescriptions = {
-  browser: '예시 사이트 구조와 응답 메타데이터를 관찰합니다.',
-  knowledge: '관찰 자료와 관련된 예시 검토 지식을 조회합니다.',
-  reasoning: '관찰 근거를 입력받아 에이전트의 검토 요약을 출력합니다.',
-  policy: '시뮬레이션 범위와 허용된 검토 작업을 확인합니다.',
-  observer: '검토 항목의 예시 근거와 참조 정보를 확인합니다.',
-  recorder: '반복별 이벤트와 검토 결과를 실행 기록으로 남깁니다.',
+  parser: '제공된 fixture 응답에서 분석 결과를 반환합니다. 대상 URL에는 접속하지 않습니다.',
+  casper: '고정 fixture에서 과거 취약점 지식을 조회합니다.',
+  attack: 'Scripted fixture gateway가 쓰기 요청의 구조화된 curl JSON과 모의 결과를 반환합니다. 대상 URL에 요청하지 않습니다.',
+  guardrail: '고정 fixture에서 실행 전 요청 검사 결과를 반환합니다.',
+  pentest: '코어의 기록 요청과 fixture 응답을 확인합니다. 실제 DB에는 저장하지 않습니다.',
+  agent: 'RunOnce의 plan과 reflect 입출력을 확인합니다.',
+  webpage: '입력 URL은 fixture 모드에서 표시용 메타데이터입니다.',
 };
+const labModuleDescriptions = {
+  parser: 'xss-parser가 입력 위치와 HTML 렌더링을 관찰하고, 시험 게시글의 마커가 Chromium에서 실행됐는지 확인합니다.',
+  casper: 'casper-db가 파서 관찰값을 과거 XSS 사례와 대조해 참고 정보를 반환합니다.',
+  attack: 'attack-module이 허용된 curl JSON으로 무해한 XSS 시험 게시글 한 건을 전송하고 HTTP 결과를 반환합니다.',
+  guardrail: 'guardrail이 로컬 대상, 고정 시험 본문과 요청 횟수를 전송 전에 검사합니다.',
+  pentest: 'pentest-db가 초안 공격 정보를 제공하고 이번 실행의 요청·응답·판정을 저장합니다.',
+  agent: 'RunOnce가 관찰 근거로 후보를 만들고 DeepSeek의 제한된 POST 선택과 브라우저 실행 증거를 plan / reflect로 기록합니다.',
+  webpage: '서버가 만든 격리된 127.0.0.1 게시판입니다. 입력 URL은 사용하지 않습니다.',
+};
+const legacyLabModuleDescriptions = {
+  parser: 'xss-parser가 로컬 게시판을 삭제 전후로 관찰합니다.',
+  casper: 'casper-db가 과거 XSS 사례를 참고 정보로 조회합니다.',
+  attack: 'attack-module이 구조화된 curl JSON으로 제한된 게시글 삭제 요청을 전송합니다.',
+  guardrail: 'guardrail이 교차 사용자 삭제 canary의 범위와 요청 예산을 검사합니다.',
+  pentest: 'pentest-db가 요청·응답·판정을 저장합니다.',
+  agent: 'RunOnce가 삭제 권한 가설의 plan과 전후 관찰에 근거한 reflect를 기록합니다.',
+  webpage: labModuleDescriptions.webpage,
+};
+function isLab(item) { return item?.mode === 'local-lab-deepseek'; }
+function isXssLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile) === 'stored_xss_canary'; }
+function describeModule(id, item = currentRun()) { return (isXssLab(item) ? labModuleDescriptions
+  : isLab(item) ? legacyLabModuleDescriptions : moduleDescriptions)[id] || '이전 실행의 코어 이벤트입니다.'; }
+function modeLabel(item) { return isXssLab(item) ? '저장형 XSS 실습 + DeepSeek'
+  : isLab(item) ? '삭제 권한 실습 + DeepSeek' : '코어 fixture'; }
 const viewMeta = {
   dashboard: ['대시보드', 'Observe. Decide. <span>Iterate.</span>', '에이전트의 모든 판단과 흐름을, 한눈에.'],
   sessions: ['실행 이력', 'Every run. <span>Remembered.</span>', '이 브라우저에 남아 있는 실행 기록을 다시 살펴보세요.'],
   modules: ['모듈 탐색', 'Inside the <span>loop.</span>', '각 모듈이 주고받는 데이터와 상태를 확인하세요.'],
-  reports: ['리포트', 'From signals to <span>insight.</span>', '모의 관찰 결과와 사람이 검토할 항목을 모았습니다.'],
+  reports: ['리포트', 'From signals to <span>insight.</span>', '코어 실행 리포트와 모드별 검토 항목을 확인하세요.'],
 };
 function currentRun() { return inspectedRun || run; }
-function moduleById(id) { return MODULES.find((module) => module.id === id) || MODULES[0]; }
+function moduleById(id) { return MODULES.find((module) => module.id === id) || EVENT_CHANNELS[id] || { id, name: '알 수 없는 이벤트', role: '이벤트', icon: 'box' }; }
 function notify(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 3300); }
 function saveRun() {
-  if (run.status === 'idle') return;
+  if (run.status === 'idle' || !isRun(run)) return;
   history = [structuredClone(run), ...history.filter((item) => item.id !== run.id)].slice(0, 12);
   try { localStorage.setItem(STORAGE, JSON.stringify(history)); } catch { notify('브라우저 저장 공간을 사용할 수 없습니다. 내보내기로 보관하세요.'); }
   $('history-count').textContent = history.length;
 }
+function showRuntimeError(message) {
+  $('runtime-error').textContent = message;
+  $('runtime-error').hidden = !message;
+}
+function acceptState(envelope) {
+  const next = redactTelemetry(envelope.run);
+  if (next.status !== 'idle' && !isRun(next)) throw new Error('코어 실행 상태의 데이터 형식이 올바르지 않습니다.');
+  if (next.status === 'idle' && (!isObject(next.snapshots) || !Array.isArray(next.reviewItems) || next.step !== 0 || !Number.isInteger(next.totalSteps) || next.totalSteps < 1 || next.totalSteps > 128 || next.events.length !== 0)) throw new Error('코어 대기 상태의 데이터 형식이 올바르지 않습니다.');
+  const sameInstance = instanceId === envelope.instanceId;
+  const rank = { idle: 0, preparing: 1, running: 2, stopping: 3, stopped: 4, completed: 4, failed: 4 };
+  // A POST response can arrive after a newer SSE event. Keep the newer server state.
+  if (sameInstance && next.id === run.id &&
+      (next.step < run.step || (next.step === run.step && rank[next.status] < rank[run.status]))) return;
+  const previousStatus = run.status;
+  const previousId = run.id;
+  if (!sameInstance && instanceId !== null) notify('로컬 런타임이 다시 시작되었습니다. 서버의 현재 상태를 표시합니다.');
+  instanceId = envelope.instanceId;
+  labReadiness = isObject(envelope.lab) && typeof envelope.lab.available === 'boolean'
+    ? { available: envelope.lab.available, model: envelope.lab.model, possibleRetries: envelope.lab.possibleRetries }
+    : { available: false };
+  run = structuredClone(next);
+  saveRun();
+  if (!inspectedRun && !isLab(run) && (!sameInstance || previousId !== run.id) && document.activeElement !== $('target-url')) $('target-url').value = run.target || '';
+  if (selectedEventId && !currentRun().events.some((event) => event.id === selectedEventId)) selectedEventId = null;
+  showRuntimeError(run.status === 'failed' ? run.error || '코어 실행에 실패했습니다.' : '');
+  render();
+  if (run.id === previousId && run.status !== previousStatus) {
+    if (run.status === 'completed') notify('코어 실행이 완료되었습니다. 리포트를 확인하세요.');
+    if (run.status === 'stopped') notify('코어 실행을 중지하고 수신한 기록을 저장했습니다.');
+    if (run.status === 'failed') notify('코어 실행에 실패했습니다. 오류 내용을 확인하세요.');
+  }
+}
+const runtime = createRuntimeClient({
+  onState: acceptState,
+  onConnection(state) { connection = state; renderStats(); },
+  onError: showRuntimeError,
+});
 function persistSettings() { try { localStorage.setItem(SETTINGS, JSON.stringify(settings)); } catch { notify('설정을 브라우저에 저장할 수 없습니다.'); } }
 function updateStars() {
   if (settings.motion && !stars) stars = initStarfield($('starfield'));
@@ -128,34 +223,60 @@ function historyReplace(view) { window.history.replaceState(null, '', `#${view}`
 function renderStats() {
   const item = currentRun();
   const running = !inspectedRun && run.status === 'running';
-  const stage = MODULES[Math.min(item.step, item.totalSteps - 1) % MODULES.length];
+  const active = ['preparing', 'running', 'stopping'].includes(run.status);
+  const lab = isLab(item);
+  const stage = item.events.length ? moduleById(item.events.at(-1).module) : null;
+  const connected = connection === 'connected';
+  const connectionLabel = { connecting: '런타임 연결 중', connected: 'SSE 연결됨', disconnected: '연결 끊김 · 자동 재연결 중' }[connection];
   $('history-banner').hidden = !inspectedRun;
   $('run-status').textContent = inspectedRun ? '기록 보기' : statusNames[item.status];
-  $('status-orb').className = `status-orb ${item.status === 'paused' ? 'paused' : running ? '' : 'stopped'}`;
-  $('run-context').textContent = inspectedRun ? '저장한 실행 · 읽기 전용' : item.status === 'completed' ? '18단계 기록 완료' : '로컬 시뮬레이션';
-  $('iteration-value').textContent = String(Math.min(3, Math.floor(item.step / 6) + 1)).padStart(2, '0');
-  $('step-label').textContent = item.status === 'completed' ? '모든 반복 완료' : stage.role;
+  $('status-orb').className = `status-orb ${running && connected ? '' : 'stopped'}`;
+  $('run-context').textContent = inspectedRun ? `${modeLabel(item)} · 저장한 실행` : !connected ? '마지막 수신 상태 · 진행 상태 갱신 대기' : lab ? '로컬 실습 게시판 · DeepSeek 판단' : '실제 코어 · 외부 모듈 fixture';
+  $('execution-label').textContent = lab ? 'LOCAL LAB / DEEPSEEK' : 'CORE / FIXTURE';
+  $('dashboard-mode').textContent = lab ? '실제 코어 / 로컬 실습 게시판 + DeepSeek' : '실제 코어 / 외부 모듈 fixture';
+  $('elapsed-source').textContent = lab ? '로컬 실습 실행' : 'fixture 실행';
+  $('iteration-value').textContent = '01';
+  $('step-label').textContent = item.status === 'completed' ? '코어 실행 완료' : stage ? `최근 수신 · ${stage.role}` : '첫 이벤트 대기';
+  $('total-event-count').textContent = `${item.totalSteps} 이벤트`;
   $('event-count').textContent = String(item.events.length).padStart(2, '0');
   $('elapsed-value').textContent = formatElapsed(item.elapsedMs);
-  $('progress-label').textContent = item.status === 'completed' ? '모든 단계 완료' : `${stage.role} ${item.status === 'paused' ? '· 일시정지' : item.status === 'stopped' ? '· 중지됨' : item.status === 'idle' ? '· 대기 중' : '진행'}`;
-  $('progress-number').textContent = `${String(item.step).padStart(2,'0')} / 18 steps`;
-  $('progress-fill').style.width = `${item.step / 18 * 100}%`;
-  $('core-state').textContent = inspectedRun ? 'SAVED SESSION' : {running:'LOOP RUNNING',paused:'LOOP PAUSED',stopped:'LOOP STOPPED',completed:'LOOP COMPLETE',idle:'READY TO START'}[item.status];
-  $('live-label').innerHTML = `<span class="tiny-dot ${running ? 'green' : 'gray'}"></span>${running ? 'LIVE' : inspectedRun ? 'SAVED' : 'IDLE'}`;
-  $('stream-status').textContent = running ? 'stream active' : 'stream idle';
-  $('pause-button').innerHTML = icon(item.status === 'paused' ? 'play' : 'pause');
-  $('pause-button').setAttribute('aria-label', item.status === 'paused' ? '루프 재개' : '루프 일시정지');
-  $('pause-button').disabled = !!inspectedRun || !['running','paused'].includes(run.status);
-  $('stop-button').disabled = !!inspectedRun || !['running','paused'].includes(run.status);
-  $('run-button').disabled = !inspectedRun && ['running','paused'].includes(run.status);
+  $('progress-label').textContent = item.status === 'completed' ? '모든 이벤트 수신 완료' : `수신한 코어 이벤트 · ${statusNames[item.status]}`;
+  $('progress-number').textContent = `${String(item.step).padStart(2,'0')} / ${item.totalSteps} events`;
+  $('progress-fill').style.width = `${Math.min(100, item.step / item.totalSteps * 100)}%`;
+  $('core-state').textContent = inspectedRun ? 'SAVED SESSION' : !connected ? connection === 'connecting' ? 'CONNECTING' : 'CONNECTION LOST' : {preparing:'LAB PREPARING',running:'CORE RUNNING',stopping:'CORE STOPPING',stopped:'CORE STOPPED',completed:'CORE COMPLETE',failed:'CORE FAILED',idle:'READY TO START'}[item.status];
+  $('live-label').innerHTML = `<span class="tiny-dot ${connected && running ? 'green' : 'gray'}"></span>${inspectedRun ? 'SAVED' : !connected ? 'OFFLINE' : running ? 'LIVE' : 'IDLE'}`;
+  $('stream-status').textContent = connected ? 'SSE connected' : 'SSE reconnecting';
+  $('connection-status').textContent = connectionLabel;
+  $('connection-dot').className = `tiny-dot ${connected ? 'green' : 'gray'}`;
+  $('connection-notice').hidden = connected;
+  $('connection-notice').textContent = `${connectionLabel}. 표시된 상태를 보존하고 실행 제어를 잠급니다.`;
+  $('pause-button').disabled = true;
+  $('pause-button').setAttribute('aria-label', '일시정지 및 재개 미지원');
+  $('stop-button').disabled = !!inspectedRun || !connected || controlPending || !['preparing','running'].includes(run.status);
+  $('run-button').disabled = !connected || controlPending || active;
+  $('lab-run-button').disabled = !connected || controlPending || active || !labReadiness.available;
+  $('lab-readiness').textContent = labReadiness.available
+    ? `${labReadiness.model || 'DeepSeek'} 준비됨 · 요청 실패 시 최대 ${Number.isInteger(labReadiness.possibleRetries) ? labReadiness.possibleRetries : 0}회 재시도`
+    : '로컬 실습 실행이 준비되지 않았습니다. 서버의 DeepSeek 설정을 확인하세요.';
+  $('new-session-button').disabled = !connected || controlPending || active;
   $('export-button').disabled = item.events.length === 0;
-  $('loop-graph').classList.toggle('is-paused', !running);
+  $('target-url').disabled = controlPending;
+  $('loop-graph').classList.toggle('is-paused', !running || !connected);
+  $('webpage-caption').textContent = lab ? '격리된 로컬 게시판' : '표시용 URL';
+  document.querySelector('.graph-webpage').classList.toggle('contacted', item.targetContacted);
+  const graphSources = lab
+    ? { parser: '응답 분석', casper: '이전 DB 조회', attack: '로컬 curl 쓰기', guardrail: '실행 전 검사', pentest: '실습 기록' }
+    : { parser: 'Fixture 분석', casper: 'Fixture 조회', attack: '쓰기 Fixture', guardrail: 'Fixture 검사', pentest: 'Fixture 기록' };
   document.querySelectorAll('.graph-node').forEach((node) => {
+    node.querySelector('.node-copy small').textContent = graphSources[node.dataset.module];
     node.classList.toggle('selected', node.dataset.module === selectedModule);
     node.classList.toggle('done', !!item.snapshots[node.dataset.module]);
-    node.classList.toggle('current', ['running','paused'].includes(item.status) && node.dataset.module === stage.id);
+    node.classList.toggle('current', running && connected && stage?.id === node.dataset.module);
     node.setAttribute('aria-pressed', String(node.dataset.module === selectedModule));
   });
+  $('agent-core').classList.toggle('selected', selectedModule === 'agent');
+  $('agent-core').classList.toggle('current', running && connected && stage?.id === 'agent');
+  $('agent-core').setAttribute('aria-pressed', String(selectedModule === 'agent'));
 }
 function renderActivity() {
   const item = currentRun();
@@ -163,21 +284,26 @@ function renderActivity() {
   const events = item.events.filter((event) => `${moduleById(event.module).name} ${event.title} ${event.detail} ${event.correlationId}`.toLowerCase().includes(query)).slice().reverse();
   const previousScroll = $('activity-list').scrollTop;
   $('activity-counter').textContent = String(item.events.length).padStart(2,'0');
-  $('activity-list').innerHTML = events.length ? events.map((event) => `<button class="activity-event ${event.id === selectedEventId ? 'active' : ''}" data-event="${escape(event.id)}"><span class="event-indicator">${icon(event.type === 'success' ? 'check' : moduleById(event.module).icon)}</span><span class="event-copy"><span class="event-meta"><span>${escape(moduleById(event.module).name.replace(' Engine','').replace('Observation Review','Observer'))}</span><span class="event-time">${escape(timeLabel(event.time))}</span></span><span class="event-title">${escape(event.title)}</span><span class="event-detail">${escape(event.detail)}</span></span></button>`).join('') : `<div class="empty-state compact"><span data-icon="pulse"></span><h3>${query ? '일치하는 이벤트가 없습니다' : '첫 이벤트를 기다리는 중'}</h3><p>${query ? '다른 검색어를 입력해 보세요.' : 'URL을 입력하고 모의 루프를 시작하세요.'}</p></div>`;
+  $('activity-list').innerHTML = events.length ? events.map((event) => `<button class="activity-event ${event.id === selectedEventId ? 'active' : ''}" data-event="${escape(event.id)}"><span class="event-indicator">${icon(event.type === 'success' ? 'check' : moduleById(event.module).icon)}</span><span class="event-copy"><span class="event-meta"><span>${escape(moduleById(event.module).name.replace(' Engine','').replace('Observation Review','Observer'))}</span><span class="event-time">${escape(timeLabel(event.time))}</span></span><span class="event-title">${escape(event.title)}</span><span class="event-detail">${escape(event.detail)}</span></span></button>`).join('') : `<div class="empty-state compact"><span data-icon="pulse"></span><h3>${query ? '일치하는 이벤트가 없습니다' : '첫 코어 이벤트를 기다리는 중'}</h3><p>${query ? '다른 검색어를 입력해 보세요.' : isLab(item) ? '로컬 실습 서버가 준비되고 첫 이벤트가 도착하면 표시됩니다.' : '표시용 URL을 입력하고 코어 fixture를 시작하세요.'}</p></div>`;
   hydrateIcons($('activity-list'));
   $('activity-list').scrollTop = settings.autoScroll ? 0 : previousScroll;
   if (!$('notification-popover').hidden) renderNotifications();
 }
 function getSnapshot() { const item = currentRun(); return selectedEventId ? item.events.find((event) => event.id === selectedEventId) : item.snapshots[selectedModule]; }
-function getAgentEvent() { const snapshot = getSnapshot(); return snapshot?.module === 'reasoning' ? snapshot : currentRun().events.filter((event) => event.module === 'reasoning' && (!snapshot || event.iteration === snapshot.iteration)).at(-1); }
+function getAgentEvent() {
+  const snapshot = getSnapshot();
+  const hasIO = (event) => isObject(event?.agentInput) && isObject(event?.agentOutput);
+  return hasIO(snapshot) ? snapshot : currentRun().events.filter((event) => hasIO(event) && (!snapshot || event.iteration === snapshot.iteration)).at(-1);
+}
 function traceData() {
   const snapshot = getSnapshot();
   const item = currentRun();
+  const lab = isLab(item);
   if (activeTab === 'agent') {
     const reasoning = getAgentEvent();
-    return reasoning ? { source: 'local-simulation', correlationId: reasoning.correlationId, input: reasoning.agentInput, output: reasoning.agentOutput } : { status: 'waiting', simulated: true, message: '해당 반복의 에이전트 입출력을 기다리고 있습니다.' };
+    return reasoning ? { source: lab && reasoning.stage === 'loop.think' ? 'DeepSeek + RuleReasoningEngine' : 'RuleReasoningEngine', mode: item.mode, fixtureInputs: !lab, correlationId: reasoning.correlationId, input: reasoning.agentInput, output: reasoning.agentOutput } : { status: 'waiting', mode: item.mode, message: lab ? 'DeepSeek curl 요청과 코어 plan / reflect 입출력을 기다리고 있습니다.' : 'RuleReasoningEngine의 plan / reflect 입출력을 기다리고 있습니다.' };
   }
-  return snapshot?.[activeTab] || { status: 'waiting', simulated: true, module: selectedModule, message: '이 모듈의 첫 이벤트를 기다리고 있습니다.' };
+  return snapshot?.[activeTab] || { status: 'waiting', mode: item.mode, simulated: item.simulated, module: selectedModule, message: '이 모듈의 첫 코어 이벤트를 기다리고 있습니다.' };
 }
 function highlightJSON(data) {
   const raw = JSON.stringify(data, null, 2);
@@ -189,14 +315,21 @@ function highlightJSON(data) {
 }
 function renderInspector() {
   const module = moduleById(selectedModule);
+  const lab = isLab(currentRun());
   const snapshot = getSnapshot();
   const contextEvent = activeTab === 'agent' ? getAgentEvent() : snapshot;
   $('selected-module-name').textContent = module.name;
-  $('context-module').textContent = activeTab === 'agent' ? 'Reasoning Engine' : module.name;
-  $('context-role').textContent = moduleDescriptions[activeTab === 'agent' ? 'reasoning' : selectedModule];
+  $('context-module').textContent = activeTab === 'agent' && lab ? 'Agent / RunOnce + DeepSeek' : activeTab === 'agent' ? 'Agent / RunOnce' : module.name;
+  $('context-role').textContent = describeModule(activeTab === 'agent' ? 'agent' : selectedModule);
   $('correlation-value').textContent = contextEvent?.correlationId || '—';
-  $('trace-state').textContent = contextEvent ? '응답 수신 · 모의 데이터' : '이벤트 대기';
-  $('trace-latency').textContent = contextEvent ? `${contextEvent.latency} ms · 모의` : '—';
+  $('trace-source').textContent = activeTab === 'agent' ? lab ? 'DeepSeek · Agent / RunOnce' : 'Agent / RunOnce · fixture 입력'
+    : contextEvent?.source === 'local-curl-board' ? 'local-curl-board · curl 실행'
+      : contextEvent?.source === 'local-loopback-board' ? '격리된 로컬 게시판'
+        : contextEvent?.source === 'core-internal-event' ? 'Agent / RunOnce'
+          : contextEvent?.source === 'scripted-gateway' ? 'Scripted fixture gateway'
+            : contextEvent?.source || (lab ? '로컬 모듈 이벤트 대기' : 'Fixture 이벤트 대기');
+  $('trace-state').textContent = contextEvent ? '코어 이벤트 수신' : '이벤트 대기';
+  $('trace-latency').textContent = contextEvent ? contextEvent.latency === null ? '코어 내부 I/O · 지연 미측정' : `${contextEvent.latency} ms · 실측` : '—';
   $('code-filename').textContent = activeTab === 'agent' ? 'agent-io.json' : `${activeTab}.json`;
   $('request-tab-count').textContent = $('response-tab-count').textContent = snapshot ? '01' : '00';
   document.querySelectorAll('[data-tab]').forEach((el) => { el.classList.toggle('active', el.dataset.tab === activeTab); el.setAttribute('aria-selected', String(el.dataset.tab === activeTab)); el.setAttribute('tabindex', el.dataset.tab === activeTab ? '0' : '-1'); el.setAttribute('aria-controls', 'trace-code'); });
@@ -204,7 +337,7 @@ function renderInspector() {
   $('trace-code').innerHTML = highlightJSON(traceData());
 }
 function renderSessions() {
-  $('session-list').innerHTML = history.length ? history.map((item) => `<div class="session-row"><div class="session-target">${escape(item.target)}<small>${escape(item.id)}</small></div><span class="state-chip ${escape(item.status)}"><span class="tiny-dot ${item.status === 'running' || item.status === 'completed' ? 'green' : 'gray'}"></span>${statusNames[item.status]}</span><span class="session-stat session-events">${item.events.length} events</span><span class="session-stat session-date">${escape(dateLabel(item.startedAt))}</span><button class="button secondary" data-session="${escape(item.id)}">열기 ${icon('code')}</button></div>`).join('') : `<div class="empty-state"><span data-icon="layers"></span><h3>아직 저장된 실행이 없습니다</h3><p>모의 루프를 시작하면 실행 이력이 자동으로 기록됩니다.</p></div>`;
+  $('session-list').innerHTML = history.length ? history.map((item) => `<div class="session-row"><div class="session-target">${escape(item.target)}<small>${escape(modeLabel(item))} · ${escape(item.id)}</small></div><span class="state-chip ${escape(item.status)}"><span class="tiny-dot ${item.status === 'running' || item.status === 'completed' ? 'green' : 'gray'}"></span>${statusNames[item.status]}</span><span class="session-stat session-events">${item.events.length} events</span><span class="session-stat session-date">${escape(dateLabel(item.startedAt))}</span><button class="button secondary" data-session="${escape(item.id)}">열기 ${icon('code')}</button></div>`).join('') : `<div class="empty-state"><span data-icon="layers"></span><h3>아직 저장된 실행이 없습니다</h3><p>로컬 코어 이벤트를 수신하면 실행 이력이 자동으로 기록됩니다.</p></div>`;
   hydrateIcons($('session-list'));
 }
 function renderModules() {
@@ -212,13 +345,23 @@ function renderModules() {
   $('module-grid').innerHTML = MODULES.map((module) => {
     const count = item.events.filter((event) => event.module === module.id).length;
     const snapshot = item.snapshots[module.id];
-    return `<article class="panel module-card"><div class="module-card-top"><span data-icon="${module.icon}"></span><span class="local-chip">SIMULATED</span></div><h2>${escape(module.name)}</h2><p>${escape(moduleDescriptions[module.id])}</p><div class="module-metrics"><span><strong>${String(count).padStart(2,'0')}</strong>REQUESTS</span><span><strong>${String(count).padStart(2,'0')}</strong>RESPONSES</span><span><strong>${snapshot?.latency || '—'}</strong>MOCK MS</span></div><button class="button secondary" data-open-module="${module.id}">데이터 확인 ${icon('code')}</button></article>`;
+    const source = !snapshot ? 'EVENT WAITING' : snapshot.source === 'local-curl-board' ? 'LOCAL CURL'
+      : snapshot.source === 'scripted-gateway' ? 'FIXTURE'
+        : snapshot.source === 'core-internal-event' ? 'CORE EVENT'
+          : snapshot.source === 'local-loopback-board' ? 'LOCAL BOARD'
+            : isLab(item) ? 'LOCAL MODULE' : 'FIXTURE';
+    return `<article class="panel module-card"><div class="module-card-top"><span data-icon="${module.icon}"></span><span class="local-chip">${source}</span></div><h2>${escape(module.name)}</h2><p>${escape(describeModule(module.id, item))}</p><div class="module-metrics"><span><strong>${String(count).padStart(2,'0')}</strong>EVENTS</span><span><strong>${escape(snapshot?.latency ?? '—')}</strong>ELAPSED MS</span></div><button class="button secondary" data-open-module="${module.id}">데이터 확인 ${icon('code')}</button></article>`;
   }).join('');
   hydrateIcons($('module-grid'));
 }
 function renderReports() {
   const item = currentRun();
-  $('report-content').innerHTML = `<section class="panel report-top"><div><div class="eyebrow">SIMULATION REPORT</div><h2>관찰 결과와 검토 항목</h2><p>${escape(item.target)}</p><small>${escape(statusNames[item.status])} · ${item.step} / 18 단계 · ${escape(formatElapsed(item.elapsedMs))}</small></div><div class="report-count"><strong>${String(item.reviewItems.length).padStart(2,'0')}</strong><span>검토 항목</span></div></section><div class="report-items">${item.reviewItems.length ? item.reviewItems.map((review) => `<article class="panel report-item"><span class="review-tag"><span class="tiny-dot"></span>HUMAN REVIEW</span><h2>${escape(review.title)}</h2><p>${escape(review.description)}</p><div class="evidence-box"><strong>SIMULATED EVIDENCE / ${escape(review.evidenceId)}</strong>${escape(review.evidence)}</div></article>`).join('') : `<section class="panel empty-state"><span data-icon="file"></span><h3>검토 항목을 기다리는 중</h3><p>결과 검토 단계가 완료되면 항목이 표시됩니다.</p></section>`}</div><div class="report-note">이 리포트는 로컬 예시 데이터로 생성했습니다. 실제 대상의 응답을 수집하거나 취약점을 확인한 결과가 아닙니다.</div><section class="panel recommendations"><h2>${icon('sparkles')}다음 단계 제안</h2><div class="recommendation-list"><div class="recommendation"><strong>승인 범위와 실행 예산</strong>운영 환경에서는 허용된 대상과 경로, 실행 시간, 단계 한도를 실행 기록과 함께 관리하세요.</div><div class="recommendation"><strong>민감정보 마스킹</strong>관측 로그를 연동할 때 토큰·쿠키·개인정보를 마스킹하고 원본 열람 권한을 분리하세요.</div><div class="recommendation"><strong>실제 관측 이벤트 연동</strong>읽기 전용 SSE 이벤트 스트림을 연결하면 기존 실행의 상태와 요청·응답을 실시간으로 표시할 수 있습니다.</div></div></section>`;
+  const lab = isLab(item);
+  const note = isXssLab(item)
+    ? `서버가 생성한 격리된 로컬 게시판(${escape(item.target || '준비 중')})에서 XSS 가설 한 건을 검사합니다. ${item.targetContacted ? '실습 사이트에 HTTP 요청을 보냈습니다.' : '아직 실습 사이트로 보낸 HTTP 요청은 없습니다.'} DeepSeek가 선택한 구조화된 curl 요청은 정책 검사를 거쳐 전송하며, finding은 동일 시험 게시글의 브라우저 실행 증거로 판정합니다. 입력 URL은 사용하지 않습니다.`
+    : lab ? `서버가 생성한 격리된 로컬 게시판(${escape(item.target || '준비 중')})에서 삭제 권한 가설 한 건을 검사했습니다. 입력 URL은 사용하지 않았습니다.`
+    : 'RunOnce와 RuleReasoningEngine의 실제 코어 실행 결과입니다. 외부 모듈의 응답은 scripted fixture이며, 입력 URL은 표시용 메타데이터입니다. 실제 대상에 접속하거나 취약점을 확인하지 않았습니다.';
+  $('report-content').innerHTML = `<section class="panel report-top"><div><div class="eyebrow">${lab ? 'ISOLATED LOCAL LAB REPORT' : 'CORE FIXTURE REPORT'}</div><h2>${lab ? '로컬 실습 게시판 실행 결과' : '코어 실행 결과와 fixture 검토 항목'}</h2><p>${escape(item.target || '실행 전')}</p><small>${escape(statusNames[item.status])} · ${item.step} / ${item.totalSteps} 이벤트 · ${escape(formatElapsed(item.elapsedMs))}</small></div><div class="report-count"><strong>${String(item.reviewItems.length).padStart(2,'0')}</strong><span>${lab ? '로컬 실습 검토 항목' : 'fixture 검토 항목'}</span></div></section><div class="report-items">${item.reviewItems.length ? item.reviewItems.map((review) => `<article class="panel report-item"><span class="review-tag"><span class="tiny-dot"></span>${lab ? review.vulnerabilityConfirmed ? 'LOCAL LAB · CONFIRMED' : 'LOCAL LAB · REVIEW' : 'FIXTURE · UNCONFIRMED'}</span><h2>${escape(review.title)}</h2><p>${escape(review.description)}</p><div class="evidence-box"><strong>${lab ? 'LOCAL LAB' : 'FIXTURE'} EVIDENCE / ${escape(review.evidenceId)}</strong>${escape(review.evidence)}</div></article>`).join('') : `<section class="panel empty-state"><span data-icon="file"></span><h3>최종 ${lab ? '실습' : 'fixture'} 결과 대기</h3><p>코어 실행 완료 후 검토 항목이 표시됩니다.</p></section>`}</div><div class="report-note">${note}</div>${item.report ? `<section class="panel core-report"><h2>${icon('file')}RunOnce 최종 리포트</h2><p>코어가 반환한 결과 · 내부 실행 ID ${escape(item.coreRunId || '—')} · 코어 origin ${escape(item.coreTargetOrigin || (lab ? '—' : 'http://127.0.0.1:3000'))}</p><pre tabindex="0" aria-label="RunOnce 최종 리포트 JSON">${highlightJSON(item.report)}</pre></section>` : ''}`;
   hydrateIcons($('report-content'));
 }
 function renderNotifications() {
@@ -237,32 +380,64 @@ function render() {
 
 document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view)));
 window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
-$('target-form').addEventListener('submit', (event) => {
+async function submitControl(action) {
+  if (controlPending || connection !== 'connected') return;
+  controlPending = true;
+  showRuntimeError('');
+  renderStats();
+  try { await action(); }
+  catch (error) { showRuntimeError(error.message); notify('로컬 런타임 요청에 실패했습니다. 오류 내용을 확인하세요.'); }
+  finally { controlPending = false; render(); }
+}
+$('target-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (!inspectedRun && ['running','paused'].includes(run.status)) return;
+  if (['preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected') return;
   const validated = validateTarget($('target-url').value);
   $('url-error').hidden = validated.ok;
   $('target-url').setAttribute('aria-invalid', String(!validated.ok));
   if (!validated.ok) { $('url-error').textContent = validated.error; $('target-url').focus(); return; }
-  if (run.status === 'running' || run.status === 'paused') { run.status = 'stopped'; saveRun(); }
-  run = createRun(validated.url); inspectedRun = null; selectedEventId = null; accumulated = 0; lastFrame = performance.now();
-  $('target-url').value = validated.url; saveRun(); render(); notify('모의 루프를 시작했습니다. 입력한 사이트에 접속하지 않습니다.');
+  await submitControl(async () => {
+    await runtime.start(validated.url, settings.speed);
+    inspectedRun = null;
+    selectedEventId = null;
+    $('target-url').value = validated.url;
+    notify('실제 코어와 fixture gateway 실행을 시작했습니다. URL은 표시용이며 접속하지 않습니다.');
+  });
+});
+$('lab-run-button').addEventListener('click', async () => {
+  if (['preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !labReadiness.available) return;
+  await submitControl(async () => {
+    await runtime.startLab();
+    inspectedRun = null;
+    selectedEventId = null;
+    notify('서버가 만든 로컬 실습 게시판을 시작했습니다. DeepSeek API 호출은 과금될 수 있습니다.');
+  });
 });
 $('target-url').addEventListener('input', () => { $('url-error').hidden = true; $('target-url').removeAttribute('aria-invalid'); });
-$('pause-button').addEventListener('click', () => {
-  if (inspectedRun || !['running','paused'].includes(run.status)) return;
-  run.status = run.status === 'running' ? 'paused' : 'running'; lastFrame = performance.now(); saveRun(); render();
-  notify(run.status === 'paused' ? '루프를 일시정지했습니다.' : '루프를 재개했습니다.');
+$('stop-button').addEventListener('click', async () => {
+  if (inspectedRun || !['preparing','running'].includes(run.status)) return;
+  await submitControl(() => runtime.stop(run.id));
 });
-$('stop-button').addEventListener('click', () => { if (inspectedRun || !['running','paused'].includes(run.status)) return; run.status = 'stopped'; saveRun(); render(); notify('루프를 중지하고 실행 기록을 저장했습니다.'); });
-$('new-session-button').addEventListener('click', () => {
-  if (['running','paused'].includes(run.status)) { run.status = 'stopped'; saveRun(); }
-  run = createRun(run.target); run.status = 'idle'; inspectedRun = null; selectedEventId = null; accumulated = 0;
-  $('target-url').value = ''; $('url-error').hidden = true; $('target-url').removeAttribute('aria-invalid'); navigate('dashboard'); $('target-url').focus();
-  notify('대상 URL을 입력해 새 모의 루프를 시작하세요.');
+$('new-session-button').addEventListener('click', async () => {
+  if (['preparing','running','stopping'].includes(run.status)) return;
+  await submitControl(async () => {
+    await runtime.reset();
+    inspectedRun = null;
+    selectedEventId = null;
+    $('target-url').value = ''; $('url-error').hidden = true; $('target-url').removeAttribute('aria-invalid');
+    navigate('dashboard');
+    notify('표시용 URL을 입력해 새 로컬 코어 실행을 시작하세요.');
+  });
+  if (run.status === 'idle') $('target-url').focus();
 });
-function chooseModule(id, eventId = null) { selectedModule = id; selectedEventId = eventId; renderStats(); renderInspector(); renderActivity(); }
+function chooseModule(id, eventId = null) {
+  selectedModule = id;
+  selectedEventId = eventId;
+  activeTab = ['agent','reasoning','observer'].includes(id) ? 'agent' : 'request';
+  renderStats(); renderInspector(); renderActivity();
+}
 document.querySelectorAll('.graph-node').forEach((node) => node.addEventListener('click', () => chooseModule(node.dataset.module)));
+$('agent-core').addEventListener('click', () => chooseModule('agent'));
 $('activity-list').addEventListener('click', (event) => { const button = event.target.closest('[data-event]'); if (!button) return; const selected = currentRun().events.find((entry) => entry.id === button.dataset.event); if (selected) chooseModule(selected.module, selected.id); });
 $('event-search').addEventListener('input', renderActivity);
 document.querySelectorAll('[data-tab]').forEach((tab) => tab.addEventListener('click', () => { activeTab = tab.dataset.tab; renderInspector(); }));
@@ -279,41 +454,30 @@ $('copy-button').addEventListener('click', async () => {
 });
 $('export-button').addEventListener('click', () => {
   const item = currentRun();
-  const payload = { schemaVersion: 1, mode: 'local-simulation', simulated: true, targetContacted: false, exportedAt: new Date().toISOString(), session: item };
+  const payload = { schemaVersion: 2, mode: item.mode, simulated: item.simulated, targetContacted: item.targetContacted, exportedAt: new Date().toISOString(), session: item };
   const url = URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)], { type:'application/json' }));
-  const link = document.createElement('a'); link.href = url; link.download = `ca3p-${item.id}.json`; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify('모의 실행 기록의 JSON 다운로드를 요청했습니다.');
+  const link = document.createElement('a'); link.href = url; link.download = `ca3p-${item.id}.json`; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify(`${modeLabel(item)} 실행 기록의 JSON 다운로드를 요청했습니다.`);
 });
 $('session-list').addEventListener('click', (event) => {
   const button = event.target.closest('[data-session]'); if (!button) return;
   const item = history.find((entry) => entry.id === button.dataset.session); if (!item) return;
-  if (run.status === 'running') { run.status = 'paused'; saveRun(); }
-  inspectedRun = structuredClone(item); selectedEventId = null; $('target-url').value = inspectedRun.target; navigate('dashboard'); notify('저장된 실행을 열었습니다. 새 실행으로 다시 시작할 수 있습니다.');
+  inspectedRun = structuredClone(item); selectedEventId = null; $('target-url').value = isLab(inspectedRun) ? '' : inspectedRun.target; navigate('dashboard'); notify('저장된 스냅샷을 열었습니다. 서버의 현재 실행은 계속 진행됩니다.');
 });
-$('return-current-button').addEventListener('click', () => { inspectedRun = null; selectedEventId = null; $('target-url').value = run.target; render(); notify(run.status === 'paused' ? '현재 실행으로 돌아왔습니다. 일시정지된 루프를 재개할 수 있습니다.' : '현재 실행으로 돌아왔습니다.'); });
-$('module-grid').addEventListener('click', (event) => { const button = event.target.closest('[data-open-module]'); if (!button) return; selectedModule = button.dataset.openModule; selectedEventId = null; navigate('dashboard'); $('inspector-panel').scrollIntoView({ block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' }); });
+$('return-current-button').addEventListener('click', () => { inspectedRun = null; selectedEventId = null; $('target-url').value = isLab(run) ? '' : run.target || ''; render(); notify('서버의 현재 실행으로 돌아왔습니다.'); });
+$('module-grid').addEventListener('click', (event) => { const button = event.target.closest('[data-open-module]'); if (!button) return; selectedModule = button.dataset.openModule; selectedEventId = null; activeTab = 'request'; navigate('dashboard'); $('inspector-panel').scrollIntoView({ block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' }); });
 function setAutoScroll(enabled) { settings.autoScroll = enabled; $('autoscroll-button').setAttribute('aria-pressed', String(enabled)); $('scroll-setting').checked = enabled; persistSettings(); }
 $('autoscroll-button').addEventListener('click', () => { setAutoScroll(!settings.autoScroll); if (settings.autoScroll) $('activity-list').scrollTop = 0; notify(settings.autoScroll ? '최신 이벤트를 자동으로 표시합니다.' : '자동 이벤트 표시를 끄었습니다.'); });
 $('settings-button').addEventListener('click', () => { $('motion-setting').checked = settings.motion; $('scroll-setting').checked = settings.autoScroll; $('speed-setting').value = settings.speed; $('settings-dialog').showModal(); });
 $('motion-setting').addEventListener('change', (event) => { settings.motion = event.target.checked; persistSettings(); updateStars(); });
 $('scroll-setting').addEventListener('change', (event) => setAutoScroll(event.target.checked));
-$('speed-setting').addEventListener('change', (event) => { settings.speed = Number(event.target.value); accumulated = 0; persistSettings(); });
+$('speed-setting').addEventListener('change', (event) => { settings.speed = Number(event.target.value); persistSettings(); });
 $('settings-dialog').addEventListener('click', (event) => { if (event.target === $('settings-dialog')) { const rect = $('settings-dialog').getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) $('settings-dialog').close(); } });
 $('notifications-button').addEventListener('click', () => { $('notification-popover').hidden = !$('notification-popover').hidden; $('notifications-button').setAttribute('aria-expanded', String(!$('notification-popover').hidden)); renderNotifications(); });
 $('menu-button').addEventListener('click', () => { $('sidebar').classList.toggle('open'); $('menu-button').setAttribute('aria-expanded', String($('sidebar').classList.contains('open'))); });
 document.addEventListener('click', (event) => { if (!event.target.closest('#notification-popover') && !event.target.closest('#notifications-button')) { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); } if (innerWidth <= 760 && !event.target.closest('#sidebar') && !event.target.closest('#menu-button')) { $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
 document.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); navigate('dashboard'); $('target-url').focus(); $('target-url').select(); } if (event.key === 'Escape') { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
-window.addEventListener('beforeunload', saveRun);
-$('target-url').value = run.target;
+window.addEventListener('beforeunload', () => { saveRun(); runtime.close(); });
+$('target-url').value = '';
 $('autoscroll-button').setAttribute('aria-pressed', String(settings.autoScroll));
-if (!history.length || run.status === 'paused') saveRun();
 navigate(location.hash.slice(1) || 'dashboard');
-setInterval(() => {
-  const now = performance.now(); const delta = Math.max(0, now - lastFrame); lastFrame = now;
-  if (run.status !== 'running') return;
-  run.elapsedMs += delta; accumulated += delta;
-  if (!inspectedRun) $('elapsed-value').textContent = formatElapsed(run.elapsedMs);
-  if (accumulated >= settings.speed) {
-    accumulated %= settings.speed; tickRun(run,0); saveRun(); render();
-    if (run.status === 'completed') notify('3회 반복이 완료되었습니다. 리포트에서 검토 항목을 확인하세요.');
-  }
-},250);
+runtime.connect();

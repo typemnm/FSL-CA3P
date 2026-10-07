@@ -1,14 +1,13 @@
 /** Local telemetry simulation. This module never performs network requests. */
 export const MODULES = [
-  { id: 'browser', name: 'Web Explorer', role: '사이트 관찰', icon: 'globe' },
-  { id: 'knowledge', name: 'Vulnerability DB', role: '지식 조회', icon: 'database' },
-  { id: 'reasoning', name: 'Reasoning Engine', role: '에이전트 판단', icon: 'brain' },
-  { id: 'policy', name: 'Action Policy', role: '정책 검사', icon: 'shield' },
-  { id: 'observer', name: 'Observation Review', role: '관찰 검토', icon: 'scan' },
-  { id: 'recorder', name: 'Pentesting DB', role: '실행 기록', icon: 'archive' },
+  { id: 'parser', name: 'xss-parser', role: '사이트 응답 분석', icon: 'scan' },
+  { id: 'casper', name: 'casper-db', role: '취약점 지식 조회', icon: 'database' },
+  { id: 'attack', name: 'attack-module', role: 'curl 쓰기 요청', icon: 'terminal' },
+  { id: 'guardrail', name: 'guardrail', role: '실행 전 요청 검사', icon: 'shield' },
+  { id: 'pentest', name: 'pentest-db', role: '실행 기록', icon: 'archive' },
 ];
 
-const TOTAL_STEPS = 18;
+const TOTAL_STEPS = MODULES.length * 3;
 const REVIEW_TOPICS = [
   {
     title: '응답 헤더 검토',
@@ -93,59 +92,35 @@ function buildStageData(run, moduleId, iteration, traceId) {
   };
   const fixtureId = `fixture-${iteration.toString().padStart(2, '0')}`;
   switch (moduleId) {
-    case 'browser':
+    case 'parser':
       return {
         title: '관찰 데이터 준비',
         detail: '예시 사이트 구조와 응답 메타데이터를 준비했습니다.',
         request: { ...common, purpose: 'prepare-observation', input: { targetUrl: run.target, source: 'local-fixture' } },
         response: { ...common, status: 'ready', observationId: fixtureId, pages: 4 + iteration, inputPoints: 6 + iteration, source: 'local-fixture', targetContacted: false },
       };
-    case 'knowledge':
+    case 'casper':
       return {
         title: '검토 지식 조회',
         detail: `${topic.title}에 사용할 예시 체크리스트를 연결했습니다.`,
         request: { ...common, purpose: 'lookup-review-guidance', input: { observationId: fixtureId, topic: topic.title } },
         response: { ...common, status: 'matched', references: [{ id: `guidance-${iteration}`, title: topic.title, source: 'demo-review-checklist' }], confirmedVulnerabilities: 0 },
       };
-    case 'reasoning': {
-      const agentInput = {
-        simulated: true,
-        observationId: fixtureId,
-        reviewTopic: topic.title,
-        guidanceId: `guidance-${iteration}`,
-        objective: '제공된 관찰 자료에서 사람이 검토할 항목을 요약',
-      };
-      const agentOutput = {
-        simulated: true,
-        summary: topic.description,
-        decision: 'review-supplied-observation',
-        confidence: 'requires-human-review',
-        proposedNetworkActions: 0,
-      };
-      return {
-        title: '검토 항목 요약',
-        detail: '관찰 근거와 체크리스트를 바탕으로 검토 요약을 만들었습니다.',
-        request: { ...common, purpose: 'summarize-observation', input: agentInput },
-        response: { ...common, status: 'summarized', output: agentOutput },
-        agentInput,
-        agentOutput,
-      };
-    }
-    case 'policy':
+    case 'guardrail':
       return {
         title: '관찰 범위 확인',
         detail: '로컬 예시 자료를 검토하는 시뮬레이션 범위를 확인했습니다.',
         request: { ...common, purpose: 'check-simulation-policy', input: { operation: 'review-supplied-observation', source: 'local-fixture', networkAccess: false } },
         response: { ...common, status: 'allowed', ruleId: 'SIMULATION_ONLY', networkAccess: false, allowedOperation: 'review-supplied-observation' },
       };
-    case 'observer':
+    case 'attack':
       return {
-        title: '근거 정합성 검토',
-        detail: `${topic.title} 항목의 예시 근거와 참조 ID를 확인했습니다.`,
-        request: { ...common, purpose: 'review-observation-consistency', input: { observationId: fixtureId, reference: topic.reference } },
-        response: { ...common, status: 'review-required', evidenceId: `evidence-${iteration}`, evidenceSource: 'local-fixture', classification: 'review', vulnerabilityConfirmed: false, summary: topic.evidence },
+        title: '모의 쓰기 요청 검토',
+        detail: '예시 curl 요청 JSON을 기록했습니다. 사이트로 전송하지 않았습니다.',
+        request: { ...common, purpose: 'simulate-curl-write', input: { operation: 'execute_curl', curl: { method: 'POST', url: `fixture://review/${fixtureId}` } } },
+        response: { ...common, status: 'simulated', executed: false, success: null, targetContacted: false },
       };
-    case 'recorder':
+    case 'pentest':
       return {
         title: iteration === 3 ? '최종 기록 완료' : '반복 기록 완료',
         detail: `${iteration}번째 반복의 이벤트와 검토 항목을 기록했습니다.`,
@@ -170,7 +145,7 @@ export function tickRun(run, deltaMs = 1700) {
     id: `${run.id}:event-${run.step}`,
     time: new Date(Date.parse(run.startedAt) + run.elapsedMs).toISOString(),
     module: module.id,
-    type: module.id === 'recorder' ? 'success' : 'info',
+    type: module.id === 'pentest' ? 'success' : 'info',
     title: data.title,
     detail: data.detail,
     latency: 90 + ((run.step * 47) % 310),
@@ -183,7 +158,7 @@ export function tickRun(run, deltaMs = 1700) {
   if (data.agentOutput) event.agentOutput = data.agentOutput;
   run.events.push(event);
   run.snapshots[module.id] = event;
-  if (module.id === 'observer') {
+  if (module.id === 'pentest') {
     const topic = REVIEW_TOPICS[iteration - 1];
     run.reviewItems.push({
       id: `${run.id}:review-${iteration}`,

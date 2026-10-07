@@ -10,7 +10,7 @@ async function main() {
   console.warn('WARNING: this opt-in command can make billable DeepSeek API requests; HTTP retries may add requests. No real target will be contacted.');
   const startedAt = Date.now();
   const gateway = createScriptedGateway();
-  const reasoningEngine = createDeepSeekReasoningEngineFromEnv();
+  const reasoningEngine = createDeepSeekReasoningEngineFromEnv({ curlMode: true });
   const result = await runOnce({
     gateway,
     reasoningEngine,

@@ -5,7 +5,6 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const test = require('node:test');
 const {
-  ActionPolicy,
   MAX_MESSAGE_BYTES,
   RuleReasoningEngine,
   assertModuleSuccess,
@@ -19,513 +18,231 @@ const { createScriptedGateway } = require('../test-support/scripted-gateway');
 
 const TARGET_ORIGIN = 'http://127.0.0.1:3000';
 
-async function exists(file) {
-  try {
-    await fs.stat(file);
-    return true;
-  } catch (error) {
-    if (error.code === 'ENOENT') return false;
-    throw error;
-  }
+function attackCommands(gateway) {
+  return gateway.requests.filter(({ envelope }) => envelope.receiver === 'attack-module')
+    .map(({ envelope }) => envelope.payload.curl);
 }
 
-async function listRelativeFiles(directory, root = directory) {
-  const files = [];
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...await listRelativeFiles(absolute, root));
-    } else if (entry.isFile()) {
-      files.push(path.relative(root, absolute).split(path.sep).join('/'));
-    }
-  }
-  return files.sort();
-}
-
-test('agent completes exactly one loop through serialized external JSON contracts', async () => {
+test('agent completes a bounded canary loop through the real module wire names', async () => {
   const gateway = createScriptedGateway();
-  const result = await runOnce({ gateway, targetOrigin: TARGET_ORIGIN });
-
-  assert.equal(result.report.status, 'completed');
-  assert.equal(result.report.iterations, 1);
-  assert.equal(result.report.finding.status, 'confirmed');
-  assert.deepEqual(result.report.progress, {
-    iterationStarted: 1,
-    actionAttempted: true,
-    actionCompleted: true,
-    verificationCompleted: true,
+  const { report } = await runOnce({ gateway, targetOrigin: TARGET_ORIGIN });
+  assert.equal(report.status, 'completed');
+  assert.equal(report.finding.status, 'confirmed');
+  assert.deepEqual(report.metrics, { requestCount: 4, parserRuns: 2, iterations: 1 });
+  assert.deepEqual(report.progress, {
+    iterationStarted: 1, actionAttempted: true,
+    actionCompleted: true, verificationCompleted: true,
   });
-  assert.equal(result.report.metrics.requestCount, 6);
-  assert.equal(result.report.finding.evidenceRefs.length, 6);
-  assert.equal(gateway.events.length, 9);
-  assert.equal(gateway.finalReport.runId, result.report.runId);
+  assert.equal(report.finding.evidenceRefs.length, 6);
+  assert.equal(report.referenceContext.casperDb.category, 'historical_xss_only');
+  assert.equal(report.referenceContext.pentestDb.category, 'stored_xss_reference_only');
+  assert.equal(report.guardrail.decisions.length, 4);
+  assert.ok(report.guardrail.decisions.every(decision => decision.decision === 'ALLOW'));
+  assert.equal(gateway.events.length, 10);
+  assert.equal(gateway.finalReport.runId, report.runId);
 
-  const externalReceivers = new Set(['web_explorer', 'vulnerability_db', 'pentest_db']);
-  gateway.requests.forEach(({ raw, envelope }) => {
-    assert.equal(typeof raw, 'string');
-    assert.deepEqual(JSON.parse(raw), envelope);
-    assert.ok(externalReceivers.has(envelope.receiver));
-  });
-  gateway.rawResponses.forEach(raw => {
-    assert.equal(typeof raw, 'string');
-    JSON.parse(raw);
-  });
-
-  const deleteRequests = gateway.requests.filter(({ envelope }) => (
-    envelope.receiver === 'web_explorer' && envelope.payload.method === 'DELETE'
-  ));
-  assert.equal(deleteRequests.length, 1, 'The agent must emit exactly one mutating action');
-  assert.equal(
-    gateway.requests.some(({ envelope }) => envelope.receiver === 'rule_reasoner'),
-    false,
-    'Reasoning is internal to the agent, not an external module',
-  );
-});
-
-test('production contains only agent core, DeepSeek adapter, and external contracts', async () => {
-  const root = path.resolve(__dirname, '..');
-  const sourceDir = path.join(root, 'src');
-  const productionFiles = await listRelativeFiles(sourceDir);
-  assert.deepEqual(productionFiles, [
-    'action-policy.js',
-    'deepseek-client.js',
-    'deepseek-config.js',
-    'deepseek-reasoning-engine.js',
-    'index.js',
-    'orchestrator.js',
-    'protocol.js',
-    'reasoning-engine.js',
+  const receivers = gateway.requests.map(({ envelope }) => envelope.receiver);
+  assert.deepEqual(receivers.filter(receiver => receiver !== 'pentest-db'), [
+    'attack-module', 'attack-module', 'attack-module',
+    'xss-parser', 'casper-db', 'attack-module', 'xss-parser',
   ]);
-
-  const forbidden = [
-    'src/modules/web-explorer.js',
-    'src/modules/vulnerability-db.js',
-    'src/modules/pentest-db.js',
-    'src/modules/scope-guard.js',
-    'src/target-harness.js',
-    'knowledge/vulnerabilities.json',
-  ];
-  for (const relative of forbidden) {
-    assert.equal(await exists(path.join(root, relative)), false, `${relative} must remain external`);
-  }
-
-  const coreFiles = productionFiles.filter(file => !file.startsWith('deepseek-'));
-  const coreSourceText = (await Promise.all(coreFiles.map(file => (
-    fs.readFile(path.join(sourceDir, file), 'utf8')
-  )))).join('\n');
-  assert.doesNotMatch(coreSourceText, /node:(?:fs|child_process|http|https|net|tls)/);
-  assert.doesNotMatch(coreSourceText, /\bfetch\s*\(/);
-
-  const productionSourceText = (await Promise.all(productionFiles.map(file => (
-    fs.readFile(path.join(sourceDir, file), 'utf8')
-  )))).join('\n');
-  assert.doesNotMatch(productionSourceText, /node:(?:child_process|http|https|net|tls)/);
-  assert.doesNotMatch(productionSourceText, /class\s+(?:WebExplorer|VulnerabilityDb|PentestDb|ScopeGuard)/);
-  assert.doesNotMatch(productionSourceText, /startIsolatedLab|withIsolatedLab/);
-  assert.doesNotMatch(productionSourceText, /test-support/);
-
-  const deepSeekClientText = await fs.readFile(path.join(sourceDir, 'deepseek-client.js'), 'utf8');
-  assert.match(deepSeekClientText, /globalThis\.fetch/);
-  const nonClientSourceText = (await Promise.all(
-    productionFiles
-      .filter(file => file !== 'deepseek-client.js')
-      .map(file => fs.readFile(path.join(sourceDir, file), 'utf8')),
-  )).join('\n');
-  assert.doesNotMatch(nonClientSourceText, /globalThis\.fetch/);
-
-  const nonConfigSourceText = (await Promise.all(
-    productionFiles
-      .filter(file => file !== 'deepseek-config.js')
-      .map(file => fs.readFile(path.join(sourceDir, file), 'utf8')),
-  )).join('\n');
-  assert.doesNotMatch(nonConfigSourceText, /node:fs/);
+  assert.ok(!receivers.includes('web_explorer'));
+  assert.ok(!receivers.includes('vulnerability_db'));
+  assert.deepEqual(attackCommands(gateway).map(command => command.method), [
+    'GET', 'POST', 'POST', 'DELETE',
+  ]);
+  const phases = gateway.requests.filter(({ envelope }) => envelope.receiver === 'xss-parser')
+    .map(({ envelope }) => envelope.payload.phase);
+  assert.deepEqual(phases, ['before', 'after']);
+  assert.ok(gateway.requests.some(({ envelope }) => envelope.receiver === 'pentest-db'
+    && envelope.payload.operation === 'get_attack_info'));
+  assert.ok(gateway.requests.every(({ raw, envelope }) => JSON.stringify(envelope) === raw));
+  gateway.rawResponses.forEach(raw => JSON.parse(raw));
 });
 
-test('gateway distinguishes transport failures from external module errors', async () => {
-  const request = createEnvelope({
-    runId: 'run-gateway-errors',
-    iteration: 1,
-    sender: 'agent',
-    receiver: 'vulnerability_db',
-    type: 'module.request',
-    payload: { operation: 'match' },
-  });
-
-  const transportFailure = await invokeJson({
-    exchange: async () => { throw new Error('offline'); },
-  }, request);
-  assert.equal(transportFailure.type, 'module.error');
-  assert.equal(transportFailure.payload.error.code, 'TRANSPORT_FAILURE');
-  assert.equal(transportFailure.payload.error.source, 'agent_gateway');
-
-  const externalFailure = await invokeJson({
-    exchange: async raw => {
-      const inbound = parseEnvelope(raw, 'vulnerability_db');
-      return JSON.stringify(replyTo(inbound, 'vulnerability_db', 'module.error', {
-        error: { code: 'EXTERNAL_FAILURE', message: 'external rejection', source: 'external_module' },
-      }));
-    },
-  }, request);
-  assert.equal(externalFailure.payload.error.code, 'EXTERNAL_FAILURE');
-  assert.equal(externalFailure.payload.error.source, 'external_module');
+test('agent source no longer imports or implements Web Explorer and ActionPolicy', async () => {
+  const directory = path.join(__dirname, '..', 'src');
+  const files = (await fs.readdir(directory, { withFileTypes: true }))
+    .filter(entry => entry.isFile()).map(entry => entry.name).sort();
+  assert.deepEqual(files, [
+    'curl-command.js', 'deepseek-client.js', 'deepseek-config.js',
+    'deepseek-reasoning-engine.js', 'index.js', 'orchestrator.js',
+    'protocol.js', 'reasoning-engine.js', 'xss-canary.js',
+  ]);
+  const source = (await Promise.all(files.map(file => fs.readFile(path.join(directory, file), 'utf8')))).join('\n');
+  assert.doesNotMatch(source, /action-policy|ActionPolicy|web_explorer|vulnerability_db/);
+  assert.doesNotMatch(source, /node:(?:child_process|http|https|net|tls)/);
 });
 
-test('external modules cannot impersonate agent gateway error provenance', async () => {
-  const request = createEnvelope({
-    runId: 'run-error-provenance',
-    iteration: 1,
-    sender: 'agent',
-    receiver: 'vulnerability_db',
-    type: 'module.request',
-    payload: { operation: 'match' },
+test('parser ID and title must both agree with the trusted creation response', async () => {
+  const gateway = createScriptedGateway({
+    beforePosts: canary => [{ ...canary, title: 'different visible title' }],
   });
-  const response = await invokeJson({
-    exchange: async raw => {
-      const inbound = parseEnvelope(raw, 'vulnerability_db');
-      return JSON.stringify(replyTo(inbound, 'vulnerability_db', 'module.error', {
-        error: {
-          code: 'TRANSPORT_FAILURE',
-          message: 'spoofed gateway failure',
-          source: 'agent_gateway',
-        },
-      }));
-    },
-  }, request);
-
-  assert.throws(() => assertModuleSuccess(response), error => {
-    assert.equal(error.source, 'external_module');
-    assert.equal(error.externalModule, 'vulnerability_db');
-    assert.equal(error.code, 'EXTERNAL_MODULE_FAILURE');
-    assert.equal(error.reportedCode, 'TRANSPORT_FAILURE');
-    return true;
-  });
-});
-
-test('gateway enforces module-specific response types and evidence payloads', async () => {
-  const storageRequest = createEnvelope({
-    runId: 'run-wrong-response-type',
-    iteration: 1,
-    sender: 'agent',
-    receiver: 'pentest_db',
-    type: 'storage.request',
-    payload: { operation: 'append', event: {} },
-  });
-  const wrongType = await invokeJson({
-    exchange: async raw => {
-      const inbound = parseEnvelope(raw, 'pentest_db');
-      return JSON.stringify(replyTo(inbound, 'pentest_db', 'web.result', {}));
-    },
-  }, storageRequest);
-  assert.equal(wrongType.payload.error.code, 'PROTOCOL_FAILURE');
-  assert.match(wrongType.payload.error.message, /Expected storage\.appended/);
-
-  const webRequest = createEnvelope({
-    runId: 'run-missing-evidence',
-    iteration: 1,
-    sender: 'agent',
-    receiver: 'web_explorer',
-    type: 'module.request',
-    payload: { operation: 'http_request' },
-  });
-  const missingEvidence = await invokeJson({
-    exchange: async raw => {
-      const inbound = parseEnvelope(raw, 'web_explorer');
-      return JSON.stringify(replyTo(inbound, 'web_explorer', 'web.result', {
-        operation: 'http_request',
-        response: { status: 200, ok: true, bodyJson: {} },
-      }));
-    },
-  }, webRequest);
-  assert.equal(missingEvidence.payload.error.code, 'PROTOCOL_FAILURE');
-  assert.match(missingEvidence.payload.error.message, /HTTP evidence contract/);
-
-  const knowledgeRequest = createEnvelope({
-    runId: 'run-invalid-candidate',
-    iteration: 1,
-    sender: 'agent',
-    receiver: 'vulnerability_db',
-    type: 'module.request',
-    payload: { operation: 'match' },
-  });
-  const invalidCandidate = await invokeJson({
-    exchange: async raw => {
-      const inbound = parseEnvelope(raw, 'vulnerability_db');
-      return JSON.stringify(replyTo(inbound, 'vulnerability_db', 'knowledge.result', {
-        candidates: [{ resource: { id: 4, ownerId: 'bob' } }],
-      }));
-    },
-  }, knowledgeRequest);
-  assert.equal(invalidCandidate.payload.error.code, 'PROTOCOL_FAILURE');
-  assert.match(invalidCandidate.payload.error.message, /valid candidate contracts/);
-});
-
-test('gateway calls time out instead of blocking the agent indefinitely', async () => {
-  const request = createEnvelope({
-    runId: 'run-gateway-timeout',
-    iteration: 0,
-    sender: 'agent',
-    receiver: 'web_explorer',
-    type: 'module.request',
-    payload: { operation: 'http_request' },
-  });
-  const response = await invokeJson({
-    exchange: async () => new Promise(() => {}),
-  }, request, { timeoutMs: 5 });
-
-  assert.equal(response.payload.error.code, 'TRANSPORT_FAILURE');
-  assert.match(response.payload.error.message, /timed out/);
-
-  const nonErrorRejection = await invokeJson({
-    exchange: async () => Promise.reject('string rejection'),
-  }, request);
-  assert.equal(nonErrorRejection.payload.error.code, 'TRANSPORT_FAILURE');
-  assert.equal(nonErrorRejection.payload.error.message, 'string rejection');
-});
-
-test('invalid or non-serialized module responses become correlated protocol errors', async () => {
-  const request = createEnvelope({
-    runId: 'run-invalid-response',
-    iteration: 0,
-    sender: 'agent',
-    receiver: 'web_explorer',
-    type: 'module.request',
-    payload: { operation: 'http_request' },
-  });
-  const response = await invokeJson({ exchange: async () => ({ not: 'serialized' }) }, request);
-  assert.equal(response.type, 'module.error');
-  assert.equal(response.sender, 'agent');
-  assert.equal(response.receiver, 'agent');
-  assert.equal(response.correlationId, request.messageId);
-  assert.equal(response.payload.error.code, 'PROTOCOL_FAILURE');
-  assert.throws(() => parseEnvelope({}, 'web_explorer'), /serialized JSON only/);
-});
-
-test('outbound messages over the JSON size limit are rejected before gateway dispatch', async () => {
-  let calls = 0;
-  const request = createEnvelope({
-    runId: 'run-oversized-request',
-    iteration: 0,
-    sender: 'agent',
-    receiver: 'web_explorer',
-    type: 'module.request',
-    payload: { oversized: 'x'.repeat(MAX_MESSAGE_BYTES) },
-  });
-  const response = await invokeJson({
-    exchange: async () => { calls += 1; },
-  }, request);
-
-  assert.equal(calls, 0);
-  assert.equal(response.type, 'module.error');
-  assert.equal(response.sender, 'agent');
-  assert.equal(response.payload.error.code, 'PROTOCOL_FAILURE');
-  assert.match(response.payload.error.message, /exceeds 1 MB/);
-});
-
-test('a mismatched external response correlation becomes an agent protocol error', async () => {
-  const request = createEnvelope({
-    runId: 'run-wrong-correlation',
-    iteration: 1,
-    sender: 'agent',
-    receiver: 'web_explorer',
-    type: 'module.request',
-    payload: { operation: 'http_request' },
-  });
-  const response = await invokeJson({
-    exchange: async raw => {
-      const inbound = parseEnvelope(raw, 'web_explorer');
-      const outbound = replyTo(inbound, 'web_explorer', 'web.result', {});
-      outbound.correlationId = 'wrong-correlation-id';
-      return JSON.stringify(outbound);
-    },
-  }, request);
-
-  assert.equal(response.type, 'module.error');
-  assert.equal(response.sender, 'agent');
-  assert.equal(response.payload.error.code, 'PROTOCOL_FAILURE');
-  assert.match(response.payload.error.message, /correlation mismatch/);
-});
-
-test('orchestrator refuses a second iteration before contacting the gateway', async () => {
-  let calls = 0;
-  await assert.rejects(
-    () => runOnce({
-      gateway: { exchange: async () => { calls += 1; } },
-      targetOrigin: TARGET_ORIGIN,
-      maxIterations: 2,
-    }),
-    /maxIterations to equal 1/,
-  );
-  assert.equal(calls, 0);
-});
-
-test('failure after the action preserves progress and never retries DELETE', async () => {
-  const gateway = createScriptedGateway({ failOn: 'verify_transport' });
-  let caught;
-  try {
-    await runOnce({ gateway, targetOrigin: TARGET_ORIGIN });
-  } catch (error) {
-    caught = error;
-  }
-  assert.ok(caught);
-  assert.match(caught.message, /verification transport failure/);
-  assert.equal(caught.failureReport.iterations, 1);
-  assert.deepEqual(caught.failureReport.progress, {
-    iterationStarted: 1,
-    actionAttempted: true,
-    actionCompleted: true,
-    verificationCompleted: false,
-  });
-  assert.deepEqual(gateway.finalReport.progress, caught.failureReport.progress);
-  const deletes = gateway.requests.filter(({ envelope }) => envelope.payload.method === 'DELETE');
-  assert.equal(deletes.length, 1);
-});
-
-test('external module.error is propagated with module provenance', async () => {
-  const gateway = createScriptedGateway({ failOn: 'knowledge_module_error' });
   await assert.rejects(
     () => runOnce({ gateway, targetOrigin: TARGET_ORIGIN }),
-    error => {
-      assert.equal(error.code, 'EXTERNAL_FAILURE');
-      assert.equal(error.source, 'external_module');
-      assert.equal(error.failureReport.progress.actionAttempted, false);
-      return true;
-    },
+    /exact canary ID and title/,
   );
+  assert.equal(attackCommands(gateway).filter(command => command.method === 'DELETE').length, 0);
+  assert.equal(gateway.requests.some(({ envelope }) => envelope.receiver === 'casper-db'), false);
+  assert.equal(gateway.finalReport.progress.actionAttempted, false);
 });
 
-test('internal action policy blocks out-of-scope actions before gateway dispatch', () => {
-  const policy = new ActionPolicy({ targetOrigin: TARGET_ORIGIN, maxRequests: 2 });
-  assert.throws(() => policy.authorize('loop.observe', {
-    operation: 'http_request',
-    method: 'GET',
-    path: 'http://127.0.0.1:3001/api/posts',
-    session: 'attacker',
-  }), /outside the exact allowed scope/);
-  assert.throws(() => policy.authorize('loop.act', {
-    operation: 'http_request',
-    method: 'DELETE',
-    path: '/api/posts/4',
-    session: 'attacker',
-    query: { authorId: 'bob' },
-  }), /has not been bound/);
-  policy.bindDeleteTarget({ resourceId: 4, ownerId: 'bob' });
-  assert.throws(() => policy.authorize('loop.act', {
-    operation: 'http_request',
-    method: 'DELETE',
-    path: '/api/posts/999',
-    session: 'attacker',
-    query: { authorId: 'bob' },
-  }), /does not match the bound canary/);
-  assert.throws(() => policy.authorize('loop.act', {
-    operation: 'http_request',
-    method: 'POST',
-    path: '/api/posts',
-    session: 'fixture',
-    body: { title: 'injected', content: 'unexpected mutation' },
-  }), /does not match the allowed action for loop\.act/);
-  assert.equal(policy.metrics().requestCount, 0);
-});
-
-test('reasoning engine rejects an external candidate that swaps the observed canary target', () => {
-  const engine = new RuleReasoningEngine();
-  const plan = engine.plan({
-    expectedTarget: { resourceId: 4, ownerId: 'bob', attackerId: 'alice' },
-    candidates: [{
-      attackerId: 'alice',
-      resource: { id: 999, ownerId: 'bob' },
-      actionTemplate: { method: 'DELETE', pathTemplate: '/api/posts/{resourceId}' },
-    }],
+test('historical XSS assessments remain separate from the BOLA canary plan', async () => {
+  const gateway = createScriptedGateway({
+    historyAssessments: [{ decision: 'retest_candidate', matches: [{ vulnerability_type: 'stored_xss' }] }],
   });
-
-  assert.equal(plan.state, 'stop');
-  assert.equal(plan.action, null);
-  assert.match(plan.decisionSummary, /일치하지 않아/);
+  const { report } = await runOnce({ gateway, targetOrigin: TARGET_ORIGIN });
+  const thought = gateway.events.find(event => event.stage === 'loop.think');
+  assert.equal(report.referenceContext.casperDb.assessments, 1);
+  assert.equal(thought.request.payload.candidates[0].knowledgeId, 'local-canary-cross-user-delete');
+  assert.equal(thought.request.payload.candidates[0].provenance.source, 'agent_bound_local_canary');
+  assert.equal(thought.request.payload.candidates[0].cwe, 'CWE-639');
+  assert.equal(report.finding.cwe, 'CWE-639');
 });
 
-test('orchestrator awaits asynchronous planning and reflection engines', async () => {
+test('failed historical module response stops before DELETE with external provenance', async () => {
+  const gateway = createScriptedGateway({ failOn: 'history_module_error' });
+  await assert.rejects(() => runOnce({ gateway, targetOrigin: TARGET_ORIGIN }), error => {
+    assert.equal(error.code, 'EXTERNAL_FAILURE');
+    assert.equal(error.source, 'external_module');
+    assert.equal(error.externalModule, 'casper-db');
+    assert.equal(error.failureReport.progress.actionAttempted, false);
+    return true;
+  });
+  assert.equal(attackCommands(gateway).filter(command => command.method === 'DELETE').length, 0);
+});
+
+test('a DENY result from guardrail is preserved as JSON and prevents verification', async () => {
+  const gateway = createScriptedGateway({ failOn: 'guardrail_denied' });
+  await assert.rejects(() => runOnce({ gateway, targetOrigin: TARGET_ORIGIN }), error => {
+    assert.equal(error.code, 'GUARDRAIL_DENIED');
+    assert.equal(error.source, 'external_module');
+    assert.deepEqual(error.failureReport.progress, {
+      iterationStarted: 1, actionAttempted: true,
+      actionCompleted: false, verificationCompleted: false,
+    });
+    assert.equal(error.failureReport.guardrail.decisions.at(-1).decision, 'DENY');
+    return true;
+  });
+  const action = gateway.events.find(event => event.stage === 'loop.act');
+  assert.equal(action.response.payload.guardrail.decision, 'DENY');
+  assert.equal(gateway.events.some(event => event.stage === 'loop.verify'), false);
+});
+
+test('parser truncation after DELETE cannot confirm a vulnerability', async () => {
+  const gateway = createScriptedGateway({ failOn: 'parser_incomplete' });
+  await assert.rejects(() => runOnce({ gateway, targetOrigin: TARGET_ORIGIN }), error => {
+    assert.equal(error.code, 'XSS_PARSER_INCOMPLETE');
+    assert.equal(error.failureReport.progress.actionCompleted, true);
+    assert.equal(error.failureReport.progress.verificationCompleted, false);
+    return true;
+  });
+  assert.equal(attackCommands(gateway).filter(command => command.method === 'DELETE').length, 1);
+  assert.equal(gateway.events.some(event => event.stage === 'loop.reflect'), false);
+});
+
+test('an unchanged browser observation yields a not_confirmed finding', async () => {
+  const gateway = createScriptedGateway({ afterPosts: canary => [canary] });
+  const { report } = await runOnce({ gateway, targetOrigin: TARGET_ORIGIN });
+  assert.equal(report.finding.status, 'not_confirmed');
+  assert.equal(report.finding.checks.absentAfter, false);
+});
+
+test('reasoning engine cannot send a DELETE for a different resource or curl URL', async () => {
   const local = new RuleReasoningEngine();
-  const calls = { plan: 0, reflect: 0 };
-  const reasoningEngine = {
-    async plan(input) {
-      calls.plan += 1;
-      await Promise.resolve();
-      return local.plan(input);
-    },
-    async reflect(input) {
-      calls.reflect += 1;
-      await Promise.resolve();
-      return local.reflect(input);
-    },
-  };
-  const gateway = createScriptedGateway();
-  const result = await runOnce({
-    gateway,
-    reasoningEngine,
-    targetOrigin: TARGET_ORIGIN,
-  });
-
-  assert.equal(result.report.status, 'completed');
-  assert.deepEqual(calls, { plan: 1, reflect: 1 });
-  const thinkEvent = gateway.events.find(event => event.stage === 'loop.think');
-  const reflectEvent = gateway.events.find(event => event.stage === 'loop.reflect');
-  assert.equal(thinkEvent.response.payload.state, 'act');
-  assert.equal(reflectEvent.response.payload.finding.status, 'confirmed');
+  for (const mutation of [
+    plan => ({ ...plan, action: { ...plan.action, path: '/api/posts/999' } }),
+    plan => ({ ...plan, curl: { method: 'DELETE', url: `${TARGET_ORIGIN}/api/posts/999?authorId=bob` } }),
+  ]) {
+    const gateway = createScriptedGateway();
+    await assert.rejects(() => runOnce({
+      gateway, targetOrigin: TARGET_ORIGIN,
+      reasoningEngine: {
+        plan: input => mutation(local.plan(input)),
+        reflect: input => local.reflect(input),
+      },
+    }));
+    assert.equal(attackCommands(gateway).filter(command => command.method === 'DELETE').length, 0);
+    assert.equal(gateway.finalReport.progress.actionAttempted, false);
+  }
 });
 
-test('an asynchronous planning failure stops before any mutating action', async () => {
-  const gateway = createScriptedGateway();
-  const planningError = Object.assign(new Error('invalid model decision'), {
-    code: 'DEEPSEEK_SCHEMA_ERROR',
-    source: 'deepseek_api',
+test('verification transport failure never retries the completed DELETE', async () => {
+  const gateway = createScriptedGateway({ failOn: 'verify_transport' });
+  await assert.rejects(() => runOnce({ gateway, targetOrigin: TARGET_ORIGIN }), error => {
+    assert.match(error.message, /verification transport failure/);
+    assert.equal(error.failureReport.progress.actionCompleted, true);
+    assert.equal(error.failureReport.progress.verificationCompleted, false);
+    return true;
   });
-
-  await assert.rejects(
-    () => runOnce({
-      gateway,
-      targetOrigin: TARGET_ORIGIN,
-      reasoningEngine: {
-        plan: async () => { throw planningError; },
-        reflect: () => { throw new Error('reflect must not run'); },
-      },
-    }),
-    error => {
-      assert.equal(error.code, 'DEEPSEEK_SCHEMA_ERROR');
-      assert.equal(error.failureReport.progress.actionAttempted, false);
-      return true;
-    },
-  );
-  const deletes = gateway.requests.filter(({ envelope }) => envelope.payload.method === 'DELETE');
-  assert.equal(deletes.length, 0);
+  assert.equal(attackCommands(gateway).filter(command => command.method === 'DELETE').length, 1);
 });
 
-test('an asynchronous reflection failure never retries the completed DELETE', async () => {
-  const gateway = createScriptedGateway();
-  const local = new RuleReasoningEngine();
-  const reflectionError = Object.assign(new Error('reflection failed'), {
-    code: 'REFLECTION_FAILURE',
-    source: 'agent',
-  });
+test('invalid target and unsupported iteration count stop before any module contact', async () => {
+  let calls = 0;
+  const gateway = { exchange: async () => { calls += 1; } };
+  await assert.rejects(() => runOnce({ gateway, targetOrigin: 'https://example.org' }), /local HTTP origin/);
+  await assert.rejects(() => runOnce({ gateway, targetOrigin: TARGET_ORIGIN, maxIterations: 2 }), /equal 1/);
+  assert.equal(calls, 0);
+});
 
-  await assert.rejects(
-    () => runOnce({
-      gateway,
-      targetOrigin: TARGET_ORIGIN,
-      reasoningEngine: {
-        plan: input => local.plan(input),
-        reflect: async () => { throw reflectionError; },
-      },
-    }),
-    error => {
-      assert.equal(error.code, 'REFLECTION_FAILURE');
-      assert.deepEqual(error.failureReport.progress, {
-        iterationStarted: 1,
-        actionAttempted: true,
-        actionCompleted: true,
-        verificationCompleted: true,
-      });
-      return true;
-    },
-  );
-  const deletes = gateway.requests.filter(({ envelope }) => envelope.payload.method === 'DELETE');
-  assert.equal(deletes.length, 1);
+test('protocol rejects old receiver names and forged attack evidence', async () => {
+  assert.throws(() => createEnvelope({
+    runId: 'run-old', iteration: 0, sender: 'agent', receiver: 'web_explorer', type: 'module.request',
+  }), /known module names/);
+  const request = createEnvelope({
+    runId: 'run-forged-attack', iteration: 1,
+    sender: 'agent', receiver: 'attack-module', type: 'module.request',
+    payload: { operation: 'execute_curl', session: 'attacker',
+      curl: { method: 'DELETE', url: `${TARGET_ORIGIN}/api/posts/4?authorId=bob` } },
+  });
+  const response = await invokeJson({ exchange: async raw => {
+    const inbound = parseEnvelope(raw, 'attack-module');
+    return JSON.stringify(replyTo(inbound, 'attack-module', 'attack.result', {
+      operation: 'execute_curl', success: true,
+      request: { method: 'DELETE', url: inbound.payload.curl.url, session: 'attacker' },
+      response: { status: 200, ok: true, bodyJson: { deletedId: 4 } },
+      error: null, evidenceId: 'evidence-without-guardrail',
+    }));
+  } }, request);
+  assert.equal(response.type, 'module.error');
+  assert.equal(response.payload.error.code, 'PROTOCOL_FAILURE');
+  assert.match(response.payload.error.message, /curl result contract/);
+});
+
+test('protocol rejects parser reports from a different target origin', async () => {
+  const request = createEnvelope({
+    runId: 'run-parser-origin', iteration: 1,
+    sender: 'agent', receiver: 'xss-parser', type: 'module.request',
+    payload: { operation: 'parse_site', origin: TARGET_ORIGIN, phase: 'before' },
+  });
+  const response = await invokeJson({ exchange: async raw => {
+    const inbound = parseEnvelope(raw, 'xss-parser');
+    return JSON.stringify(replyTo(inbound, 'xss-parser', 'parser.result', {
+      operation: 'parse_site', phase: 'before',
+      report: { schemaVersion: '3.4', startUrl: 'http://127.0.0.1:9000/', pages: [] },
+      observedPosts: [], errors: [], truncated: false, evidenceId: 'parser-evidence',
+    }));
+  } }, request);
+  assert.equal(response.payload.error.code, 'PROTOCOL_FAILURE');
+  assert.match(response.payload.error.message, /site observation contract/);
+});
+
+test('gateway timeouts and oversized outbound JSON are correlated failures', async () => {
+  const request = createEnvelope({
+    runId: 'run-transport', iteration: 1,
+    sender: 'agent', receiver: 'xss-parser', type: 'module.request',
+    payload: { operation: 'parse_site', origin: TARGET_ORIGIN, phase: 'before' },
+  });
+  const timedOut = await invokeJson({ exchange: async () => new Promise(() => {}) }, request, { timeoutMs: 5 });
+  assert.equal(timedOut.payload.error.code, 'TRANSPORT_FAILURE');
+  assert.match(timedOut.payload.error.message, /timed out/);
+  assert.throws(() => assertModuleSuccess(timedOut), /timed out/);
+  const oversized = createEnvelope({
+    runId: 'run-oversized', iteration: 1,
+    sender: 'agent', receiver: 'casper-db', type: 'module.request',
+    payload: { parserReport: 'x'.repeat(MAX_MESSAGE_BYTES) },
+  });
+  const tooLarge = await invokeJson({ exchange: async () => { throw new Error('must not dispatch'); } }, oversized);
+  assert.equal(tooLarge.payload.error.code, 'PROTOCOL_FAILURE');
 });

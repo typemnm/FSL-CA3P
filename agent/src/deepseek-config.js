@@ -168,10 +168,11 @@ function createDeepSeekReasoningEngineFromEnv({
   fetchImpl,
   sleep,
   ruleEngine,
+  curlMode,
 } = {}) {
   const options = resolveDeepSeekOptions({ env, envFile, readFileSync });
   const client = new DeepSeekClient({ ...options, fetchImpl, sleep });
-  return new DeepSeekReasoningEngine({ client, ruleEngine });
+  return new DeepSeekReasoningEngine({ client, ruleEngine, curlMode });
 }
 
 module.exports = {

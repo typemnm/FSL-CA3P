@@ -6,6 +6,12 @@
 
 패키지 버전은 0.2.0, SQLite 구조 버전은 v5다.
 
+## Agent Loop 연결 범위
+
+로컬 Agent Loop의 [`casper-db` 어댑터](../agent-dashboard/integrations/casper-db.mjs)는 실제 이 패키지의 SQLite 저장소를 조회한다. `xss-parser`가 명시적으로 관찰한 같은 원점 API 입력 위치를 추출해 `assess_observation`으로 과거 사례와 비교하고, 결과를 `history.result` JSON으로 Agent에 돌려준다. 기본 DB는 `casper-db/data/cases.sqlite3`이며, `CASPER_DB_PATH` 환경변수에 절대 경로를 넣어 기존 SQLite 파일을 지정할 수 있다. DB가 비어 있으면 과거 사례가 없다는 결과를 반환한다.
+
+이 연결은 사례를 자동 생성하거나 이번 실행의 재현 결과를 `checks`에 기록하지 않는다. 과거 XSS 위치 일치는 참고 판정이며, 현재 XSS 취약점의 재현·확정을 뜻하지 않는다. 기본 로컬 루프는 별도의 고정 canary 게시와 Chromium 실행 관찰로 저장형 XSS 한 건을 검증한다. Bob canary 삭제 권한 검사는 명시적으로 선택하는 레거시 프로필이다.
+
 ## 왜 이 DB를 만드는가
 
 ```text

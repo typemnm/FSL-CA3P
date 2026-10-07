@@ -122,6 +122,51 @@ test('reports unvisited links when the page limit is reached', async () => {
   } finally { await close(server); }
 });
 
+test('waits for the local page post list to finish rendering before reading DOM', async () => {
+  const { server, url } = await localServer((request, response) => {
+    if (request.url === '/api/posts') {
+      setTimeout(() => response.writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ id: 41, title: 'loaded post' })), 300);
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'text/html' }).end(`
+      <div id="post-list" aria-busy="true"></div>
+      <script>
+        fetch('/api/posts').then(response => response.json()).then(post => {
+          document.querySelector('#post-list').innerHTML =
+            '<article data-post-id="' + post.id + '"><h3>' + post.title + '</h3></article>';
+          document.querySelector('#post-list').setAttribute('aria-busy', 'false');
+        });
+      </script>`);
+  });
+  try {
+    const report = await scan(url, {
+      maxPages: 1, waitMs: 0, readySelector: '#post-list[aria-busy="false"]',
+    });
+    assert.equal(report.summary.errors, 0);
+    assert.deepEqual(report.pages[0].posts.map(post => post.id), ['41']);
+    assert.ok(report.pages[0].observedRequests.some(request =>
+      request.method === 'GET' && request.url.endsWith('/api/posts') && request.status === 200));
+  } finally { await close(server); }
+});
+
+test('aborting during an in-flight browser wait stops the scan promptly', async () => {
+  const { server, url } = await localServer((_request, response) =>
+    response.writeHead(200, { 'content-type': 'text/html' })
+      .end('<div id="post-list" aria-busy="true"></div>'));
+  const controller = new AbortController();
+  const started = Date.now();
+  try {
+    const pending = scan(url, {
+      maxPages: 1, waitMs: 0, timeoutMs: 10_000,
+      readySelector: '#post-list[aria-busy="false"]', signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 250);
+    await assert.rejects(pending, error => error.name === 'AbortError');
+    assert.ok(Date.now() - started < 3_000, 'aborted scan should not wait for selector timeout');
+  } finally { await close(server); }
+});
+
 test('blocks another local port, writes, and redirect targets', async () => {
   let outsideHits = 0;
   let writes = 0;

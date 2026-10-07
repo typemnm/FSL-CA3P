@@ -2,129 +2,138 @@
 
 const { parseEnvelope, replyTo } = require('../src/protocol');
 
-function createScriptedGateway({ failOn = null } = {}) {
+function createScriptedGateway({ failOn = null, beforePosts, afterPosts, historyAssessments = [] } = {}) {
   const requests = [];
-  const events = [];
   const rawResponses = [];
+  const events = [];
   let finalReport = null;
-  let evidenceSequence = 0;
+  let sequence = 0;
   let canary = null;
   let deleted = false;
 
-  function serializedResponse(request, sender, type, payload) {
+  function evidenceId() { sequence += 1; return `fixture-evidence-${sequence}`; }
+  function respond(request, sender, type, payload) {
     const response = replyTo(request, sender, type, payload);
-    if (failOn === 'wrong_correlation' && sender === 'web_explorer') {
-      response.correlationId = 'wrong-correlation-id';
-    }
+    if (failOn === 'wrong_correlation' && sender === 'xss-parser') response.correlationId = 'wrong';
     const raw = JSON.stringify(response);
     rawResponses.push(raw);
     return raw;
   }
-
-  function evidenceId() {
-    evidenceSequence += 1;
-    return `fake-evidence-${evidenceSequence}`;
-  }
-
-  function webResponse(request, status, bodyJson) {
-    return serializedResponse(request, 'web_explorer', 'web.result', {
-      operation: 'http_request',
-      trust: 'untrusted_observation',
-      request: {
-        method: request.payload.method,
-        path: request.payload.path,
-        session: request.payload.session,
+  function attackResponse(request, status, bodyJson, error = null, decision = 'ALLOW') {
+    const method = request.payload.curl.method;
+    const ok = status !== null && status >= 200 && status < 300;
+    return respond(request, 'attack-module', 'attack.result', {
+      operation: 'execute_curl',
+      success: ok && error === null && decision === 'ALLOW',
+      request: { method, url: request.payload.curl.url, session: request.payload.session },
+      response: { status, ok, bodyJson },
+      error,
+      guardrail: {
+        decision, ruleId: decision === 'ALLOW' ? 'FIXTURE-ALLOW' : 'FIXTURE-DENY',
+        stage: method === 'DELETE' ? 'loop.act' : method === 'GET'
+          ? 'setup.attacker_session' : canary ? 'setup.canary_post' : 'setup.fixture_session',
+        reason: 'fixture guardrail decision',
       },
-      response: { status, ok: status >= 200 && status < 300, bodyJson },
+      evidenceId: evidenceId(),
+    });
+  }
+  function parserResponse(request) {
+    const { origin, phase } = request.payload;
+    const override = phase === 'before' ? beforePosts : afterPosts;
+    const posts = typeof override === 'function'
+      ? override(canary)
+      : override ?? (phase === 'before'
+        ? (canary ? [canary] : [])
+        : (deleted ? [] : canary ? [canary] : []));
+    const observedPosts = posts.map(post => ({
+      id: String(post.id), idSource: 'visible-label', title: post.title,
+      author: 'Bob', pageUrl: `${origin}/`,
+    }));
+    const truncated = failOn === 'parser_incomplete' && phase === 'after';
+    const report = {
+      schemaVersion: '3.4', startUrl: `${origin}/`,
+      pages: [{ url: `${origin}/`, posts: observedPosts }],
+      summary: { scope: 'visited-client-pages', truncated, errors: 0 },
+    };
+    return respond(request, 'xss-parser', 'parser.result', {
+      operation: 'parse_site', phase, report, observedPosts, errors: [], truncated,
       evidenceId: evidenceId(),
     });
   }
 
   async function exchange(rawRequest) {
-    if (typeof rawRequest !== 'string') throw new TypeError('Scripted gateway accepts JSON strings only');
     const request = parseEnvelope(rawRequest);
     requests.push({ raw: rawRequest, envelope: request });
-
-    if (request.receiver === 'web_explorer') {
-      const { method, path, session, body } = request.payload;
-      if (method === 'GET' && path === '/api/session' && session === 'attacker') {
-        return webResponse(request, 200, { user: { id: 'alice', name: 'Alice' } });
+    if (request.receiver === 'attack-module') {
+      const command = request.payload.curl;
+      const target = new URL(command.url);
+      if (command.method === 'GET' && target.pathname === '/api/session') {
+        return attackResponse(request, 200, { user: { id: 'alice', name: 'Alice' } });
       }
-      if (method === 'POST' && path === '/api/session' && session === 'fixture') {
-        return webResponse(request, 200, { user: { id: body.userId, name: 'Bob' } });
+      if (command.method === 'POST' && target.pathname === '/api/session') {
+        return attackResponse(request, 200, { user: { id: command.body.userId, name: 'Bob' } });
       }
-      if (method === 'POST' && path === '/api/posts' && session === 'fixture') {
-        canary = { id: 4, title: body.title, content: body.content, authorId: 'bob', authorName: 'Bob' };
-        return webResponse(request, 201, { post: canary });
+      if (command.method === 'POST' && target.pathname === '/api/posts') {
+        canary = {
+          id: 4, title: command.body.title, content: command.body.content,
+          authorId: 'bob', authorName: 'Bob',
+        };
+        return attackResponse(request, 201, { post: canary });
       }
-      if (method === 'DELETE' && path === '/api/posts/4') {
+      if (command.method === 'DELETE' && target.pathname === '/api/posts/4') {
         if (failOn === 'action_transport') throw new Error('scripted action transport failure');
+        if (failOn === 'guardrail_denied') return attackResponse(request, null, {}, 'guardrail_denied', 'DENY');
+        if (failOn === 'attack_result_failure') return attackResponse(request, null, {}, 'curl_failed');
         deleted = true;
-        return webResponse(request, 200, { deletedId: 4 });
+        return attackResponse(request, 200, { deletedId: 4 });
       }
-      if (method === 'GET' && path === '/api/posts') {
-        if (deleted && failOn === 'verify_transport') {
-          throw new Error('scripted verification transport failure');
-        }
-        return webResponse(request, 200, { posts: deleted || !canary ? [] : [canary] });
-      }
-      throw new Error(`Unexpected scripted Web Explorer request: ${method} ${path}`);
+      throw new Error(`Unexpected attack command: ${command.method} ${target.pathname}`);
     }
-
-    if (request.receiver === 'vulnerability_db') {
-      if (failOn === 'knowledge_module_error') {
-        return serializedResponse(request, 'vulnerability_db', 'module.error', {
-          error: {
-            code: 'EXTERNAL_FAILURE',
-            message: 'scripted external knowledge failure',
-            source: 'external_module',
-            retryable: false,
-          },
+    if (request.receiver === 'xss-parser') {
+      if (failOn === 'verify_transport' && request.payload.phase === 'after') {
+        throw new Error('scripted verification transport failure');
+      }
+      return parserResponse(request);
+    }
+    if (request.receiver === 'casper-db') {
+      if (failOn === 'history_module_error') {
+        return respond(request, 'casper-db', 'module.error', {
+          error: { code: 'EXTERNAL_FAILURE', message: 'scripted history failure' },
         });
       }
-      const observation = request.payload.observation;
-      const resource = observation.posts.find(post => String(post.id) === String(observation.resourceId));
-      return serializedResponse(request, 'vulnerability_db', 'knowledge.result', {
-        candidates: [{
-          knowledgeId: 'lab-cwe-639',
-          cwe: 'CWE-639',
-          severity: 'high',
-          severityBasis: 'scripted_contract_fixture_without_cvss',
-          attackerId: observation.attackerId,
-          resource: { id: resource.id, ownerId: resource.authorId },
-          actionTemplate: { method: 'DELETE', pathTemplate: '/api/posts/{resourceId}' },
-          successCriteria: ['different users', '2xx deletion', 'resource absent after verification'],
-          provenance: { source: 'external-vulnerability-db-fixture' },
-        }],
+      return respond(request, 'casper-db', 'history.result', {
+        operation: 'assess_xss_history', assessments: historyAssessments,
+        readyCaseCount: historyAssessments.length, observations: historyAssessments.map(() => ({})),
+        evidenceId: evidenceId(),
       });
     }
-
-    if (request.receiver === 'pentest_db') {
-      if (request.payload.operation === 'append') {
-        events.push(request.payload.event);
-        return serializedResponse(request, 'pentest_db', 'storage.appended', {
-          ok: true,
-          eventType: request.payload.event.stage,
+    if (request.receiver === 'pentest-db') {
+      const { operation } = request.payload;
+      if (operation === 'get_attack_info') {
+        return respond(request, 'pentest-db', 'storage.attack_info', {
+          operation, attackInfo: { vulnType: 'stored_xss', cwe: 'CWE-79' },
+          evidenceId: evidenceId(),
         });
       }
-      if (request.payload.operation === 'finalize') {
+      if (operation === 'append') {
+        events.push(request.payload.event);
+        return respond(request, 'pentest-db', 'storage.appended', {
+          ok: true, eventType: request.payload.event.stage,
+        });
+      }
+      if (operation === 'finalize') {
         if (failOn === 'finalize_transport') throw new Error('scripted finalize transport failure');
         finalReport = request.payload.report;
-        return serializedResponse(request, 'pentest_db', 'storage.finalized', {
-          ok: true,
-          artifactRef: `memory://reports/${request.runId}`,
+        return respond(request, 'pentest-db', 'storage.finalized', {
+          ok: true, artifactRef: `memory://reports/${request.runId}`,
         });
       }
     }
-
-    throw new Error(`Unexpected external receiver: ${request.receiver}`);
+    throw new Error(`Unexpected module receiver: ${request.receiver}`);
   }
 
   return {
-    exchange,
-    requests,
-    rawResponses,
-    events,
+    exchange, requests, events, rawResponses,
     get finalReport() { return finalReport; },
   };
 }

@@ -8,3 +8,7 @@ node_modules/
 !.env.example
 /agent-dashboard/.openai/
 /agent-dashboard/previews/
+/casper-db/data/*.sqlite3
+/casper-db/data/*.sqlite3-shm
+/casper-db/data/*.sqlite3-wal
+/reports/pentest-db-runs/
