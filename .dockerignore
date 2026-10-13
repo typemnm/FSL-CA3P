@@ -1,0 +1,12 @@
+.git
+**/node_modules
+**/.env
+**/.env.*
+!agent/.env.example
+**/__pycache__
+**/.pytest_cache
+**/.venv
+**/venv
+casper-db/data
+reports
+xss-fuzzer

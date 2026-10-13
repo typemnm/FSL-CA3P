@@ -2,6 +2,27 @@
 Future Security Lab 지원사업으로 진행하는 CA3P 프로젝트에 대한
 국립창원대학교 CASPER의 자료 공유 repository 입니다.
 
+# Docker Compose 실행
+
+Docker Engine과 Docker Compose v2.24 이상이 필요합니다. 프로젝트 루트에서 대시보드를 빌드하고 시작합니다.
+
+```powershell
+docker compose up --build -d
+docker compose logs -f dashboard
+```
+
+브라우저에서 [CA3P 로컬 대시보드](http://127.0.0.1:4173)를 엽니다. Compose는 호스트의 `127.0.0.1:4173`에만 포트를 공개합니다. 컨테이너 시작만으로 모델 API 호출이나 사이트 검사는 진행되지 않습니다. 화면에서 **코어 fixture 시작** 또는 **로컬 실습 시작**을 눌러 실행합니다.
+
+DeepSeek를 사용하는 로컬 실습에는 `agent/.env.example`을 참고해 `agent/.env`에 `DEEPSEEK_API_KEY`를 설정한 뒤 컨테이너를 시작하세요. 이 파일은 선택 사항이며 코어 fixture에는 필요하지 않습니다. 키는 Git이나 Docker 이미지에 포함하지 마세요. 로컬 실습은 저장소의 격리된 게시판만 대상으로 사용하며 모델 API 호출에는 과금이 발생할 수 있습니다.
+
+`casper-db`의 SQLite 파일과 `pentest-db` 실행 보고서는 Docker named volume에 보존됩니다. 컨테이너를 내렸다가 다시 올려도 이 데이터는 남습니다. 기존 호스트의 `casper-db/data/cases.sqlite3`와 `reports/`는 새 컨테이너에 자동으로 복사되지 않습니다. 기존 과거 사례 DB가 필요하면 실습을 실행하지 않는 상태에서 `docker compose cp casper-db/data/cases.sqlite3 dashboard:/app/casper-db/data/cases.sqlite3`로 가져올 수 있습니다. 개별 보고서는 대시보드의 JSON 내보내기로 저장할 수 있습니다.
+
+```powershell
+docker compose down
+```
+
+저장된 DB와 보고서까지 삭제하려는 경우에만 `docker compose down -v`를 사용합니다.
+
 # 로컬 워크스페이스 실행
 
 통합 로컬 실습에는 Node.js 20 이상, Python 3.11 이상과 `curl`이 필요합니다. 먼저 실제 `xss-parser` 브라우저와 `casper-db` 의존성을 준비합니다.
