@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=24 <25"
   },
   "scripts": {
-    "start": "node vul-web-1/server.js",
+    "start": "node ../vul-web-1/server.js",
     "parse": "node cli.mjs",
     "test": "node --test test/*.test.mjs"
   },

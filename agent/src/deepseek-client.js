@@ -8,7 +8,7 @@ const DEFAULT_MAX_TOKENS = 512;
 const MAX_PROMPT_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 512 * 1024;
 const MAX_CONTENT_BYTES = 64 * 1024;
-const SUPPORTED_MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
+const SUPPORTED_MODELS = new Set(require('./model-definitions').DEEPSEEK_MODELS);
 const RETRYABLE_STATUSES = new Set([429, 500, 503]);
 
 class DeepSeekError extends Error {
@@ -422,6 +422,8 @@ class DeepSeekClient {
         metadata: {
           provider: 'deepseek',
           model: this.model,
+          ...(typeof envelope.model === 'string' && /^[a-zA-Z0-9._:/-]{1,128}$/.test(envelope.model)
+            ? { reportedModel: envelope.model } : {}),
           finishReason,
           usage: sanitizeUsage(envelope.usage),
         },

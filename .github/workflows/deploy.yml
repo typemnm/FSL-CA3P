@@ -1,0 +1,53 @@
+name: Deploy immutable CA3P image
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        required: true
+        type: string
+      environment:
+        required: false
+        default: staging
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ca3p-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # No public pull request code is ever scheduled onto the deployment runner.
+    if: >-
+      github.event_name != 'pull_request' && github.event_name != 'merge_group' &&
+      (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') &&
+      (inputs.environment == 'staging' || inputs.environment == 'production')
+    environment: ${{ inputs.environment }}
+    runs-on: [self-hosted, linux, ca3p-deploy]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validate repository image digest and deploy
+        env:
+          CA3P_IMAGE: ${{ inputs.image }}
+          REPOSITORY: ${{ github.repository }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          prefix="ghcr.io/${REPOSITORY,,}@sha256:"
+          test "${CA3P_IMAGE#"$prefix"}" != "$CA3P_IMAGE"
+          digest="${CA3P_IMAGE#"$prefix"}"
+          [[ "$digest" =~ ^[a-f0-9]{64}$ ]]
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          docker compose -p ca3p -f docker-compose.deploy.yml pull
+          docker compose -p ca3p -f docker-compose.deploy.yml up -d --wait --wait-timeout 120
+          printf 'Deployed image: `%s`\n' "$CA3P_IMAGE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove registry credentials
+        if: always()
+        run: docker logout ghcr.io

@@ -16,21 +16,23 @@
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <a class="brand" href="#dashboard" aria-label="CA3P 대시보드"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 8h9l9 8-9 8H5l9-8-9-8Z" fill="currentColor"/><path d="m20 8 9 8-9 8" stroke="currentColor" stroke-width="3"/></svg><span>CA3P<span class="brand-dot">®</span></span></a>
-      <div class="workspace-switch"><span class="workspace-logo">C</span><div><strong>Agent workspace</strong><small>로컬 워크스페이스</small></div><span data-icon="chevrons" class="muted"></span></div>
+      <div class="workspace-switch"><span class="workspace-logo">C</span><div><strong>Agent workspace</strong><small>팀 통합 워크스페이스</small></div><span data-icon="chevrons" class="muted"></span></div>
       <div class="nav-caption">WORKSPACE</div>
       <nav class="primary-nav" aria-label="주 메뉴">
         <button class="nav-item active" data-view="dashboard"><span data-icon="dashboard"></span><span>대시보드</span><span class="nav-active-dot"></span></button>
         <button class="nav-item" data-view="sessions"><span data-icon="layers"></span><span>실행 이력</span><span class="nav-count" id="history-count">0</span></button>
         <button class="nav-item" data-view="modules"><span data-icon="box"></span><span>모듈 탐색</span></button>
         <button class="nav-item" data-view="reports"><span data-icon="file"></span><span>리포트</span></button>
+        <button class="nav-item" data-view="compare"><span data-icon="exchange"></span><span>실행 비교</span></button>
+        <button class="nav-item" data-view="platform"><span data-icon="shield"></span><span>통합 상태</span></button>
       </nav>
       <div class="nav-caption connection-caption">ENVIRONMENT</div>
       <div class="environment-item"><span class="tiny-dot gray" id="connection-dot"></span><span id="connection-status">런타임 연결 중</span></div>
       <div class="environment-item"><span class="tiny-dot green"></span><span>Core + local gateway</span><span class="environment-state">로컬</span></div>
       <div class="sidebar-bottom">
-        <div class="local-note"><span data-icon="shield"></span><strong>두 가지 로컬 실행</strong><p>고정 fixture 코어 실행 또는<br>서버가 만든 격리 실습 게시판 + DeepSeek.<br>입력 URL은 실습 대상이 아닙니다.</p></div>
+        <div class="local-note"><span data-icon="shield"></span><strong>세 가지 검증 경로</strong><p>모의 코어 fixture · 실제 규칙 실습 · AI 실습.<br>실제 검증은 격리된 실습 게시판에서 실행합니다.</p></div>
         <button class="nav-item" id="settings-button"><span data-icon="settings"></span><span>워크스페이스 설정</span></button>
-        <div class="user-profile"><div class="avatar">C</div><div><strong>CA3P Research</strong><small>Local operator</small></div><span class="tiny-dot green"></span></div>
+        <div class="user-profile"><div class="avatar">C</div><div><strong id="user-name">CA3P Research</strong><small id="user-role">세션 확인 중</small></div><button class="text-button" id="logout-button" hidden>로그아웃</button></div>
       </div>
     </aside>
 
@@ -60,7 +62,7 @@
           </form>
           <p class="runtime-scope" id="runtime-scope">이 모의 실행은 실제 RunOnce + RuleReasoningEngine을 사용합니다. 외부 모듈은 scripted fixture gateway이며, 입력 URL은 기록의 표시용 메타데이터입니다. 이 모드에서는 LLM·파서·fuzzer·대상 사이트에 연결하지 않습니다.</p>
           <div class="lab-launch">
-            <div class="lab-launch-copy"><strong>저장형 XSS 1회 실습 + DeepSeek</strong><p>서버가 격리된 로컬 게시판을 열어 시험 글 한 건을 게시하고 브라우저 실행 여부를 확인합니다. 위 입력 URL은 사용하지 않습니다.</p><small class="lab-cost">DeepSeek API 호출은 과금될 수 있습니다.</small><small id="lab-readiness" aria-live="polite">DeepSeek 설정을 확인하는 중입니다.</small></div>
+            <div class="lab-launch-copy"><strong>실제 격리 실습 · 저장형 XSS 검증</strong><p>서버가 격리된 로컬 게시판을 열어 시험 글 한 건을 게시하고 브라우저 실행 여부를 확인합니다. 위 입력 URL은 사용하지 않습니다.</p><label class="model-control" for="model-select">판단 엔진 / AI 모델 <select id="model-select"><option value="">모델 목록 수신 중</option></select></label><small class="lab-cost" id="model-scope">규칙 엔진은 모델 API를 호출하지 않습니다. DeepSeek 모델 호출은 과금될 수 있습니다.</small><small id="lab-readiness" aria-live="polite">실행 환경을 확인하는 중입니다.</small></div>
             <button type="button" class="button lab-run-button" id="lab-run-button" disabled><span data-icon="play"></span>로컬 실습 시작</button>
           </div>
 
@@ -92,21 +94,24 @@
               <div class="loop-progress"><div class="progress-copy"><span><span class="tiny-dot green"></span><strong id="progress-label">첫 코어 이벤트 대기</strong></span><span class="mono" id="progress-number">0 / 25 events</span></div><div class="progress-track"><div id="progress-fill"></div></div></div>
             </section>
 
-            <section class="panel activity-panel"><div class="panel-heading"><div><h2><span class="tiny-dot green"></span>Live activity</h2><span class="panel-subtitle">서버 SSE 이벤트 스트림</span></div><span class="activity-counter mono" id="activity-counter">00</span></div><div class="activity-toolbar"><span data-icon="search"></span><input id="event-search" type="search" aria-label="이벤트 검색" placeholder="이벤트 검색…"><button class="icon-button" id="autoscroll-button" title="최신 이벤트 자동 표시" aria-label="최신 이벤트 자동 표시" aria-pressed="true"><span data-icon="arrow-down"></span></button></div><div class="activity-list" id="activity-list" role="log" aria-label="에이전트 실행 이벤트"></div><div class="activity-footer"><span class="tiny-dot green"></span><span>서버에서 수신한 코어 이벤트</span><span class="mono" id="stream-status">SSE connecting</span></div></section>
+            <section class="panel activity-panel"><div class="panel-heading"><div><h2><span class="tiny-dot green"></span>Live activity</h2><span class="panel-subtitle">서버 이벤트 · SSE / 1초 polling</span></div><span class="activity-counter mono" id="activity-counter">00</span></div><div class="activity-toolbar"><span data-icon="search"></span><input id="event-search" type="search" aria-label="이벤트 검색" placeholder="이벤트 검색…"><button class="icon-button" id="autoscroll-button" title="최신 이벤트 자동 표시" aria-label="최신 이벤트 자동 표시" aria-pressed="true"><span data-icon="arrow-down"></span></button></div><div class="activity-list" id="activity-list" role="log" aria-label="에이전트 실행 이벤트"></div><div class="activity-footer"><span class="tiny-dot green"></span><span>서버에서 수신한 코어 이벤트</span><span class="mono" id="stream-status">SSE connecting</span></div></section>
           </div>
 
           <section class="panel inspector-panel" id="inspector-panel"><div class="panel-heading"><div><h2><span data-icon="code"></span>Trace inspector</h2><span class="panel-subtitle">선택한 노드의 요청·응답과 에이전트 입출력</span></div><span class="trace-badge" id="selected-module-name">xss-parser</span></div><div class="inspector-toolbar"><div class="inspector-tabs" role="tablist" aria-label="추적 데이터"><button class="inspector-tab active" data-tab="request" role="tab" aria-selected="true">요청<span id="request-tab-count">01</span></button><button class="inspector-tab" data-tab="response" role="tab" aria-selected="false">응답<span id="response-tab-count">01</span></button><button class="inspector-tab" data-tab="agent" role="tab" aria-selected="false">Agent I/O<span data-icon="sparkles"></span></button></div><div class="trace-meta"><span class="mono" id="trace-latency">—</span><span class="trace-divider"></span><button class="text-button" id="copy-button"><span data-icon="copy"></span>복사</button></div></div><div class="inspector-body"><aside class="trace-context"><span class="context-label">MODULE CONTEXT</span><strong id="context-module">xss-parser</strong><p id="context-role">사이트 응답을 분석합니다.</p><dl><dt>Correlation ID</dt><dd class="mono" id="correlation-value">—</dd><dt>데이터 소스</dt><dd id="trace-source">실행 전</dd><dt>상태</dt><dd id="trace-state">이벤트 대기</dd></dl></aside><div class="code-area"><div class="code-file"><span class="tiny-dot violet"></span><span id="code-filename">request.json</span><span class="code-format">JSON</span></div><pre id="trace-code" tabindex="0" aria-label="선택한 추적 데이터"></pre></div></div></section>
-          <div class="dashboard-footer"><span><span class="tiny-dot green"></span><span id="dashboard-mode">실제 코어 / 외부 모듈 fixture</span></span><span>Made for the loop. <span class="mint">Built for clarity.</span></span></div>
+          <div id="history-review-panel" hidden></div><div class="dashboard-footer"><span><span class="tiny-dot green"></span><span id="dashboard-mode">실제 코어 / 외부 모듈 fixture</span></span><span>Made for the loop. <span class="mint">Built for clarity.</span></span></div>
         </section>
 
-        <section class="view" id="view-sessions" hidden><section class="panel alternate-panel"><div class="panel-heading"><div><h2><span data-icon="layers"></span>Session history</h2><span class="panel-subtitle">이 브라우저에 저장한 최근 12개 실행 스냅샷</span></div><span class="local-chip">LOCAL STORAGE</span></div><div class="session-list" id="session-list"></div></section></section>
+        <section class="view" id="view-sessions" hidden><section class="panel alternate-panel"><div class="panel-heading"><div><h2><span data-icon="layers"></span>실행 이력</h2><span class="panel-subtitle" id="history-source">중앙 실행 기록 조회 중</span></div><button class="button secondary" id="refresh-history">새로고침</button></div><div class="session-list" id="session-list"></div></section><div id="legacy-detail" hidden></div></section>
         <section class="view" id="view-modules" hidden><div class="module-grid" id="module-grid"></div><section class="panel module-note"><span data-icon="exchange"></span><div><h2>하나의 루프, 연결된 데이터</h2><p>xss-parser, casper-db, attack-module, guardrail, pentest-db의 요청과 응답은 Correlation ID로 연결됩니다. 중앙 Agent / RunOnce의 plan · reflect 입출력은 Trace inspector의 Agent I/O에서 확인합니다.</p></div></section></section>
         <section class="view" id="view-reports" hidden><div id="report-content"></div></section>
+        <section class="view" id="view-compare" hidden><section class="panel compare-controls"><div><h2>같은 조건에서 실행 결과 비교</h2><p>기준 실행과 변경 후 실행을 선택하세요. 임시 포트·시간·canary ID는 정규화하고 원본 입출력을 함께 확인합니다.</p></div><form id="compare-form"><label for="comparison-kind">비교 종류<select id="comparison-kind"><option value="code">코드 변경</option><option value="model">모델 변경</option><option value="prompt">프롬프트 변경</option><option value="environment">환경 변경</option></select></label><label for="baseline-select">기준 실행<select id="baseline-select" required></select></label><label for="candidate-select">비교 실행<select id="candidate-select" required></select></label><button class="button primary" id="compare-button">비교</button></form></section><div id="comparison-content"><div class="panel empty-state"><span data-icon="exchange"></span><h3>두 실행을 선택하세요</h3><p>코드 변경 비교는 모델·입력·정책 조건을, 모델 비교는 코드·입력·정책 조건을 고정해야 합니다.</p></div></div></section>
+        <section class="view" id="view-platform" hidden><div id="platform-content"><div class="panel empty-state"><h3>통합 상태 조회 중</h3></div></div></section>
       </main>
       <footer class="app-footer"><span>CA3P / AGENT LOOP</span><span>LOCAL WORKSPACE<span class="tiny-dot green"></span></span></footer>
     </div>
   </div>
   <dialog id="settings-dialog"><form method="dialog"><div class="dialog-heading"><div><div class="eyebrow">PREFERENCES</div><h2>워크스페이스 설정</h2></div><button class="icon-button" aria-label="설정 닫기"><span data-icon="close"></span></button></div><label class="setting-row"><span><strong>별빛 배경</strong><small>DESIGN.md 기반의 배경 애니메이션</small></span><input id="motion-setting" type="checkbox" checked></label><label class="setting-row"><span><strong>자동 이벤트 표시</strong><small>새 이벤트가 들어오면 최신 위치로 이동</small></span><input id="scroll-setting" type="checkbox" checked></label><label class="setting-row"><span><strong>Fixture 응답 지연</strong><small>다음 실행의 gateway 응답마다 적용</small></span><select id="speed-setting"><option value="1800">기본 · 1.8초</option><option value="900">빠르게 · 0.9초</option><option value="3000">천천히 · 3초</option></select></label><p class="settings-note">설정과 수신한 이력은 이 브라우저에 저장됩니다.<br>현재 실행 상태는 로컬 서버에서 받아옵니다. 실행 중 설정을 변경해도 응답 지연은 다음 실행부터 적용됩니다.</p><button class="button primary dialog-done">완료</button></form></dialog>
   <div class="toast" id="toast" role="status" hidden></div>
+  <dialog id="login-dialog" aria-labelledby="login-title"><form id="login-form"><div class="eyebrow">CA3P / TEAM WORKSPACE</div><h2 id="login-title">워크스페이스 로그인</h2><p>실행 기록과 격리 실습에 접근하려면 로그인하세요.</p><label for="login-username">사용자 이름</label><input id="login-username" name="username" autocomplete="username" required><label for="login-password">비밀번호</label><input id="login-password" name="password" type="password" autocomplete="current-password" required><p id="login-error" class="runtime-error" role="alert" hidden></p><button class="button primary" id="login-submit" type="submit">로그인</button></form></dialog>
 </body>
 </html>

@@ -199,7 +199,7 @@ test('blocks another local port, writes, and redirect targets', async () => {
 
 test('maps the real vul-web-1 as page areas, forms, buttons, links, and outputs', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'basic-parser-board-'));
-  const child = spawn(process.execPath, ['vul-web-1/server.js'], {
+  const child = spawn(process.execPath, ['../vul-web-1/server.js'], {
     cwd: new URL('..', import.meta.url),
     env: { ...process.env, HOST: '127.0.0.1', PORT: '0', BOARD_DATA_FILE: join(dataDir, 'posts.json') },
     stdio: ['ignore', 'pipe', 'pipe']

@@ -15,7 +15,7 @@ const elements = {
   toast: document.querySelector("#toast"),
 };
 
-const state = { user: null, posts: [] };
+const state = { user: null, posts: [], safeMode: false };
 let toastTimeout;
 
 async function api(path, options = {}) {
@@ -116,8 +116,9 @@ function makePostCard(post) {
   title.textContent = post.title;
   const content = document.createElement("div");
   content.className = "post-content";
-  // Security lab: post content is deliberately inserted as HTML to demonstrate stored XSS.
-  content.innerHTML = post.content;
+  // The paired safe fixture renders identical posts as text for regression checks.
+  if (state.safeMode) content.textContent = post.content;
+  else content.innerHTML = post.content;
 
   const footer = document.createElement("div");
   footer.className = "post-footer";
@@ -180,6 +181,7 @@ async function switchAccount(userId) {
     await api("/api/session", { method: "POST", body: JSON.stringify({ userId }) });
     const session = await api("/api/session");
     state.user = session.user;
+    state.safeMode = session.safeMode === true;
     renderSession();
     await loadPosts();
     showToast(`${state.user.name} 계정으로 전환했습니다.`);
@@ -232,6 +234,7 @@ async function initialize() {
   try {
     const [session, posts] = await Promise.all([api("/api/session"), api("/api/posts")]);
     state.user = session.user;
+    state.safeMode = session.safeMode === true;
     state.posts = Array.isArray(posts.posts) ? posts.posts : [];
     renderSession();
     renderPosts();

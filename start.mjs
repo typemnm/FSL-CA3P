@@ -49,7 +49,7 @@ try {
     console.log(usage);
   } else {
     const nodeMajor = Number(process.versions.node.split('.')[0]);
-    if (nodeMajor < 18) throw new Error('Node.js 18 or newer is required.');
+    if (nodeMajor < 24) throw new Error('Node.js 24 or newer is required.');
     process.env.PORT = String(options.port);
     console.log('Starting CA3P local dashboard. Lab checks require an explicit action in the UI.');
     // Resolve relative to this script, independent of the current working directory.

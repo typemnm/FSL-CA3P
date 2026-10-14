@@ -219,6 +219,7 @@ test('DeepSeekClient sends the documented JSON request and returns parsed value 
   assert.deepEqual(result.metadata, {
     provider: 'deepseek',
     model: 'deepseek-flash',
+    reportedModel: 'deepseek-flash',
     finishReason: 'stop',
     usage: { prompt_tokens: 23, completion_tokens: 17, total_tokens: 40 },
   });

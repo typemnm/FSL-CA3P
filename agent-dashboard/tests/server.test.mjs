@@ -121,7 +121,7 @@ test('the API rejects invalid input, oversized JSON, unsupported methods, and un
     ['/api/runs', jsonPost({ target: 'https://metadata-only.invalid', gateway: {} }), 400],
     ['/api/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: `https://metadata-only.invalid/${'x'.repeat(8192)}` }) }, 413],
     ['/api/state', { method: 'POST' }, 405],
-    ['/api/runs', { method: 'GET' }, 405],
+    ['/api/runs', { method: 'PUT' }, 405],
     ['/api/missing', undefined, 404],
   ];
   for (const [path, options, expected] of cases) {
