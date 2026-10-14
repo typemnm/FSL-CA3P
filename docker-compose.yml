@@ -6,12 +6,13 @@ services:
     init: true
     shm_size: 1gb
     ports:
-      - "127.0.0.1:4173:4173"
+      - "0.0.0.0:4173:4173"
     env_file:
       - path: ./agent/.env
         required: false
     environment:
       DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PUBLIC_ORIGINS: ${CA3P_PUBLIC_ORIGINS:-}
       PORT: "4173"
       CASPER_DB_PYTHON: /opt/ca3p-venv/bin/python
     volumes:

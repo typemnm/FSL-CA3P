@@ -12,8 +12,12 @@ Options:
   --port, -p  Local dashboard port (1-65535, default: PORT or 4173)
   --help, -h  Show this help
 
-The dashboard binds to 127.0.0.1 by default. The fixture run uses scripted modules.
+The dashboard binds to 127.0.0.1 by default. For LAN access, set
+DASHBOARD_HOST=0.0.0.0 and DASHBOARD_PUBLIC_ORIGINS=http://<server-ip>:<port>.
+This host allowance is not authentication; Internet access requires an
+authenticated HTTPS reverse proxy. The fixture run uses scripted modules.
 The separate local lab action starts an isolated board and may call DeepSeek.
+The lab board stays on 127.0.0.1 when the dashboard is reachable over LAN.
 Stop it with Ctrl+C. Arbitrary target URLs are not used by the lab.`;
 
 function resolveOptions(args) {

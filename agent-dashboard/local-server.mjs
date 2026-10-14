@@ -13,6 +13,22 @@ const headers = {
 };
 
 function error(status, message) { return Object.assign(new Error(message), { status }); }
+function parsePublicOrigins(value) {
+  if (value == null || value === '') return [];
+  const entries = typeof value === 'string' ? value.split(',') : value;
+  if (!Array.isArray(entries)) throw new TypeError('DASHBOARD_PUBLIC_ORIGINS must be a comma-separated list of HTTP(S) origins.');
+  return entries.map(entry => {
+    if (typeof entry !== 'string' || !entry.trim()) throw new TypeError('DASHBOARD_PUBLIC_ORIGINS contains an empty origin.');
+    const origin = entry.trim();
+    let url;
+    try { url = new URL(origin); }
+    catch { throw new TypeError(`Invalid dashboard public origin: ${origin}`); }
+    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== origin) {
+      throw new TypeError(`Dashboard public origin must be an exact HTTP(S) origin: ${origin}`);
+    }
+    return { host: url.host, origin };
+  });
+}
 function json(res, status, data, extra = {}) {
   res.writeHead(status, { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra });
   res.end(JSON.stringify(data));
@@ -46,15 +62,23 @@ function readJson(req) {
   });
 }
 
-export function createDashboardServer({ runtime = createLocalRuntime() } = {}) {
+export function createDashboardServer({ runtime = createLocalRuntime(), publicOrigins = '' } = {}) {
+  const configuredOrigins = parsePublicOrigins(publicOrigins);
   const streams = new Set();
   const server = http.createServer(async (req, res) => {
     try {
       const port = server.address()?.port;
-      if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host)) throw error(403, 'Use a loopback Host header.');
+      const allowedOrigins = new Set();
+      if (req.headers.host === `127.0.0.1:${port}` || req.headers.host === `localhost:${port}`) {
+        allowedOrigins.add(`http://${req.headers.host}`);
+      }
+      for (const configured of configuredOrigins) {
+        if (configured.host === req.headers.host) allowedOrigins.add(configured.origin);
+      }
+      if (!allowedOrigins.size) throw error(403, 'Use an allowed Host header.');
       const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
       if (pathname.startsWith('/api/')) {
-        if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) throw error(403, 'Cross-origin API access is not allowed.');
+        if (req.headers.origin && !allowedOrigins.has(req.headers.origin)) throw error(403, 'Cross-origin API access is not allowed.');
         if (req.headers['sec-fetch-site'] === 'cross-site') throw error(403, 'Cross-site API access is not allowed.');
         if (pathname === '/api/state' || pathname === '/api/events') {
           if (req.method !== 'GET') return json(res, 405, { error: 'Use GET.' }, { Allow: 'GET' });
