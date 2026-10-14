@@ -149,13 +149,18 @@ async function runOnce({
   maxIterations = 1,
   testProfile = BOLA_PROFILE,
   reasoningEngine = new RuleReasoningEngine(),
+  runId: suppliedRunId,
 }) {
   if (targetMode !== 'isolated_local_lab') throw new Error('MVP only supports an isolated local lab target');
   if (maxIterations !== 1) throw new Error('MVP requires maxIterations to equal 1');
   if (![BOLA_PROFILE, XSS_PROFILE].includes(testProfile)) throw new Error('Unsupported local test profile');
   assertGateway(gateway);
   const allowedOrigin = localOrigin(targetOrigin);
-  const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  if (suppliedRunId !== undefined && (typeof suppliedRunId !== 'string'
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(suppliedRunId))) {
+    throw new TypeError('runId must be a safe nonempty identifier of at most 128 characters');
+  }
+  const runId = suppliedRunId ?? `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const startedAt = new Date().toISOString();
   const policyContext = {
     targetMode,

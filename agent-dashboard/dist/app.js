@@ -78,7 +78,7 @@ function isEvent(value) {
 }
 function isRun(value) {
   const fixture = value?.mode === 'core-fixture';
-  const lab = value?.mode === 'local-lab-deepseek';
+  const lab = ['local-lab-rule', 'local-lab-deepseek'].includes(value?.mode);
   return isObject(value) && (fixture || lab) && value.simulated === !lab &&
     (fixture ? value.targetContacted === false : typeof value.targetContacted === 'boolean') &&
     typeof value.id === 'string' && validateTarget(value.target).ok &&
@@ -91,7 +91,12 @@ function isRun(value) {
       (item.simulated === undefined || item.simulated === value.simulated) &&
       (item.vulnerabilityConfirmed === undefined || typeof item.vulnerabilityConfirmed === 'boolean') &&
       ['id','title','description','evidence','evidenceId'].every((key) => typeof item[key] === 'string')) &&
-    ['preparing','running','stopping','stopped','completed','failed'].includes(value.status);
+    ['queued','preparing','running','stopping','stopped','cancelled','interrupted','completed','failed'].includes(value.status);
+}
+function isLegacyRun(value) {
+  return isObject(value) && value.mode === 'legacy-import' && typeof value.id === 'string'
+    && Number.isFinite(Date.parse(value.startedAt)) && ['completed', 'failed'].includes(value.status)
+    && Array.isArray(value.events) && isObject(value.report);
 }
 const saved = readJSON(STORAGE, []);
 let history = Array.isArray(saved) ? saved.filter(isRun).slice(0, 12) : [];
@@ -102,15 +107,30 @@ let run = { id: '', target: '', status: 'idle', startedAt: null, elapsedMs: 0, s
 let instanceId = null;
 let labReadiness = { available: false };
 let connection = 'connecting';
+let connectionTransport = 'polling';
+let authSession = null;
+let centralHistoryLoaded = false;
+let historyRefreshPending = false;
+let models = [];
+let platform = null;
+let comparison = null;
+let comparisonPending = false;
+let platformError = '';
+let historyError = '';
+let workspaceGeneration = 0;
+const reviewDrafts = new Map();
+const pendingReviews = new Set();
+let historyReviewSignature = '';
 let controlPending = false;
 let inspectedRun = null;
+let legacyDetail = null;
 let selectedModule = 'parser';
 let selectedEventId = null;
 let activeTab = 'request';
 let activeView = 'dashboard';
 let toastTimer;
 let stars;
-const statusNames = { preparing: '실습 준비 중', running: '진행 중', stopping: '중지 처리 중', completed: '완료', stopped: '중지됨', failed: '실패', idle: '대기 중' };
+const statusNames = { queued: '실행 대기', cancelled: '취소됨', interrupted: '실행 중단 · 새 실행 필요', preparing: '실습 준비 중', running: '진행 중', stopping: '중지 처리 중', completed: '완료', stopped: '중지됨', failed: '실패', idle: '대기 중' };
 const moduleDescriptions = {
   parser: '제공된 fixture 응답에서 분석 결과를 반환합니다. 대상 URL에는 접속하지 않습니다.',
   casper: '고정 fixture에서 과거 취약점 지식을 조회합니다.',
@@ -138,15 +158,20 @@ const legacyLabModuleDescriptions = {
   agent: 'RunOnce가 삭제 권한 가설의 plan과 전후 관찰에 근거한 reflect를 기록합니다.',
   webpage: labModuleDescriptions.webpage,
 };
-function isLab(item) { return item?.mode === 'local-lab-deepseek'; }
+function isLab(item) { return ['local-lab-rule', 'local-lab-deepseek'].includes(item?.mode); }
+function isAiLab(item) { return item?.mode === 'local-lab-deepseek'; }
+function canOperate() { return authSession && (!authSession.authRequired || authSession.authenticated) && authSession.user?.role !== 'viewer'; }
+function selectedModel() { return models.find(item => item.id === $('model-select').value); }
 function isXssLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile) === 'stored_xss_canary'; }
-function describeModule(id, item = currentRun()) { return (isXssLab(item) ? labModuleDescriptions
-  : isLab(item) ? legacyLabModuleDescriptions : moduleDescriptions)[id] || '이전 실행의 코어 이벤트입니다.'; }
-function modeLabel(item) { return isXssLab(item) ? '저장형 XSS 실습 + DeepSeek'
-  : isLab(item) ? '삭제 권한 실습 + DeepSeek' : '코어 fixture'; }
+function describeModule(id, item = currentRun()) { const text = (isXssLab(item) ? labModuleDescriptions
+  : isLab(item) ? legacyLabModuleDescriptions : moduleDescriptions)[id] || '이전 실행의 코어 이벤트입니다.';
+  return isLab(item) && !isAiLab(item) ? text.replace('DeepSeek의 제한된 POST 선택', '규칙 엔진의 제한된 POST 선택') : text; }
+function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
 const viewMeta = {
   dashboard: ['대시보드', 'Observe. Decide. <span>Iterate.</span>', '에이전트의 모든 판단과 흐름을, 한눈에.'],
-  sessions: ['실행 이력', 'Every run. <span>Remembered.</span>', '이 브라우저에 남아 있는 실행 기록을 다시 살펴보세요.'],
+  sessions: ['실행 이력', 'Every run. <span>Remembered.</span>', '중앙에 저장된 실행과 모듈별 증거를 다시 살펴보세요.'],
+  compare: ['실행 비교', 'Inspect the <span>difference.</span>', '코드·모델·입력 조건과 결과 차이를 함께 확인하세요.'],
+  platform: ['통합 상태', 'Build. Verify. <span>Integrate.</span>', '모듈 버전과 검증 상태, 실행 계층을 확인하세요.'],
   modules: ['모듈 탐색', 'Inside the <span>loop.</span>', '각 모듈이 주고받는 데이터와 상태를 확인하세요.'],
   reports: ['리포트', 'From signals to <span>insight.</span>', '코어 실행 리포트와 모드별 검토 항목을 확인하세요.'],
 };
@@ -155,7 +180,8 @@ function moduleById(id) { return MODULES.find((module) => module.id === id) || E
 function notify(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 3300); }
 function saveRun() {
   if (run.status === 'idle' || !isRun(run)) return;
-  history = [structuredClone(run), ...history.filter((item) => item.id !== run.id)].slice(0, 12);
+  history = [structuredClone(run), ...history.filter((item) => item.id !== run.id)].slice(0, centralHistoryLoaded ? 200 : 12);
+  if (centralHistoryLoaded) { $('history-count').textContent = history.length; return; }
   try { localStorage.setItem(STORAGE, JSON.stringify(history)); } catch { notify('브라우저 저장 공간을 사용할 수 없습니다. 내보내기로 보관하세요.'); }
   $('history-count').textContent = history.length;
 }
@@ -168,7 +194,7 @@ function acceptState(envelope) {
   if (next.status !== 'idle' && !isRun(next)) throw new Error('코어 실행 상태의 데이터 형식이 올바르지 않습니다.');
   if (next.status === 'idle' && (!isObject(next.snapshots) || !Array.isArray(next.reviewItems) || next.step !== 0 || !Number.isInteger(next.totalSteps) || next.totalSteps < 1 || next.totalSteps > 128 || next.events.length !== 0)) throw new Error('코어 대기 상태의 데이터 형식이 올바르지 않습니다.');
   const sameInstance = instanceId === envelope.instanceId;
-  const rank = { idle: 0, preparing: 1, running: 2, stopping: 3, stopped: 4, completed: 4, failed: 4 };
+  const rank = { idle: 0, queued: 1, preparing: 1, running: 2, stopping: 3, stopped: 4, interrupted: 4, cancelled: 4, completed: 4, failed: 4 };
   // A POST response can arrive after a newer SSE event. Keep the newer server state.
   if (sameInstance && next.id === run.id &&
       (next.step < run.step || (next.step === run.step && rank[next.status] < rank[run.status]))) return;
@@ -181,6 +207,7 @@ function acceptState(envelope) {
     : { available: false };
   run = structuredClone(next);
   saveRun();
+  if (next.id !== previousId || next.status !== previousStatus) void refreshHistory();
   if (!inspectedRun && !isLab(run) && (!sameInstance || previousId !== run.id) && document.activeElement !== $('target-url')) $('target-url').value = run.target || '';
   if (selectedEventId && !currentRun().events.some((event) => event.id === selectedEventId)) selectedEventId = null;
   showRuntimeError(run.status === 'failed' ? run.error || '코어 실행에 실패했습니다.' : '');
@@ -193,8 +220,10 @@ function acceptState(envelope) {
 }
 const runtime = createRuntimeClient({
   onState: acceptState,
-  onConnection(state) { connection = state; renderStats(); },
+  onConnection(state, transport) { connection = state; connectionTransport = transport || connectionTransport; renderStats(); },
   onError: showRuntimeError,
+  onSession: acceptSession,
+  onAuthRequired: requireLogin,
 });
 function persistSettings() { try { localStorage.setItem(SETTINGS, JSON.stringify(settings)); } catch { notify('설정을 브라우저에 저장할 수 없습니다.'); } }
 function updateStars() {
@@ -223,17 +252,17 @@ function historyReplace(view) { window.history.replaceState(null, '', `#${view}`
 function renderStats() {
   const item = currentRun();
   const running = !inspectedRun && run.status === 'running';
-  const active = ['preparing', 'running', 'stopping'].includes(run.status);
+  const active = ['queued', 'preparing', 'running', 'stopping'].includes(run.status);
   const lab = isLab(item);
   const stage = item.events.length ? moduleById(item.events.at(-1).module) : null;
   const connected = connection === 'connected';
-  const connectionLabel = { connecting: '런타임 연결 중', connected: 'SSE 연결됨', disconnected: '연결 끊김 · 자동 재연결 중' }[connection];
+  const connectionLabel = { connecting: '런타임 연결 중', connected: connectionTransport === 'polling' ? '1초 간격 상태 연결됨' : 'SSE 연결됨', disconnected: '연결 끊김 · 자동 재연결 중' }[connection];
   $('history-banner').hidden = !inspectedRun;
   $('run-status').textContent = inspectedRun ? '기록 보기' : statusNames[item.status];
   $('status-orb').className = `status-orb ${running && connected ? '' : 'stopped'}`;
-  $('run-context').textContent = inspectedRun ? `${modeLabel(item)} · 저장한 실행` : !connected ? '마지막 수신 상태 · 진행 상태 갱신 대기' : lab ? '로컬 실습 게시판 · DeepSeek 판단' : '실제 코어 · 외부 모듈 fixture';
-  $('execution-label').textContent = lab ? 'LOCAL LAB / DEEPSEEK' : 'CORE / FIXTURE';
-  $('dashboard-mode').textContent = lab ? '실제 코어 / 로컬 실습 게시판 + DeepSeek' : '실제 코어 / 외부 모듈 fixture';
+  $('run-context').textContent = inspectedRun ? `${modeLabel(item)} · 저장한 실행` : !connected ? '마지막 수신 상태 · 진행 상태 갱신 대기' : lab ? `실제 격리 게시판 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'} 판단` : '실제 코어 · 외부 모듈 fixture';
+  $('execution-label').textContent = lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
+  $('dashboard-mode').textContent = lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
   $('elapsed-source').textContent = lab ? '로컬 실습 실행' : 'fixture 실행';
   $('iteration-value').textContent = '01';
   $('step-label').textContent = item.status === 'completed' ? '코어 실행 완료' : stage ? `최근 수신 · ${stage.role}` : '첫 이벤트 대기';
@@ -243,22 +272,23 @@ function renderStats() {
   $('progress-label').textContent = item.status === 'completed' ? '모든 이벤트 수신 완료' : `수신한 코어 이벤트 · ${statusNames[item.status]}`;
   $('progress-number').textContent = `${String(item.step).padStart(2,'0')} / ${item.totalSteps} events`;
   $('progress-fill').style.width = `${Math.min(100, item.step / item.totalSteps * 100)}%`;
-  $('core-state').textContent = inspectedRun ? 'SAVED SESSION' : !connected ? connection === 'connecting' ? 'CONNECTING' : 'CONNECTION LOST' : {preparing:'LAB PREPARING',running:'CORE RUNNING',stopping:'CORE STOPPING',stopped:'CORE STOPPED',completed:'CORE COMPLETE',failed:'CORE FAILED',idle:'READY TO START'}[item.status];
+  $('core-state').textContent = inspectedRun ? 'SAVED SESSION' : !connected ? connection === 'connecting' ? 'CONNECTING' : 'CONNECTION LOST' : {queued:'QUEUED',preparing:'LAB PREPARING',running:'CORE RUNNING',stopping:'CORE STOPPING',stopped:'CORE STOPPED',cancelled:'CANCELLED',interrupted:'INTERRUPTED',completed:'CORE COMPLETE',failed:'CORE FAILED',idle:'READY TO START'}[item.status];
   $('live-label').innerHTML = `<span class="tiny-dot ${connected && running ? 'green' : 'gray'}"></span>${inspectedRun ? 'SAVED' : !connected ? 'OFFLINE' : running ? 'LIVE' : 'IDLE'}`;
-  $('stream-status').textContent = connected ? 'SSE connected' : 'SSE reconnecting';
+  $('stream-status').textContent = connected ? connectionTransport === 'polling' ? 'Polling · 1s connected' : 'SSE connected' : '상태 연결 재시도 중';
   $('connection-status').textContent = connectionLabel;
   $('connection-dot').className = `tiny-dot ${connected ? 'green' : 'gray'}`;
   $('connection-notice').hidden = connected;
   $('connection-notice').textContent = `${connectionLabel}. 표시된 상태를 보존하고 실행 제어를 잠급니다.`;
   $('pause-button').disabled = true;
   $('pause-button').setAttribute('aria-label', '일시정지 및 재개 미지원');
-  $('stop-button').disabled = !!inspectedRun || !connected || controlPending || !['preparing','running'].includes(run.status);
-  $('run-button').disabled = !connected || controlPending || active;
-  $('lab-run-button').disabled = !connected || controlPending || active || !labReadiness.available;
-  $('lab-readiness').textContent = labReadiness.available
-    ? `${labReadiness.model || 'DeepSeek'} 준비됨 · 요청 실패 시 최대 ${Number.isInteger(labReadiness.possibleRetries) ? labReadiness.possibleRetries : 0}회 재시도`
-    : '로컬 실습 실행이 준비되지 않았습니다. 서버의 DeepSeek 설정을 확인하세요.';
-  $('new-session-button').disabled = !connected || controlPending || active;
+  $('stop-button').disabled = !canOperate() || !!inspectedRun || !connected || controlPending || !['queued','preparing','running'].includes(run.status);
+  $('run-button').disabled = !canOperate() || !connected || controlPending || active;
+  const model = selectedModel();
+  $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || !model?.available;
+  $('model-select').disabled = controlPending || active || !canOperate();
+  $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : model?.available ? `${model.name || model.id} · 실행 준비됨` : '선택한 엔진을 사용할 수 없습니다. 서버 실행 환경과 모델 설정을 확인하세요.';
+  $('model-scope').textContent = model?.mode === 'local-lab-deepseek' ? 'AI는 허용된 단일 후보를 선택합니다. 최종 취약점 판정은 브라우저 증거와 규칙 엔진이 수행하며 API 호출은 과금될 수 있습니다.' : '규칙 엔진으로 실제 격리 게시판과 Chromium을 검사합니다. 모델 API 호출은 없습니다.';
+  $('new-session-button').disabled = !canOperate() || !connected || controlPending || active;
   $('export-button').disabled = item.events.length === 0;
   $('target-url').disabled = controlPending;
   $('loop-graph').classList.toggle('is-paused', !running || !connected);
@@ -301,12 +331,12 @@ function traceData() {
   const lab = isLab(item);
   if (activeTab === 'agent') {
     const reasoning = getAgentEvent();
-    return reasoning ? { source: lab && reasoning.stage === 'loop.think' ? 'DeepSeek + RuleReasoningEngine' : 'RuleReasoningEngine', mode: item.mode, fixtureInputs: !lab, correlationId: reasoning.correlationId, input: reasoning.agentInput, output: reasoning.agentOutput } : { status: 'waiting', mode: item.mode, message: lab ? 'DeepSeek curl 요청과 코어 plan / reflect 입출력을 기다리고 있습니다.' : 'RuleReasoningEngine의 plan / reflect 입출력을 기다리고 있습니다.' };
+    return reasoning ? { source: isAiLab(item) && reasoning.stage === 'loop.think' ? 'DeepSeek + RuleReasoningEngine' : 'RuleReasoningEngine', mode: item.mode, fixtureInputs: !lab, correlationId: reasoning.correlationId, input: reasoning.agentInput, output: reasoning.agentOutput } : { status: 'waiting', mode: item.mode, message: isAiLab(item) ? 'DeepSeek curl 요청과 코어 plan / reflect 입출력을 기다리고 있습니다.' : 'RuleReasoningEngine의 plan / reflect 입출력을 기다리고 있습니다.' };
   }
   return snapshot?.[activeTab] || { status: 'waiting', mode: item.mode, simulated: item.simulated, module: selectedModule, message: '이 모듈의 첫 코어 이벤트를 기다리고 있습니다.' };
 }
 function highlightJSON(data) {
-  const raw = JSON.stringify(data, null, 2);
+  const raw = JSON.stringify(data ?? null, null, 2);
   return raw.split('\n').map((line, i) => {
     const colored = line.replace(/("(?:\\.|[^"\\])*"\s*:)|("(?:\\.|[^"\\])*")|\b(true|false|null)\b|(-?\b\d+(?:\.\d+)?\b)/g, (match, key, str, bool, number) => `<span class="code-${key ? 'key' : str ? 'string' : bool ? 'boolean' : 'number'}">${escape(match)}</span>`);
     // Indentation and punctuation outside tokens cannot contain user supplied strings.
@@ -319,10 +349,10 @@ function renderInspector() {
   const snapshot = getSnapshot();
   const contextEvent = activeTab === 'agent' ? getAgentEvent() : snapshot;
   $('selected-module-name').textContent = module.name;
-  $('context-module').textContent = activeTab === 'agent' && lab ? 'Agent / RunOnce + DeepSeek' : activeTab === 'agent' ? 'Agent / RunOnce' : module.name;
+  $('context-module').textContent = activeTab === 'agent' && isAiLab(currentRun()) ? 'Agent / RunOnce + DeepSeek' : activeTab === 'agent' ? 'Agent / RunOnce' : module.name;
   $('context-role').textContent = describeModule(activeTab === 'agent' ? 'agent' : selectedModule);
   $('correlation-value').textContent = contextEvent?.correlationId || '—';
-  $('trace-source').textContent = activeTab === 'agent' ? lab ? 'DeepSeek · Agent / RunOnce' : 'Agent / RunOnce · fixture 입력'
+  $('trace-source').textContent = activeTab === 'agent' ? isAiLab(currentRun()) ? 'DeepSeek · Agent / RunOnce' : lab ? '규칙 엔진 · 실제 격리 실습' : 'Agent / RunOnce · fixture 입력'
     : contextEvent?.source === 'local-curl-board' ? 'local-curl-board · curl 실행'
       : contextEvent?.source === 'local-loopback-board' ? '격리된 로컬 게시판'
         : contextEvent?.source === 'core-internal-event' ? 'Agent / RunOnce'
@@ -337,9 +367,13 @@ function renderInspector() {
   $('trace-code').innerHTML = highlightJSON(traceData());
 }
 function renderSessions() {
-  $('session-list').innerHTML = history.length ? history.map((item) => `<div class="session-row"><div class="session-target">${escape(item.target)}<small>${escape(modeLabel(item))} · ${escape(item.id)}</small></div><span class="state-chip ${escape(item.status)}"><span class="tiny-dot ${item.status === 'running' || item.status === 'completed' ? 'green' : 'gray'}"></span>${statusNames[item.status]}</span><span class="session-stat session-events">${item.events.length} events</span><span class="session-stat session-date">${escape(dateLabel(item.startedAt))}</span><button class="button secondary" data-session="${escape(item.id)}">열기 ${icon('code')}</button></div>`).join('') : `<div class="empty-state"><span data-icon="layers"></span><h3>아직 저장된 실행이 없습니다</h3><p>로컬 코어 이벤트를 수신하면 실행 이력이 자동으로 기록됩니다.</p></div>`;
+  $('history-source').textContent = centralHistoryLoaded ? `중앙 영속 기록 · ${history.length}건${historyError ? ' · 갱신 실패, 마지막 수신 기록' : ''}` : historyError || '중앙 실행 기록 조회 중';
+  $('session-list').innerHTML = history.length ? history.map((item) => `<div class="session-row"><div class="session-target">${escape(item.target || '대상 URL 미기록')}<small>${escape(modeLabel(item))} · ${escape(item.id)}</small><small>${escape(runModelName(item))} · SHA ${escape(runRevision(item).slice(0, 12))}</small></div><span class="state-chip ${escape(item.status)}"><span class="tiny-dot ${item.status === 'running' || item.status === 'completed' ? 'green' : 'gray'}"></span>${escape(statusNames[item.status] || item.status)}</span><span class="session-stat session-events">${item.events.length} events</span><span class="session-stat session-date">${escape(dateLabel(item.startedAt))}</span><button class="button secondary" data-session="${escape(item.id)}">${isLegacyRun(item) ? '이전 리포트' : '열기'} ${icon('code')}</button></div>`).join('') : `<div class="empty-state"><span data-icon="layers"></span><h3>아직 저장된 실행이 없습니다</h3><p>모의 코어 또는 실제 격리 실습을 시작하면 중앙 실행 기록에 저장됩니다.</p></div>`;
   hydrateIcons($('session-list'));
+  $('legacy-detail').hidden = !legacyDetail;
+  $('legacy-detail').innerHTML = legacyDetail ? `<section class="panel core-report"><div class="eyebrow">IMPORTED / LEGACY EVIDENCE</div><h2>이전 실행 보고서 · ${escape(legacyDetail.id)}</h2><p>기존 pentest-db 기록입니다. 원래 모듈·모델·입력 조건이 누락될 수 있어 같은 조건 비교로 단정하지 않습니다.</p></section>${jsonSection('원본 실행 보고서', legacyDetail.report)}${jsonSection('원본 이벤트', legacyDetail.events)}${jsonSection('가져오기 정보', legacyDetail.manifest || {})}` : '';
 }
+
 function renderModules() {
   const item = currentRun();
   $('module-grid').innerHTML = MODULES.map((module) => {
@@ -358,11 +392,13 @@ function renderReports() {
   const item = currentRun();
   const lab = isLab(item);
   const note = isXssLab(item)
-    ? `서버가 생성한 격리된 로컬 게시판(${escape(item.target || '준비 중')})에서 XSS 가설 한 건을 검사합니다. ${item.targetContacted ? '실습 사이트에 HTTP 요청을 보냈습니다.' : '아직 실습 사이트로 보낸 HTTP 요청은 없습니다.'} DeepSeek가 선택한 구조화된 curl 요청은 정책 검사를 거쳐 전송하며, finding은 동일 시험 게시글의 브라우저 실행 증거로 판정합니다. 입력 URL은 사용하지 않습니다.`
+    ? `서버가 생성한 격리된 로컬 게시판(${escape(item.target || '준비 중')})에서 XSS 가설 한 건을 검사합니다. ${item.targetContacted ? '실습 사이트에 HTTP 요청을 보냈습니다.' : '아직 실습 사이트로 보낸 HTTP 요청은 없습니다.'} ${isAiLab(item) ? 'DeepSeek가 선택한' : '규칙 엔진이 만든'} 구조화된 curl 요청은 정책 검사를 거쳐 전송하며, finding은 동일 시험 게시글의 브라우저 실행 증거로 판정합니다. 입력 URL은 사용하지 않습니다.`
     : lab ? `서버가 생성한 격리된 로컬 게시판(${escape(item.target || '준비 중')})에서 삭제 권한 가설 한 건을 검사했습니다. 입력 URL은 사용하지 않았습니다.`
     : 'RunOnce와 RuleReasoningEngine의 실제 코어 실행 결과입니다. 외부 모듈의 응답은 scripted fixture이며, 입력 URL은 표시용 메타데이터입니다. 실제 대상에 접속하거나 취약점을 확인하지 않았습니다.';
   $('report-content').innerHTML = `<section class="panel report-top"><div><div class="eyebrow">${lab ? 'ISOLATED LOCAL LAB REPORT' : 'CORE FIXTURE REPORT'}</div><h2>${lab ? '로컬 실습 게시판 실행 결과' : '코어 실행 결과와 fixture 검토 항목'}</h2><p>${escape(item.target || '실행 전')}</p><small>${escape(statusNames[item.status])} · ${item.step} / ${item.totalSteps} 이벤트 · ${escape(formatElapsed(item.elapsedMs))}</small></div><div class="report-count"><strong>${String(item.reviewItems.length).padStart(2,'0')}</strong><span>${lab ? '로컬 실습 검토 항목' : 'fixture 검토 항목'}</span></div></section><div class="report-items">${item.reviewItems.length ? item.reviewItems.map((review) => `<article class="panel report-item"><span class="review-tag"><span class="tiny-dot"></span>${lab ? review.vulnerabilityConfirmed ? 'LOCAL LAB · CONFIRMED' : 'LOCAL LAB · REVIEW' : 'FIXTURE · UNCONFIRMED'}</span><h2>${escape(review.title)}</h2><p>${escape(review.description)}</p><div class="evidence-box"><strong>${lab ? 'LOCAL LAB' : 'FIXTURE'} EVIDENCE / ${escape(review.evidenceId)}</strong>${escape(review.evidence)}</div></article>`).join('') : `<section class="panel empty-state"><span data-icon="file"></span><h3>최종 ${lab ? '실습' : 'fixture'} 결과 대기</h3><p>코어 실행 완료 후 검토 항목이 표시됩니다.</p></section>`}</div><div class="report-note">${note}</div>${item.report ? `<section class="panel core-report"><h2>${icon('file')}RunOnce 최종 리포트</h2><p>코어가 반환한 결과 · 내부 실행 ID ${escape(item.coreRunId || '—')} · 코어 origin ${escape(item.coreTargetOrigin || (lab ? '—' : 'http://127.0.0.1:3000'))}</p><pre tabindex="0" aria-label="RunOnce 최종 리포트 JSON">${highlightJSON(item.report)}</pre></section>` : ''}`;
   hydrateIcons($('report-content'));
+  if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
+  if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
 }
 function renderNotifications() {
   $('notification-list').innerHTML = currentRun().events.slice(-3).reverse().map((event) => `<div class="notification-event">${escape(event.title)}<small>${escape(moduleById(event.module).name)} · ${escape(timeLabel(event.time))}</small></div>`).join('') || '<div class="notification-event">아직 이벤트가 없습니다.</div>';
@@ -370,10 +406,12 @@ function renderNotifications() {
 function render() {
   $('history-count').textContent = history.length;
   renderStats();
-  if (activeView === 'dashboard') { renderActivity(); renderInspector(); }
+  if (activeView === 'dashboard') { renderActivity(); renderInspector(); renderHistoryChecks(); }
   if (activeView === 'sessions') renderSessions();
   if (activeView === 'modules') renderModules();
   if (activeView === 'reports') renderReports();
+  if (activeView === 'compare') renderComparison();
+  if (activeView === 'platform') renderPlatform();
   if (!$('notification-popover').hidden) renderNotifications();
   updateStars();
 }
@@ -381,7 +419,7 @@ function render() {
 document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view)));
 window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
 async function submitControl(action) {
-  if (controlPending || connection !== 'connected') return;
+  if (!canOperate() || controlPending || connection !== 'connected') return;
   controlPending = true;
   showRuntimeError('');
   renderStats();
@@ -391,7 +429,7 @@ async function submitControl(action) {
 }
 $('target-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (['preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected') return;
+  if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected') return;
   const validated = validateTarget($('target-url').value);
   $('url-error').hidden = validated.ok;
   $('target-url').setAttribute('aria-invalid', String(!validated.ok));
@@ -405,21 +443,22 @@ $('target-form').addEventListener('submit', async (event) => {
   });
 });
 $('lab-run-button').addEventListener('click', async () => {
-  if (['preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !labReadiness.available) return;
+  const model = selectedModel();
+  if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available) return;
   await submitControl(async () => {
-    await runtime.startLab();
+    await runtime.startLab(model.id, model.mode);
     inspectedRun = null;
     selectedEventId = null;
-    notify('서버가 만든 로컬 실습 게시판을 시작했습니다. DeepSeek API 호출은 과금될 수 있습니다.');
+    notify(`${model.name || model.id}로 실제 격리 실습을 시작했습니다.`);
   });
 });
 $('target-url').addEventListener('input', () => { $('url-error').hidden = true; $('target-url').removeAttribute('aria-invalid'); });
 $('stop-button').addEventListener('click', async () => {
-  if (inspectedRun || !['preparing','running'].includes(run.status)) return;
+  if (inspectedRun || !['queued','preparing','running'].includes(run.status)) return;
   await submitControl(() => runtime.stop(run.id));
 });
 $('new-session-button').addEventListener('click', async () => {
-  if (['preparing','running','stopping'].includes(run.status)) return;
+  if (['queued','preparing','running','stopping'].includes(run.status)) return;
   await submitControl(async () => {
     await runtime.reset();
     inspectedRun = null;
@@ -460,8 +499,7 @@ $('export-button').addEventListener('click', () => {
 });
 $('session-list').addEventListener('click', (event) => {
   const button = event.target.closest('[data-session]'); if (!button) return;
-  const item = history.find((entry) => entry.id === button.dataset.session); if (!item) return;
-  inspectedRun = structuredClone(item); selectedEventId = null; $('target-url').value = isLab(inspectedRun) ? '' : inspectedRun.target; navigate('dashboard'); notify('저장된 스냅샷을 열었습니다. 서버의 현재 실행은 계속 진행됩니다.');
+  void openStoredRun(button.dataset.session);
 });
 $('return-current-button').addEventListener('click', () => { inspectedRun = null; selectedEventId = null; $('target-url').value = isLab(run) ? '' : run.target || ''; render(); notify('서버의 현재 실행으로 돌아왔습니다.'); });
 $('module-grid').addEventListener('click', (event) => { const button = event.target.closest('[data-open-module]'); if (!button) return; selectedModule = button.dataset.openModule; selectedEventId = null; activeTab = 'request'; navigate('dashboard'); $('inspector-panel').scrollIntoView({ block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' }); });
@@ -476,8 +514,194 @@ $('notifications-button').addEventListener('click', () => { $('notification-popo
 $('menu-button').addEventListener('click', () => { $('sidebar').classList.toggle('open'); $('menu-button').setAttribute('aria-expanded', String($('sidebar').classList.contains('open'))); });
 document.addEventListener('click', (event) => { if (!event.target.closest('#notification-popover') && !event.target.closest('#notifications-button')) { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); } if (innerWidth <= 760 && !event.target.closest('#sidebar') && !event.target.closest('#menu-button')) { $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
 document.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); navigate('dashboard'); $('target-url').focus(); $('target-url').select(); } if (event.key === 'Escape') { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
+function runModelName(item) {
+  const model = item.manifest?.model || item.events?.find(event => event.agentOutput?.modelMetadata)?.agentOutput?.modelMetadata;
+  return typeof model === 'string' ? model : model?.name || model?.model || model?.id || item.modelId || (isAiLab(item) ? 'DeepSeek' : 'RuleReasoningEngine');
+}
+function runRevision(item) {
+  return String(item.manifest?.source?.commitSha || item.manifest?.source?.commit || item.manifest?.source?.sha || item.manifest?.commitSha || item.manifest?.gitSha || item.source?.commit || '미기록');
+}
+function jsonSection(title, value) {
+  return `<section class="panel core-report"><h2>${escape(title)}</h2><pre tabindex="0" aria-label="${escape(title)}">${highlightJSON(redactTelemetry(value))}</pre></section>`;
+}
+function historyCheckMarkup(item) {
+  const historyWrite = item.historyWrite;
+  if (!historyWrite) return '';
+  const checks = Array.isArray(historyWrite.checks) ? historyWrite.checks : [];
+  return `<section class="panel history-checks"><div class="eyebrow">CASE HISTORY / EVIDENCE REVIEW</div><h2>과거 사례에 연결한 검증 기록</h2><p>${escape(({ synced: '현재 실행의 결과와 증거를 과거 사례의 check로 저장했습니다.', 'not-applicable': '이번 실행에 연결할 과거 사례가 없습니다.', failed: '과거 사례 check 저장에 실패했습니다. 실행 증거는 중앙 run에서 확인할 수 있습니다.' })[historyWrite.status] || historyWrite.status || '저장 상태 확인 중')}</p>${historyWrite.error ? `<p class="runtime-error">${escape(historyWrite.error)}</p>` : ''}${checks.map(check => {
+    const id = String(check.check_id || check.id || ''); const key = `${item.id}:${id}`;
+    const reviewed = check.review_status === 'reviewed';
+    return `<article class="history-check"><div class="history-check-heading"><strong>${escape(check.case_id || 'case')} · revision ${escape(check.case_revision ?? '미기록')}</strong><span class="local-chip">${escape(check.result || '미판정')} / ${escape(check.review_status || '검토 대기')}</span></div><p class="mono">Check ${escape(id)}</p><details><summary>증거 메타데이터</summary><pre tabindex="0">${highlightJSON(redactTelemetry(check.evidence_metadata || check.evidence || {}))}</pre></details>${reviewed ? `<p class="review-complete">증거 검토 완료${check.review_note ? ` · ${escape(check.review_note)}` : ''}</p>` : `<form data-review-form data-run-id="${escape(item.id)}" data-check-id="${escape(id)}"><label>검토 메모<input data-review-note="${escape(key)}" value="${escape(reviewDrafts.get(key) || '')}" maxlength="1000" placeholder="확인한 증거와 검토 내용을 입력하세요" required${canOperate() ? '' : ' disabled'}></label><button class="button secondary" type="submit"${!canOperate() || pendingReviews.has(key) || !id ? ' disabled' : ''}>${pendingReviews.has(key) ? '증거 무결성 확인 중' : '증거 확인 후 검토 완료'}</button></form>`}</article>`;
+  }).join('')}</section>`;
+}
+function renderHistoryChecks() {
+  const item = currentRun(); const panel = $('history-review-panel');
+  const signature = JSON.stringify([item.id, item.historyWrite, Boolean(canOperate()), [...pendingReviews]]);
+  if (signature === historyReviewSignature) return;
+  historyReviewSignature = signature;
+  panel.innerHTML = historyCheckMarkup(item); panel.hidden = !item.historyWrite;
+}
+function requireLogin() {
+  workspaceGeneration += 1;
+  authSession = { ...authSession, authenticated: false, authRequired: true, user: null };
+  history = []; centralHistoryLoaded = false; inspectedRun = null; legacyDetail = null; comparison = null; platform = null; models = [];
+  reviewDrafts.clear(); pendingReviews.clear(); historyReviewSignature = '';
+  run = { id: '', target: '', status: 'idle', startedAt: null, elapsedMs: 0, step: 0, totalSteps: 19, iterations: 1, events: [], snapshots: {}, reviewItems: [], mode: 'core-fixture', simulated: true, targetContacted: false };
+  $('user-name').textContent = '로그인 필요'; $('user-role').textContent = '인증된 세션으로 접근';
+  $('logout-button').hidden = true;
+  $('comparison-content').textContent = '';
+  $('session-list').textContent = '';
+  $('trace-code').textContent = '';
+  $('notification-list').textContent = '';
+  if (!$('login-dialog').open) $('login-dialog').showModal();
+  render();
+}
+function acceptSession(value) {
+  workspaceGeneration += 1;
+  authSession = value;
+  $('user-name').textContent = value.user?.name || 'Local operator';
+  $('user-role').textContent = ({ viewer: '조회 전용', operator: '실행 운영자', admin: '관리자' })[value.user?.role] || '로컬 운영자';
+  $('logout-button').hidden = !value.authRequired || !value.authenticated;
+  if (value.authRequired && !value.authenticated) { requireLogin(); return; }
+  $('login-dialog').close(); $('login-error').hidden = true;
+  void loadWorkspace();
+}
+async function loadWorkspace() {
+  const generation = workspaceGeneration;
+  await Promise.allSettled([refreshHistory(), (async () => {
+    const payload = await runtime.getModels();
+    if (generation !== workspaceGeneration) return;
+    const previous = $('model-select').value;
+    models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string' && ['local-lab-rule', 'local-lab-deepseek'].includes(item.mode)) : [];
+    $('model-select').innerHTML = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
+    $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
+    renderStats();
+  })().catch(error => showRuntimeError(error.message)), (async () => {
+    const payload = await runtime.getPlatform();
+    if (generation !== workspaceGeneration) return;
+    platform = redactTelemetry(payload); platformError = ''; if (activeView === 'platform') renderPlatform();
+  })().catch(error => { platformError = error.message; if (activeView === 'platform') renderPlatform(); })]);
+}
+async function refreshHistory() {
+  if (historyRefreshPending || !authSession || (authSession.authRequired && !authSession.authenticated)) return;
+  historyRefreshPending = true;
+  const generation = workspaceGeneration;
+  try {
+    const records = [];
+    let offset = 0;
+    while (true) {
+      const payload = await runtime.listRuns({ limit: 200, offset });
+      if (generation !== workspaceGeneration) return;
+      if (!Array.isArray(payload.runs)) throw new Error('중앙 실행 목록 형식을 확인할 수 없습니다.');
+      records.push(...payload.runs);
+      offset += payload.runs.length;
+      if (!payload.runs.length || !Number.isSafeInteger(payload.total) || offset >= payload.total) break;
+    }
+    history = records.map(item => redactTelemetry(item)).filter(item => isRun(item) || isLegacyRun(item)).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+    if (run.id && isRun(run) && !history.some(item => item.id === run.id)) history.unshift(structuredClone(run));
+    centralHistoryLoaded = true; historyError = ''; updateComparisonSelectors(); render();
+  } catch (error) { historyError = error.message; if (activeView === 'sessions') renderSessions(); }
+  finally { historyRefreshPending = false; }
+}
+async function openStoredRun(id) {
+  const generation = workspaceGeneration;
+  try {
+    const payload = await runtime.getRun(id);
+    if (generation !== workspaceGeneration) return;
+    const item = redactTelemetry(payload.run);
+    if (isLegacyRun(item)) {
+      inspectedRun = null; legacyDetail = item; selectedEventId = null;
+      navigate('sessions'); $('legacy-detail').scrollIntoView({ block: 'start' });
+      notify('이전 보고서를 열었습니다. 누락된 실행 조건은 비교 시 별도로 표시합니다.');
+      return;
+    }
+    if (!isRun(item)) throw new Error('저장된 실행 형식을 확인할 수 없습니다.');
+    legacyDetail = null; inspectedRun = item; selectedEventId = null; $('target-url').value = isLab(item) ? '' : item.target;
+    navigate('dashboard'); notify('중앙에 저장된 실행을 열었습니다.');
+  } catch (error) { showRuntimeError(error.message); }
+}
+function updateComparisonSelectors() {
+  const options = history.map(item => `<option value="${escape(item.id)}">${escape(`${dateLabel(item.startedAt)} · ${runModelName(item)} · ${item.id}`)}</option>`).join('');
+  const before = $('baseline-select').value; const after = $('candidate-select').value;
+  $('baseline-select').innerHTML = $('candidate-select').innerHTML = options || '<option value="">저장된 실행 없음</option>';
+  if (history.some(item => item.id === before)) $('baseline-select').value = before;
+  else if (history.length > 1) $('baseline-select').value = history[1].id;
+  if (history.some(item => item.id === after)) $('candidate-select').value = after;
+  $('compare-button').disabled = comparisonPending || history.length < 2;
+}
+function comparisonConditions(conditions) {
+  if (!Array.isArray(conditions)) return jsonSection('비교 조건', conditions || {});
+  return `<section class="panel comparison-modules"><h2>비교 조건</h2><div class="comparison-table-wrap"><table class="comparison-table"><thead><tr><th>조건</th><th>기준</th><th>비교</th><th>확인</th></tr></thead><tbody>${conditions.map(item => `<tr><th>${escape(item.name)}</th><td>${escape(typeof item.before === 'object' ? JSON.stringify(item.before) : item.before ?? '미기록')}</td><td>${escape(typeof item.after === 'object' ? JSON.stringify(item.after) : item.after ?? '미기록')}</td><td class="${item.equal ? 'condition-match' : 'condition-difference'}">${item.available === false ? '자료 부족' : item.equal ? '동일' : '다름'}</td></tr>`).join('')}</tbody></table></div></section>`;
+}
+function comparisonMetrics(metrics) {
+  if (!metrics?.baseline || !metrics?.candidate) return jsonSection('실행 시간 · 토큰 · 비용 · 오류 지표', metrics || {});
+  const labels = { elapsedMs: '실행 시간 (ms)', events: '모듈 이벤트', modelCalls: '모델 호출', successfulModelCalls: '성공한 모델 호출', promptTokens: '입력 토큰', completionTokens: '출력 토큰', estimatedCost: '예상 비용' };
+  return `<section class="panel comparison-modules"><h2>실행 지표 차이</h2><div class="comparison-table-wrap"><table class="comparison-table"><thead><tr><th>지표</th><th>기준</th><th>비교</th><th>차이</th></tr></thead><tbody>${Object.entries(labels).map(([key, label]) => {
+    const measured = !['promptTokens', 'completionTokens'].includes(key) || (metrics.baseline.tokenUsageAvailable && metrics.candidate.tokenUsageAvailable);
+    const before = measured ? metrics.baseline[key] : null; const after = measured ? metrics.candidate[key] : null;
+    const delta = Number.isFinite(before) && Number.isFinite(after) ? after - before : null;
+    return `<tr><th>${escape(label)}</th><td>${escape(before ?? '미측정')}</td><td>${escape(after ?? '미측정')}</td><td>${delta === null ? '—' : escape(`${delta > 0 ? '+' : ''}${delta}`)}</td></tr>`;
+  }).join('')}</tbody></table></div><p>비용 또는 토큰 정보가 없는 경우 0으로 추정하지 않고 미측정으로 표시합니다.</p></section>`;
+}
+function renderComparison() {
+  updateComparisonSelectors();
+  if (!comparison) return;
+  const compatible = comparison.compatible === true || comparison.comparable === true;
+  const baseline = comparison.baseline?.run || comparison.baseline || history.find(item => item.id === comparison.baselineRunId);
+  const candidate = comparison.candidate?.run || comparison.candidate || history.find(item => item.id === comparison.candidateRunId);
+  const diffs = Array.isArray(comparison.moduleDiffs) ? comparison.moduleDiffs : Object.entries(comparison.moduleDiffs || {}).map(([module, diff]) => ({ module, ...diff }));
+  $('comparison-content').innerHTML = `<section class="panel comparison-summary"><span class="review-tag">${compatible ? '동일 조건 비교 가능' : '조건 차이 확인 필요'}</span><h2>${escape(comparison.kind || comparison.type || '실행 결과 차이')}</h2><p>${compatible ? '서버가 기록한 비교 조건을 충족합니다.' : '코드·모델·입력·정책 중 함께 바뀐 조건이 있으면 한 모듈의 영향으로 단정할 수 없습니다.'}</p><div class="comparison-pair"><div><small>BASELINE</small><strong>${escape(baseline?.id || $('baseline-select').value)}</strong><span>${escape(baseline ? runModelName(baseline) : '')}</span></div><div><small>CANDIDATE</small><strong>${escape(candidate?.id || $('candidate-select').value)}</strong><span>${escape(candidate ? runModelName(candidate) : '')}</span></div></div></section>${comparisonConditions(comparison.conditions || comparison.compatibility)}${comparisonMetrics(comparison.metrics)}${jsonSection('Finding 추가 / 제거 / 변경', comparison.findingChanges || comparison.findingTransition || comparison.findings || {})}<section class="panel comparison-modules"><h2>모듈별 정규화 입출력 차이</h2>${diffs.length ? diffs.map(item => `<details><summary>${escape(item.module || item.name || item.id || 'module')} · ${escape(item.changed === false || item.changes?.length === 0 ? '동일' : '변경 상세')}</summary><pre tabindex="0">${highlightJSON(item)}</pre></details>`).join('') : '<p>모듈 차이가 없습니다.</p>'}</section><p class="runtime-scope">현재 AI는 규칙 엔진이 만든 단일 허용 후보를 선택합니다. 모델 비교값은 계약 준수·중단·실행 시간·토큰 비교이며 범용 취약점 탐지 정확도로 해석하지 않습니다.</p>`;
+}
+function renderPlatform() {
+  if (!platform) { $('platform-content').innerHTML = `<div class="panel empty-state"><h3>${platformError ? '통합 상태를 불러올 수 없습니다' : '통합 상태 조회 중'}</h3><p>${escape(platformError)}</p></div>`; return; }
+  const source = platform.source || {};
+  const modules = Array.isArray(platform.modules) ? platform.modules : Object.entries(platform.modules || {}).map(([name, value]) => ({ name, ...value }));
+  $('platform-content').innerHTML = `<section class="panel platform-source"><div class="eyebrow">INTEGRATION PLATFORM</div><h2>${escape(source.branch || source.ref || '현재 통합 소스')}</h2><p class="mono">${escape(source.commitSha || source.commit || source.sha || 'SHA 미기록')}</p><p>${escape(source.dirty ? '작업 디렉터리에 변경 사항이 있습니다.' : '서버가 보고한 소스 버전과 모듈 정보를 표시합니다.')}</p></section><div class="module-grid platform-modules">${modules.map(item => `<article class="panel module-card"><span class="local-chip">${escape(item.status || item.layer || 'MODULE')}</span><h2>${escape(item.name || item.id || 'module')}</h2><p>${escape(item.description || item.role || item.path || '')}</p><small>${escape(item.layer || '')}${item.sourceBranch ? ` · ${escape(item.sourceBranch)}` : ''}</small><p class="mono">${escape(item.version || item.packageVersion || item.hash || item.contentDigest || item.sha || '버전 미기록')}</p>${item.changed !== undefined ? `<small>${item.changed ? '기준 대비 변경됨' : '기준과 동일'}</small>` : ''}</article>`).join('')}</div>${jsonSection('검증 실행 결과 · 실제 서버 보고값', platform.tests || platform.validation || {})}${jsonSection('계층 및 모듈 연결', platform.architecture || {})}${jsonSection('소스 및 변경 모듈 상세', source)}`;
+}
+$('model-select').addEventListener('change', renderStats);
+document.addEventListener('input', event => { if (event.target.dataset.reviewNote) reviewDrafts.set(event.target.dataset.reviewNote, event.target.value); });
+document.addEventListener('submit', async event => {
+  const form = event.target.closest('[data-review-form]'); if (!form) return;
+  event.preventDefault();
+  const runId = form.dataset.runId; const checkId = form.dataset.checkId; const key = `${runId}:${checkId}`;
+  const note = form.querySelector('[data-review-note]').value.trim();
+  if (!canOperate() || pendingReviews.has(key)) return;
+  if (!note) { notify('증거를 확인한 검토 메모를 입력하세요.'); return; }
+  const generation = workspaceGeneration; pendingReviews.add(key); render();
+  try {
+    await runtime.reviewCheck(runId, checkId, note);
+    const payload = await runtime.getRun(runId);
+    if (generation !== workspaceGeneration) return;
+    const updated = redactTelemetry(payload.run);
+    if (!isRun(updated)) throw new Error('검토 후 실행 기록 형식을 확인할 수 없습니다.');
+    if (inspectedRun?.id === runId) inspectedRun = updated;
+    if (run.id === runId) run = updated;
+    reviewDrafts.delete(key); await refreshHistory(); notify('서버가 증거 무결성을 확인하고 검토 완료를 저장했습니다.');
+  } catch (error) { showRuntimeError(error.message); }
+  finally { pendingReviews.delete(key); render(); }
+});
+$('refresh-history').addEventListener('click', () => void refreshHistory());
+$('compare-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const baseline = $('baseline-select').value; const candidate = $('candidate-select').value;
+  if (!baseline || !candidate || comparisonPending) return;
+  if (baseline === candidate) { notify('서로 다른 두 실행을 선택하세요.'); return; }
+  comparisonPending = true; $('compare-button').disabled = true;
+  try { comparison = redactTelemetry(await runtime.compare(baseline, candidate, $('comparison-kind').value)); renderComparison(); }
+  catch (error) { showRuntimeError(error.message); }
+  finally { comparisonPending = false; $('compare-button').disabled = history.length < 2; }
+});
+$('login-dialog').addEventListener('cancel', event => event.preventDefault());
+$('login-form').addEventListener('submit', async event => {
+  event.preventDefault(); $('login-submit').disabled = true; $('login-error').hidden = true;
+  try { await runtime.login($('login-username').value, $('login-password').value); $('login-password').value = ''; }
+  catch (error) { $('login-error').textContent = error.message; $('login-error').hidden = false; }
+  finally { $('login-submit').disabled = false; }
+});
+$('logout-button').addEventListener('click', async () => { try { await runtime.logout(); } catch (error) { showRuntimeError(error.message); } });
 window.addEventListener('beforeunload', () => { saveRun(); runtime.close(); });
 $('target-url').value = '';
 $('autoscroll-button').setAttribute('aria-pressed', String(settings.autoScroll));
 navigate(location.hash.slice(1) || 'dashboard');
 runtime.connect();
+setInterval(() => { if (authSession && (!authSession.authRequired || authSession.authenticated)) void refreshHistory(); }, 5000);
