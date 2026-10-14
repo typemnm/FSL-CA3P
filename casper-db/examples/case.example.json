@@ -1,0 +1,34 @@
+{
+  "case_id": "CASE-001",
+  "target_id": "LAB-DEMO",
+  "title": "가정한 지난달 CERT 보고서: 검색 입력 XSS",
+  "vulnerability_type": "XSS",
+  "reported_on": "2026-08-20",
+  "vulnerability_url": "https://lab.example.invalid/search?q=sample",
+  "severity": "medium",
+  "description": "지난달 점검에서 검색어 q가 HTML 본문에 필요한 출력 인코딩 없이 포함되어 브라우저에서 스크립트가 실행된 것으로 가정한다. 실제 모의 사이트의 구현과 보고서 수치는 팀 자료로 바꾼다.",
+  "remediation": [
+    "검색어를 HTML 본문에 출력할 때 문맥에 맞는 출력 인코딩을 적용한다",
+    "수정 후 같은 입력으로 재점검해 브라우저 실행이 차단되는지 확인한다"
+  ],
+  "prior_evidence": "시나리오 가정: 지난달 실습 브라우저에서 casperProof 표식을 관찰했다. 실제 증거 파일은 아직 제공되지 않았다.",
+  "endpoint": "/search",
+  "method": "GET",
+  "parameter": "q",
+  "parameter_location": "query",
+  "preconditions": [
+    "예시 가정: LAB-DEMO의 /search가 q 값을 HTML 본문에 그대로 출력한다",
+    "예시 가정: 실습 브라우저에서 해당 스크립트를 실행할 수 있다. 실제 사이트에서 확인한다"
+  ],
+  "procedure": [
+    "팀의 모의 사이트에서 검색 경로와 q 입력을 확인한다",
+    "실습용 입력을 q 값으로 전달하고 브라우저에서 응답을 연다",
+    "document.documentElement.dataset.casperProof 값이 CASE-001인지 확인한다"
+  ],
+  "payload": "<script>document.documentElement.dataset.casperProof='CASE-001'</script>",
+  "success_condition": "브라우저에서 실습 스크립트가 실행되어 document.documentElement.dataset.casperProof가 CASE-001이 된다. 응답에 문자열이 보이는 것만으로 성공으로 판단하지 않는다.",
+  "source_report": "examples/previous-month-xss-report.md",
+  "status": "draft",
+  "patch_status": "unknown",
+  "source": "synthetic"
+}

@@ -1,0 +1,12 @@
+{
+  "name": "ca3p-agent-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "test": "node --test tests/engine.test.mjs tests/runtime.test.mjs tests/server.test.mjs tests/local-lab.test.mjs tests/local-xss-loop.test.mjs tests/xss-gateway.test.mjs tests/xss-execution-observer.test.mjs tests/xss-parser-integration.test.mjs tests/guardrail-integration.test.mjs tests/casper-db-integration.test.mjs tests/pentest-db-integration.test.mjs",
+    "check": "node --check server.mjs && node --check local-server.mjs && node --check local-runtime.mjs && node --check local-lab-gateway.mjs && node --check lab-reasoning.mjs && node --check integrations/xss-parser.mjs && node --check integrations/guardrail.mjs && node --check integrations/casper-db.mjs && node --check integrations/pentest-db.mjs && node --check dist/runtime-client.js && node --check dist/app.js && node --check dist/engine.js && node --check dist/starfield.js"
+  }
+}

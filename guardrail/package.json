@@ -1,0 +1,13 @@
+{
+  "name": "fsl-ca3p-guardrail-evaluator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FSL-CA3P ruleset evaluator",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

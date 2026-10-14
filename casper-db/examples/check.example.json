@@ -1,0 +1,17 @@
+{
+  "check_id": "CHECK-DEMO-002",
+  "case_id": "CASE-001",
+  "run_id": "RUN-DEMO-002",
+  "target_id": "LAB-DEMO",
+  "endpoint": "/search",
+  "method": "GET",
+  "parameter": "q",
+  "parameter_location": "query",
+  "observed_at": "2026-09-30T11:00:00+09:00",
+  "result": "inconclusive",
+  "observation": "가상 입력 예시: 실제 모의 사이트에서 아직 재점검하지 않았다.",
+  "evidence_refs": [],
+  "source": "synthetic",
+  "review_status": "draft",
+  "case_revision": 1
+}

@@ -1,0 +1,802 @@
+{
+  "schemaVersion": "1.0.0",
+  "rulesetId": "fsl-ca3p-vul-web-1-guardrail",
+  "version": "1.0.1",
+  "status": "final-specification",
+  "description": "FSL-CA3P vul-web-1 전용 펜테스팅 에이전트 실행 가드레일",
+  "targetApplication": "vul-web-1",
+  "compatibility": {
+    "repository": "FSL-CA3P",
+    "reviewedBranches": [
+      "main",
+      "origin/1mn2147/loop_agent",
+      "origin/Skirt/xss-fuzzer",
+      "origin/nahyun06/pentest-db",
+      "origin/typemnm/vul-web"
+    ],
+    "agentEnvelopeSchema": "1.0",
+    "runtimeRequirements": {
+      "vul-web-1": "Node.js >=18",
+      "loop_agent": "Node.js >=18",
+      "xss-fuzzer": "Node.js >=20"
+    }
+  },
+  "engine": {
+    "defaultDecision": "DENY",
+    "denyOverridesAllow": true,
+    "stopOnFirstHardDeny": true,
+    "evaluationOrder": [
+      "validate_input",
+      "validate_trusted_context",
+      "normalize_for_detection",
+      "classify_payload",
+      "evaluate_hard_denies",
+      "evaluate_profile_policy",
+      "enforce_budget",
+      "emit_decision"
+    ],
+    "decisions": [
+      "ALLOW",
+      "DENY"
+    ],
+    "failureMode": "closed"
+  },
+  "inputContract": {
+    "required": [
+      "stage",
+      "action",
+      "trustedContext"
+    ],
+    "actionSchemas": {
+      "http_request": {
+        "required": [
+          "operation",
+          "session",
+          "method",
+          "path"
+        ],
+        "allowedFields": [
+          "operation",
+          "session",
+          "method",
+          "path",
+          "query",
+          "body"
+        ]
+      },
+      "browser_fuzz": {
+        "required": [
+          "operation",
+          "profile",
+          "maxCases"
+        ],
+        "allowedFields": [
+          "operation",
+          "profile",
+          "maxCases",
+          "settleMs",
+          "timeoutMs"
+        ]
+      }
+    },
+    "trustedContext": {
+      "source": "orchestrator_or_gateway_only",
+      "mustNotBeAcceptedFromLlmOutput": true,
+      "required": [
+        "targetMode",
+        "targetOrigin",
+        "testProfile",
+        "runId",
+        "iteration",
+        "networkPolicy",
+        "budget"
+      ],
+      "optional": [
+        "currentUser",
+        "boundCanary",
+        "fixtureOwner",
+        "fuzzerEnvironment"
+      ]
+    }
+  },
+  "scope": {
+    "targetMode": "isolated_local_lab",
+    "allowedOrigins": [
+      "http://127.0.0.1:3000"
+    ],
+    "canonicalOrigin": "http://127.0.0.1:3000",
+    "allowedLoopbackHosts": [
+      "127.0.0.1"
+    ],
+    "allowedSchemes": [
+      "http"
+    ],
+    "forbidUrlCredentials": true,
+    "forbidFragments": true,
+    "forbidOriginRedirects": true,
+    "externalNetworkDefault": "DENY"
+  },
+  "normalization": {
+    "detectionViewOnly": true,
+    "preserveOriginalActionForExecution": true,
+    "maximumInputBytes": 65536,
+    "maximumDecodePasses": 2,
+    "steps": [
+      "validate_utf8",
+      "reject_nul_bytes",
+      "percent_decode",
+      "decode_html_entities",
+      "unicode_nfkc",
+      "lowercase_for_case_insensitive_matching"
+    ],
+    "rejectWhenStillEncodedAfterMaximumPasses": true,
+    "duplicateQueryParameterPolicy": "DENY"
+  },
+  "endpointCatalog": [
+    {
+      "id": "SESSION_GET",
+      "method": "GET",
+      "pathPattern": "^/api/session$",
+      "queryKeys": [],
+      "bodyKeys": []
+    },
+    {
+      "id": "SESSION_POST",
+      "method": "POST",
+      "pathPattern": "^/api/session$",
+      "queryKeys": [],
+      "bodyKeys": [
+        "userId"
+      ]
+    },
+    {
+      "id": "POSTS_GET",
+      "method": "GET",
+      "pathPattern": "^/api/posts$",
+      "queryKeys": [],
+      "bodyKeys": []
+    },
+    {
+      "id": "POSTS_CREATE",
+      "method": "POST",
+      "pathPattern": "^/api/posts$",
+      "queryKeys": [],
+      "bodyKeys": [
+        "title",
+        "content"
+      ]
+    },
+    {
+      "id": "POSTS_DELETE",
+      "method": "DELETE",
+      "pathPattern": "^/api/posts/([0-9]+)$",
+      "queryKeys": [
+        "authorId"
+      ],
+      "bodyKeys": []
+    }
+  ],
+  "classifiers": [
+    {
+      "id": "XSS_SCRIPT_TAG",
+      "fields": [
+        "action.body.content"
+      ],
+      "match": {
+        "type": "regex_any",
+        "patterns": [
+          "<\\s*\\/?\\s*script\\b"
+        ],
+        "flags": "i"
+      },
+      "labels": [
+        "xss",
+        "html_tag",
+        "script"
+      ]
+    },
+    {
+      "id": "XSS_EVENT_HANDLER",
+      "fields": [
+        "action.body.content"
+      ],
+      "match": {
+        "type": "regex_any",
+        "patterns": [
+          "\\bon[a-z]+\\s*="
+        ],
+        "flags": "i"
+      },
+      "labels": [
+        "xss",
+        "event_handler"
+      ]
+    },
+    {
+      "id": "XSS_EXECUTABLE_SCHEME",
+      "fields": [
+        "action.body.content"
+      ],
+      "match": {
+        "type": "regex_any",
+        "patterns": [
+          "javascript\\s*:",
+          "data\\s*:\\s*text/html"
+        ],
+        "flags": "i"
+      },
+      "labels": [
+        "xss",
+        "executable_url"
+      ]
+    },
+    {
+      "id": "XSS_EXECUTABLE_TAG",
+      "fields": [
+        "action.body.content"
+      ],
+      "match": {
+        "type": "regex_any",
+        "patterns": [
+          "<\\s*(img|svg|iframe|object|embed|math)\\b"
+        ],
+        "flags": "i"
+      },
+      "labels": [
+        "xss",
+        "executable_tag"
+      ]
+    },
+    {
+      "id": "HTML_TAG_PRESENT",
+      "fields": [
+        "action.body.content"
+      ],
+      "match": {
+        "type": "regex_any",
+        "patterns": [
+          "<\\s*\\/?\\s*[a-z][^>]*>"
+        ],
+        "flags": "i"
+      },
+      "labels": [
+        "html"
+      ]
+    },
+    {
+      "id": "DELETE_AUTHORITY_CLAIM",
+      "fields": [
+        "action.query.authorId"
+      ],
+      "match": {
+        "type": "field_present"
+      },
+      "labels": [
+        "authorization",
+        "client_claimed_identity"
+      ]
+    }
+  ],
+  "hardDenyRules": [
+    {
+      "id": "SCOPE-001",
+      "reason": "격리된 로컬 실습 모드가 아님",
+      "when": {
+        "field": "trustedContext.targetMode",
+        "operator": "not_equals",
+        "value": "isolated_local_lab"
+      }
+    },
+    {
+      "id": "SCOPE-002",
+      "reason": "허용된 로컬 origin이 아님",
+      "when": {
+        "field": "trustedContext.targetOrigin",
+        "operator": "not_in",
+        "values": [
+          "http://127.0.0.1:3000"
+        ]
+      }
+    },
+    {
+      "id": "SCOPE-003",
+      "reason": "요청 경로가 절대 URL, credential 또는 fragment를 포함함",
+      "when": {
+        "field": "action.path",
+        "operator": "unsafe_url_reference"
+      }
+    },
+    {
+      "id": "CONTRACT-001",
+      "reason": "허용되지 않은 action 필드 또는 endpoint",
+      "when": {
+        "operator": "not_in_endpoint_catalog"
+      }
+    },
+    {
+      "id": "CONTRACT-002",
+      "reason": "중복 query parameter가 존재함",
+      "when": {
+        "operator": "has_duplicate_query_parameter"
+      }
+    },
+    {
+      "id": "TRUST-001",
+      "reason": "LLM 출력이 trustedContext 또는 policyContext를 덮어쓰려고 함",
+      "when": {
+        "operator": "untrusted_input_contains_trusted_fields"
+      }
+    },
+    {
+      "id": "SECRET-001",
+      "reason": "LLM 행동에 Cookie 또는 Authorization 값이 포함됨",
+      "when": {
+        "field": "action",
+        "operator": "contains_forbidden_keys",
+        "values": [
+          "cookie",
+          "authorization",
+          "proxy-authorization"
+        ]
+      }
+    },
+    {
+      "id": "BUDGET-001",
+      "reason": "실행 횟수 또는 변경 요청 예산을 초과함",
+      "when": {
+        "operator": "budget_exceeded"
+      }
+    },
+    {
+      "id": "DELETE-001",
+      "reason": "DELETE 요청의 authorId가 없거나 단일 값이 아님",
+      "when": {
+        "all": [
+          {
+            "field": "action.method",
+            "operator": "equals",
+            "value": "DELETE"
+          },
+          {
+            "field": "action.query.authorId",
+            "operator": "not_exactly_one_nonempty_value"
+          }
+        ]
+      }
+    },
+    {
+      "id": "DELETE-002",
+      "reason": "보호된 관리자 또는 초기 fixture를 대상으로 함",
+      "when": {
+        "all": [
+          {
+            "field": "action.method",
+            "operator": "equals",
+            "value": "DELETE"
+          },
+          {
+            "any": [
+              {
+                "field": "trustedContext.boundCanary.ownerId",
+                "operator": "equals",
+                "value": "admin"
+              },
+              {
+                "field": "action.query.authorId",
+                "operator": "equals",
+                "value": "admin"
+              },
+              {
+                "field": "action.path",
+                "operator": "matches",
+                "value": "^/api/posts/(1|2)$",
+                "flags": ""
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "XSS-OUT-OF-PROFILE",
+      "reason": "XSS 지표가 허용된 XSS 테스트 프로필 밖에서 발견됨",
+      "when": {
+        "all": [
+          {
+            "field": "classifications",
+            "operator": "contains",
+            "value": "xss"
+          },
+          {
+            "field": "trustedContext.testProfile",
+            "operator": "not_in",
+            "values": [
+              "stored_xss_canary",
+              "offline_xss_fuzzer"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "EGRESS-001",
+      "reason": "XSS 테스트의 외부 네트워크가 차단 상태가 아님",
+      "when": {
+        "all": [
+          {
+            "field": "trustedContext.testProfile",
+            "operator": "in",
+            "values": [
+              "stored_xss_canary",
+              "offline_xss_fuzzer"
+            ]
+          },
+          {
+            "field": "trustedContext.networkPolicy.externalRequests",
+            "operator": "not_equals",
+            "value": "DENY"
+          }
+        ]
+      }
+    }
+  ],
+  "profiles": {
+    "agent_cross_user_delete_canary": {
+      "description": "loop_agent가 생성한 Bob canary 하나에 대한 Alice 세션의 교차 사용자 삭제 검증",
+      "trustedContextRequirements": {
+        "currentUserId": "alice",
+        "fixtureOwnerId": "bob",
+        "boundCanaryRequired": true,
+        "boundCanaryFields": [
+          "resourceId",
+          "ownerId",
+          "createdByRunId"
+        ],
+        "maximumIterations": 1,
+        "maximumHttpRequests": 8,
+        "maximumMutations": 2,
+        "retryMutation": false
+      },
+      "stageRules": [
+        {
+          "stage": "setup.attacker_session",
+          "decision": "ALLOW",
+          "exactAction": {
+            "operation": "http_request",
+            "session": "attacker",
+            "method": "GET",
+            "path": "/api/session"
+          }
+        },
+        {
+          "stage": "setup.fixture_session",
+          "decision": "ALLOW",
+          "exactAction": {
+            "operation": "http_request",
+            "session": "fixture",
+            "method": "POST",
+            "path": "/api/session",
+            "body": {
+              "userId": "bob"
+            }
+          }
+        },
+        {
+          "stage": "setup.canary_post",
+          "decision": "ALLOW",
+          "constraints": [
+            {
+              "field": "action.session",
+              "operator": "equals",
+              "value": "fixture"
+            },
+            {
+              "field": "action.method",
+              "operator": "equals",
+              "value": "POST"
+            },
+            {
+              "field": "action.path",
+              "operator": "equals",
+              "value": "/api/posts"
+            },
+            {
+              "field": "action.body",
+              "operator": "exact_keys",
+              "values": [
+                "title",
+                "content"
+              ]
+            },
+            {
+              "field": "action.body.title",
+              "operator": "starts_with",
+              "value": "agent-canary-"
+            },
+            {
+              "field": "action.body.content",
+              "operator": "not_classified_as",
+              "value": "xss"
+            }
+          ]
+        },
+        {
+          "stage": "loop.observe",
+          "decision": "ALLOW",
+          "exactAction": {
+            "operation": "http_request",
+            "session": "attacker",
+            "method": "GET",
+            "path": "/api/posts"
+          }
+        },
+        {
+          "stage": "loop.act",
+          "decision": "ALLOW",
+          "constraints": [
+            {
+              "field": "action.operation",
+              "operator": "equals",
+              "value": "http_request"
+            },
+            {
+              "field": "action.session",
+              "operator": "equals",
+              "value": "attacker"
+            },
+            {
+              "field": "action.method",
+              "operator": "equals",
+              "value": "DELETE"
+            },
+            {
+              "field": "action.path.resourceId",
+              "operator": "equals_field",
+              "value": "trustedContext.boundCanary.resourceId"
+            },
+            {
+              "field": "action.query.authorId",
+              "operator": "equals_field",
+              "value": "trustedContext.boundCanary.ownerId"
+            },
+            {
+              "field": "trustedContext.boundCanary.ownerId",
+              "operator": "equals",
+              "value": "bob"
+            },
+            {
+              "field": "trustedContext.boundCanary.createdByRunId",
+              "operator": "equals_field",
+              "value": "trustedContext.runId"
+            },
+            {
+              "field": "budget.deleteCount",
+              "operator": "less_than",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "stage": "loop.verify",
+          "decision": "ALLOW",
+          "exactAction": {
+            "operation": "http_request",
+            "session": "attacker",
+            "method": "GET",
+            "path": "/api/posts"
+          }
+        }
+      ]
+    },
+    "stored_xss_canary": {
+      "description": "attack-module이 로컬 vul-web-1에 테스트용 저장형 XSS 게시글 하나를 생성하고 xss-parser가 관찰하는 프로필",
+      "trustedContextRequirements": {
+        "boundCanaryRequired": true,
+        "maximumIterations": 1,
+        "maximumHttpRequests": 6,
+        "maximumMutations": 2,
+        "maximumXssSubmissions": 1,
+        "retryMutation": false,
+        "externalRequests": "DENY"
+      },
+      "stageRules": [
+        {
+          "stage": "xss.setup_session",
+          "decision": "ALLOW",
+          "exactAction": {
+            "operation": "http_request",
+            "session": "attacker",
+            "method": "GET",
+            "path": "/api/session"
+          }
+        },
+        {
+          "stage": "xss.inject_canary",
+          "decision": "ALLOW",
+          "constraints": [
+            {
+              "field": "action.session",
+              "operator": "equals",
+              "value": "attacker"
+            },
+            {
+              "field": "action.method",
+              "operator": "equals",
+              "value": "POST"
+            },
+            {
+              "field": "action.path",
+              "operator": "equals",
+              "value": "/api/posts"
+            },
+            {
+              "field": "action.body",
+              "operator": "exact_keys",
+              "values": [
+                "title",
+                "content"
+              ]
+            },
+            {
+              "field": "action.body.title",
+              "operator": "starts_with_field",
+              "value": "trustedContext.boundCanary.titlePrefix"
+            },
+            {
+              "field": "action.body.content",
+              "operator": "classified_as",
+              "value": "xss"
+            },
+            {
+              "field": "trustedContext.boundCanary.createdByRunId",
+              "operator": "equals_field",
+              "value": "trustedContext.runId"
+            },
+            {
+              "field": "budget.xssSubmissionCount",
+              "operator": "less_than",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "stage": "xss.observe",
+          "decision": "ALLOW",
+          "exactAction": {
+            "operation": "http_request",
+            "session": "attacker",
+            "method": "GET",
+            "path": "/api/posts"
+          }
+        },
+        {
+          "stage": "xss.cleanup",
+          "decision": "ALLOW",
+          "constraints": [
+            {
+              "field": "action.session",
+              "operator": "equals",
+              "value": "attacker"
+            },
+            {
+              "field": "action.method",
+              "operator": "equals",
+              "value": "DELETE"
+            },
+            {
+              "field": "action.path.resourceId",
+              "operator": "equals_field",
+              "value": "trustedContext.boundCanary.resourceId"
+            },
+            {
+              "field": "action.query.authorId",
+              "operator": "equals_field",
+              "value": "trustedContext.currentUser.id"
+            },
+            {
+              "field": "trustedContext.boundCanary.createdByRunId",
+              "operator": "equals_field",
+              "value": "trustedContext.runId"
+            }
+          ]
+        }
+      ]
+    },
+    "offline_xss_fuzzer": {
+      "description": "xss-fuzzer가 실제 서버 없이 Chromium과 인메모리 FSL API 모델에서 실행되는 프로필",
+      "trustedContextRequirements": {
+        "fuzzerMode": "offline-browser",
+        "virtualOrigin": "http://xss-fuzzer.test",
+        "realServerTested": false,
+        "externalRequests": "DENY",
+        "maximumCases": 500
+      },
+      "allowedOperation": {
+        "operation": "browser_fuzz",
+        "profile": "fsl-ca3p"
+      },
+      "constraints": [
+        {
+          "field": "trustedContext.fuzzerEnvironment.mode",
+          "operator": "equals",
+          "value": "offline-browser"
+        },
+        {
+          "field": "trustedContext.fuzzerEnvironment.virtualOrigin",
+          "operator": "equals",
+          "value": "http://xss-fuzzer.test"
+        },
+        {
+          "field": "trustedContext.fuzzerEnvironment.realServerTested",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "trustedContext.networkPolicy.externalRequests",
+          "operator": "equals",
+          "value": "DENY"
+        },
+        {
+          "field": "action.maxCases",
+          "operator": "between_inclusive",
+          "values": [
+            1,
+            500
+          ]
+        }
+      ],
+      "decision": "ALLOW"
+    }
+  },
+  "forbiddenActions": [
+    "non_loopback_target",
+    "unknown_endpoint",
+    "shell_command",
+    "file_write_outside_test_artifacts",
+    "credential_extraction",
+    "cookie_or_authorization_exposure",
+    "admin_seed_post_deletion",
+    "unbound_resource_mutation",
+    "mutation_retry",
+    "external_network_request",
+    "more_than_one_iteration"
+  ],
+  "decisionOutput": {
+    "required": [
+      "decision",
+      "ruleId",
+      "reason",
+      "runId",
+      "stage",
+      "normalizedTarget",
+      "matchedClassifiers",
+      "budgetSnapshot"
+    ],
+    "exampleAllow": {
+      "decision": "ALLOW",
+      "ruleId": "PROFILE.agent_cross_user_delete_canary.loop.act",
+      "reason": "현재 run에 바인딩된 Bob canary 한 건과 정확히 일치함"
+    },
+    "exampleDeny": {
+      "decision": "DENY",
+      "ruleId": "DELETE-002",
+      "reason": "보호된 관리자 또는 초기 fixture를 대상으로 함"
+    },
+    "sensitiveFieldsToRedact": [
+      "cookie",
+      "authorization",
+      "proxy-authorization",
+      "rawChainOfThought"
+    ]
+  },
+  "implementationRequirements": [
+    "이 파일은 데이터이므로 실행 전에 별도 evaluator가 로드하고 스키마를 검증해야 한다.",
+    "trustedContext는 LLM 출력이 아니라 Orchestrator 또는 Gateway가 주입해야 한다.",
+    "분류용 정규식은 공격 여부를 표시할 뿐 단독으로 허용 여부를 결정하지 않는다.",
+    "attack-module 호출 직전에 최종 평가해야 하며 평가 후 action을 변경하면 다시 평가해야 한다.",
+    "DELETE와 POST 같은 변경 요청은 전송 실패 후 자동 재시도하지 않는다.",
+    "ALLOW 결정은 runId, stage, canary, budget과 함께 감사 로그로 남긴다.",
+    "실제 웹사이트의 XSS와 권한 취약점은 의도된 실습 대상이므로 이 ruleset이 서버 보안 패치를 대체하지 않는다."
+  ]
+}
+

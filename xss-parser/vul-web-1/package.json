@@ -1,0 +1,13 @@
+{
+  "name": "vulnerable-vanilla-board",
+  "version": "1.0.0",
+  "private": true,
+  "description": "로컬 보안 실습용 바닐라 JS 게시판",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

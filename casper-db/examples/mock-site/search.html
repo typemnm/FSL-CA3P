@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>CASPER 모의 검색 페이지</title></head>
+<body>
+  <!-- 입력 지점 추출 실습용 HTML이다. XSS 취약점이나 서버 동작은 포함하지 않는다. -->
+  <form action="/search" method="get">
+    <label>검색어 <input type="search" name="q"></label>
+    <button type="submit">검색</button>
+  </form>
+  <a href="/search?q=sample">예시 검색 링크</a>
+  <a href="/search?page=2">다음 페이지</a>
+  <form action="/feedback" method="post">
+    <label>의견 <textarea name="message"></textarea></label>
+    <button type="submit">보내기</button>
+  </form>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "ca3p",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CA3P 로컬 워크스페이스 시작 진입점",
+  "scripts": {
+    "start": "node start.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
