@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync, appendFileSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createTunnelOriginDetector } from './tunnel-origin.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const runtimeDir = join(root, '.runtime');
@@ -12,16 +13,18 @@ const binary = process.env.CLOUDFLARED_BIN ?? join(runtimeDir, 'bin/cloudflared'
 if (!existsSync(binary)) throw new Error('Install cloudflared and set CLOUDFLARED_BIN. See docs/DEVICE_DEPLOYMENT.md.');
 const python = process.env.CASPER_DB_PYTHON ?? join(root, '.venv/bin/python');
 let app; let stopping = false; let publicOrigin; let started = false;
+const detectStdoutOrigin = createTunnelOriginDetector();
+const detectStderrOrigin = createTunnelOriginDetector();
 const tunnel = spawn(binary, ['tunnel', '--no-autoupdate', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`], {
   cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
 });
 writeFileSync(join(runtimeDir, 'device-pids.json'), JSON.stringify({ supervisor: process.pid, tunnel: tunnel.pid, startedAt: new Date().toISOString() }), { mode: 0o600 });
 const timeout = setTimeout(() => { console.error('Tunnel registration timed out.'); void stop(1); }, 60000);
-function capture(chunk) {
+function capture(chunk, detectOrigin) {
   const text = chunk.toString(); appendFileSync(join(runtimeDir, 'tunnel.log'), text, { mode: 0o600 });
-  const match = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(text);
-  if (!match || started) return;
-  started = true; publicOrigin = match[0]; clearTimeout(timeout);
+  const origin = detectOrigin(text);
+  if (!origin || started) return;
+  started = true; publicOrigin = origin; clearTimeout(timeout);
   writeFileSync(join(runtimeDir, 'public-url.txt'), publicOrigin + '\n', { mode: 0o600 });
   app = spawn(process.execPath, [join(root, 'start.mjs')], { cwd: root,
     env: { ...process.env, PORT: String(port), DASHBOARD_HOST: '127.0.0.1', DASHBOARD_PUBLIC_ORIGIN: publicOrigin,
@@ -33,7 +36,8 @@ function capture(chunk) {
   app.once('exit', code => { if (!stopping) { console.error(`Server exited (${code}).`); void stop(code ?? 1); } });
   console.log(`External dashboard: ${publicOrigin}\nLogin credentials: ${join(runtimeDir, 'access.txt')}\nThis URL remains active while this device and supervisor are running.`);
 }
-tunnel.stdout.on('data', capture); tunnel.stderr.on('data', capture);
+tunnel.stdout.on('data', chunk => capture(chunk, detectStdoutOrigin));
+tunnel.stderr.on('data', chunk => capture(chunk, detectStderrOrigin));
 tunnel.once('error', error => { console.error(`Tunnel failed: ${error.code}`); void stop(1); });
 tunnel.once('exit', code => { if (!stopping) { console.error(`Tunnel exited (${code}).`); void stop(code ?? 1); } });
 async function stop(code = 0) {

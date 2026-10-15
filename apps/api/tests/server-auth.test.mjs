@@ -25,7 +25,8 @@ async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBy
     store: { getArtifact: id => id === artifact.id ? artifact : null },
   };
   const auth = createAuthentication({ users: ['admin', 'operator', 'viewer'].map(role => hashAccount(role, 'test-password', role)) });
-  const server = createDashboardServer({ runtime, auth, publicOrigins, platformProvider: async () => ({ source: { commitSha: 'test-only' } }) });
+  const ciResults = { getSnapshot: () => ({ source: 'public-feed', status: 'fresh', runs: [{ runId: 101, status: 'passed' }] }), close() {} };
+  const server = createDashboardServer({ runtime, auth, publicOrigins, ciResults, platformProvider: async () => ({ source: { commitSha: 'test-only' } }) });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { await server.shutdown(); await rm(directory, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -53,8 +54,10 @@ test('session API, viewer access, operator mutations and logout enforce authenti
   assert.equal(anonymous.body.authRequired, true); assert.equal(anonymous.body.authenticated, false);
   assert.equal((await api(base, '/api/state')).status, 401);
   assert.equal((await api(base, '/api/runs')).status, 401);
+  assert.equal((await api(base, '/api/ci-results')).status, 401);
   const viewer = await login(base, 'viewer');
   assert.equal((await api(base, '/api/state', { headers: viewer.headers })).status, 200);
+  assert.equal((await api(base, '/api/ci-results', { headers: viewer.headers })).body.runs[0].runId, 101);
   assert.equal((await api(base, '/api/runs?limit=200&offset=0', { headers: viewer.headers })).status, 200);
   assert.equal((await api(base, '/api/runs?offset=-1', { headers: viewer.headers })).status, 400);
   assert.equal((await api(base, '/api/runs', { method: 'POST', headers: viewer.headers, body: {} })).status, 403);

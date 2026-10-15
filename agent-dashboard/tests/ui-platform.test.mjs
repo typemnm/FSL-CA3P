@@ -43,6 +43,19 @@ async function setup(t, role = 'operator') {
     if (path === '/api/events') return route.fulfill({ contentType: 'text/event-stream', body: `event: state\ndata: ${JSON.stringify(wrap(state))}\n\n` });
     if (path === '/api/models') return json({ models: [{ id: 'rule-baseline', name: '규칙 기반 · 실제 XSS 실습', provider: 'local', mode: 'local-lab-rule', available: true }, { id: 'deepseek-test', name: 'DeepSeek unavailable', provider: 'deepseek', mode: 'local-lab-deepseek', available: false }] });
     if (path === '/api/platform') return json({ source: { branch: 'develop', commit: 'test-commit' }, modules: [{ name: 'parser <img src=x onerror=alert(1)>', version: '1.0', status: 'verified' }], tests: { passed: 10 }, architecture: { api: 'application -> domain' } });
+    if (path === '/api/ci-results') return json({ source: 'public-feed', status: 'fresh', updatedAt: '2026-10-15T01:30:00Z', runs: [
+      { runId: 102, runAttempt: 1, commitSha: 'b'.repeat(40), branch: 'develop', status: 'failed', completeSuite: true,
+        completedAt: '2026-10-15T01:20:00Z', runUrl: 'https://github.com/typemnm/FSL-CA3P/actions/runs/102',
+        tests: 12, passed: 11, failed: 1, skipped: 0, changedModules: ['agent', 'xss-parser'],
+        pipeline: { tests: 'failure', containerSmoke: 'success', integrationGate: 'failure' },
+        jobs: [{ id: 'agent', status: 'failed', tests: 12, passed: 11, failed: 1, skipped: 0 },
+          { id: 'xss-parser<img src=x onerror=alert(1)>', status: 'passed', tests: 0, passed: 0, failed: 0, skipped: 0 }] },
+      { runId: 101, runAttempt: 1, commitSha: 'a'.repeat(40), branch: 'develop', status: 'passed', completeSuite: true,
+        completedAt: '2026-10-14T01:20:00Z', runUrl: 'https://github.com/typemnm/FSL-CA3P/actions/runs/101',
+        tests: 10, passed: 10, failed: 0, skipped: 0, changedModules: [],
+        pipeline: { tests: 'success', containerSmoke: 'success', integrationGate: 'success' },
+        jobs: [{ id: 'agent', status: 'passed', tests: 10, passed: 10, failed: 0, skipped: 0 }] },
+    ] });
     if (path === '/api/comparisons') return json({ comparable: false, kind: 'code', baselineRunId: 'baseline', candidateRunId: 'candidate', conditions: [{ name: 'logicalInput', before: 'digest-a', after: 'digest-b', equal: false, available: true }], metrics: { baseline: { elapsedMs: 100, events: 1, modelCalls: 0, promptTokens: 0, tokenUsageAvailable: false }, candidate: { elapsedMs: 120, events: 2, modelCalls: 0, promptTokens: 0, tokenUsageAvailable: false } }, findingTransition: { before: 'not_reproduced', after: '<img src=x onerror=alert(1)>' }, moduleDiffs: [{ module: 'agent', changes: [{ path: '/value', before: 1, after: 2 }] }] });
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs });
     if (path === '/api/runs' && request.method() === 'POST') { mutations.push({ body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] }); state = snapshot('new-rule', request.postDataJSON().mode); runs.unshift(state); return json(wrap(state)); }
@@ -89,6 +102,19 @@ test('authenticated workspace loads central runs, starts a selected rule lab, an
   await page.locator('[data-view=platform]').click();
   await page.locator('.platform-source').waitFor(); assert.match(await page.locator('#platform-content').textContent(), /test-commit/);
   assert.equal(await page.locator('#platform-content img').count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('develop CI view shows merged-suite failure, changed modules, and previous-run deltas without rendering report HTML', async t => {
+  const { page, errors } = await setup(t, 'viewer');
+  await page.locator('[data-view=ci]').click();
+  await page.locator('.ci-latest').waitFor();
+  assert.match(await page.locator('#ci-content').textContent(), /실패/);
+  assert.match(await page.locator('#ci-content').textContent(), /12/);
+  assert.match(await page.locator('#ci-comparison').textContent(), /xss-parser/);
+  assert.match(await page.locator('#ci-comparison').textContent(), /\+1/);
+  assert.equal(await page.locator('#ci-content img').count(), 0);
+  assert.equal(await page.locator('#ci-comparison img').count(), 0);
   assert.deepEqual(errors, []);
 });
 

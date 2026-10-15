@@ -145,6 +145,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     getRun(id) { return request(`/api/runs/${encodeURIComponent(id)}`); },
     getModels() { return request('/api/models'); },
     getPlatform() { return request('/api/platform'); },
+    getCiResults() { return request('/api/ci-results'); },
     reviewCheck(runId, checkId, note) { return request(`/api/runs/${encodeURIComponent(runId)}/reviews/${encodeURIComponent(checkId)}`, { note }); },
     compare(baseline, candidate, kind = 'code') { return request(`/api/comparisons?${new URLSearchParams({ baseline, candidate, kind })}`); },
     close() { closed = true; disconnect(); },
