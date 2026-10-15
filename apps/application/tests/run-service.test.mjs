@@ -40,3 +40,30 @@ test('queued cancellation never reaches a worker; arbitrary lab targets are reje
   assert.equal(service.stop(state.run.id).run.status, 'cancelled');
   assert.equal(service.store.claimNext('test-worker'), null); assert.equal(service.reset().run.status, 'idle');
 });
+
+test('legacy imports remain in history without replacing the current interactive run', async t => {
+  const { service, storePath } = setup(t, { autoStartWorker: false, importLegacy: false });
+  const live = await service.start({ mode: 'core-fixture' });
+  service.store.importLegacyRun({ runId: 'legacy-after-live', report: {
+    runId: 'legacy-after-live', status: 'completed', startedAt: new Date().toISOString(),
+  }, events: [] });
+  await service.close();
+
+  const restarted = createRunService({ storePath, autoStartWorker: false, importLegacy: false, envFile: null });
+  t.after(() => restarted.close());
+  assert.equal(restarted.getState().run.id, live.run.id);
+  assert.equal(restarted.getRun('legacy-after-live').mode, 'legacy-import');
+});
+
+test('a store containing only legacy reports starts with an idle interactive state', async t => {
+  const { service, storePath } = setup(t, { autoStartWorker: false, importLegacy: false });
+  service.store.importLegacyRun({ runId: 'legacy-only', report: {
+    runId: 'legacy-only', status: 'completed', startedAt: new Date().toISOString(),
+  }, events: [] });
+  await service.close();
+
+  const restarted = createRunService({ storePath, autoStartWorker: false, importLegacy: false, envFile: null });
+  t.after(() => restarted.close());
+  assert.equal(restarted.getState().run.status, 'idle');
+  assert.equal(restarted.listRuns({ mode: 'legacy-import' }).items.length, 1);
+});
