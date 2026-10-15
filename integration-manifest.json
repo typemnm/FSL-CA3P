@@ -249,7 +249,21 @@
     "requiredCheck": "integration-gate",
     "allModules": true,
     "requiredSkippedTests": 0,
-    "liveModelCalls": false
+    "liveModelCalls": false,
+    "suiteAssignments": {
+      "pentest-db": [
+        "agent-dashboard/tests/pentest-db-integration.test.mjs"
+      ],
+      "adapters": [
+        "agent-dashboard/tests/casper-db-integration.test.mjs",
+        "agent-dashboard/tests/guardrail-integration.test.mjs",
+        "agent-dashboard/tests/xss-gateway.test.mjs",
+        "agent-dashboard/tests/xss-parser-integration.test.mjs"
+      ],
+      "worker": [
+        "apps/application/tests/run-service.test.mjs"
+      ]
+    }
   },
   "migration": {
     "legacyComposition": "Compatibility wrappers remain in agent-dashboard; execution adapters and lab gateway live in packages/adapters."

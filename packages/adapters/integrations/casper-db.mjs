@@ -16,8 +16,9 @@ from casper_db.matching import assess_observation
 
 request = json.load(sys.stdin)
 db = Path(request['database'])
-if not db.exists():
-    initialize_database(db)
+# Initialization is transactional and serialized. Checking only for existence
+# lets a concurrent reader see SQLite's newly created but uninitialized file.
+initialize_database(db)
 store = CaseStore(db)
 target_id = request['targetId']
 cases = store.list_for_target(target_id)
