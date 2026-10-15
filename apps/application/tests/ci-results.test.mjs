@@ -11,7 +11,7 @@ const example = { runId: 101, runAttempt: 1, commitSha, branch: 'develop', event
   startedAt: '2026-10-15T01:00:00Z', completedAt: '2026-10-15T01:05:00Z',
   pipeline: { tests: 'success', containerSmoke: 'success', integrationGate: 'success' },
   jobs: [{ id: 'agent', status: 'passed', tests: 10, passed: 10, failed: 0, skipped: 0 }],
-  changedModules: ['agent'], privateNote: 'must-not-leak' };
+  changedFromSha: 'b'.repeat(40), changedModules: ['agent'], privateNote: 'must-not-leak' };
 const response = value => ({ ok: true, text: async () => JSON.stringify(value) });
 
 test('public feed is allowlisted and cannot claim a passing gate with missing evidence', () => {
@@ -23,6 +23,8 @@ test('public feed is allowlisted and cannot claim a passing gate with missing ev
   assert.equal(rows[1].status, 'incomplete');
   assert.equal(rows[0].jobs.length, 0);
   assert.deepEqual(rows[2].changedModules, ['agent']);
+  assert.equal(rows[2].changedFromSha, 'b'.repeat(40));
+  assert.equal(sanitizeCiFeed({ schemaVersion: '1.0', runs: [{ ...example, changedFromSha: 'invalid' }] })[0].changedFromSha, null);
   assert.equal(JSON.stringify(rows).includes('must-not-leak'), false);
   assert.equal(rows[2].runUrl, 'https://github.com/typemnm/FSL-CA3P/actions/runs/101');
 });
@@ -37,6 +39,7 @@ test('collector keeps the last verified feed during network failure', async t =>
   service.close();
   const offline = createCiResultsService({ cachePath, autoStart: false, fetchImpl: async () => { throw new Error('offline secret'); } });
   assert.equal(offline.getSnapshot().status, 'cached');
+  assert.equal(offline.getSnapshot().runs[0].changedFromSha, 'b'.repeat(40));
   const stale = await offline.sync();
   assert.equal(stale.status, 'stale'); assert.equal(stale.runs[0].runId, 101);
   assert.equal(JSON.stringify(stale).includes('offline secret'), false);
@@ -59,6 +62,7 @@ test('when the summary branch is absent, public Actions jobs remain visible with
   const result = await service.sync();
   assert.equal(result.source, 'actions-api'); assert.equal(result.runs[0].status, 'incomplete');
   assert.equal(result.runs[0].tests, null); assert.deepEqual(result.runs[0].jobs, []);
+  assert.equal(result.runs[0].changedFromSha, null);
   assert.equal(result.runs[0].pipeline.integrationGate, 'success');
   assert.equal(calls.length, 3);
   service.close();

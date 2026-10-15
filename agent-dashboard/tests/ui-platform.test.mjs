@@ -12,7 +12,7 @@ function snapshot(id, mode = 'core-fixture') {
 }
 const idle = { ...snapshot('', 'core-fixture'), id: null, status: 'idle', events: [], snapshots: {}, totalSteps: 19, step: 0 };
 const wrap = run => ({ instanceId: 'test-server', mode: run.mode, run, lab: { available: false } });
-async function setup(t, role = 'operator') {
+async function setup(t, role = 'operator', ciRuns = null) {
   const server = http.createServer(async (req, res) => {
     try {
       const filename = new URL(req.url, 'http://test').pathname.split('/').pop() || 'index.html';
@@ -43,10 +43,10 @@ async function setup(t, role = 'operator') {
     if (path === '/api/events') return route.fulfill({ contentType: 'text/event-stream', body: `event: state\ndata: ${JSON.stringify(wrap(state))}\n\n` });
     if (path === '/api/models') return json({ models: [{ id: 'rule-baseline', name: '규칙 기반 · 실제 XSS 실습', provider: 'local', mode: 'local-lab-rule', available: true }, { id: 'deepseek-test', name: 'DeepSeek unavailable', provider: 'deepseek', mode: 'local-lab-deepseek', available: false }] });
     if (path === '/api/platform') return json({ source: { branch: 'develop', commit: 'test-commit' }, modules: [{ name: 'parser <img src=x onerror=alert(1)>', version: '1.0', status: 'verified' }], tests: { passed: 10 }, architecture: { api: 'application -> domain' } });
-    if (path === '/api/ci-results') return json({ source: 'public-feed', status: 'fresh', updatedAt: '2026-10-15T01:30:00Z', runs: [
+    if (path === '/api/ci-results') return json({ source: 'public-feed', status: 'fresh', updatedAt: '2026-10-15T01:30:00Z', runs: ciRuns ?? [
       { runId: 102, runAttempt: 1, commitSha: 'b'.repeat(40), branch: 'develop', status: 'failed', completeSuite: true,
         completedAt: '2026-10-15T01:20:00Z', runUrl: 'https://github.com/typemnm/FSL-CA3P/actions/runs/102',
-        tests: 12, passed: 11, failed: 1, skipped: 0, changedModules: ['agent', 'xss-parser'],
+        tests: 12, passed: 11, failed: 1, skipped: 0, changedFromSha: 'a'.repeat(40), changedModules: ['agent', 'xss-parser'],
         pipeline: { tests: 'failure', containerSmoke: 'success', integrationGate: 'failure' },
         jobs: [{ id: 'agent', status: 'failed', tests: 12, passed: 11, failed: 1, skipped: 0 },
           { id: 'xss-parser<img src=x onerror=alert(1)>', status: 'passed', tests: 0, passed: 0, failed: 0, skipped: 0 }] },
@@ -116,6 +116,60 @@ test('develop CI view shows merged-suite failure, changed modules, and previous-
   assert.equal(await page.locator('#ci-content img').count(), 0);
   assert.equal(await page.locator('#ci-comparison img').count(), 0);
   assert.deepEqual(errors, []);
+});
+
+test('CI comparison treats same-SHA reruns as no code changes and skips them when finding the previous commit', async t => {
+  const a = 'a'.repeat(40); const b = 'b'.repeat(40);
+  const ciRuns = [
+    { runId: 102, runAttempt: 2, commitSha: b, status: 'failed', tests: 12, passed: 11, failed: 1, skipped: 0,
+      changedFromSha: a, changedModules: ['agent'], jobs: [] },
+    { runId: 102, runAttempt: 1, commitSha: b, status: 'failed', tests: 12, passed: 11, failed: 1, skipped: 0,
+      changedFromSha: a, changedModules: ['agent'], jobs: [] },
+    { runId: 101, runAttempt: 1, commitSha: a, status: 'passed', tests: 10, passed: 10, failed: 0, skipped: 0,
+      changedModules: null, jobs: [] },
+  ];
+  const { page, errors } = await setup(t, 'viewer', ciRuns);
+  await page.locator('[data-view=ci]').click();
+  await page.locator('.ci-latest').waitFor();
+  assert.match(await page.locator('#ci-comparison').textContent(), /코드가 바뀐 모듈: 없음/);
+  assert.doesNotMatch(await page.locator('#ci-comparison').textContent(), /코드가 바뀐 모듈: agent/);
+  await page.locator('#ci-baseline').selectOption('101:1');
+  assert.match(await page.locator('#ci-comparison').textContent(), /코드가 바뀐 모듈: agent/);
+  await page.locator('#ci-candidate').selectOption('102:1');
+  assert.match(await page.locator('#ci-comparison').textContent(), /코드가 바뀐 모듈: agent/);
+  assert.deepEqual(errors, []);
+});
+
+test('CI comparison does not attribute a diff to a baseline that differs from its recorded source SHA', async t => {
+  const ciRuns = [
+    { runId: 102, runAttempt: 1, commitSha: 'b'.repeat(40), changedFromSha: 'c'.repeat(40),
+      changedModules: ['agent'], jobs: [] },
+    { runId: 101, runAttempt: 1, commitSha: 'a'.repeat(40), changedModules: [], jobs: [] },
+  ];
+  const { page, errors } = await setup(t, 'viewer', ciRuns);
+  await page.locator('[data-view=ci]').click();
+  await page.locator('.ci-latest').waitFor();
+  assert.match(await page.locator('#ci-comparison').textContent(), /이 비교 구간의 변경 경로 정보 없음/);
+  assert.doesNotMatch(await page.locator('#ci-comparison').textContent(), /코드가 바뀐 모듈: agent/);
+  assert.deepEqual(errors, []);
+});
+
+test('CI view distinguishes missing test totals from an actual zero-test result', async t => {
+  const ciRuns = [{ runId: 102, runAttempt: 1, commitSha: 'b'.repeat(40), status: 'incomplete', completeSuite: false,
+    tests: null, passed: null, failed: null, skipped: null, changedModules: null, jobs: [] }];
+  const { page, errors } = await setup(t, 'viewer', ciRuns);
+  await page.locator('[data-view=ci]').click();
+  await page.locator('.ci-latest').waitFor();
+  assert.equal(await page.locator('.ci-totals strong').first().textContent(), '자료 없음');
+  assert.match(await page.locator('.ci-verification').textContent(), /전체 suite 보고서가 없어/);
+  assert.doesNotMatch(await page.locator('.ci-totals').textContent(), /0/);
+  const actual = await setup(t, 'viewer', [{ ...ciRuns[0], runId: 103,
+    tests: 0, passed: 0, failed: 0, skipped: 0 }]);
+  await actual.page.locator('[data-view=ci]').click();
+  await actual.page.locator('.ci-latest').waitFor();
+  assert.equal(await actual.page.locator('.ci-totals strong').first().textContent(), '0');
+  assert.deepEqual(errors, []);
+  assert.deepEqual(actual.errors, []);
 });
 
 test('viewer session can inspect evidence while all mutation controls remain disabled', async t => {

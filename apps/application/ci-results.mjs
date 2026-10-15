@@ -38,6 +38,7 @@ function sanitizeRun(value) {
   const changedModules = Array.isArray(value.changedModules) && value.changedModules.length <= 50 &&
     value.changedModules.every(name => typeof name === 'string' && /^[a-zA-Z0-9._/-]{1,100}$/.test(name))
     ? [...new Set(value.changedModules)] : null;
+  const changedFromSha = sha(value.changedFromSha);
   const completeSuite = value.completeSuite === true;
   const failed = count(value.failed); const skipped = count(value.skipped);
   const verified = value.status === 'passed' && completeSuite && failed === 0 && skipped === 0 &&
@@ -48,7 +49,7 @@ function sanitizeRun(value) {
     startedAt: timestamp(value.startedAt), completedAt: timestamp(value.completedAt),
     runUrl: `https://github.com/${REPOSITORY}/actions/runs/${runId}`,
     completeSuite, tests: count(value.tests), passed: count(value.passed), failed, skipped,
-    jobs, changedModules, pipeline };
+    jobs, changedFromSha, changedModules, pipeline };
 }
 
 export function sanitizeCiFeed(value) {

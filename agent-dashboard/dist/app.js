@@ -693,8 +693,12 @@ function renderCiComparison(baseline, candidate) {
   const afterJobs = new Map((candidate.jobs || []).map(job => [job.id, job]));
   const names = [...new Set([...beforeJobs.keys(), ...afterJobs.keys()])];
   const candidateIndex = ciResults?.runs?.findIndex(item => ciKey(item) === ciKey(candidate)) ?? -1;
-  const adjacentBaseline = candidateIndex >= 0 && ciKey(ciResults.runs[candidateIndex + 1] || {}) === ciKey(baseline);
-  const changedModules = adjacentBaseline && Array.isArray(candidate.changedModules) ? candidate.changedModules : null;
+  const sameCommit = baseline.commitSha === candidate.commitSha;
+  const precedingCommit = candidateIndex >= 0
+    ? ciResults.runs.slice(candidateIndex + 1).find(item => item.commitSha !== candidate.commitSha) : null;
+  const matchingDiffBase = precedingCommit?.commitSha === baseline.commitSha && candidate.changedFromSha === baseline.commitSha;
+  const changedModules = sameCommit ? [] : matchingDiffBase && Array.isArray(candidate.changedModules)
+    ? candidate.changedModules : null;
   $('ci-comparison').innerHTML = `<p class="ci-compare-caption">기준 <strong>${escape(baseline.commitSha.slice(0, 12))}</strong> → 비교 <strong>${escape(candidate.commitSha.slice(0, 12))}</strong></p>
     <div class="ci-delta-grid"><span>전체 테스트 <strong>${ciDelta(baseline.tests, candidate.tests)}</strong></span><span>통과 <strong>${ciDelta(baseline.passed, candidate.passed)}</strong></span><span>실패 <strong>${ciDelta(baseline.failed, candidate.failed)}</strong></span><span>건너뜀 <strong>${ciDelta(baseline.skipped, candidate.skipped)}</strong></span></div>
     <p class="ci-changed-modules">코드가 바뀐 모듈: ${changedModules === null ? '이 비교 구간의 변경 경로 정보 없음' : changedModules.length ? changedModules.map(escape).join(', ') : '없음'}</p>
