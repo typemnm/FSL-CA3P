@@ -6,6 +6,56 @@ Future Security Lab 지원사업으로 진행하는 CA3P 프로젝트에 대한
 
 [CI/CD 실행·배포 안내](docs/CI_CD.md), [이 장치에서 외부 접속하기](docs/DEVICE_DEPLOYMENT.md), [모듈 구조](docs/ARCHITECTURE.md)를 참고하세요. Node.js 24, Python 3.11+를 사용하며 전체 검증은 `npm run verify`입니다. GitHub PR의 `integration-gate`는 모든 모듈, 실제 Chromium 통합 및 Docker health check를 요구합니다.
 
+# CI/CD 및 대시보드 테스트 가이드
+
+## 1. 변경 전 로컬 검증
+
+프로젝트 루트에서 아래 명령을 실행합니다(Bash/macOS/Linux 기준). Node.js 24, Python 3.11+, `curl`이 필요하고, Linux의 Chromium 시스템 의존성 설치 방법은 [CI/CD 안내](docs/CI_CD.md)를 참고하세요.
+
+```sh
+npm ci --prefix xss-parser
+python3 -m venv .venv
+.venv/bin/python -m pip install -r casper-db/requirements-ci.lock
+.venv/bin/python -m pip install --no-deps -e ./casper-db
+(cd xss-parser && npx playwright install chromium)
+CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run verify
+```
+
+`reports/ci/latest.json`에서 `completeSuite: true`, `status: "passed"`, 실패·skip 0건을 확인합니다. 모듈별 로그와 pytest XML도 `reports/ci/`에 남습니다. 준비 단계에서 중단되면 `completeSuite`는 `false`이며 실패 보고서가 남습니다. `--node-only`, `--modules`, `--skip-preflight`는 부분 점검용이므로 PR의 전체 검증을 대신하지 않습니다. CI는 실제 Chromium과 격리 실습 대상을 사용하지만 유료 모델 API를 호출하지 않습니다.
+
+## 2. PR 및 배포 확인
+
+`feature/<module>/<change>` 브랜치에서 `develop`으로 PR을 엽니다. GitHub Actions는 PR 브랜치와 현재 `develop`을 합친 후보 커밋에서 **활성 모듈 전체**를 검사합니다. `tests`와 `container-smoke`가 모두 통과하고 최종 `integration-gate`가 성공했는지 확인한 뒤 담당자 승인을 받아 병합합니다. 실패한 경우 해당 Actions 실행의 `ci-report-<검사한 SHA>` artifact에서 JSON·모듈별 로그·pytest XML을 확인하세요.
+
+병합 후 `develop`의 실제 커밋에 대해 같은 전체 검증을 다시 실행합니다. `publish-ci-summary`는 그 실행의 테스트 건수·통과/실패/건너뜀, 이전 통합 실행 이후 변경된 모듈 ID 및 세 CI job 결론만 공개 `ci-results` 브랜치에 기록합니다. 장치 서버는 시작할 때와 이후 5분마다 이 요약을 가져와 `.runtime/ci-results/index.json`에 보관합니다. 인증 후 **통합 테스트** 화면에서 `develop` 실행 이력과 모듈별 변화를 확인합니다. 공개 피드에는 입력값·취약점 증거·모듈 로그가 없으며, 상세 원인은 Actions artifact에서 확인합니다. 피드가 아직 없을 때는 Actions 단계별 결론만 표시되고 모듈별 수치는 `자료 없음`으로 표시됩니다. 이 CI 결과는 대시보드에서 직접 실행한 격리 실습 run의 finding·모델 결과와 별개입니다.
+
+PR 실행은 병합 전 후보 검증으로 Actions에서 확인합니다. 결과 수집과 장치의 코드 배포는 별개입니다. `develop`/`main`의 성공한 push는 GHCR 이미지 게시까지 수행하지만, 이 PC의 실행 코드는 자동으로 교체되지 않습니다. Staging 자동 배포는 `ca3p-deploy` self-hosted runner와 `CA3P_AUTO_DEPLOY=true`가 설정된 경우에만 실행됩니다. 세부 보호 규칙과 배포 절차는 [CI/CD 안내](docs/CI_CD.md)에 있습니다.
+
+## 3. 대시보드 기능 테스트
+
+Docker Compose로 시작하거나, 위 로컬 의존성을 준비한 뒤 다음 명령으로 시작합니다. 기본 주소는 `http://127.0.0.1:4173`입니다.
+
+```sh
+CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm start
+```
+
+첫 시작 때 생성되는 `.runtime/access.txt`의 `admin` 계정으로 로그인합니다(Docker에서는 `docker compose exec dashboard cat /app/.runtime/access.txt`). `viewer` 계정은 결과 조회만 할 수 있습니다. 다음 순서로 확인합니다.
+
+1. **코어 fixture 시작**: 입력 URL이 표시용으로만 저장되고 실제 대상 접속이나 취약점 확정이 없는지 확인합니다.
+2. **로컬 실습 시작**: 모델 목록에서 API 키가 필요 없는 규칙 baseline을 고릅니다. 서버가 생성한 격리 게시판 `vul-web-1`에서 실행이 완료되는지 확인합니다. DeepSeek 경로는 별도로 `agent/.env`에 키를 설정한 경우에만 선택하며 API 비용이 발생할 수 있습니다.
+3. **결과 확인**: **대시보드**의 모듈 노드에서 요청·응답과 Agent I/O를 보고, **실행 이력**에서 같은 run을 다시 엽니다. **리포트**에서 finding의 브라우저 증거와 실행 조건을 확인합니다. 두 번 실행한 뒤 **실행 비교**에서 모델·모듈 digest·finding·처리 지연 차이를 확인하고, **통합 테스트**에서 수집된 `develop` 전체 모듈 검증 결과를 봅니다. 입력·환경이 다른 실행은 동등한 조건의 성능 비교로 해석하지 않습니다.
+
+## 4. 이 장치에서 외부 접속 테스트
+
+이 Mac의 고정 접속 주소는 [https://macmini.casper.or.kr](https://macmini.casper.or.kr)입니다. Nginx Proxy Manager가 HTTPS를 종료하고 이 장치의 4175 포트로 전달합니다. 외부 브라우저에서 `viewer`로 로그인해 실행 이력·리포트·비교와 **통합 테스트**를 확인하세요. 비밀번호는 이 장치의 `.runtime/access.txt`에 있으며 Git에 올리지 않습니다.
+
+```sh
+curl -fsS https://macmini.casper.or.kr/api/health
+curl -sS -o /dev/null -w '%{http_code}\n' https://macmini.casper.or.kr/api/runs
+```
+
+첫 명령은 `{"status":"ok"}`, 두 번째는 미로그인 상태에서 `401`이어야 합니다. Mac의 서비스는 로그인 시 자동 시작되며, 상태는 `launchctl print gui/$(id -u)/kr.or.casper.ca3p.macmini-dashboard`로 확인합니다. `develop` 병합 후 CI 보고서 수집과 이 장치의 코드 배포는 별개입니다. 새 코드는 장치의 실행 체크아웃을 갱신하고 서비스를 재시작해야 적용됩니다. 임시 Cloudflare 주소와 장애 진단은 [장치 배포 안내](docs/DEVICE_DEPLOYMENT.md)를 참고하세요.
+
 # Docker Compose 실행
 
 Docker Engine과 Docker Compose v2.24 이상이 필요합니다. 프로젝트 루트에서 대시보드를 빌드하고 시작합니다.
