@@ -18,15 +18,21 @@ CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run verify
 
 `scripts/ci.mjs`는 integration-manifest에 등록된 활성 모듈의 test/tests를 자동 탐색한다. 새 파일을 package.json에 매번 열거하지 않는다. JSON 카탈로그 모듈 pentest-db는 카탈로그·저장 어댑터 통합 테스트에서 검증한다. Node skip/todo/cancelled, pytest skip/error는 게이트 실패다. Chromium 실제 실행, curl, Python 의존성을 먼저 확인한다.
 
-결과는 `reports/ci/latest.json`, 모듈별 로그, pytest JUnit XML에 저장한다. 플랫폼 API가 JSON을 읽어 commitSha, branch, worktreeDirty, completeSuite, 시각, 모듈별 통과·실패·skip을 표시한다. `--node-only`, `--modules=agent,guardrail`, `--skip-preflight`는 일부 확인용이며 completeSuite=false다. 정식 검증은 옵션 없는 `npm run verify`다.
+요약의 `jobs`는 테스트 suite 단위다. `pentest-db`, `adapters`, `worker`처럼 독립 test 디렉터리가 없는 모듈은 관련 application/dashboard 통합 테스트에서 검증되며 별도의 모듈별 건수 행은 없다. `changedModules`는 코드 경로 변경을 나타내므로 테스트 suite 행과 일대일 대응하지 않을 수 있다.
+
+결과는 `reports/ci/latest.json`, 모듈별 로그, pytest JUnit XML에 저장한다. 보고서는 검사한 `commitSha`, GitHub event/ref, branch, worktreeDirty, completeSuite, 시각, 모듈별 통과·실패·skip을 기록한다. 준비 단계나 검증 프로세스가 중단되면 실패 보고서를 남기고 completeSuite=false로 표시한다. 일부 모듈이 실패해도 나머지 suite를 실행한 경우 completeSuite=true일 수 있으며, 이때 status는 failed다. `--node-only`, `--modules=agent,guardrail`, `--skip-preflight`는 일부 확인용이며 completeSuite=false다. 정식 검증은 옵션 없는 `npm run verify`다.
 
 ## GitHub Actions
 
-`ci.yml`은 develop/main의 PR·push, workflow_dispatch, merge_group에서 실행한다. public PR은 GitHub hosted Ubuntu runner의 read-only 권한으로 검증한다. 테스트와 Docker smoke가 모두 성공해야 항상 종료하는 `integration-gate`가 성공한다. 경로 필터로 required check가 pending으로 남는 설정을 사용하지 않는다.
+`ci.yml`은 develop/main의 PR·push, workflow_dispatch, merge_group에서 실행한다. PR에서는 GitHub가 만든 PR 브랜치와 대상 브랜치의 병합 후보 커밋을 checkout해 **활성 모듈 전체**를 검사한다. 병합 후 develop push에서는 실제 통합 커밋을 다시 전체 검사한다. public PR은 GitHub hosted Ubuntu runner의 read-only 권한으로 검증한다. 테스트와 Docker smoke가 모두 성공해야 항상 종료하는 `integration-gate`가 성공한다. 경로 필터로 required check가 pending으로 남는 설정을 사용하지 않는다.
+
+`tests` job은 성공·실패와 관계없이 `ci-report-<검사한 SHA>` artifact에 구조화된 보고서를 14일간 보존한다. 의존성 설치 등 검증 시작 전에 실패한 경우에도 최소 실패 보고서를 기록한다. `container-smoke`와 `integration-gate`의 결론은 별도 Actions job 결과로 확인한다. 신뢰된 `develop` push에서만 `publish-ci-summary`가 보고서와 세 job 결론을 합쳐 공개 `ci-results` 브랜치의 `index.json`에 최근 50개 실행을 기록한다. 장치 서버는 시작할 때와 이후 5분마다 피드를 읽어 `.runtime/ci-results/index.json`에 보관하고 인증된 **통합 테스트** 화면에 표시한다. 피드가 아직 없을 때는 Actions job 결론만 보여주며 모듈 수치는 `자료 없음`으로 표시한다. PR 후보의 결과는 해당 PR의 Checks/Actions에서 확인한다. `npm run verify`로 만든 로컬 보고서와 GitHub의 병합 후 보고서를 구분한다.
+
+공개 요약에는 commit SHA, Actions 실행 주소·시각, 모듈별 통과/실패/건너뜀 **건수**, 이전 develop 실행 이후 변경된 활성 모듈 **ID**, `tests`·`container-smoke`·`integration-gate` 결론만 포함한다. 이전 커밋을 비교할 수 없으면 변경 모듈은 `null`로 기록하며 추정하지 않는다. 테스트 로그, 입력값, 모델 출력, 취약점 증거, 인증정보는 포함하지 않는다. 자세한 실패 원인은 Actions artifact와 로그에서 확인한다. `publish-ci-summary`가 실패해도 기존 `integration-gate` 판정은 바뀌지 않으며 대시보드의 최신 결과가 갱신되지 않는다. 이 경우 해당 Actions job의 오류와 저장소 `GITHUB_TOKEN`의 `contents: write` 권한, `ci-results` 브랜치 규칙을 확인한다. 장치 서버에는 GitHub 토큰이나 외부 쓰기 API가 필요하지 않다.
 
 저장소 보호 규칙에 `integration-gate`를 required check로 등록하고 PR 승인 및 최신 base 반영을 요구한다. 이 설정 변경은 저장소 관리자 권한이 필요하다. 조직 저장소에서 merge queue를 사용할 때도 merge_group 검증을 이용할 수 있다.
 
-신뢰된 develop/main의 push 또는 해당 ref 수동 실행만 GHCR 이미지를 게시한다. tag는 commit SHA이고 배포는 immutable digest다. API key 없이 실제 Chromium·고정 실습 웹·가짜 모델·규칙 기반 회귀를 검증한다. CI와 health check가 실제 모델 호출을 시작하지 않는다.
+신뢰된 develop/main의 push 또는 해당 ref 수동 실행만 GHCR 이미지를 게시한다. tag는 commit SHA이고 배포는 immutable digest다. 장치의 결과 수집은 코드 배포가 아니다. 이 PC의 실행 모듈은 별도 배포·재시작 전까지 기존 버전이다. API key 없이 실제 Chromium·고정 실습 웹·가짜 모델·규칙 기반 회귀를 검증한다. CI와 health check가 실제 모델 호출을 시작하지 않는다.
 
 Actions는 공식 release commit에 고정했으며 Dependabot 변경 PR을 같은 게이트로 검증한다.
 

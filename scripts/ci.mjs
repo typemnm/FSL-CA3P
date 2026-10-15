@@ -68,7 +68,8 @@ const git = await execute('git', ['rev-parse', 'HEAD'], root, 10_000);
 const branch = await execute('git', ['branch', '--show-current'], root, 10_000);
 const worktree = await execute('git', ['status', '--porcelain'], root, 10_000);
 const startedAt = new Date().toISOString();
-const report = { schemaVersion: '1.0', id: randomUUID(), source: process.env.GITHUB_ACTIONS ? 'github-actions' : 'local', commitSha: git.exitCode === 0 ? git.output.trim() : null, branch: process.env.GITHUB_REF_NAME || branch.output.trim() || null, worktreeDirty: Boolean(worktree.output.trim()), nodeVersion: process.version, startedAt, completedAt: null, status: 'running', completeSuite: !nodeOnly && !selection && !skipPreflight, runUrl: process.env.GITHUB_RUN_ID ? `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null, tests: 0, passed: 0, failed: 0, skipped: 0, jobs: [] };
+const fullSuiteRequested = !nodeOnly && !selection && !skipPreflight;
+const report = { schemaVersion: '1.0', id: randomUUID(), source: process.env.GITHUB_ACTIONS ? 'github-actions' : 'local', commitSha: git.exitCode === 0 ? git.output.trim() : null, branch: process.env.GITHUB_REF_NAME || branch.output.trim() || null, eventName: process.env.GITHUB_EVENT_NAME || null, testRef: process.env.GITHUB_REF || null, headBranch: process.env.GITHUB_HEAD_REF || null, baseBranch: process.env.GITHUB_BASE_REF || null, worktreeDirty: Boolean(worktree.output.trim()), nodeVersion: process.version, startedAt, completedAt: null, status: 'running', completeSuite: false, runUrl: process.env.GITHUB_RUN_ID && process.env.GITHUB_REPOSITORY ? `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null, tests: 0, passed: 0, failed: 0, skipped: 0, jobs: [] };
 async function saveReport() { const temp = join(reportDir, `.latest-${report.id}.tmp`); await writeFile(temp, JSON.stringify(report, null, 2)); await rename(temp, join(reportDir, 'latest.json')); }
 await saveReport();
 let prerequisites = true;
@@ -94,6 +95,8 @@ if (prerequisites) for (const suite of suites) {
   await saveReport();
 }
 report.completedAt = new Date().toISOString();
+report.completeSuite = fullSuiteRequested && prerequisites && suites.length > 0
+  && suites.every(suite => report.jobs.some(job => job.id === suite.id));
 report.status = prerequisites && report.jobs.every(job => job.status === 'passed') && suites.length > 0 ? 'passed' : 'failed';
 report.failedJobs = report.jobs.filter(job => job.status === 'failed').length;
 await saveReport();
