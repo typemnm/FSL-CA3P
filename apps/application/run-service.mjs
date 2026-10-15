@@ -18,13 +18,24 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
   const store = createRunRepository({ path: storePath });
   store.recoverExpired();
   const instanceId = randomUUID(); const listeners = new Set();
-  let selectedRunId = store.listRuns({ limit: 1 }).items[0]?.id ?? null;
+  function latestInteractiveRunId() {
+    let offset = 0;
+    while (true) {
+      const page = store.listRuns({ limit: 200, offset });
+      const recent = page.items.find(item => RUN_MODES.includes(item.mode));
+      if (recent) return recent.id;
+      offset += page.items.length;
+      if (offset >= page.total) return null;
+    }
+  }
+  let selectedRunId = latestInteractiveRunId();
   let idleRun = emptyRun(); let child = null; let closing = false; let closed = false;
   let lastRevision = ''; let closeTask; let restartTimer; let restartDelay = 200;
   const owner = `worker-${randomUUID()}`;
   function listModels() { return registryModels({ envFile, env }); }
   function getState() {
-    const run = selectedRunId ? store.getRun(selectedRunId) ?? idleRun : idleRun;
+    const selected = selectedRunId ? store.getRun(selectedRunId) : null;
+    const run = selected && RUN_MODES.includes(selected.mode) ? selected : idleRun;
     const models = listModels(); const remote = models.find(model => model.provider === 'deepseek' && model.available);
     return { run, mode: run.mode, instanceId, lab: { available: true, model: 'rule-baseline', provider: 'rules',
       remoteAvailable: Boolean(remote), models } };
@@ -59,7 +70,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
   poller.unref();
   ensureWorker();
   const ready = importLegacy ? importLegacyRuns(store).then(result => {
-    if (!selectedRunId && !closing) selectedRunId = store.listRuns({ limit: 1 }).items[0]?.id ?? null;
+    if (!selectedRunId && !closing) selectedRunId = latestInteractiveRunId();
     publish(); return result;
   }).catch(() => ({ imported: 0, errors: [{ code: 'LEGACY_IMPORT_FAILED' }] })) : Promise.resolve({ imported: 0, errors: [] });
 
