@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const outcomes = new Set(['success', 'failure', 'cancelled', 'skipped', 'timed_out']);
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+const measured = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+const commitSha = value => /^[a-f0-9]{40}$/.test(value ?? '') && value !== '0'.repeat(40);
 const outcome = value => outcomes.has(value) ? value : 'unknown';
 
 export function summarizeReport(report, context) {
@@ -27,11 +29,12 @@ export function summarizeReport(report, context) {
     commitSha: sha, branch: 'develop', eventName: 'push',
     startedAt: result?.startedAt ?? null, completedAt: result?.completedAt ?? now,
     status, completeSuite: result?.completeSuite === true,
-    tests: count(result?.tests), passed: count(result?.passed),
-    failed: count(result?.failed), skipped: count(result?.skipped),
+    tests: measured(result?.tests), passed: measured(result?.passed),
+    failed: measured(result?.failed), skipped: measured(result?.skipped),
     jobs: (result?.jobs ?? []).filter(job => /^[a-z0-9-]{1,64}$/.test(job?.id ?? ''))
       .map(job => ({ id: job.id, status: ['passed', 'failed'].includes(job.status) ? job.status : 'unknown',
-        tests: count(job.tests), passed: count(job.passed), failed: count(job.failed), skipped: count(job.skipped) })),
+        tests: measured(job.tests), passed: measured(job.passed),
+        failed: measured(job.failed), skipped: measured(job.skipped) })),
     pipeline: checks,
     runUrl: `${serverUrl}/${repository}/actions/runs/${runId}`,
   };
@@ -48,10 +51,13 @@ export function mergeIndex(previous, summary, now) {
       completedAt: typeof item.completedAt === 'string' ? item.completedAt : null,
       status: ['passed', 'failed', 'incomplete'].includes(item.status) ? item.status : 'incomplete',
       completeSuite: item.completeSuite === true,
-      tests: count(item.tests), passed: count(item.passed), failed: count(item.failed), skipped: count(item.skipped),
+      tests: measured(item.tests), passed: measured(item.passed),
+      failed: measured(item.failed), skipped: measured(item.skipped),
       jobs: (Array.isArray(item.jobs) ? item.jobs : []).filter(job => /^[a-z0-9-]{1,64}$/.test(job?.id ?? ''))
         .slice(0, 40).map(job => ({ id: job.id, status: ['passed', 'failed'].includes(job.status) ? job.status : 'unknown',
-          tests: count(job.tests), passed: count(job.passed), failed: count(job.failed), skipped: count(job.skipped) })),
+          tests: measured(job.tests), passed: measured(job.passed),
+          failed: measured(job.failed), skipped: measured(job.skipped) })),
+      changedFromSha: commitSha(item.changedFromSha) ? item.changedFromSha : null,
       changedModules: item.changedModules === null ? null : (Array.isArray(item.changedModules)
         ? item.changedModules.filter(id => /^[a-z0-9-]{1,64}$/.test(id)).slice(0, 40) : null),
       pipeline: { tests: outcome(item.pipeline?.tests), containerSmoke: outcome(item.pipeline?.containerSmoke),
@@ -77,6 +83,18 @@ export function changedModuleIds(currentManifest, previousManifest, changedFiles
     changedFiles.some(file => file === item.path || file.startsWith(`${item.path}/`))
     || (previousManifest && JSON.stringify(previous.get(item.id)) !== JSON.stringify(item))
   )).map(item => item.id);
+}
+
+export function selectChangedFromSha(previous, runId, sha, beforeSha) {
+  const runs = Array.isArray(previous?.runs) ? previous.runs : [];
+  const predecessor = runs.filter(item => /^\d+$/.test(String(item?.runId ?? ''))
+    && BigInt(item.runId) < BigInt(runId) && commitSha(item?.commitSha)
+    && item.commitSha !== sha)
+    .sort((a, b) => BigInt(a.runId) === BigInt(b.runId) ? 0 : BigInt(a.runId) > BigInt(b.runId) ? -1 : 1)[0];
+  const previousAttempt = runs.find(item => String(item?.runId) === runId && item?.commitSha === sha
+    && commitSha(item?.changedFromSha));
+  const baseSha = predecessor?.commitSha ?? previousAttempt?.changedFromSha ?? beforeSha;
+  return commitSha(baseSha) && baseSha !== sha ? baseSha : null;
 }
 
 async function changedModules(previousSha, currentSha) {
@@ -130,10 +148,8 @@ export async function publish({ fetchImpl = fetch, reportPath = resolve('reports
         previous = JSON.parse(Buffer.from(file.data.content, 'base64').toString('utf8'));
       }
     }
-    const predecessor = (Array.isArray(previous?.runs) ? previous.runs : []).filter(item => /^\d+$/.test(String(item?.runId ?? ''))
-      && BigInt(item.runId) < BigInt(runId) && /^[a-f0-9]{40}$/.test(item?.commitSha ?? ''))
-      .sort((a, b) => BigInt(a.runId) === BigInt(b.runId) ? 0 : BigInt(a.runId) > BigInt(b.runId) ? -1 : 1)[0];
-    summary.changedModules = await changedModules(predecessor?.commitSha ?? process.env.CA3P_BEFORE_SHA, sha);
+    summary.changedFromSha = selectChangedFromSha(previous, runId, sha, process.env.CA3P_BEFORE_SHA);
+    summary.changedModules = await changedModules(summary.changedFromSha, sha);
     const index = mergeIndex(previous, summary, now);
     const tree = await api('POST', '/git/trees', { tree: [{ path: 'index.json', mode: '100644', type: 'blob', content: JSON.stringify(index, null, 2) + '\n' }] });
     if (tree.status !== 201) throw new Error(`Unable to create CI summary tree: ${tree.status}.`);

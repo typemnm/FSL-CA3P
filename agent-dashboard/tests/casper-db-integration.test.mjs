@@ -36,3 +36,12 @@ test('real casper-db assesses parser locations against an isolated empty SQLite 
   assert.equal(result.assessments.length, 2);
   assert.ok(result.assessments.every(item => item.decision === 'no_match' && item.matches.length === 0));
 });
+
+test('concurrent first-use lookups wait for one complete database initialization', async t => {
+  const databasePath = join(tmpdir(), `ca3p-casper-concurrent-${randomUUID()}.sqlite3`);
+  t.after(async () => { await unlink(databasePath).catch(error => { if (error.code !== 'ENOENT') throw error; }); });
+  const results = await Promise.all(Array.from({ length: 4 }, () =>
+    matchCasperHistory({ report, origin, databasePath })));
+  assert.equal(results.length, 4);
+  assert.ok(results.every(result => result.readyCaseCount === 0 && result.assessments.length === 2));
+});

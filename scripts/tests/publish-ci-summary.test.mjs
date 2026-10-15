@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { changedModuleIds, mergeIndex, publish, summarizeReport } from '../publish-ci-summary.mjs';
+import { changedModuleIds, mergeIndex, publish, selectChangedFromSha, summarizeReport } from '../publish-ci-summary.mjs';
 
 const sha = 'a'.repeat(40);
 const context = { sha, runId: '123', runAttempt: '1', repository: 'typemnm/FSL-CA3P',
@@ -29,7 +29,16 @@ test('failed suite remains a complete run; missing artifact is incomplete', () =
   const missing = summarizeReport(null, context);
   assert.equal(missing.status, 'incomplete');
   assert.equal(missing.completeSuite, false);
+  assert.deepEqual([missing.tests, missing.passed, missing.failed, missing.skipped],
+    [null, null, null, null]);
   assert.deepEqual(missing.jobs, []);
+  const setupFailure = summarizeReport({ ...report, status: 'failed', completeSuite: false,
+    tests: null, passed: null, failed: null, skipped: null,
+    jobs: [{ id: 'ci-workflow', status: 'failed' }] }, context);
+  assert.deepEqual([setupFailure.tests, setupFailure.passed, setupFailure.failed, setupFailure.skipped],
+    [null, null, null, null]);
+  assert.deepEqual([setupFailure.jobs[0].tests, setupFailure.jobs[0].passed,
+    setupFailure.jobs[0].failed, setupFailure.jobs[0].skipped], [null, null, null, null]);
 });
 
 test('feed keeps newest 50 runs and replaces an existing run attempt', () => {
@@ -44,6 +53,28 @@ test('feed keeps newest 50 runs and replaces an existing run attempt', () => {
   const rerun = mergeIndex(index, { ...newest, status: 'failed' }, context.now);
   assert.equal(rerun.runs.length, 50);
   assert.equal(rerun.runs[0].status, 'failed');
+  const unknown = mergeIndex(rerun, { ...newest, tests: null, passed: null,
+    failed: null, skipped: null, changedFromSha: 'b'.repeat(40) }, context.now);
+  assert.equal(unknown.runs[0].tests, null);
+  assert.equal(unknown.runs[0].passed, null);
+  assert.equal(unknown.runs[0].changedFromSha, 'b'.repeat(40));
+});
+
+test('diff baseline skips same-SHA runs and survives a retry of the same run', () => {
+  const older = 'b'.repeat(40);
+  const oldest = 'c'.repeat(40);
+  const previous = { runs: [
+    { runId: '124', runAttempt: 1, commitSha: sha, changedFromSha: older },
+    { runId: '123', runAttempt: 1, commitSha: sha },
+    { runId: '122', runAttempt: 1, commitSha: older },
+    { runId: '121', runAttempt: 1, commitSha: oldest },
+  ] };
+  assert.equal(selectChangedFromSha(previous, '125', sha, oldest), older);
+  assert.equal(selectChangedFromSha(previous, '124', sha, oldest), older);
+  assert.equal(selectChangedFromSha({ runs: [previous.runs[0]] }, '124', sha, oldest), older);
+  assert.equal(selectChangedFromSha({ runs: [previous.runs[0]] }, '125', sha, oldest), oldest);
+  assert.equal(selectChangedFromSha(null, '125', sha, sha), null);
+  assert.equal(selectChangedFromSha(null, '125', sha, '0'.repeat(40)), null);
 });
 
 test('changed module list uses source paths and manifest changes, excluding replaced modules', () => {
@@ -90,6 +121,8 @@ test('publisher creates an isolated counts-only branch for a trusted develop pus
     assert.equal(feed.runs[0].status, 'failed');
     assert.equal(feed.runs[0].completeSuite, false);
     assert.equal(feed.runs[0].changedModules, null);
+    assert.equal(feed.runs[0].changedFromSha, null);
+    assert.equal(feed.runs[0].tests, null);
     assert.deepEqual(Object.keys(feed), ['schemaVersion', 'generatedAt', 'runs']);
   } finally {
     for (const key of keys) prior[key] === undefined ? delete process.env[key] : process.env[key] = prior[key];

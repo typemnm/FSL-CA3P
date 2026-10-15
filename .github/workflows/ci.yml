@@ -77,7 +77,7 @@ jobs:
                   'startedAt': now, 'completedAt': now,
                   'status': 'failed', 'completeSuite': False,
                   'runUrl': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
-                  'tests': 0, 'passed': 0, 'failed': 0, 'skipped': 0,
+                  'tests': None, 'passed': None, 'failed': None, 'skipped': None,
                   'jobs': [],
               }
           incomplete = created or report.get('status') == 'running' or (

@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { resolve, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { parseTap, parseJUnit, suitePassed } from './ci-results.mjs';
+import { createSuitePlan } from './ci-plan.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const reportDir = resolve(root, 'reports/ci');
@@ -13,29 +14,14 @@ const skipPreflight = args.includes('--skip-preflight');
 const selection = args.find(arg => arg.startsWith('--modules='))?.slice(10).split(',');
 const dryRun = args.includes('--dry-run');
 if (args.some(arg => !['--node-only', '--skip-preflight', '--dry-run'].includes(arg) && !arg.startsWith('--modules='))) throw new Error('Unknown CI option.');
-async function testFiles(directory) {
-  let entries;
-  try { entries = await readdir(directory, { withFileTypes: true }); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-  const found = [];
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (entry.isSymbolicLink() || ['node_modules', '.git', '.runtime', '.venv'].includes(entry.name)) continue;
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) found.push(...await testFiles(path));
-    else if (/\.test\.(?:mjs|cjs|js)$/.test(entry.name)) found.push(path);
-  }
-  return found;
-}
 const manifest = JSON.parse(await readFile(resolve(root, 'integration-manifest.json'), 'utf8'));
-const suites = [];
-for (const module of manifest.modules.filter(item => item.status === 'active' && item.id !== 'casper-db')) {
-  const files = [...await testFiles(resolve(root, module.path, 'test')), ...await testFiles(resolve(root, module.path, 'tests'))];
-  if (files.length && (!selection || selection.includes(module.id))) suites.push({ id: module.id, cwd: resolve(root, module.path), command: process.execPath, args: ['--test', '--test-reporter=tap', ...files] });
+const { suites, problems, activeIds } = await createSuitePlan({ root, manifest, nodeOnly, selection });
+if (dryRun) {
+  console.log(JSON.stringify(suites.map(({ id, cwd, args }) => ({ id, cwd: relative(root, cwd), args })), null, 2));
+  if (problems.length) { console.error(`CI suite discovery failed:\n${problems.join('\n')}`); process.exitCode = 1; }
+  else process.exitCode = 0;
+  process.exit();
 }
-const scriptTests = await testFiles(resolve(root, 'scripts/tests'));
-if (scriptTests.length && !selection) suites.push({ id: 'ci-tools', cwd: root, command: process.execPath, args: ['--test', '--test-reporter=tap', ...scriptTests] });
-if (!nodeOnly && (!selection || selection.includes('casper-db'))) suites.push({ id: 'casper-db', cwd: resolve(root, 'casper-db'), command: process.env.CASPER_DB_PYTHON || 'python3', args: ['-m', 'pytest', '--junitxml=../reports/ci/casper-db.xml'] });
-if (selection?.some(id => !suites.some(suite => suite.id === id))) throw new Error(`Selected module has no discovered test suite: ${selection.join(',')}`);
-if (dryRun) { console.log(JSON.stringify(suites.map(({ id, cwd, args }) => ({ id, cwd: relative(root, cwd), args })), null, 2)); process.exit(0); }
 await mkdir(reportDir, { recursive: true });
 function execute(command, commandArgs, cwd, timeout = 300_000) {
   return new Promise(resolveResult => {
@@ -72,7 +58,12 @@ const fullSuiteRequested = !nodeOnly && !selection && !skipPreflight;
 const report = { schemaVersion: '1.0', id: randomUUID(), source: process.env.GITHUB_ACTIONS ? 'github-actions' : 'local', commitSha: git.exitCode === 0 ? git.output.trim() : null, branch: process.env.GITHUB_REF_NAME || branch.output.trim() || null, eventName: process.env.GITHUB_EVENT_NAME || null, testRef: process.env.GITHUB_REF || null, headBranch: process.env.GITHUB_HEAD_REF || null, baseBranch: process.env.GITHUB_BASE_REF || null, worktreeDirty: Boolean(worktree.output.trim()), nodeVersion: process.version, startedAt, completedAt: null, status: 'running', completeSuite: false, runUrl: process.env.GITHUB_RUN_ID && process.env.GITHUB_REPOSITORY ? `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null, tests: 0, passed: 0, failed: 0, skipped: 0, jobs: [] };
 async function saveReport() { const temp = join(reportDir, `.latest-${report.id}.tmp`); await writeFile(temp, JSON.stringify(report, null, 2)); await rename(temp, join(reportDir, 'latest.json')); }
 await saveReport();
-let prerequisites = true;
+let prerequisites = problems.length === 0;
+if (problems.length) {
+  report.jobs.push({ id: 'discovery', status: 'failed', exitCode: 1,
+    error: problems.join('\n') });
+  await saveReport();
+}
 for (const [id, file] of [['boundaries', 'check-boundaries.mjs'], ...(!skipPreflight ? [['preflight', 'preflight.mjs']] : [])]) {
   const result = await execute(process.execPath, [resolve(root, 'scripts', file)], root);
   await writeFile(join(reportDir, `${id}.log`), result.output);
@@ -95,9 +86,11 @@ if (prerequisites) for (const suite of suites) {
   await saveReport();
 }
 report.completedAt = new Date().toISOString();
-report.completeSuite = fullSuiteRequested && prerequisites && suites.length > 0
-  && suites.every(suite => report.jobs.some(job => job.id === suite.id));
-report.status = prerequisites && report.jobs.every(job => job.status === 'passed') && suites.length > 0 ? 'passed' : 'failed';
+report.completeSuite = fullSuiteRequested && prerequisites && activeIds.length > 0
+  && activeIds.every(id => suites.some(suite => suite.id === id)
+    && report.jobs.some(job => job.id === id));
+report.status = prerequisites && report.jobs.every(job => job.status === 'passed')
+  && suites.length > 0 && (!fullSuiteRequested || report.completeSuite) ? 'passed' : 'failed';
 report.failedJobs = report.jobs.filter(job => job.status === 'failed').length;
 await saveReport();
 console.log(`\nCI ${report.status}: ${report.passed} passed, ${report.failed} failed tests, ${report.skipped} skipped, ${report.failedJobs} failed jobs. Report: reports/ci/latest.json`);

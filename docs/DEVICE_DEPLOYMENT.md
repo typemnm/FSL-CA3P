@@ -24,7 +24,7 @@ tail -n 100 .runtime/macmini-dashboard.err.log
 launchctl kickstart -k gui/$(id -u)/kr.or.casper.ca3p.macmini-dashboard
 ```
 
-마지막 명령은 새 코드가 배포된 뒤 서버를 재시작할 때만 실행한다. 현재 프로세스의 포트는 4175이고, Nginx Proxy Manager가 이 포트에 접근하려면 Mac의 LAN IP가 `192.168.0.84`로 유지돼야 한다. IP가 바뀌면 Nginx Proxy Manager의 Forward Hostname/IP 및 서버의 `DASHBOARD_HOST`를 함께 수정한다. 데이터는 `.runtime/runs.sqlite`, 인증 계정은 `.runtime/auth.json`, 서비스 로그는 `.runtime/macmini-dashboard.*.log`에 남는다. 파일을 초기화하거나 계정 비밀번호를 재생성하기 전에 백업한다.
+마지막 명령은 새 코드가 배포된 뒤 서버를 재시작할 때만 실행한다. 현재 프로세스의 포트는 4175이고, Nginx Proxy Manager가 이 포트에 접근하려면 Mac의 LAN IP가 `192.168.0.84`로 유지돼야 한다. IP가 바뀌면 Nginx Proxy Manager의 Forward Hostname/IP 및 서버의 `DASHBOARD_HOST`를 함께 수정한다. Nginx Proxy Manager 뒤에서 로그인 시도 제한을 방문자별로 적용하려면 LaunchAgent 환경에 `DASHBOARD_TRUSTED_PROXY_IPS=192.168.0.3`을 설정한다. 프록시의 **IP만** 적고 관리 포트 `:81`은 넣지 않는다. 이 주소에서 온 요청에 한해 프록시가 전달한 `X-Forwarded-For`의 마지막 IP를 사용하며, 그 밖의 접속자가 보낸 헤더는 신뢰하지 않는다. 설정을 바꾸면 LaunchAgent를 재시작한다. 데이터는 `.runtime/runs.sqlite`, 인증 계정은 `.runtime/auth.json`, 서비스 로그는 `.runtime/macmini-dashboard.*.log`에 남는다. 파일을 초기화하거나 계정 비밀번호를 재생성하기 전에 백업한다.
 
 `develop`에 PR을 병합하면 GitHub Actions가 병합된 코드의 전체 모듈을 검증한다. 신뢰된 `develop` 실행의 비민감 요약은 공개 `ci-results` 피드를 통해 장치가 주기적으로 읽고 **통합 테스트** 화면에 표시한다. 이는 코드 자동 배포가 아니다. 이 Mac의 실행 모듈과 UI를 변경하려면 체크아웃을 갱신하고 위 서비스를 재시작해야 한다. CI 판정·요약 범위와 장애 진단은 [CI/CD 안내](CI_CD.md)에 있다.
 
