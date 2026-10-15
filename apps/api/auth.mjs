@@ -1,11 +1,27 @@
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SESSION_MS = 8 * 60 * 60 * 1000;
 const passwordHash = (password, salt) => scryptSync(password, salt, 64).toString('hex');
 const fail = (status, message) => Object.assign(new Error(message), { status });
+function ipAddress(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  const address = trimmed.startsWith('[') && trimmed.endsWith(']') ? trimmed.slice(1, -1) : trimmed;
+  const family = isIP(address);
+  if (!family || (trimmed !== address && family !== 6)) return null;
+  return family === 6 ? new URL(`http://[${address}]/`).hostname.slice(1, -1) : address;
+}
+function configuredProxyIps(value) {
+  const entries = typeof value === 'string' ? value.split(',') : value;
+  if (!Array.isArray(entries)) throw new Error('Invalid trusted proxy IP configuration.');
+  const addresses = entries.map(ipAddress);
+  if (addresses.some(address => !address)) throw new Error('Invalid trusted proxy IP configuration.');
+  return new Set(addresses);
+}
 
 export function hashAccount(username, password, role = 'operator') {
   const salt = randomBytes(16).toString('hex');
@@ -14,8 +30,10 @@ export function hashAccount(username, password, role = 'operator') {
 
 export function createAuthentication({ enabled = true,
   file = resolve(process.env.DASHBOARD_AUTH_FILE ?? fileURLToPath(new URL('../../.runtime/auth.json', import.meta.url))), users, now = Date.now,
+  trustedProxyIps = process.env.DASHBOARD_TRUSTED_PROXY_IPS || [],
 } = {}) {
   const sessions = new Map(), attempts = new Map();
+  const trustedProxies = configuredProxyIps(trustedProxyIps);
   let accounts = users;
   if (enabled && !accounts) {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -48,7 +66,15 @@ export function createAuthentication({ enabled = true,
   }
   function login(req, body, { secure = false } = {}) {
     if (!enabled) return { body: describe(req), cookie: null };
-    const ip = req.socket.remoteAddress ?? 'unknown', record = attempts.get(ip);
+    const peer = ipAddress(req.socket.remoteAddress);
+    let ip = peer ?? 'unknown';
+    if (peer && trustedProxies.has(peer)) {
+      const forwarded = req.headers['x-forwarded-for'];
+      const rightmost = typeof forwarded === 'string' ? forwarded.split(',').at(-1) : null;
+      ip = ipAddress(rightmost);
+      if (!ip) throw fail(400, '프록시가 전달한 클라이언트 주소가 필요합니다.');
+    }
+    const record = attempts.get(ip);
     if (record && record.until > now() && record.count >= 10) throw fail(429, '로그인 시도가 많습니다. 잠시 후 다시 시도하세요.');
     if (!body || typeof body.username !== 'string' || typeof body.password !== 'string'
       || body.username.length > 64 || body.password.length > 256 || Object.keys(body).some(k => !['username', 'password'].includes(k))) throw fail(400, '계정과 비밀번호를 확인하세요.');

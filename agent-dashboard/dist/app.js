@@ -113,6 +113,9 @@ let centralHistoryLoaded = false;
 let historyRefreshPending = false;
 let models = [];
 let platform = null;
+let ciResults = null;
+let ciError = '';
+let ciRefreshPending = false;
 let comparison = null;
 let comparisonPending = false;
 let platformError = '';
@@ -171,6 +174,7 @@ const viewMeta = {
   dashboard: ['대시보드', 'Observe. Decide. <span>Iterate.</span>', '에이전트의 모든 판단과 흐름을, 한눈에.'],
   sessions: ['실행 이력', 'Every run. <span>Remembered.</span>', '중앙에 저장된 실행과 모듈별 증거를 다시 살펴보세요.'],
   compare: ['실행 비교', 'Inspect the <span>difference.</span>', '코드·모델·입력 조건과 결과 차이를 함께 확인하세요.'],
+  ci: ['통합 테스트', 'Verify the <span>merge.</span>', 'develop 전체 모듈 테스트와 이전 병합 결과를 비교하세요.'],
   platform: ['통합 상태', 'Build. Verify. <span>Integrate.</span>', '모듈 버전과 검증 상태, 실행 계층을 확인하세요.'],
   modules: ['모듈 탐색', 'Inside the <span>loop.</span>', '각 모듈이 주고받는 데이터와 상태를 확인하세요.'],
   reports: ['리포트', 'From signals to <span>insight.</span>', '코어 실행 리포트와 모드별 검토 항목을 확인하세요.'],
@@ -411,6 +415,7 @@ function render() {
   if (activeView === 'modules') renderModules();
   if (activeView === 'reports') renderReports();
   if (activeView === 'compare') renderComparison();
+  if (activeView === 'ci') renderCiResults();
   if (activeView === 'platform') renderPlatform();
   if (!$('notification-popover').hidden) renderNotifications();
   updateStars();
@@ -544,13 +549,17 @@ function renderHistoryChecks() {
 function requireLogin() {
   workspaceGeneration += 1;
   authSession = { ...authSession, authenticated: false, authRequired: true, user: null };
-  history = []; centralHistoryLoaded = false; inspectedRun = null; legacyDetail = null; comparison = null; platform = null; models = [];
+  history = []; centralHistoryLoaded = false; inspectedRun = null; legacyDetail = null; comparison = null; platform = null; ciResults = null; ciError = ''; models = [];
   reviewDrafts.clear(); pendingReviews.clear(); historyReviewSignature = '';
   run = { id: '', target: '', status: 'idle', startedAt: null, elapsedMs: 0, step: 0, totalSteps: 19, iterations: 1, events: [], snapshots: {}, reviewItems: [], mode: 'core-fixture', simulated: true, targetContacted: false };
   $('user-name').textContent = '로그인 필요'; $('user-role').textContent = '인증된 세션으로 접근';
   $('logout-button').hidden = true;
   $('comparison-content').textContent = '';
   $('session-list').textContent = '';
+  $('ci-content').textContent = '';
+  $('ci-comparison').textContent = '';
+  $('ci-count').textContent = '—';
+  $('ci-source').textContent = '로그인 필요';
   $('trace-code').textContent = '';
   $('notification-list').textContent = '';
   if (!$('login-dialog').open) $('login-dialog').showModal();
@@ -568,7 +577,7 @@ function acceptSession(value) {
 }
 async function loadWorkspace() {
   const generation = workspaceGeneration;
-  await Promise.allSettled([refreshHistory(), (async () => {
+  await Promise.allSettled([refreshHistory(), refreshCiResults(), (async () => {
     const payload = await runtime.getModels();
     if (generation !== workspaceGeneration) return;
     const previous = $('model-select').value;
@@ -581,6 +590,19 @@ async function loadWorkspace() {
     if (generation !== workspaceGeneration) return;
     platform = redactTelemetry(payload); platformError = ''; if (activeView === 'platform') renderPlatform();
   })().catch(error => { platformError = error.message; if (activeView === 'platform') renderPlatform(); })]);
+}
+async function refreshCiResults() {
+  if (ciRefreshPending || !authSession || (authSession.authRequired && !authSession.authenticated)) return;
+  ciRefreshPending = true;
+  const generation = workspaceGeneration;
+  try {
+    const payload = await runtime.getCiResults();
+    if (generation !== workspaceGeneration) return;
+    if (!payload || !Array.isArray(payload.runs)) throw new Error('통합 테스트 결과 형식을 확인할 수 없습니다.');
+    ciResults = payload; ciError = '';
+    $('ci-count').textContent = payload.runs.length ? String(payload.runs.length) : '—';
+  } catch (error) { ciError = error.message; }
+  finally { ciRefreshPending = false; if (activeView === 'ci') renderCiResults(); }
 }
 async function refreshHistory() {
   if (historyRefreshPending || !authSession || (authSession.authRequired && !authSession.authenticated)) return;
@@ -652,11 +674,69 @@ function renderComparison() {
   const diffs = Array.isArray(comparison.moduleDiffs) ? comparison.moduleDiffs : Object.entries(comparison.moduleDiffs || {}).map(([module, diff]) => ({ module, ...diff }));
   $('comparison-content').innerHTML = `<section class="panel comparison-summary"><span class="review-tag">${compatible ? '동일 조건 비교 가능' : '조건 차이 확인 필요'}</span><h2>${escape(comparison.kind || comparison.type || '실행 결과 차이')}</h2><p>${compatible ? '서버가 기록한 비교 조건을 충족합니다.' : '코드·모델·입력·정책 중 함께 바뀐 조건이 있으면 한 모듈의 영향으로 단정할 수 없습니다.'}</p><div class="comparison-pair"><div><small>BASELINE</small><strong>${escape(baseline?.id || $('baseline-select').value)}</strong><span>${escape(baseline ? runModelName(baseline) : '')}</span></div><div><small>CANDIDATE</small><strong>${escape(candidate?.id || $('candidate-select').value)}</strong><span>${escape(candidate ? runModelName(candidate) : '')}</span></div></div></section>${comparisonConditions(comparison.conditions || comparison.compatibility)}${comparisonMetrics(comparison.metrics)}${jsonSection('Finding 추가 / 제거 / 변경', comparison.findingChanges || comparison.findingTransition || comparison.findings || {})}<section class="panel comparison-modules"><h2>모듈별 정규화 입출력 차이</h2>${diffs.length ? diffs.map(item => `<details><summary>${escape(item.module || item.name || item.id || 'module')} · ${escape(item.changed === false || item.changes?.length === 0 ? '동일' : '변경 상세')}</summary><pre tabindex="0">${highlightJSON(item)}</pre></details>`).join('') : '<p>모듈 차이가 없습니다.</p>'}</section><p class="runtime-scope">현재 AI는 규칙 엔진이 만든 단일 허용 후보를 선택합니다. 모델 비교값은 계약 준수·중단·실행 시간·토큰 비교이며 범용 취약점 탐지 정확도로 해석하지 않습니다.</p>`;
 }
+const ciStatusNames = { passed: '통과', failed: '실패', incomplete: '증거 부족', running: '진행 중', success: '통과', failure: '실패',
+  cancelled: '취소', skipped: '건너뜀', timed_out: '시간 초과', in_progress: '진행 중', queued: '대기', unknown: '미확인' };
+function ciCount(value) { return Number.isSafeInteger(value) ? value.toLocaleString('ko-KR') : '자료 없음'; }
+function ciKey(item) { return `${item.runId}:${item.runAttempt}`; }
+function ciJobTable(jobs) {
+  return `<div class="comparison-table-wrap"><table class="comparison-table ci-table"><thead><tr><th>검증 단계 / 모듈</th><th>상태</th><th>전체</th><th>통과</th><th>실패</th><th>건너뜀</th></tr></thead><tbody>${jobs.map(job => `<tr><th>${escape(job.id)}</th><td><span class="ci-state ci-${escape(job.status)}">${escape(ciStatusNames[job.status] || job.status)}</span></td><td>${ciCount(job.tests)}</td><td>${ciCount(job.passed)}</td><td>${ciCount(job.failed)}</td><td>${ciCount(job.skipped)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+function ciDelta(before, after) {
+  if (!Number.isSafeInteger(before) || !Number.isSafeInteger(after)) return '자료 없음';
+  const value = after - before;
+  return value > 0 ? `+${value}` : String(value);
+}
+function renderCiComparison(baseline, candidate) {
+  if (!baseline || !candidate) { $('ci-comparison').innerHTML = '<p class="ci-empty-compare">비교할 develop 실행이 두 건 이상 필요합니다.</p>'; return; }
+  if (ciKey(baseline) === ciKey(candidate)) { $('ci-comparison').innerHTML = '<p class="ci-empty-compare">서로 다른 두 실행을 선택하세요.</p>'; return; }
+  const beforeJobs = new Map((baseline.jobs || []).map(job => [job.id, job]));
+  const afterJobs = new Map((candidate.jobs || []).map(job => [job.id, job]));
+  const names = [...new Set([...beforeJobs.keys(), ...afterJobs.keys()])];
+  const candidateIndex = ciResults?.runs?.findIndex(item => ciKey(item) === ciKey(candidate)) ?? -1;
+  const sameCommit = baseline.commitSha === candidate.commitSha;
+  const precedingCommit = candidateIndex >= 0
+    ? ciResults.runs.slice(candidateIndex + 1).find(item => item.commitSha !== candidate.commitSha) : null;
+  const matchingDiffBase = precedingCommit?.commitSha === baseline.commitSha && candidate.changedFromSha === baseline.commitSha;
+  const changedModules = sameCommit ? [] : matchingDiffBase && Array.isArray(candidate.changedModules)
+    ? candidate.changedModules : null;
+  $('ci-comparison').innerHTML = `<p class="ci-compare-caption">기준 <strong>${escape(baseline.commitSha.slice(0, 12))}</strong> → 비교 <strong>${escape(candidate.commitSha.slice(0, 12))}</strong></p>
+    <div class="ci-delta-grid"><span>전체 테스트 <strong>${ciDelta(baseline.tests, candidate.tests)}</strong></span><span>통과 <strong>${ciDelta(baseline.passed, candidate.passed)}</strong></span><span>실패 <strong>${ciDelta(baseline.failed, candidate.failed)}</strong></span><span>건너뜀 <strong>${ciDelta(baseline.skipped, candidate.skipped)}</strong></span></div>
+    <p class="ci-changed-modules">코드가 바뀐 모듈: ${changedModules === null ? '이 비교 구간의 변경 경로 정보 없음' : changedModules.length ? changedModules.map(escape).join(', ') : '없음'}</p>
+    ${names.length ? `<div class="comparison-table-wrap"><table class="comparison-table ci-table"><thead><tr><th>검증 단계 / 모듈</th><th>기준</th><th>비교</th><th>통과 차이</th><th>실패 차이</th><th>건너뜀 차이</th></tr></thead><tbody>${names.map(name => {
+      const before = beforeJobs.get(name); const after = afterJobs.get(name);
+      const changed = before?.status !== after?.status || before?.passed !== after?.passed || before?.failed !== after?.failed || before?.skipped !== after?.skipped;
+      return `<tr class="${changed ? 'ci-changed-row' : ''}"><th>${escape(name)}</th><td>${escape(ciStatusNames[before?.status] || before?.status || '자료 없음')}</td><td>${escape(ciStatusNames[after?.status] || after?.status || '자료 없음')}</td><td>${ciDelta(before?.passed, after?.passed)}</td><td>${ciDelta(before?.failed, after?.failed)}</td><td>${ciDelta(before?.skipped, after?.skipped)}</td></tr>`;
+    }).join('')}</tbody></table></div>` : '<p class="ci-empty-compare">Actions 단계 결과만 확인할 수 있습니다. 모듈별 수치는 공개 요약이 게시되면 표시됩니다.</p>'}
+    <p class="runtime-scope">테스트 수나 통과 수 변화만으로 취약점 탐지 정확도의 향상을 뜻하지 않습니다. 코드 변경 모듈은 Git diff에서, 테스트 결과는 Actions 보고서에서 각각 기록합니다.</p>`;
+}
+function renderCiResults() {
+  const rows = Array.isArray(ciResults?.runs) ? ciResults.runs : [];
+  $('ci-count').textContent = rows.length ? String(rows.length) : '—';
+  const source = ciResults?.source === 'public-feed' ? '공개 비민감 요약 · 모듈별 결과' : ciResults?.source === 'actions-api'
+    ? 'GitHub Actions 공개 단계 결과 · 모듈별 수치 미제공' : '아직 수집된 결과 없음';
+  const freshness = ciResults?.status === 'stale' || ciResults?.status === 'unavailable' ? ' · 동기화 실패, 마지막 저장값 표시' : '';
+  $('ci-source').textContent = `${source}${ciResults?.updatedAt ? ` · ${dateLabel(ciResults.updatedAt)} 수집` : ''}${freshness}${ciError ? ` · ${ciError}` : ''}`;
+  if (!rows.length) {
+    $('ci-content').innerHTML = '<section class="panel empty-state"><span data-icon="check"></span><h3>develop 통합 결과를 기다리고 있습니다</h3><p>병합 후 GitHub Actions 실행과 공개 요약이 수집되면 전체 모듈 테스트를 표시합니다.</p></section>';
+  } else {
+    const latest = rows[0];
+    const pipeline = [['tests', '전체 모듈 테스트'], ['containerSmoke', '컨테이너 기동'], ['integrationGate', '통합 게이트']];
+    $('ci-content').innerHTML = `<section class="panel ci-latest"><div class="ci-latest-top"><div><div class="eyebrow">LATEST DEVELOP PUSH</div><h2><span class="ci-state ci-${escape(latest.status)}">${escape(ciStatusNames[latest.status] || latest.status)}</span> ${escape(latest.commitSha.slice(0, 12))}</h2><p>Actions 실행 ${escape(latest.runId)} · 시도 ${escape(latest.runAttempt)} · ${escape(latest.completedAt ? dateLabel(latest.completedAt) : '완료 시간 미기록')}</p></div><a class="button secondary" href="${escape(latest.runUrl)}" target="_blank" rel="noopener noreferrer">GitHub Actions에서 보기</a></div><div class="ci-totals"><div><small>전체 테스트</small><strong>${ciCount(latest.tests)}</strong></div><div><small>통과</small><strong>${ciCount(latest.passed)}</strong></div><div><small>실패</small><strong>${ciCount(latest.failed)}</strong></div><div><small>건너뜀</small><strong>${ciCount(latest.skipped)}</strong></div></div><div class="ci-pipeline">${pipeline.map(([key, name]) => `<div><span>${name}</span><strong class="ci-state ci-${escape(latest.pipeline?.[key] || 'unknown')}">${escape(ciStatusNames[latest.pipeline?.[key]] || '미확인')}</strong></div>`).join('')}</div><p class="ci-verification">${latest.status === 'passed' ? '전체 suite, 컨테이너 기동, 통합 게이트가 성공했고 실패·건너뜀 테스트가 없습니다.' : latest.completeSuite ? '실패·미완료 단계를 확인하세요. 병합된 코드의 검증을 통과했다고 표시하지 않습니다.' : '전체 suite 보고서가 없어 모듈별 검증 통과를 확인할 수 없습니다.'}</p></section>
+      <section class="panel ci-jobs"><h2>모듈·검증 단계별 결과</h2>${latest.jobs?.length ? ciJobTable(latest.jobs) : '<p>공개 Actions 단계 결과만 수집했습니다. 모듈별 테스트 수는 요약 피드가 게시되면 표시됩니다.</p>'}</section>`;
+  }
+  const baselineSelect = $('ci-baseline'); const candidateSelect = $('ci-candidate');
+  const previousBaseline = baselineSelect.value; const previousCandidate = candidateSelect.value;
+  const options = rows.map(item => `<option value="${escape(ciKey(item))}">${escape(`${item.commitSha.slice(0, 12)} · ${ciStatusNames[item.status] || item.status} · ${item.completedAt ? dateLabel(item.completedAt) : '진행 중'}`)}</option>`).join('');
+  baselineSelect.innerHTML = candidateSelect.innerHTML = options || '<option value="">실행 없음</option>';
+  baselineSelect.value = rows.some(item => ciKey(item) === previousBaseline) ? previousBaseline : rows[1] ? ciKey(rows[1]) : '';
+  candidateSelect.value = rows.some(item => ciKey(item) === previousCandidate) ? previousCandidate : rows[0] ? ciKey(rows[0]) : '';
+  renderCiComparison(rows.find(item => ciKey(item) === baselineSelect.value), rows.find(item => ciKey(item) === candidateSelect.value));
+}
 function renderPlatform() {
   if (!platform) { $('platform-content').innerHTML = `<div class="panel empty-state"><h3>${platformError ? '통합 상태를 불러올 수 없습니다' : '통합 상태 조회 중'}</h3><p>${escape(platformError)}</p></div>`; return; }
   const source = platform.source || {};
   const modules = Array.isArray(platform.modules) ? platform.modules : Object.entries(platform.modules || {}).map(([name, value]) => ({ name, ...value }));
-  $('platform-content').innerHTML = `<section class="panel platform-source"><div class="eyebrow">INTEGRATION PLATFORM</div><h2>${escape(source.branch || source.ref || '현재 통합 소스')}</h2><p class="mono">${escape(source.commitSha || source.commit || source.sha || 'SHA 미기록')}</p><p>${escape(source.dirty ? '작업 디렉터리에 변경 사항이 있습니다.' : '서버가 보고한 소스 버전과 모듈 정보를 표시합니다.')}</p></section><div class="module-grid platform-modules">${modules.map(item => `<article class="panel module-card"><span class="local-chip">${escape(item.status || item.layer || 'MODULE')}</span><h2>${escape(item.name || item.id || 'module')}</h2><p>${escape(item.description || item.role || item.path || '')}</p><small>${escape(item.layer || '')}${item.sourceBranch ? ` · ${escape(item.sourceBranch)}` : ''}</small><p class="mono">${escape(item.version || item.packageVersion || item.hash || item.contentDigest || item.sha || '버전 미기록')}</p>${item.changed !== undefined ? `<small>${item.changed ? '기준 대비 변경됨' : '기준과 동일'}</small>` : ''}</article>`).join('')}</div>${jsonSection('검증 실행 결과 · 실제 서버 보고값', platform.tests || platform.validation || {})}${jsonSection('계층 및 모듈 연결', platform.architecture || {})}${jsonSection('소스 및 변경 모듈 상세', source)}`;
+  $('platform-content').innerHTML = `<section class="panel platform-source"><div class="eyebrow">INTEGRATION PLATFORM</div><h2>${escape(source.branch || source.ref || '현재 통합 소스')}</h2><p class="mono">${escape(source.commitSha || source.commit || source.sha || 'SHA 미기록')}</p><p>${escape(source.dirty ? '작업 디렉터리에 변경 사항이 있습니다.' : '서버가 보고한 소스 버전과 모듈 정보를 표시합니다.')}</p><p>이 화면의 검증 파일은 서버 체크아웃에서 생성된 값입니다. develop 병합 커밋의 전체 모듈 검증은 ‘통합 테스트’에서 확인하세요.</p></section><div class="module-grid platform-modules">${modules.map(item => `<article class="panel module-card"><span class="local-chip">${escape(item.status || item.layer || 'MODULE')}</span><h2>${escape(item.name || item.id || 'module')}</h2><p>${escape(item.description || item.role || item.path || '')}</p><small>${escape(item.layer || '')}${item.sourceBranch ? ` · ${escape(item.sourceBranch)}` : ''}</small><p class="mono">${escape(item.version || item.packageVersion || item.hash || item.contentDigest || item.sha || '버전 미기록')}</p>${item.changed !== undefined ? `<small>${item.changed ? '기준 대비 변경됨' : '기준과 동일'}</small>` : ''}</article>`).join('')}</div>${jsonSection('현재 서버 체크아웃의 로컬 검증 파일', platform.tests || platform.validation || {})}${jsonSection('계층 및 모듈 연결', platform.architecture || {})}${jsonSection('소스 및 변경 모듈 상세', source)}`;
 }
 $('model-select').addEventListener('change', renderStats);
 document.addEventListener('input', event => { if (event.target.dataset.reviewNote) reviewDrafts.set(event.target.dataset.reviewNote, event.target.value); });
@@ -681,6 +761,9 @@ document.addEventListener('submit', async event => {
   finally { pendingReviews.delete(key); render(); }
 });
 $('refresh-history').addEventListener('click', () => void refreshHistory());
+$('refresh-ci').addEventListener('click', () => void refreshCiResults());
+$('ci-baseline').addEventListener('change', renderCiResults);
+$('ci-candidate').addEventListener('change', renderCiResults);
 $('compare-form').addEventListener('submit', async event => {
   event.preventDefault();
   const baseline = $('baseline-select').value; const candidate = $('candidate-select').value;
@@ -705,3 +788,4 @@ $('autoscroll-button').setAttribute('aria-pressed', String(settings.autoScroll))
 navigate(location.hash.slice(1) || 'dashboard');
 runtime.connect();
 setInterval(() => { if (authSession && (!authSession.authRequired || authSession.authenticated)) void refreshHistory(); }, 5000);
+setInterval(() => { if (authSession && (!authSession.authRequired || authSession.authenticated)) void refreshCiResults(); }, 30_000);

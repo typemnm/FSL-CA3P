@@ -51,7 +51,7 @@ function readJson(req) {
   });
 }
 
-export function createDashboardServer({ runtime = createLocalRuntime(), auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform } = {}) {
+export function createDashboardServer({ runtime = createLocalRuntime(), auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform, ciResults = null } = {}) {
   const configured = publicOrigins.map(value => new URL(value));
   if (configured.some(url => url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/')) throw new Error('Public origins must be plain HTTPS origins.');
   if (configured.length && !auth.enabled) throw new Error('External dashboard access requires authentication.');
@@ -101,6 +101,8 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
           return res.end(data);
         }
         if (pathname === '/api/platform' && req.method === 'GET') return json(res, 200, await platformProvider());
+        if (pathname === '/api/ci-results' && req.method === 'GET') return json(res, 200,
+          ciResults?.getSnapshot?.() ?? { source: 'none', status: 'unavailable', updatedAt: null, lastAttemptAt: null, runs: [] });
         if (pathname === '/api/models' && req.method === 'GET') return json(res, 200, { models: await runtime.listModels?.() ?? [] });
         if (pathname === '/api/comparisons' && req.method === 'GET') {
           const params = new URL(req.url, expectedOrigin).searchParams;
@@ -179,7 +181,7 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
     }
   });
   let runtimeCloseTask;
-  const closeRuntime = () => runtimeCloseTask ??= runtime.close();
+  const closeRuntime = () => runtimeCloseTask ??= Promise.all([runtime.close(), ciResults?.close?.()]);
   server.on('close', () => { for (const stream of streams) stream.end(); void closeRuntime(); });
   let shutdownTask;
   server.shutdown = () => {
