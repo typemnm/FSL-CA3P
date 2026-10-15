@@ -6,6 +6,51 @@ Future Security Lab 지원사업으로 진행하는 CA3P 프로젝트에 대한
 
 [CI/CD 실행·배포 안내](docs/CI_CD.md), [이 장치에서 외부 접속하기](docs/DEVICE_DEPLOYMENT.md), [모듈 구조](docs/ARCHITECTURE.md)를 참고하세요. Node.js 24, Python 3.11+를 사용하며 전체 검증은 `npm run verify`입니다. GitHub PR의 `integration-gate`는 모든 모듈, 실제 Chromium 통합 및 Docker health check를 요구합니다.
 
+# CI/CD 및 대시보드 테스트 가이드
+
+## 1. 변경 전 로컬 검증
+
+프로젝트 루트에서 아래 명령을 실행합니다(Bash/macOS/Linux 기준). Node.js 24, Python 3.11+, `curl`이 필요하고, Linux의 Chromium 시스템 의존성 설치 방법은 [CI/CD 안내](docs/CI_CD.md)를 참고하세요.
+
+```sh
+npm ci --prefix xss-parser
+python3 -m venv .venv
+.venv/bin/python -m pip install -r casper-db/requirements-ci.lock
+.venv/bin/python -m pip install --no-deps -e ./casper-db
+(cd xss-parser && npx playwright install chromium)
+CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run verify
+```
+
+`reports/ci/latest.json`에서 `completeSuite: true`, 실패·skip 0건을 확인합니다. 모듈별 로그와 pytest XML도 `reports/ci/`에 남습니다. `--node-only`, `--modules`, `--skip-preflight`는 부분 점검용이므로 PR의 전체 검증을 대신하지 않습니다. CI는 실제 Chromium과 격리 실습 대상을 사용하지만 유료 모델 API를 호출하지 않습니다.
+
+## 2. PR 및 배포 확인
+
+`feature/<module>/<change>` 브랜치에서 `develop`으로 PR을 엽니다. GitHub Actions의 `tests`와 `container-smoke`가 모두 통과하고 최종 `integration-gate`가 성공했는지 확인한 뒤 담당자 승인을 받아 병합합니다. 실패한 경우 Actions 로그와 `reports/ci/` 결과에서 해당 모듈을 확인하세요. `develop`/`main`의 신뢰된 push는 GHCR 이미지 게시까지 수행합니다. Staging 자동 배포는 `ca3p-deploy` self-hosted runner와 `CA3P_AUTO_DEPLOY=true`가 설정된 경우에만 실행됩니다. 세부 보호 규칙과 배포 절차는 [CI/CD 안내](docs/CI_CD.md)에 있습니다.
+
+## 3. 대시보드 기능 테스트
+
+Docker Compose로 시작하거나, 위 로컬 의존성을 준비한 뒤 다음 명령으로 시작합니다. 기본 주소는 `http://127.0.0.1:4173`입니다.
+
+```sh
+CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm start
+```
+
+첫 시작 때 생성되는 `.runtime/access.txt`의 `admin` 계정으로 로그인합니다(Docker에서는 `docker compose exec dashboard cat /app/.runtime/access.txt`). `viewer` 계정은 결과 조회만 할 수 있습니다. 다음 순서로 확인합니다.
+
+1. **코어 fixture 시작**: 입력 URL이 표시용으로만 저장되고 실제 대상 접속이나 취약점 확정이 없는지 확인합니다.
+2. **로컬 실습 시작**: 모델 목록에서 API 키가 필요 없는 규칙 baseline을 고릅니다. 서버가 생성한 격리 게시판 `vul-web-1`에서 실행이 완료되는지 확인합니다. DeepSeek 경로는 별도로 `agent/.env`에 키를 설정한 경우에만 선택하며 API 비용이 발생할 수 있습니다.
+3. **결과 확인**: **대시보드**의 모듈 노드에서 요청·응답과 Agent I/O를 보고, **실행 이력**에서 같은 run을 다시 엽니다. **리포트**에서 finding의 브라우저 증거와 실행 조건을 확인합니다. 두 번 실행한 뒤 **실행 비교**에서 모델·모듈 digest·finding·처리 지연 차이를 확인하고, **통합 상태**에서 CI 결과를 봅니다. 입력·환경이 다른 실행은 동등한 조건의 성능 비교로 해석하지 않습니다.
+
+## 4. 이 장치에서 외부 접속 테스트
+
+로컬 서버를 종료한 뒤 아래 명령으로 인증된 대시보드와 Cloudflare Quick Tunnel을 함께 실행합니다. 기본 포트 4173이 사용 중이면 명령 앞에 `PORT=4174`를 추가합니다.
+
+```sh
+CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run serve:external
+```
+
+현재 HTTPS 주소는 터미널 출력과 `.runtime/public-url.txt`에 기록됩니다. 외부 브라우저에서 해당 주소를 열고 `viewer`로 로그인해 실행 이력·리포트·비교를 조회합니다. 연결 점검 시 외부 주소의 `/api/health`는 `{"status":"ok"}`을 반환하고, 로그인하지 않은 `/api/runs`는 HTTP 401이어야 합니다. URL과 비밀번호는 Git에 올리지 말고 팀원에게 별도 경로로 전달하세요. Quick Tunnel 주소는 재시작할 때 바뀔 수 있습니다. 자세한 운영·로그·종료 방법은 [장치 배포 안내](docs/DEVICE_DEPLOYMENT.md)를 참고하세요.
+
 # Docker Compose 실행
 
 Docker Engine과 Docker Compose v2.24 이상이 필요합니다. 프로젝트 루트에서 대시보드를 빌드하고 시작합니다.
