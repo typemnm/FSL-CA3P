@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#12345a">
+  <meta name="description" content="{{ site.name }} 공식 홈페이지. 대학 안내, 입학, 학사, 연구, 캠퍼스 소식을 확인하세요.">
+  <title>{% block title %}{{ site.name }}{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700;800&family=Noto+Serif+KR:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/site.css">
+  {% block head %}{% endblock %}
+</head>
+<body data-site="{{ site.id }}" data-path="{{ activePath }}">
+  <a class="skip-link" href="#main-content">본문으로 바로가기</a>
+  <div class="utility-bar">
+    <div class="container utility-inner">
+      <span class="utility-label">{{ site.enName }}</span>
+      <div class="utility-links">
+        <a href="/schedule">학사일정</a>
+        <a href="/faq">자주 묻는 질문</a>
+        {% if user %}
+          <a href="/mypage">{{ user.display_name }}님</a>
+          {% if user.role == 'admin' %}<a href="/admin">관리자</a>{% endif %}
+          <a href="/logout">로그아웃</a>
+        {% else %}
+          <a href="/login">로그인</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <header class="site-header" id="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/" aria-label="{{ site.name }} 홈으로">
+        <span class="brand-mark" aria-hidden="true"><span>{{ site.logoMark }}</span></span>
+        <span class="brand-words"><strong>{{ site.name }}</strong><small>{{ site.enName }}</small></span>
+      </a>
+      <nav class="desktop-nav" aria-label="주 메뉴">
+        {% for item in nav %}
+        <div class="nav-item">
+          <a class="nav-link{% if activePath == item.href %} is-active{% endif %}" href="{{ item.href }}">{{ item.label }}</a>
+          {% if item.children and item.children.length %}
+          <div class="nav-dropdown">
+            <strong>{{ item.label }}</strong>
+            <ul>
+              {% for child in item.children %}<li><a href="{{ child.href }}">{{ child.label }}<span aria-hidden="true">↗</span></a></li>{% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </nav>
+      <div class="header-actions">
+        <button class="icon-button search-toggle" type="button" aria-label="통합검색 열기" aria-expanded="false" aria-controls="global-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.9" cy="10.9" r="6.6"/><path d="m16 16 5 5"/></svg>
+        </button>
+        <button class="icon-button menu-toggle" type="button" aria-label="전체 메뉴 열기" aria-expanded="false" aria-controls="mobile-nav">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="global-search" id="global-search" hidden>
+      <div class="container search-panel">
+        <div><span class="eyebrow">SEARCH</span><h2>무엇을 찾고 계신가요?</h2><p>대학의 소식과 안내를 한 번에 검색하세요.</p></div>
+        <div class="search-panel-form">
+          <form id="global-search-form" action="/notices" method="get" role="search">
+            <label class="sr-only" for="global-search-input">통합검색어</label>
+            <input id="global-search-input" type="search" name="q" placeholder="검색어를 입력하세요" autocomplete="off" required>
+            <button type="submit">검색 <span aria-hidden="true">→</span></button>
+          </form>
+          <div id="search-results" class="search-results" role="status" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+    <nav class="mobile-nav" id="mobile-nav" aria-label="모바일 메뉴" hidden>
+      {% for item in nav %}
+      <details>
+        <summary><span>{{ item.label }}</span><span aria-hidden="true">+</span></summary>
+        <div class="mobile-subnav">
+          <a href="{{ item.href }}">{{ item.label }} 안내</a>
+          {% for child in item.children %}<a href="{{ child.href }}">{{ child.label }}</a>{% endfor %}
+        </div>
+      </details>
+      {% endfor %}
+      <div class="mobile-bottom"><a href="/schedule">학사일정</a><a href="/faq">자주 묻는 질문</a>{% if user %}<a href="/mypage">마이페이지</a>{% else %}<a href="/login">로그인</a>{% endif %}</div>
+    </nav>
+  </header>
+  {% if flash %}<div class="flash" role="status"><div class="container">{{ flash }}</div></div>{% endif %}
+  <main id="main-content">{% block main %}{% endblock %}</main>
+  <footer class="site-footer">
+    <div class="container footer-top">
+      <div class="footer-brand"><span class="footer-mark" aria-hidden="true">{{ site.logoMark }}</span><div><strong>{{ site.name }}</strong><small>{{ site.enName }}</small></div></div>
+      <div class="footer-grid">
+        <div><h2>대학 안내</h2><a href="/about">대학 소개</a><a href="/colleges">대학·대학원</a><a href="/campus">캠퍼스</a></div>
+        <div><h2>대학 생활</h2><a href="/admissions">입학 안내</a><a href="/academics">학사 안내</a><a href="/facilities">시설 안내</a></div>
+        <div><h2>소식·참여</h2><a href="/notices">공지사항</a><a href="/news">대학 소식</a><a href="/schedule">학사일정</a><a href="/faq">자주 묻는 질문</a></div>
+      </div>
+    </div>
+    <div class="container footer-bottom"><span>{{ site.city }} · 대표전화 {{ site.phone }}</span><span>© {{ year }} {{ site.enName }}. All rights reserved.</span></div>
+  </footer>
+  <script defer src="/js/site.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

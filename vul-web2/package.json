@@ -1,0 +1,23 @@
+{
+  "name": "fictional-university-pair",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Two fictional university websites for an isolated security evaluation",
+  "scripts": {
+    "start": "node scripts/start-both.mjs",
+    "start:daehan": "node src/server.mjs daehan",
+    "start:wonchang": "node wonchang/src/server.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "cookie-parser": "1.4.7",
+    "dayjs": "1.11.13",
+    "express": "4.21.2",
+    "lodash": "4.17.15",
+    "nunjucks": "3.2.4"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
