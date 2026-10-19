@@ -1,7 +1,0 @@
-<%- include('partials/header', { pageTitle: heading + ' | ' + site.name }) %>
-<section class="page-hero"><div class="container"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a><span aria-hidden="true">/</span><span><%= heading %></span></nav><span class="eyebrow"><%= site.enName %></span><h1><%= heading %></h1><p><%= intro %></p></div></section>
-<section class="content-section"><div class="container">
-  <% if (bodyHtml) { %><div class="section-prose"<% if (activePath === '/about') { %> id="vision"<% } %>><%- bodyHtml %></div><% } %>
-  <% if (cards && cards.length) { %><div class="section-cards"<% if (activePath === '/colleges') { %> id="departments"<% } %>><% cards.forEach((card, index) => { %><a class="section-card" href="<%= card.href %>"<% if (activePath === '/about' && index === 2) { %> id="campus"<% } else if (activePath === '/research' && index === 1) { %> id="industry"<% } %>><span class="card-number"><%= String(index + 1).padStart(2, '0') %></span><span class="card-content"><h2><%= card.title %></h2><p><%= card.description %></p></span><span class="card-arrow" aria-hidden="true">↗</span></a><% }); %></div><% } %>
-</div></section>
-<%- include('partials/footer') %>

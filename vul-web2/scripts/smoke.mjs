@@ -1,24 +1,97 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 process.env.LAB_MEMORY_DB = '1';
 const { createApp: createDaehanApp } = await import('../src/server.mjs');
-const { createApp: createWonchangApp } = await import('../wonchang/src/server.mjs');
-const daehanPackage = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'));
-const wonchangPackage = JSON.parse(readFileSync(fileURLToPath(new URL('../wonchang/package.json', import.meta.url)), 'utf8'));
+const projectRoot = fileURLToPath(new URL('..', import.meta.url));
+const runFile = promisify(execFile);
+const smokeImage = 'ca3p-wonchang:smoke';
+const springDbPath = '/app/data/smoke.sqlite';
+const daehanPackage = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'));
+const pom = readFileSync(join(projectRoot, 'wonchang', 'pom.xml'), 'utf8');
 const daehanDeps = Object.keys(daehanPackage.dependencies);
-const wonchangDeps = Object.keys(wonchangPackage.dependencies);
+const wonchangDeps = [...pom.matchAll(/<dependency>\s*<groupId>([^<]+)<\/groupId>\s*<artifactId>([^<]+)<\/artifactId>/g)]
+  .map(([, group, artifact]) => `${group}:${artifact}`);
 assert.ok(daehanDeps.length >= 4 && wonchangDeps.length >= 4, 'each site has at least four external dependencies');
 assert.deepEqual(daehanDeps.filter(name => wonchangDeps.includes(name)), [], 'the sites have distinct direct dependency sets');
-assert.ok(daehanDeps.includes('express') && wonchangDeps.includes('koa'), 'the server frameworks differ');
+assert.ok(daehanDeps.includes('express') && wonchangDeps.some(name => name.startsWith('org.springframework.boot:spring-boot-starter-web')), 'the server frameworks differ');
 
-async function start(siteKey) {
-  const { app, db } = siteKey === 'daehan' ? createDaehanApp('daehan') : createWonchangApp();
+async function docker(...args) {
+  const { stdout } = await runFile('docker', args, { cwd: projectRoot, timeout: 600_000, maxBuffer: 4 * 1024 * 1024 });
+  return stdout.trim();
+}
+
+async function startDaehan() {
+  const { app, db } = createDaehanApp('daehan');
   const server = await new Promise(resolve => {
     const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
   });
-  return { db, server, base: `http://127.0.0.1:${server.address().port}` };
+  return {
+    db, base: `http://127.0.0.1:${server.address().port}`,
+    async close() {
+      await new Promise(resolve => server.close(resolve));
+      db.close();
+    }
+  };
+}
+
+async function startWonchang() {
+  console.log('Building isolated Spring smoke image...');
+  await docker('build', '--quiet', '-f', 'wonchang/Dockerfile', '-t', smokeImage, '.');
+  const id = await docker(
+    'run', '--detach', '--publish', '127.0.0.1::4102',
+    '--env', 'SERVER_PORT=4102', '--env', 'SERVER_ADDRESS=0.0.0.0',
+    '--env', `WONCHANG_DB_PATH=${springDbPath}`, smokeImage
+  );
+  try {
+    const binding = await docker('port', id, '4102/tcp');
+    const port = Number(binding.match(/127\.0\.0\.1:(\d+)/)?.[1]);
+    assert.ok(Number.isInteger(port) && port > 0, `Docker published port: ${binding}`);
+    const base = `http://127.0.0.1:${port}`;
+    let ready = false;
+    for (let attempt = 0; attempt < 90; attempt++) {
+      try {
+        if ((await fetch(base + '/login', { signal: AbortSignal.timeout(1000) })).status === 200) {
+          ready = true;
+          break;
+        }
+      } catch { /* Spring is still starting. */ }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    if (!ready) {
+      const logs = await docker('logs', '--tail', '80', id).catch(error => error.message);
+      throw new Error(`Spring smoke container did not become ready.\n${logs}`);
+    }
+    return {
+      base,
+      async readDb(callback) {
+        const temporaryRoot = realpathSync(tmpdir());
+        const dir = mkdtempSync(join(temporaryRoot, 'wonchang-smoke-'));
+        try {
+          await docker('cp', `${id}:${springDbPath}`, join(dir, 'smoke.sqlite'));
+          const db = new DatabaseSync(join(dir, 'smoke.sqlite'), { readOnly: true });
+          try { return callback(db); } finally { db.close(); }
+        } finally {
+          const resolvedDir = realpathSync(dir);
+          assert.equal(dirname(resolvedDir), temporaryRoot, 'temporary snapshot stays under the system temporary directory');
+          assert.ok(resolvedDir.split(/[\\/]/).at(-1).startsWith('wonchang-smoke-'));
+          rmSync(resolvedDir, { recursive: true, force: true });
+        }
+      },
+      async close() {
+        await docker('rm', '--force', id);
+      }
+    };
+  } catch (error) {
+    await docker('rm', '--force', id).catch(() => {});
+    throw error;
+  }
 }
 
 async function request(base, path, options = {}) {
@@ -39,6 +112,11 @@ function boardLinks(html) {
   return [...html.matchAll(/class="board-row" href="([^"]+)"/g)].map(match => match[1]);
 }
 
+function serviceRecordIds(html) {
+  return [...html.matchAll(/href="\/(?:admissions\/partner|staff\/mobile)\?id=(\d+)"/g)]
+    .map(match => Number(match[1]));
+}
+
 async function expectStatus(base, path, status, options = {}) {
   const response = await request(base, path, options);
   assert.equal(response.status, status, `${options.method || 'GET'} ${path}`);
@@ -48,10 +126,14 @@ async function expectStatus(base, path, status, options = {}) {
 const instances = [];
 try {
   for (const siteKey of ['daehan', 'wonchang']) {
-    const instance = await start(siteKey);
+    const instance = siteKey === 'daehan' ? await startDaehan() : await startWonchang();
     instances.push(instance);
     const { base } = instance;
     const name = siteKey === 'daehan' ? '대한대학교' : '원창대학교';
+    if (siteKey === 'wonchang') {
+      const response = await request(base, '/');
+      assert.match(response.headers.get('x-powered-by') || '', /Spring Boot/i, 'Wonchang runs on Spring Boot');
+    }
     for (const path of ['/', '/about', '/admissions', '/colleges', '/academics', '/research', '/campus', '/facilities', '/notices', '/news', '/schedule', '/faq', '/login']) {
       const response = await request(base, path);
       if (response.status !== 200) console.error(`${siteKey} ${path}: ${response.status}\n${(await response.clone().text()).slice(-3500)}`);
@@ -79,7 +161,9 @@ try {
       const response = await expectStatus(base, asset, 200);
       assert.ok((await response.arrayBuffer()).byteLength > 0, `${asset} has content`);
     }
-    await expectStatus(base, '/a-page-that-does-not-exist', 404);
+    const missingPage = await expectStatus(base, '/a-page-that-does-not-exist', 404,
+      siteKey === 'wonchang' ? { headers: { accept: 'text/html' } } : {});
+    if (siteKey === 'wonchang') assert.match(await missingPage.text(), /error-section/, 'Spring 404 HTML is rendered');
     const noMatch = await request(base, '/api/search?q=zzzz-no-match');
     assert.equal((await noMatch.json()).results.length, 0);
     const matching = await request(base, '/api/search?q=' + encodeURIComponent('학년도'));
@@ -89,7 +173,9 @@ try {
     const diagnostic = await request(base, '/_diag/config');
     assert.equal(diagnostic.status, 200, 'A02 public diagnostics');
     assert.match((await diagnostic.json()).database, /\.sqlite$/);
-    const studentHashes = instance.db.prepare("SELECT password_hash FROM users WHERE username IN ('student1', 'student2') ORDER BY username").all();
+    const studentHashes = siteKey === 'daehan'
+      ? instance.db.prepare("SELECT password_hash FROM users WHERE username IN ('student1', 'student2') ORDER BY username").all()
+      : await instance.readDb(db => db.prepare("SELECT password_hash FROM users WHERE username IN ('student1', 'student2') ORDER BY username").all());
     assert.equal(studentHashes[0].password_hash, studentHashes[1].password_hash, 'A04 identical passwords share unsalted SHA-1 hash');
     assert.match(studentHashes[0].password_hash, /^[0-9a-f]{40}$/);
     for (let attempt = 0; attempt < 8; attempt++) {
@@ -118,15 +204,18 @@ try {
       { path: '/admin/posts', method: 'POST' }, { path: '/admin/posts/1', method: 'POST' },
       { path: '/admin/import', method: 'POST' }, { path: '/admin/settings', method: 'POST' }
     ]) {
-      await expectStatus(base, guarded.path, 403, { method: guarded.method || 'GET' });
+      const denied = await expectStatus(base, guarded.path, 403, { method: guarded.method || 'GET' });
+      if (siteKey === 'wonchang' && guarded.path === '/admin') {
+        assert.match(await denied.text(), /error-section/, 'Spring 403 HTML is rendered');
+      }
       await expectStatus(base, guarded.path, 403, {
         method: guarded.method || 'GET', headers: { cookie: studentCookie }
       });
     }
 
     const sideService = siteKey === 'daehan'
-      ? { page: '/admissions/partner', api: '/api/admissions/partner/applications', table: 'partner_applications', owner: 'partner_user_id', first: 'partner1', second: 'partner2', password: 'Partner2026', person: 'applicant_name', unrelated: '/staff/mobile', section: '/admissions' }
-      : { page: '/staff/mobile', api: '/api/staff/mobile/cases', table: 'staff_cases', owner: 'staff_user_id', first: 'staff1', second: 'staff2', password: 'Staff2026', person: 'student_name', unrelated: '/admissions/partner', section: '/campus' };
+      ? { page: '/admissions/partner', api: '/api/admissions/partner/applications', first: 'partner1', second: 'partner2', password: 'Partner2026', person: 'applicant_name', unrelated: '/staff/mobile', section: '/admissions' }
+      : { page: '/staff/mobile', api: '/api/staff/mobile/cases', first: 'staff1', second: 'staff2', password: 'Staff2026', person: 'student_name', unrelated: '/admissions/partner', section: '/campus' };
     const sectionHtml = await (await request(base, sideService.section)).text();
     assert.ok(sectionHtml.includes(sideService.page), 'auxiliary service is reachable from the university site');
     const sideLoginRedirect = await expectStatus(base, sideService.page, 302);
@@ -139,24 +228,27 @@ try {
     await expectStatus(base, `${sideService.api}/1`, 403, { headers: { cookie: studentCookie } });
     assert.equal((await request(base, sideService.unrelated)).status, 404, 'each university has its own auxiliary service');
     const sideCookie = await login(base, sideService.first, sideService.password, sideService.page);
-    const firstOwnerId = instance.db.prepare('SELECT id FROM users WHERE username = ?').get(sideService.first).id;
-    const secondOwnerId = instance.db.prepare('SELECT id FROM users WHERE username = ?').get(sideService.second).id;
-    const ownRecord = instance.db.prepare(`SELECT * FROM ${sideService.table} WHERE ${sideService.owner} = ? ORDER BY id LIMIT 1`).get(firstOwnerId);
-    const otherRecord = instance.db.prepare(`SELECT * FROM ${sideService.table} WHERE ${sideService.owner} = ? ORDER BY id LIMIT 1`).get(secondOwnerId);
-    assert.ok(ownRecord && otherRecord, 'fictional auxiliary records are seeded for two owners');
     const ownPage = await (await request(base, sideService.page, { headers: { cookie: sideCookie } })).text();
+    const otherCookie = await login(base, sideService.second, sideService.password, sideService.page);
+    const otherPage = await (await request(base, sideService.page, { headers: { cookie: otherCookie } })).text();
+    const ownId = serviceRecordIds(ownPage)[0];
+    const otherId = serviceRecordIds(otherPage)[0];
+    assert.ok(ownId && otherId && ownId !== otherId, 'fictional auxiliary records are seeded for two owners');
+    const ownRecord = await (await request(base, `${sideService.api}/${ownId}`, { headers: { cookie: sideCookie } })).json();
+    const otherRecord = await (await request(base, `${sideService.api}/${otherId}`, { headers: { cookie: otherCookie } })).json();
     assert.ok(ownPage.includes(ownRecord[sideService.person]), 'own records render in the service page');
     assert.ok(!ownPage.includes(otherRecord[sideService.person]), 'the default list is scoped to the signed-in owner');
-    const foreignPage = await request(base, `${sideService.page}?id=${otherRecord.id}`, { headers: { cookie: sideCookie } });
+    const foreignPage = await request(base, `${sideService.page}?id=${otherId}`, { headers: { cookie: sideCookie } });
     assert.equal(foreignPage.status, 200, 'cross-owner detail is exposed through the lookup page');
     assert.ok((await foreignPage.text()).includes(otherRecord[sideService.person]));
-    const foreignApi = await request(base, `${sideService.api}/${otherRecord.id}`, { headers: { cookie: sideCookie } });
+    const foreignApi = await request(base, `${sideService.api}/${otherId}`, { headers: { cookie: sideCookie } });
     assert.equal(foreignApi.status, 200, 'cross-owner detail is exposed through the auxiliary API');
     assert.equal((await foreignApi.json())[sideService.person], otherRecord[sideService.person]);
-    for (const id of [ownRecord.id, otherRecord.id]) {
+    for (const id of [ownId, otherId]) {
       assert.equal((await request(base, `${sideService.api}/${id}`, { headers: { cookie: sideCookie } })).status, 200, 'sequential auxiliary lookups are not throttled');
     }
-    await expectStatus(base, `${sideService.page}?id=abc`, 400, { headers: { cookie: sideCookie } });
+    const invalidSideId = await expectStatus(base, `${sideService.page}?id=abc`, 400, { headers: { cookie: sideCookie } });
+    if (siteKey === 'wonchang') assert.match(await invalidSideId.text(), /error-section/, 'Spring 400 HTML is rendered');
     await expectStatus(base, `${sideService.page}?id=999999`, 404, { headers: { cookie: sideCookie } });
     await expectStatus(base, `${sideService.api}/abc`, 404, { headers: { cookie: sideCookie } });
     await expectStatus(base, `${sideService.api}/999999`, 404, { headers: { cookie: sideCookie } });
@@ -177,24 +269,30 @@ try {
       body: new URLSearchParams({ type: 'notice', title: '검증용 공지', body: '기능 검증 본문' })
     });
     assert.equal(created.status, 302);
-    const createdNotice = instance.db.prepare('SELECT id FROM posts WHERE title = ?').get('검증용 공지');
-    assert.ok(createdNotice, 'created notice is stored');
-    assert.match(await (await request(base, `/notices/${createdNotice.id}`)).text(), /검증용 공지/);
-    const edited = await request(base, `/admin/posts/${createdNotice.id}`, {
+    const createdNoticeHtml = await (await request(base, '/notices?q=' + encodeURIComponent('검증용 공지'))).text();
+    const createdNoticePath = boardLinks(createdNoticeHtml)[0];
+    assert.ok(createdNoticePath, 'created notice is stored');
+    assert.match(await (await request(base, createdNoticePath)).text(), /검증용 공지/);
+    const createdNoticeId = Number(createdNoticePath.match(/\/(\d+)$/)?.[1]);
+    assert.ok(createdNoticeId);
+    const edited = await request(base, `/admin/posts/${createdNoticeId}`, {
       method: 'POST', headers: { cookie: adminCookie, 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ type: 'notice', title: '수정된 검증 공지', body: '수정된 검증 본문' })
     });
     assert.equal(edited.status, 302);
-    assert.match(await (await request(base, `/notices/${createdNotice.id}`)).text(), /수정된 검증 본문/);
+    assert.match(await (await request(base, `/notices/${createdNoticeId}`)).text(), /수정된 검증 본문/);
     const createdNews = await request(base, '/admin/posts', {
       method: 'POST', headers: { cookie: adminCookie, 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ type: 'news', title: '검증용 대학 소식', body: '검증용 대학 소식 본문' })
     });
     assert.equal(createdNews.status, 302);
-    const newsRecord = instance.db.prepare('SELECT id FROM posts WHERE title = ?').get('검증용 대학 소식');
-    assert.ok(newsRecord, 'created news is stored');
-    assert.match(await (await request(base, `/news/${newsRecord.id}`)).text(), /검증용 대학 소식/);
-    await expectStatus(base, `/notices/${newsRecord.id}`, 404);
+    const createdNewsHtml = await (await request(base, '/news?q=' + encodeURIComponent('검증용 대학 소식'))).text();
+    const createdNewsPath = boardLinks(createdNewsHtml)[0];
+    assert.ok(createdNewsPath, 'created news is stored');
+    assert.match(await (await request(base, createdNewsPath)).text(), /검증용 대학 소식/);
+    const newsId = Number(createdNewsPath.match(/\/(\d+)$/)?.[1]);
+    assert.ok(newsId);
+    await expectStatus(base, `/notices/${newsId}`, 404);
     await expectStatus(base, '/admin/posts', 400, {
       method: 'POST', headers: { cookie: adminCookie, 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ type: 'news', title: '', body: '내용만 있음' })
@@ -207,21 +305,27 @@ try {
     assert.match(await (await request(base, '/schedule')).text(), /검증 일정/);
     const settingChanged = await request(base, '/admin/settings', {
       method: 'POST', headers: { cookie: adminCookie, 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ payload: JSON.stringify({ path: '__proto__.labProbe', value: true }) })
+      body: new URLSearchParams({ payload: JSON.stringify(siteKey === 'daehan'
+        ? { path: '__proto__.labProbe', value: true }
+        : { path: 'theme.labProbe', value: '${env:WONCHANG_DB_PATH}' }) })
     });
     assert.equal(settingChanged.status, 302);
-    assert.equal({}.labProbe, true, 'A03 vulnerable path setter prototype pollution');
-    delete Object.prototype.labProbe;
+    if (siteKey === 'daehan') {
+      try { assert.equal({}.labProbe, true, 'A03 vulnerable lodash path setter prototype pollution'); }
+      finally { delete Object.prototype.labProbe; }
+    } else {
+      const settings = await instance.readDb(db => JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'site_preferences'").get().value));
+      assert.equal(settings.theme.labProbe, springDbPath, 'A03 vulnerable Commons Text interpolation expands an environment value');
+    }
 
     const removed = await request(base, '/admin/posts/1/delete', { method: 'POST' });
     assert.equal(removed.status, 302, 'A01 unauthenticated admin action');
     const brokenHome = await request(base, '/');
     assert.equal(brokenHome.status, 500, 'A06/A10 featured post deletion');
-    assert.match(await brokenHome.text(), /TypeError|Cannot read properties/);
+    assert.match(await brokenHome.text(), /TypeError|Cannot read properties|NullPointerException|Cannot invoke/);
     console.log(`${siteKey}: pages, assets, search, pagination, login/logout, roles, requests, auxiliary lookup, admin CRUD/import, A01-A08 and A10 probes passed; A09 static review only`);
   }
 } finally {
-  await Promise.all(instances.map(({ server }) => new Promise(resolve => server.close(resolve))));
-  for (const { db } of instances) db.close();
+  await Promise.all(instances.map(instance => instance.close()));
 }
 console.log(`distinct direct dependencies verified: 대한대학교 ${daehanDeps.join(', ')} / 원창대학교 ${wonchangDeps.join(', ')}`);

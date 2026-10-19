@@ -46,7 +46,12 @@ for (const site of sites) {
   ];
   for (const path of publicPages) {
     const response = await expect(site, path, 200);
-    if (path === '/') assert.ok((await response.text()).includes(site.name));
+    if (path === '/') {
+      assert.ok((await response.text()).includes(site.name));
+      if (site.key === 'wonchang') {
+        assert.match(response.headers.get('x-powered-by') || '', /Spring Boot/i, 'Wonchang Spring Boot response header');
+      }
+    }
   }
   for (const path of ['/css/site.css', '/js/site.js', `/images/${site.key}-campus.png`]) {
     const response = await expect(site, path, 200);

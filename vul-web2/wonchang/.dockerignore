@@ -1,7 +1,0 @@
-# Reserved for builds that use wonchang/ as their own context.
-# The Compose build uses the project root so shared src/ and public/ are included.
-node_modules
-data
-*.log
-.env
-.env.*

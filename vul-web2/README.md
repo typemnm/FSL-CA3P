@@ -17,24 +17,28 @@ docker compose ps
 - 대한대학교: http://127.0.0.1:4101/
 - 원창대학교: http://127.0.0.1:4102/
 
-`compose.yaml`은 **서로 다른 이미지·컨테이너**에 각 사이트를 실행합니다. 대한대학교와 원창대학교는 각각 전용 브리지 네트워크와 `daehan-data`, `wonchang-data` 볼륨을 사용합니다. 호스트 공개 포트는 `127.0.0.1`에만 묶여 있습니다. 컨테이너 안에서는 서비스가 `0.0.0.0`에 바인딩되어 Compose 포트 전달을 받습니다. 이미지는 각자의 `package-lock.json`으로 `npm ci`를 실행하며, 이미지 안의 런타임 의존성도 분리됩니다.
+`compose.yaml`은 **서로 다른 이미지·컨테이너**에 각 사이트를 실행합니다. 대한대학교와 원창대학교는 각각 전용 브리지 네트워크와 `daehan-data`, `wonchang-data` 볼륨을 사용합니다. 호스트 공개 포트는 `127.0.0.1`에만 묶여 있습니다. 컨테이너 안에서는 서비스가 `0.0.0.0`에 바인딩되어 Compose 포트 전달을 받습니다. 대한대학교 이미지는 Node.js 패키지를 `package-lock.json`으로 설치하고, 원창대학교 이미지는 Maven으로 Spring Boot JAR을 빌드합니다.
 
 중지할 때는 `docker compose down`을 사용합니다. 이 명령은 데이터 볼륨을 유지하므로 다음 실행에서도 더미 데이터와 사용 중 변경한 내용이 남습니다. 기존 볼륨을 사용해 새 버전을 실행하면 `CREATE TABLE IF NOT EXISTS`와 `INSERT OR IGNORE`로 부속 업무 테이블·가상 계정·조회 건을 추가합니다. 기존 게시글과 수정된 더미 데이터는 덮어쓰지 않으며 재시작해도 같은 초기 건이 중복 삽입되지 않습니다.
 
-## Node.js에서 직접 시작
+## 개발 환경에서 직접 시작
 
-Node.js 24 이상이 필요합니다. 두 사이트의 패키지 설치 위치가 다르므로 각각 설치합니다.
+대한대학교는 Node.js 24 이상, 원창대학교는 Java 17 및 Maven 3.9 이상이 필요합니다. 로컬에 Maven이 없다면 위 Docker Compose 명령으로 두 사이트를 실행하세요.
 
 ```powershell
 cd vul-web2
 npm ci
-npm --prefix wonchang ci
-npm start
+npm run start:daehan
 ```
 
-루트에서 `npm run start:daehan` 또는 `npm run start:wonchang`으로 하나씩 실행할 수도 있습니다. 기본 바인딩은 `127.0.0.1`이고, 최초 실행 시 `data/daehan.sqlite`, `data/wonchang.sqlite`에 별도 더미 DB가 생성됩니다. 초기 상태로 되돌릴 때는 서버를 중지한 뒤 해당 DB 파일을 백업하고 삭제하면 됩니다.
+원창대학교는 별도 터미널에서 실행합니다.
 
-`npm start`로 두 사이트를 함께 실행할 때 포트를 바꾸려면 `DAEHAN_PORT`와 `WONCHANG_PORT`를 각각 지정합니다. 함께 실행하는 스크립트는 포트 충돌을 막기 위해 공통 `PORT` 값을 적용하지 않습니다.
+```powershell
+cd vul-web2/wonchang
+mvn spring-boot:run
+```
+
+기본 바인딩은 `127.0.0.1`이며 대한대학교는 4101, 원창대학교는 4102 포트를 사용합니다. 최초 실행 시 대한대학교는 `data/daehan.sqlite`, 원창대학교는 `wonchang/data/wonchang.sqlite`에 각각 더미 DB를 생성합니다. 원창대학교는 `SERVER_PORT`, `SERVER_ADDRESS`, `WONCHANG_DB_PATH` 환경변수로 설정을 변경할 수 있습니다. 초기 상태로 되돌릴 때는 서버를 중지한 뒤 해당 DB 파일을 백업하고 삭제하면 됩니다.
 
 | 사이트 | 역할 | 아이디 | 비밀번호 |
 | --- | --- | --- | --- |
@@ -67,12 +71,12 @@ npm start
 
 ## 서로 다른 외부 의존성
 
-| 사이트 | 서버·화면 구성 | 직접 외부 의존성 | 잠금 파일 |
+| 사이트 | 서버·화면 구성 | 직접 외부 의존성 | 버전 관리 |
 | --- | --- | --- | --- |
 | 대한대학교 | Express · Nunjucks | `express@4.21.2`, `nunjucks@3.2.4`, `cookie-parser@1.4.7`, `dayjs@1.11.13`, `lodash@4.17.15` | 루트 `package-lock.json` |
-| 원창대학교 | Koa · EJS | `koa@2.16.2`, `@koa/router@14.0.0`, `koa-bodyparser@4.4.1`, `koa-static@5.0.0`, `ejs@3.1.10`, `luxon@3.5.0`, `dot-prop@4.2.0` | `wonchang/package-lock.json` |
+| 원창대학교 | Spring Boot 4.1.1 · Spring MVC · Thymeleaf | `spring-boot-starter-webmvc`, `spring-boot-starter-thymeleaf`, `sqlite-jdbc@3.53.4.0`, `gson`, `commons-text@1.9` | `wonchang/pom.xml`의 명시 버전과 Spring Boot 의존성 관리 |
 
-두 사이트는 직접 의존성 이름이 겹치지 않습니다. DB는 각각 Node.js 내장 `node:sqlite`를 사용합니다. `lodash`와 `dot-prop`은 보안 평가를 위해 취약 버전으로 고정돼 있습니다.
+두 사이트는 서로 다른 런타임과 직접 의존성 집합을 사용합니다. 대한대학교 DB는 Node.js 내장 `node:sqlite`, 원창대학교 DB는 SQLite JDBC를 사용합니다. `lodash`와 `commons-text`는 보안 평가를 위해 취약 버전으로 고정돼 있습니다. 원창대학교의 HTTP 응답에는 `X-Powered-By: Spring Boot`가 포함돼 서버 기술을 확인할 수 있습니다. Wappalyzer의 실제 표시는 확장 프로그램의 탐지 규칙과 캐시에 따라 달라질 수 있습니다.
 
 두 메인 캠퍼스 사진은 가상 대학 전용으로 생성한 로컬 파일입니다. 제작 방식과 최종 프롬프트는 [이미지 제작 기록](docs/이미지_제작기록.md)에 있습니다.
 
@@ -80,11 +84,12 @@ npm start
 
 ```powershell
 docker compose config --quiet
+npm ci
 npm run smoke
 node scripts/deployment-check.mjs
 ```
 
-`docker compose config --quiet`는 Compose 설정을 확인하며 컨테이너를 실행하지는 않습니다. `npm run smoke`는 두 서버를 메모리 DB와 임시 로컬 포트에서 구동해 직접 의존성 분리, 공개 페이지와 정적 자산, 게시판 검색·페이지 이동, 로그인·로그아웃, 문의 접수, 역할 제한, 두 부속 업무 화면의 조회와 오류 경로, 관리자 게시글 작성·수정·일정 가져오기 및 대표 취약 동작을 확인합니다. A01~A08과 A10의 대표 동작은 자동 검증됐고 A09는 정적 코드 검토만 수행했습니다. 실행 중인 사이트의 지속 DB는 변경하지 않습니다.
+`docker compose config --quiet`는 Compose 설정을 확인하며 컨테이너를 실행하지는 않습니다. `npm run smoke`는 대한대학교를 메모리 DB·임시 로컬 포트로 실행하고 원창대학교 Spring 이미지를 빌드해 **임시 컨테이너와 임시 SQLite DB**에서 검증합니다. Docker Engine이 필요하며 실행 중인 Compose 컨테이너의 지속 DB는 변경하지 않습니다. 공개 페이지와 정적 자산, 게시판 검색·페이지 이동, 로그인·로그아웃, 문의 접수, 역할 제한, 부속 업무 조회와 오류 경로, 관리자 게시글 작성·수정·일정 가져오기 및 대표 취약 동작을 확인합니다. A03은 대한대학교의 `lodash` 경로 오염과 원창대학교의 `commons-text` 설정값 보간을 각각 무해한 입력으로 검증합니다. A09는 정적 코드 검토만 수행했습니다.
 
 `node scripts/deployment-check.mjs`는 **Compose로 두 사이트가 실행 중일 때** `127.0.0.1:4101`·`127.0.0.1:4102`에 요청해 공개 화면과 읽기 경로를 점검합니다. 가상 계정으로 로그인 세션을 생성하지만 지속 DB의 글·일정·문의를 작성하거나 삭제하지 않습니다. 분석 범위와 위험·재현 결과는 [사전 침해분석 및 취약점 보고서](docs/사전_침해분석_및_취약점_보고서.md)에 기록합니다.
 

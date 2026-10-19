@@ -5,9 +5,9 @@
   "type": "module",
   "description": "Two fictional university websites for an isolated security evaluation",
   "scripts": {
-    "start": "node scripts/start-both.mjs",
+    "start": "docker compose up --build",
     "start:daehan": "node src/server.mjs daehan",
-    "start:wonchang": "node wonchang/src/server.mjs",
+    "start:wonchang": "docker compose up --build wonchang",
     "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
