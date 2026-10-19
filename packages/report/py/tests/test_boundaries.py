@@ -6,15 +6,26 @@ import ast
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "ca3p_report"
-FORBIDDEN_MODULES = {"socket", "urllib", "http", "requests", "httpx", "ftplib", "smtplib"}
+# Network-capable modules. urllib.parse is pure string parsing (no network) and is allowed.
+FORBIDDEN_MODULES = {"socket", "http", "requests", "httpx", "ftplib", "smtplib"}
+FORBIDDEN_FULL = {"urllib.request", "urllib.error"}
+# The LLM client is the one documented exception (§4.4, C-4): it may read DEEPSEEK_*
+# and reach the configured endpoint. Nothing else in the package may.
+EXEMPT = {"llm/client.py"}
 
 
 def sources():
     return sorted(SRC.rglob("*.py"))
 
 
+def _rel(path: Path) -> str:
+    return path.relative_to(SRC).as_posix()
+
+
 def test_no_environment_variable_reads():
     for path in sources():
+        if _rel(path) in EXEMPT:
+            continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             name = node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", None)
             imported = [a.name for a in node.names] if isinstance(node, ast.ImportFrom) else []
@@ -24,6 +35,8 @@ def test_no_environment_variable_reads():
 
 def test_no_network_modules():
     for path in sources():
+        if _rel(path) in EXEMPT:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             names = []
@@ -33,6 +46,7 @@ def test_no_network_modules():
                 names = [node.module]
             for name in names:
                 assert name.split(".")[0] not in FORBIDDEN_MODULES, (path, name)
+                assert name not in FORBIDDEN_FULL, (path, name)
 
 
 def test_no_hardcoded_absolute_paths():
