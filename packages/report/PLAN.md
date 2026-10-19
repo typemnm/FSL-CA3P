@@ -475,7 +475,7 @@ packages/report/
 |---|---|---|---|
 | **M0. 결정 정리** | ✅ 브랜치·범위, 트리거 기반 Agent, 수집기 내장, 직접 촬영, 번들, HWPX, 범용 3계층 | 이 문서 | 완료 |
 | **M1. 수집기 + seal** | ✅ (10-20) `collect-run`(pentest-db-disk, run-store), `collect-history`(casper-db, none), 번들 봉인, CLI `collect` | `py/src/ca3p_report/collect/`, 테스트 55개 | 실제 Node writer로 만든 원천으로 검증. 두 원천의 정규화 결과 동일. 원천 내용 불변, DB가 없을 때 생성 안 함, 번들 1회 쓰기·실패 시 잔여물 없음, 원천 위치·traceback 미노출 |
-| **M2. python-hwpx 스파이크** | §3.5의 1~6번. **2~3일 타임박스, go/no-go 기준 명시** | `spike/` 결과와 짧은 보고 | 한글/뷰어에서 정상으로 열림. 가변 행 표·섹션 반복이 안 되면 즉시 lxml/OWPML 대안으로 전환 |
+| **M2. python-hwpx 스파이크** | ✅ (10-20) python-hwpx 6.8.0 확인 | 스파이크 코드 | **GO.** `new/add_heading/add_paragraph/add_table+set_cell_text/add_picture/validate/export_markdown` 동작. 가변 행 표·섹션 반복 OK. 특수문자 자동 이스케이프(`<script>`→`&lt;`). lxml 대안 불필요. 남은 확인: 한컴/한글 뷰어 육안 |
 | **M3. HWPX 작성기** | `hwpx/writer.py`: 제목·문단·표·코드 블록·이미지 추가, 텍스트 노드 삽입(이스케이프), 파일 이름 정규화 | 단위 테스트 | 특수문자가 텍스트로 보임, 원시 XML 삽입 불가, 이미지는 번들 경로만 |
 | **M4. 스크린샷 도구** | Node `capture/`: 샌드박스(대상 origin 고정, GET 위주, 허용된 세션 전환만), 사진 저장, `captures.json` | `node --test` | 쓰기 요청 차단, 허용 목록 밖 요청 차단, origin 불일치 시 촬영 안 함 |
 | **M5. LLM 도구 계층** | `llm/tools.py`: `read_bundle`·`capture_screenshot`(M4 서브프로세스)·`hwpx_*`(M3)·`finish_report`. 각 도구가 자체 제약을 강제 | 도구 단위 테스트(LLM 없이) | 번들 밖 읽기·대상 외 접속·원시 XML 모두 거부 |
