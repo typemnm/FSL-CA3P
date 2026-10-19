@@ -187,3 +187,20 @@ def test_markdown_preview_is_html_escaped(tmp_path):
         assert heading in text
     assert "<script>" not in text and "&lt;script&gt;" in text
     assert "\\|" in text  # pipe in a table cell does not split the row
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        lambda m: m["run"].update(target="127.0.0.1", error="boom", status="failed"),
+        lambda m: m["findings"][0]["common"].update(cvss="9.8", location="POST /api/posts"),
+        lambda m: m["findings"][0].update(images=["a.png"], checks=["ok"], textEvidence=["x"]),
+        lambda m: m.update(findings=["x"], priorCases=["x"], triage=[], guardrail="x"),
+        lambda m: m.clear(),
+    ],
+)
+def test_malformed_llm_built_model_still_renders(tmp_path, corrupt):
+    broken = model()
+    corrupt(broken)
+    assert write_hwpx(broken, tmp_path / "broken.hwpx").exists()
+    assert write_markdown(broken, tmp_path / "broken.md").exists()

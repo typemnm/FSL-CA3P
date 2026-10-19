@@ -36,6 +36,17 @@ PHOTO_MISSING = "[사진] 무결성 불일치/자료 없음: 해당 사진을 �
 PHOTO_WIDTH_MM = 150.0
 
 
+def _obj(parent: object, key: str) -> dict:
+    """A nested object, or {} when the model holds something else there (LLM-built input)."""
+    value = parent.get(key) if isinstance(parent, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def _dicts(parent: object, key: str) -> list[dict]:
+    value = parent.get(key) if isinstance(parent, dict) else None
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
 def _text(value: object) -> str:
     if value is None or value == "":
         return NONE
@@ -68,13 +79,13 @@ def _location(common: dict) -> str:
 
 
 def _cvss(common: dict) -> tuple[str, str]:
-    cvss = common.get("cvss") or {}
+    cvss = _obj(common, "cvss")
     score = f"{_text(cvss.get('score'))} ({_text(cvss.get('rating'))})" if cvss else NONE
     return score, f"CVSS {cvss.get('version', '3.1')} {_text(cvss.get('vector'))}"
 
 
 def _cover(model: dict) -> list[tuple]:
-    run = model.get("run") or {}
+    run = _obj(model, "run")
     return [
         ("h", 1, f"CA3P 취약점 점검 보고서 — {_text(run.get('runId'))}"),
         ("p", f"생성일: {_text(model.get('generatedAt'))}"),
@@ -92,7 +103,7 @@ def _overview(run: dict) -> list[tuple]:
             ["실행 ID", _text(run.get("runId"))],
             ["상태", _text(run.get("status"))],
             ["시험 프로필", _text(run.get("testProfile"))],
-            ["공격 대상(origin)", _text((run.get("target") or {}).get("origin"))],
+            ["공격 대상(origin)", _text(_obj(run, "target").get("origin"))],
             ["시작 시각", _text(run.get("startedAt"))],
             ["종료 시각", _text(run.get("completedAt"))],
             ["요청 수", _text(requests)],
@@ -102,14 +113,14 @@ def _overview(run: dict) -> list[tuple]:
 
 def _summary(model: dict, failed: bool) -> list[tuple]:
     blocks: list[tuple] = [("h", 1, "2. 취약점 요약")]
-    findings = model.get("findings") or []
+    findings = _dicts(model, "findings")
     if failed or not findings:
         reason = "실행이 실패하여" if failed else "보고된 취약점이 없어"
         return [*blocks, ("p", f"{reason} 요약할 취약점이 없습니다.")]
-    origin = _text(((model.get("run") or {}).get("target") or {}).get("origin"))
+    origin = _text(_obj(_obj(model, "run"), "target").get("origin"))
     rows = [["번호", "취약점", "CWE", "CVSS 점수·등급", "공격 대상", "exploit 여부(판정 상태)"]]
     for index, finding in enumerate(findings, 1):
-        common = finding.get("common") or {}
+        common = _obj(finding, "common")
         rows.append([
             str(index), _text(common.get("title")), _text(common.get("cwe")),
             _cvss(common)[0], origin, _text(common.get("status")),
@@ -118,7 +129,7 @@ def _summary(model: dict, failed: bool) -> list[tuple]:
 
 
 def _finding(n: int, finding: dict) -> list[tuple]:
-    common = finding.get("common") or {}
+    common = _obj(finding, "common")
     score, vector = _cvss(common)
     blocks: list[tuple] = [
         ("h", 2, f"3.{n} {_text(common.get('title'))}"),
@@ -135,7 +146,7 @@ def _finding(n: int, finding: dict) -> list[tuple]:
         ]),
         ("h", 3, f"3.{n}.2 재현 절차"),
     ]
-    images = finding.get("images") or []
+    images = _dicts(finding, "images")
     steps = finding.get("reproduction") or []
     for step, item in enumerate(steps, 1):
         text = item.get("text") if isinstance(item, dict) else item
@@ -147,10 +158,10 @@ def _finding(n: int, finding: dict) -> list[tuple]:
     blocks += [("image", image) for image in images if image.get("step") not in linked]
 
     blocks.append(("h", 3, f"3.{n}.3 텍스트 증거"))
-    for evidence in finding.get("textEvidence") or [{"label": "증거", "text": None}]:
+    for evidence in _dicts(finding, "textEvidence") or [{"label": "증거", "text": None}]:
         blocks += [("p", _text(evidence.get("label"))), ("code", _text(evidence.get("text")))]
 
-    checks = finding.get("checks") or []
+    checks = _dicts(finding, "checks")
     blocks += [
         ("h", 3, f"3.{n}.4 판정 검사표"),
         ("table", [["레이블", "결과"]] + [
@@ -165,7 +176,7 @@ def _finding(n: int, finding: dict) -> list[tuple]:
 
 
 def _failure(run: dict) -> list[tuple]:
-    error = run.get("error") or {}
+    error = _obj(run, "error")
     return [
         ("h", 1, "3. 실행 실패"),
         ("p", "실행이 실패하여 취약점 상세 대신 실패 정보를 적습니다."),
@@ -179,9 +190,9 @@ def _failure(run: dict) -> list[tuple]:
 
 
 def _history(model: dict) -> list[tuple]:
-    triage = model.get("triage") or {}
+    triage = _obj(model, "triage")
     blocks: list[tuple] = [("h", 1, "4. 과거 사례 대조(재점검 triage)"), ("p", TRIAGE_CAVEAT)]
-    rows = triage.get("rows") or []
+    rows = _dicts(triage, "rows")
     if triage.get("status") == "unavailable" or not rows:
         blocks.append(("p", f"대조 결과가 없습니다. 사유: {_text(triage.get('reason'))}"))
     else:
@@ -189,7 +200,7 @@ def _history(model: dict) -> list[tuple]:
             [_text(r.get("caseId")), _text(r.get("location")), _text(r.get("label"))] for r in rows
         ]))
 
-    cases = model.get("priorCases") or []
+    cases = _dicts(model, "priorCases")
     blocks.append(("h", 1, "5. 관련 전월 보고서"))
     if not cases:
         blocks.append(("p", "관련 전월 보고서가 없습니다."))
@@ -200,7 +211,7 @@ def _history(model: dict) -> list[tuple]:
             ("table", _kv_rows({k: v for k, v in case.items() if k != "checks"})),
         ]
 
-    checks = [(case, check) for case in cases for check in case.get("checks") or []]
+    checks = [(case, check) for case in cases for check in _dicts(case, "checks")]
     blocks.append(("h", 1, "6. 재점검 이력"))
     if checks:
         blocks.append(("table", [["사례", "check", "상태(상태 표시)", "시각"]] + [
@@ -213,7 +224,7 @@ def _history(model: dict) -> list[tuple]:
 
 
 def _safety(model: dict) -> list[tuple]:
-    decisions = (model.get("guardrail") or {}).get("decisions") or []
+    decisions = _dicts(_obj(model, "guardrail"), "decisions")
     rows = [["결정", "규칙", "사유"]] + [
         [_text(d.get("decision")), _text(d.get("ruleId")), _text(d.get("reason"))]
         for d in decisions
@@ -226,12 +237,12 @@ def _safety(model: dict) -> list[tuple]:
 
 
 def _sources(model: dict) -> list[tuple]:
-    refs = model.get("references") or {}
-    collectors = refs.get("collectors") or []
-    omitted = refs.get("omittedSections") or []
+    refs = _obj(model, "references")
+    collectors = _dicts(refs, "collectors")
+    omitted = _dicts(refs, "omittedSections")
     blocks: list[tuple] = [
         ("h", 1, "8. 출처와 한계"),
-        ("p", f"프로필: {_text((model.get('generator') or {}).get('profile'))}"),
+        ("p", f"프로필: {_text(_obj(model, 'generator').get('profile'))}"),
         ("table", [["수집기", "원천 종류", "상태", "사유"]] + [
             [_text(c.get("name")), _text(c.get("driver")), _text(c.get("status")),
              _text(c.get("reason"))] for c in collectors
@@ -246,10 +257,10 @@ def _sources(model: dict) -> list[tuple]:
 
 
 def build_blocks(model: dict) -> list[tuple]:
-    run = model.get("run") or {}
+    run = _obj(model, "run")
     failed = run.get("status") == "failed"
     body = _failure(run) if failed else [("h", 1, "3. 취약점 상세")] + [
-        block for n, f in enumerate(model.get("findings") or [], 1) for block in _finding(n, f)
+        block for n, f in enumerate(_dicts(model, "findings"), 1) for block in _finding(n, f)
     ]
     return [*_cover(model), *_overview(run), *_summary(model, failed), *body,
             *_history(model), *_safety(model), *_sources(model)]
