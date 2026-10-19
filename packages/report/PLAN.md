@@ -106,7 +106,7 @@
 ### 1.1 보고서가 답해야 할 것
 | 질문 | 보고서 위치 | 원천(수집기) |
 |---|---|---|
-| **① 어떤 취약점인가** | 취약점 요약, 상세 2열 표 | run 보고서 `finding.{title, cwe, severity, severityBasis}`, `testProfile` |
+| **① 어떤 취약점인가** | 취약점 요약, 상세 2열 표 | run 보고서 `finding.{title, cwe, severity, severityBasis}`, `testProfile`. 심각도는 LLM이 CVSS로 재평가(상류 severity 병기) |
 | **② 공격 대상은 무엇인가** | 점검 개요, 상세 표의 "발생 위치" | run 보고서 `target.origin` + `loop.act`의 `curl.{method, url}`, 파라미터 |
 | **③ 실제로 exploit 되었는가** | 상세 표의 "판정 상태" + 판정 검사표 + 피해자 화면 사진 | `finding.{status, confidence, checks}`, 실패 run은 `status:'failed'` + `error` |
 | 어떻게 재현하나 | 재현 절차, PoC 요청·응답·페이로드(텍스트), 입력 지점 사진 | `loop.act` 이벤트 + 직접 촬영 |
@@ -156,6 +156,7 @@
 | 규칙 | 구현 방법 |
 |---|---|
 | exploit 여부는 상류가 전달한 판정이다 | 판정 상태 칸에 "에이전트의 결정론적 판정(전달받음), 보고서 모듈과 저장소는 검증하지 않음" |
+| CVSS는 LLM이 매긴 값이다 | 심각도 칸에 "LLM이 CVSS 3.1로 산출"을 명시하고 벡터를 함께 보인다. exploit 판정과 혼동하지 않게 분리 표기 |
 | 위치 일치는 재점검 후보일 뿐 현재 취약 판정이 아니다 | triage 섹션 머리에 고정 문구. 레이블은 `demo.py`와 같게 "재점검 후보 / 수동 확인 / 일치 없음" |
 | `ready`/`reviewed`는 상태 표시일 뿐 취약 판정이 아니다 | 상태 열 머리말에 "(상태 표시)"와 각주 |
 | 현재 데이터는 전부 synthetic이다 | 표지 고지 상자. synthetic 행에는 `[가상]` |
@@ -252,27 +253,30 @@ manifest 예시(초안):
 - **Markdown:** HTML 이스케이프를 하고, 표 안의 `|`와 개행도 처리한다.
 - **JSON:** 원문 그대로 넣는다. 소비자가 이스케이프한다.
 
-### 2.7 범용 보고서 목차 (HWPX 템플릿 = 코어 소유)
+### 2.7 HWPX 보고서 목차 (확정, Q7)
 ```
 [표지] CA3P 취약점 점검 보고서 — <runId>, 생성일, 고지 상자(격리 실습 / synthetic / 판정은 전달받은 값 / 위치 일치≠판정)
 
 1. 점검 개요          2열 표: 실행 ID, 상태, 시험 프로필, 공격 대상(origin), 시작/종료 시각, 요청 수
-2. 취약점 요약        표: 번호 | 취약점 | CWE | 심각도 | 공격 대상 | exploit 여부(판정 상태)     ← 핵심 3가지를 한눈에
-3. 취약점 상세        findings[] 반복:
-   3.n.1 상세         표준 2열 표(previous-month-xss-report.md 레이아웃):
-                      보고일 | 취약점 유형(title, CWE) | 발생 위치(origin + method path, 파라미터) | 심각도(+근거) |
-                      판정 상태 | 상세 설명 | 조치 방안 | 한계
+2. 취약점 요약        표: 번호 | 취약점 | CWE | CVSS 점수·등급 | 공격 대상 | exploit 여부(판정 상태)   ← 핵심 3가지를 한눈에
+3. 취약점 상세        findings[] 반복 (보통 1건):
+   3.n.1 기본 정보     2열 표(previous-month-xss-report.md 레이아웃):
+                      취약점 유형(title, CWE) | 발생 위치(method path, 파라미터) |
+                      심각도(CVSS 벡터·점수·등급, LLM 산출 명시 + 상류 severity) |
+                      판정 상태(에이전트 결정론적 판정, 보고서·저장소 미검증) | 상세 설명 | 조치 방안 | 한계
    3.n.2 재현 절차     번호 목록. 단계에 연결된 사진(① 입력 지점, ② 피해자 화면)과 캡션
    3.n.3 텍스트 증거   PoC 요청, 응답, + 프로필 추가 항목(예: 점검 페이로드)
    3.n.4 판정 검사표   checks: 레이블 | 결과
    3.n.5 영향 / 3.n.6 기타 정보(profileData)
 4. 과거 사례 대조(재점검 triage)   고정 문구 + 표
 5. 관련 전월 보고서    사례별 2열 표(대조 당시 revision)
-6. 재점검 이력        check 표 + 해시 표 + 각주
+6. 재점검 이력        check 표 + 각주(해시는 표기하지 않음, Q13)
 7. 가드레일 결정과 안전 속성
 8. 출처와 한계        수집기 상태(원천 종류만), 프로필 이름, 생략된 섹션과 사유
 ```
-실패한 run이면 3절을 "실행 실패"(error code, source, message, 도달한 단계)로 바꾼다.
+- **보고서 단위는 run 1건 = 1부다(Q8).** 월간/다건 집계는 범위 밖. `findings[]`가 배열인 것은 한 run이 여러 finding을 낼 수 있어서이지 여러 run을 묶기 위함이 아니다.
+- **심각도는 CVSS로 평가한다(Q12, A안).** LLM이 수집 자료를 바탕으로 CVSS 3.1 벡터·점수·등급을 산출한다. 보고서에 "LLM 산출"임을 명시하고, 상류 `severity`도 함께 표기해 둘이 다르면 드러나게 한다. **exploit 판정(confirmed/not_confirmed)은 CVSS와 무관하게 상류 값을 그대로 옮긴다.**
+- 실패한 run이면 3절을 "실행 실패"(error code, source, message, 도달한 단계)로 바꾼다.
 
 ---
 
@@ -439,6 +443,8 @@ packages/report/
   write_hwpx(model, template, out) / write_markdown(model, out)
   ```
 - **ReportModel `report-1.0`:** `run`, `findings[]{common, checks[], reproduction[], textEvidence[], images[], impact, profileData}`, `triage`, `priorCases`, `guardrail`, `safety`, `notices[]`, `references`, `generator{profile, fallback}`, `generatedAt`
+  - `common`에 `severity`(상류 값)와 `cvss{version:'3.1', vector, score, rating, source:'llm'}`를 둔다. `cvss`는 LLM이 채운다. 벡터가 점수·등급과 일치하는지는 검증기가 결정론적으로 재계산해 확인한다(불일치 시 반려).
+  - **보고서는 run 1건만 담는다(Q8).** `findings[]`는 한 run의 여러 finding을 위한 것이다.
   - 문자열은 원문으로 저장한다. 마스킹은 모델을 만드는 마지막 단계에서 코어가 적용한다.
   - Python 마스킹은 `packages/contracts/index.mjs`의 `redact()`와 같은 테스트 벡터로 검증한다.
 
@@ -507,10 +513,10 @@ packages/report/
 | Q5 | 트리거 시점 | 우리 설계 | ✅ (10-20) finalize 직후(attack 수행 후), 환경 정리 전. 호출 연동을 우리가 붙이므로 이 순서를 보장한다 |
 | Q6 | LLM을 어디까지 쓸지 | 사용자 | ✅ (10-20) 보고서 작성 전체를 LLM Agent가 도구 호출로 수행한다(§3.8) |
 | Q7 | HWPX 템플릿(표지, 기관 양식). 기존 CERT 양식이 있는가 | 사용자/팀 | 있으면 범용 목차에 맞춰 쓰고, 없으면 직접 만든다 |
-| Q8 | 보고서 단위: run 1건당 1부인가, 집계도 필요한가 | 사용자 | MVP는 run 단위. 모델의 `findings[]`로 확장 가능 |
+| Q8 | 보고서 단위 | 사용자 | ✅ (10-20) run 1건 = 1부. 월간/다건 집계는 범위 밖 |
 | Q10 | 상류가 추가할 취약점 프로필 로드맵 | agent/파이프라인 담당 | 프로필 인터페이스 사전 점검용 |
 | Q11 | `target.application`이 사이트를 식별해야 하나 | — | ✅ (10-20) 불필요. 촬영을 LLM이 직접 하므로 사이트 어댑터를 없앴다. `target.origin`만 있으면 된다 |
-| Q12 | 심각도 체계: low~critical 유지 또는 CVSS 추가 | 사용자 | 모델에 선택 필드 `cvss`만 마련 |
+| Q12 | 심각도 체계 | 사용자 | ✅ (10-20) LLM이 CVSS 3.1 벡터·점수·등급 산출(A안). "LLM 산출" 명시, 상류 severity 병기, 벡터↔점수 일치는 검증기가 재계산 확인 |
 | Q13 | 이미지 형식과 보고서 해시 표기 | 사용자 | ✅ (10-20) 이미지는 LLM이 필요에 따라 PNG로 촬영. 보고서 본문에 해시 표기 없음. 해시는 번들 무결성 확인용으로 manifest에만 둠 |
 | Q14 | LLM 접속 환경변수를 agent core와 공유(`DEEPSEEK_*`)할지, report 전용 변수를 둘지 | 파이프라인 담당 | ✅ (10-20) 공유. 로컬 LLM 전환 시 `DEEPSEEK_BASE_URL`만 바꾸면 된다 |
 | Q15 | LLM 데이터 정책(수집 자료 외부 전송) | 사용자 | ✅ (10-20) 지금은 다루지 않음. 로컬 LLM 전환 예정이고 데이터는 synthetic |
