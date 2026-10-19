@@ -121,11 +121,11 @@
                                                                                  ▼
  ┌───────────────────────────── Report Agent (packages/report) ──────────────────────────────┐
  │                                                                                            │
- │  [수집 단계 — 트리거가 준 위치에만 접근]                                                      │
- │   collect-run       pentest-db 디스크 | run-store | report 파일  ─┐                          │
+ │  [수집 단계 — 트리거가 준 위치에만 접근, 읽기 전용]                                           │
+ │   collect-run       pentest-db 디스크 | run-store                ─┐                          │
  │   collect-history   casper-db | (없음)                           ─┤                          │
- │   capture           대상 URL에 직접 접속 → 사진 ① ②               ─┼─▶ ReportInput 번들        │
- │   seal              manifest.json(해시·출처·해석 결과) 확정        ─┘     (자기완결, 불변)      │
+ │   collect-hints     파서 보고서 → 촬영 힌트(선택자·세션 API)       ─┼─▶ ReportInput 번들        │
+ │   seal              manifest.json(해시·수집기 종류) 확정          ─┘     (수집분 봉인)         │
  │                                                                            │               │
  │  [작성 단계 — LLM Agent 루프]                                                ▼               │
  │   LLM(OpenAI-compatible, tool calling) ← 번들 전체(마스킹) + 작성 규칙                        │
@@ -136,7 +136,7 @@
                                               ReportResult(JSON) → main Agent
 ```
 - **트리거 시점:** run이 finalize된 **뒤**, 실습 환경을 정리하기 **전**이다. 촬영에 살아 있는 대상이 필요하기 때문이다.
-- 수집과 촬영이 끝나면 번들을 봉인(seal)한다. 이후 작성은 대상이 사라져도 번들만으로 할 수 있다. 같은 트리거 안에서 이어서 해도 되고, 번들로 나중에 다시 렌더링해도 된다.
+- 수집이 끝나면 수집분(run/·history/·hints/·manifest)을 봉인(seal)한다. **촬영은 수집 단계가 아니라 작성 단계에서 LLM이 `capture_screenshot` 도구로 한다(§2.5).** 사진은 봉인 뒤 `evidence/`에 추가된다. 작성은 대상이 살아 있는 동안 같은 트리거 안에서 실행한다.
 
 ### 1.3 하는 일
 - 트리거가 지정한 원천에서 다른 모듈의 결과를 **읽기 전용으로** 수집한다.
@@ -159,6 +159,8 @@
 - ⚠️ 현재 데이터는 synthetic이고 실습용이라 이 전제가 성립한다. **실제 findings에 쓰려면** 사람 검토를 거치기 전에는 배포하지 않는다는 규칙을 반드시 지켜야 한다.
 
 ### 1.5 프레이밍 지침 (프롬프트로 LLM에 유도, 코드 강제 아님)
+아래는 **프롬프트 지침**이다(§1.4.1). 코드가 강제하는 것은 도구 샌드박스(대상 외 접속·쓰기·번들 밖 읽기 차단)와 마스킹뿐이고, 표의 규칙들은 LLM 준수에 의존한다.
+
 | 규칙 | 보고서 표기 방법 |
 |---|---|
 | exploit 여부는 상류가 전달한 판정이다 | 판정 상태 칸에 "에이전트의 결정론적 판정(전달받음), 보고서 모듈과 저장소는 검증하지 않음" |
@@ -185,7 +187,7 @@ main Agent가 보내는 `ReportTrigger`가 Agent의 **유일한 외부 입력**�
 ### 2.2 수집기 (환경 의존 부분을 전부 여기에 모은다)
 | 수집기 | 원천 종류(`kind`) | 가져오는 것 | 번들 산출물 | 원천이 없을 때 |
 |---|---|---|---|---|
-| `collect-run` | `pentest-db-disk`: §0.1 디렉터리 규약, `readRun` 동등 / `run-store`: SQLite `?mode=ro` / `file`: report.json(+events.json) 직접 | 최종 run 보고서와 이벤트 전체 | `run/report.json`, `run/events.json` | **보고서 생성 불가**(종료 코드 3) |
+| `collect-run` | `pentest-db-disk`: §0.1 디렉터리 규약, `readRun` 동등 / `run-store`: SQLite `?mode=ro`  (`file` 직접 입력은 미구현) | 최종 run 보고서와 이벤트 전체 | `run/report.json`, `run/events.json` | **보고서 생성 불가**(종료 코드 3) |
 | `collect-history` | `casper-db`: `CaseStore` 읽기 메서드만 / `none` | `loop.history` 이벤트가 가리키는 사례의 대조 당시 스냅숏(`get_version`), 현재 revision(`get`), check 목록(`list_checks`) | `history/casper.json` | `status:'unavailable'`로 기록하고 계속 진행 |
 | `collect-hints` | `collect-run` 결과(파서 보고서) | 촬영에 필요하면 찾아 둔다(Q4): 입력 폼 선택자·필드, 세션/계정 전환 API(`POST …/session`, `bodyKeys`), 공격자 계정. **없으면 비워 둔다** | `hints/capture.json` | 힌트 없이 진행(LLM이 페이지에서 직접 판단) |
 | `seal` | 번들 디렉터리 | 파일 해시, 수집기 종류·상태 | `manifest.json` | — |
@@ -239,7 +241,7 @@ manifest 예시(초안):
 `capture_screenshot(url, selector?, session?)` — LLM이 선택자와 (필요 시) 세션을 넘긴다. 도구는 다음을 **LLM의 요청과 무관하게 강제**한다.
 - **대상 URL:** 번들 `run/report.json`의 `target.origin`과 정확히 같고 `http://127.0.0.1:<port>` 형식일 때만 접속한다. 그 밖이면 거부한다. (트리거가 `targetUrl`을 주면 이 값과도 일치해야 한다.)
 - **샌드박스:** verify 단계 `observeStoredXssExecution`과 같은 수준. 같은 origin의 GET/HEAD만 허용한다. WebSocket·service worker 차단, 다운로드 거부, 팝업·대화상자 자동 닫기.
-- **세션 전환(§2.2에서 수집):** 상태를 바꾸지 않는 계정 전환 요청(예: `POST /api/session {userId}`)만, **수집기가 번들에 담아 둔 정의와 정확히 일치할 때** 허용하고 기록한다. 그 외 쓰기 요청은 모두 차단한다.
+- **세션 전환(§2.2에서 수집):** 상태를 바꾸지 않는 계정 전환 요청(예: `POST /api/session {userId}`)만, **수집기가 번들에 담아 둔 정의와 정확히 일치할 때** 허용하고 기록한다. `hints/capture.json`가 없거나 세션 전환 정의가 비어 있으면 **허용 목록이 비어 전환을 전혀 허용하지 않는다(빈 목록 = 금지).** 그 외 쓰기 요청은 모두 차단한다.
 - 저장: 사진은 `evidence/images/`에, 메타데이터(촬영 URL, 선택자, 세션 주체, 시각, 크기)는 `evidence/captures.json`에 추가한다. 파일 해시는 번들 무결성 확인용으로 manifest에만 기록하고, **보고서 본문에는 해시를 넣지 않는다(Q13).**
 - **형식·장수는 고정하지 않는다.** LLM이 필요에 따라 찍는다. PNG로 저장한다.
 - **vul-web-1 사실(§0.5):** 쿠키가 없으면 alice로 로그인되고 공격자도 alice다. 피해자 관점이 필요하면 수집기가 담아 둔 계정 전환으로 LLM이 전환해 찍고, 불가하면 기본 계정으로 찍되 그 사실을 캡션에 쓴다.
@@ -302,7 +304,7 @@ manifest 예시(초안):
 └───────────────▲────────────────────────────────────────────────────────────────────────┘
                 │ testProfile
 ┌───────────────┴──────────────────────────────┐
-│ 취약점 프로필 (LLM 작성 힌트 + 검증 항목)        │   ← 사이트별 어댑터는 없음.
+│ 취약점 프로필 (LLM 작성 힌트 + check 표시 레이블)│   ← 사이트별 어댑터는 없음.
 │ stored_xss / bola / generic(미등록 대체)       │     촬영 대상은 LLM이 번들 힌트와 페이지로 판단
 └───────────────────────────────────────────────┘
 ```
@@ -312,7 +314,7 @@ manifest 예시(초안):
 
 | | 프로필 |
 |---|---|
-| 무엇인가 | 취약점 종류별 LLM 작성 힌트(재현 절차 뼈대, 검사 항목 한글 레이블, 텍스트 증거 이름) |
+| 무엇인가 | 취약점 종류별 LLM 작성 힌트(재현 절차 뼈대, check 표시 레이블, 텍스트 증거 이름) |
 | 선택 기준 | `report.testProfile` → 정적 레지스트리. 모르는 값이면 `generic` |
 | 없을 때 | `generic`: 공통 필드와 checks 키-값 표만. "프로필 미등록" 고지 |
 
@@ -368,13 +370,13 @@ packages/report/
       collect/    model.py  pentest_db.py  run_store.py  casper.py  bundle.py  collector.py   # 구현 완료
       llm/        client.py(OpenAI-compatible)  loop.py  tools.py  redact.py
       hwpx/       writer.py  templates/ca3p-report.hwpx
-      profiles/   registry.py  generic.py  stored_xss.py  bola.py            # 작성 힌트 + 검증 항목
+      profiles/   registry.py  generic.py  stored_xss.py  bola.py            # LLM 작성 힌트 + check 표시 레이블
       cli.py      # run | collect
     tests/
 ```
 
 ### 3.7 새 취약점·새 사이트·새 원천을 추가하는 절차
-- **새 취약점:** `profiles/<id>.py`(LLM 작성 힌트 + 검증 항목)를 추가하고 레지스트리에 한 줄 등록한다. LLM 루프, 도구, HWPX 작성기는 바꾸지 않는다.
+- **새 취약점:** `profiles/<id>.py`(LLM 작성 힌트 + check 표시 레이블)를 추가하고 레지스트리에 한 줄 등록한다. LLM 루프, 도구, HWPX 작성기는 바꾸지 않는다.
 - **새 실습 사이트:** 추가 작업이 없다. LLM이 수집 힌트와 페이지를 보고 촬영한다. 수집 힌트를 더 풍부하게 하려면 `collect-hints`만 보강한다.
 - **새 결과 원천:** `collect/` 아래에 드라이버를 추가한다. 번들 계약은 유지한다.
 
@@ -392,7 +394,7 @@ packages/report/
 | 검증기 | **없음(10-20 결정).** LLM이 쓴 보고서를 그대로 확정한다. 사실성과 고지 포함은 아래 프롬프트 지침으로만 유도한다 |
 | 프롬프트 지침 | system 메시지에 넣는 규칙(강제 아님): exploit 여부는 번들의 `finding.status`를 그대로 쓸 것, 필수 고지 문구를 넣을 것, 심각도는 CVSS 3.1로 평가하고 "LLM 산출"로 표기할 것, 비밀값을 쓰지 말 것 |
 | 실패 처리 | API 오류, 응답 형식 오류 등 LLM이 끝내 보고서를 완성하지 못하면 템플릿 대체 없이 `ReportResult{ok:false, error:{code:'LLM_FAILED'}}`를 agent core에 전달한다 |
-| 상한 | 반복 횟수, 촬영 장수, 시간 모두 상한 없음 |
+| 상한 | 반복 횟수, 촬영 장수, 시간 모두 상한 없음. 루프는 LLM이 `finish_report`를 호출하면 끝난다. 호출하지 않으면 프로세스가 외부에서 종료될 때까지 계속된다(C-1). LLM API 호출에는 요청별 HTTP 타임아웃을 둔다 |
 | 기록 | LLM 대화와 도구 호출 로그를 출력 위치에 남긴다(마스킹 적용, API 키 제외) |
 
 - 판정(exploit 여부)과 CVSS는 LLM이 보고서에 적는다. 코드로 강제하거나 재계산하지 않는다. 사실성은 프롬프트 지침과 LLM 품질에 맡긴다.
@@ -408,13 +410,13 @@ packages/report/
   "schemaVersion": "report-trigger-1.0",
   "runId": "run-…",
   "sources": {
-    "run":     { "kind": "pentest-db-disk | run-store | file", "location": "<절대 경로>" },
+    "run":     { "kind": "pentest-db-disk | run-store", "location": "<절대 경로>" },
     "history": { "kind": "casper-db | none", "location": "<절대 경로>" }
   },
-  "capture": {
-    "enabled": true,
-    "targetUrl": "http://127.0.0.1:<port>",       // run 보고서의 target.origin과 같아야 함
-    "targetUrl": "http://127.0.0.1:<port>"          // 선택. 생략하면 run/report.json의 target.origin 사용
+  "capture": {                                      // 선택. 통째로 생략 가능(기본 촬영 켬)
+    "enabled": true,                                // 선택, 기본 true. false면 촬영 생략
+    "targetUrl": "http://127.0.0.1:<port>"          // 선택. 생략 시 run/report.json의 target.origin 사용.
+                                                    //        주면 그 값이 target.origin과 같아야 함
   },
   "output": { "dir": "<절대 경로>", "formats": ["hwpx", "json"], "keepBundle": true },
   "options": { "generatedAt": "<ISO, 선택>", "images": true }
@@ -425,7 +427,8 @@ packages/report/
 - 검증
   - runId 형식: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`
   - 경로: 절대 경로만 허용
-  - `targetUrl`: loopback이어야 하고, 수집된 `report.target.origin`과 일치해야 한다. 불일치하면 촬영하지 않는다.
+  - `capture` 객체도 트리거 파서가 읽어 `Trigger`에 담는다(현재 구현은 키만 통과시키고 값을 무시하므로 build 단계 전에 보완, C-2/SF-4 참조).
+  - `targetUrl`: 주어지면 loopback이어야 하고 수집된 `report.target.origin`과 일치해야 한다. 생략하면 `target.origin`을 쓴다. 불일치하면 촬영하지 않는다.
 
 ### 4.2 결과: `ReportResult` (Report Agent → main Agent)
 ```jsonc
@@ -437,7 +440,7 @@ packages/report/
   "sections": { "capture": "ok|partial|skipped|failed", "history": "ok|unavailable" },
   "warnings": [] }
 ```
-- 종료 코드: `0` 성공(일부 섹션 생략 포함), `2` 트리거 오류, `3` run 없음, `4` run 미완료, `5` 원천 데이터 이상, `6` 번들이 이미 있음, `7` 출력 위치에 쓸 수 없음, `8` LLM 실패(`LLM_FAILED`, 템플릿 대체 없음).
+- 종료 코드: `0` 성공, `1` 내부 오류(`INTERNAL_ERROR`, traceback·경로 노출 없이 클래스명만), `2` 트리거 오류, `3` run 없음, `4` run 미완료, `5` 원천 데이터 이상, `6` 번들이 이미 있음, `7` 출력 위치에 쓸 수 없음, `8` LLM 실패(`LLM_FAILED`, 템플릿 대체 없음).
 - **파이프라인을 멈추지 않는다.** 보고서 생성이 실패해도 run 결과에는 영향을 주지 않는다. main Agent는 `ok`만 확인하면 된다.
 
 ### 4.3 내부 계약
@@ -462,7 +465,8 @@ packages/report/
 | casper-db | collect-history | `CaseStore` 읽기 메서드(`mode=ro`) | `initialize_database`, `add*`, `update`, `review_check` |
 | 대상 사이트 | `capture_screenshot` 도구(작성 단계) | 번들 `target.origin`(loopback)에 GET/HEAD + 수집기가 담아 둔 계정 전환만 | 데이터 생성·수정·삭제, 외부 origin |
 | 번들 | seal 이후 코어 | 읽기만 | 수정 |
-| 네트워크 | capture만 | loopback 대상 | 코어와 다른 수집기의 모든 네트워크 |
+| 네트워크(대상) | capture_screenshot 도구 | 번들 origin(loopback) | 그 외 대상 |
+| 네트워크(LLM) | `llm/client.py` | `DEEPSEEK_BASE_URL`(환경변수)에 HTTPS | 그 외 대상, 수집기·HWPX 작성기에서의 네트워크 |
 
 ---
 
@@ -471,7 +475,7 @@ packages/report/
 |---|---|---|---|
 | **M0. 결정 정리** | ✅ 브랜치·범위, 트리거 기반 Agent, 수집기 내장, 직접 촬영, 번들, HWPX, 범용 3계층 | 이 문서 | 완료 |
 | **M1. 수집기 + seal** | ✅ (10-20) `collect-run`(pentest-db-disk, run-store), `collect-history`(casper-db, none), 번들 봉인, CLI `collect` | `py/src/ca3p_report/collect/`, 테스트 55개 | 실제 Node writer로 만든 원천으로 검증. 두 원천의 정규화 결과 동일. 원천 내용 불변, DB가 없을 때 생성 안 함, 번들 1회 쓰기·실패 시 잔여물 없음, 원천 위치·traceback 미노출 |
-| **M2. python-hwpx 스파이크** | §3.5의 1~6번 | `spike/` 결과와 짧은 보고 | 한글/뷰어에서 정상으로 열림. 막히면 대안 결정 |
+| **M2. python-hwpx 스파이크** | §3.5의 1~6번. **2~3일 타임박스, go/no-go 기준 명시** | `spike/` 결과와 짧은 보고 | 한글/뷰어에서 정상으로 열림. 가변 행 표·섹션 반복이 안 되면 즉시 lxml/OWPML 대안으로 전환 |
 | **M3. HWPX 작성기** | `hwpx/writer.py`: 제목·문단·표·코드 블록·이미지 추가, 텍스트 노드 삽입(이스케이프), 파일 이름 정규화 | 단위 테스트 | 특수문자가 텍스트로 보임, 원시 XML 삽입 불가, 이미지는 번들 경로만 |
 | **M4. 스크린샷 도구** | Node `capture/`: 샌드박스(대상 origin 고정, GET 위주, 허용된 세션 전환만), 사진 저장, `captures.json` | `node --test` | 쓰기 요청 차단, 허용 목록 밖 요청 차단, origin 불일치 시 촬영 안 함 |
 | **M5. LLM 도구 계층** | `llm/tools.py`: `read_bundle`·`capture_screenshot`(M4 서브프로세스)·`hwpx_*`(M3)·`finish_report`. 각 도구가 자체 제약을 강제 | 도구 단위 테스트(LLM 없이) | 번들 밖 읽기·대상 외 접속·원시 XML 모두 거부 |
@@ -495,7 +499,7 @@ packages/report/
 
 | 범주 | 검증 |
 |---|---|
-| **환경 정보 무보유** | 트리거에 없는 경로·URL에 접근하지 않는다. 소스에 기본 경로, 포트가 없다(정적 검사). 환경변수는 LLM 접속 정보(`DEEPSEEK_*`)만, `llm/client.py`에서만 읽는다. 번들과 보고서에 원천 위치가 남지 않는다 |
+| **환경 정보 무보유** | 트리거에 없는 경로·URL에 접근하지 않는다. 소스에 기본 경로, 포트가 없다(정적 검사). 환경변수는 LLM 접속 정보(`DEEPSEEK_*`)만, `llm/client.py`에서만 읽는다. 번들과 보고서에 원천 위치가 남지 않는다. ⚠️ `test_boundaries.py`의 네트워크 import·환경변수 금지 정적 검사는 `llm/client.py`를 명시적으로 예외 처리한다(C-4) |
 | 수집기 격리 | 수집기 모듈에 `socket`·`urllib`·네트워크 import가 없다. 번들 밖 파일을 열지 않는다. 네트워크는 `llm/` 아래에만 있다 |
 | 핵심 3가지 | 지침을 따르는 가짜 LLM이 쓰면 보고서에 취약점·공격 대상·exploit 여부가 들어간다(강제 아님, 지침과 LLM 품질에 의존) |
 | LLM 경계 | 가짜 LLM이 번들 밖 읽기·대상 외 접속·원시 XML을 요청하면 도구가 거부한다. LLM 오류 시 `LLM_FAILED`(exit 8)이고 템플릿 대체가 없다. (내용의 사실성은 도구가 강제하지 않는다) |

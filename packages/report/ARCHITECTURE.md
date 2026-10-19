@@ -29,7 +29,7 @@ flowchart TB
             HINT --> SEAL
         end
 
-        SEAL ==> BUNDLE[("ReportInput 번들<br/>run/ · history/ · hints/ · evidence/<br/>봉인·불변")]
+        SEAL ==> BUNDLE[("ReportInput 번들<br/>run/ · history/ · hints/ 봉인<br/>evidence/는 작성 단계에서 추가")]
 
         subgraph BUILD["② 작성 단계 — LLM Agent 루프 (미구현)"]
             direction TB
@@ -71,18 +71,18 @@ flowchart TB
 |---|---|---|---|
 | 수집기 `collect/` | 트리거가 지정한 원천을 읽기 전용으로 읽어 번들에 모음. 촬영 힌트도 찾아 둠 | 지정된 원천만 | ✅ run·history 완료 / hints 미구현 |
 | seal `bundle.py` | 파일 해시·출처를 manifest로 봉인. 위치는 기록 안 함 | 출력 위치만 | ✅ 구현 완료 |
-| 코어/LLM 루프 `llm/` | 번들을 마스킹해 LLM에 전달, 도구 호출 루프, 검증 | LLM 엔드포인트(환경변수) | ⬜ 미구현 |
+| 코어/LLM 루프 `llm/` | 번들을 마스킹해 LLM에 전달, 도구 호출 루프 (검증 없음) | LLM 엔드포인트(환경변수) | ⬜ 미구현 |
 | 도구 `llm/tools.py` | `read_bundle`·`capture_screenshot`·`hwpx_*`·`finish_report`. 각 도구가 자체 제약 강제 | capture만 번들 origin | ⬜ 미구현 |
 | HWPX 작성 `hwpx/` | python-hwpx로 문서 작성. 텍스트 노드 삽입(이스케이프) | 없음 | ⬜ 미구현 |
 | 스크린샷 도구 `capture/` (Node) | 샌드박스 브라우저로 촬영. LLM이 선택자·세션을 넘김 | 번들 loopback origin | ⬜ 미구현 |
-| 프로필 `profiles/` | 취약점별 LLM 작성 힌트 + 검증 항목. 사이트 어댑터 없음 | 없음 | ⬜ 미구현 |
+| 프로필 `profiles/` | 취약점별 LLM 작성 힌트 + check 표시 레이블. 사이트 어댑터 없음 | 없음 | ⬜ 미구현 |
 
 ## 3. 입력 · 출력 계약
 
 | | 형식 | 핵심 필드 |
 |---|---|---|
 | 입력 | `ReportTrigger` JSON | `runId`, `sources.run{kind,location}`, `sources.history`, `output.dir`, (선택)`capture.targetUrl` |
-| 내부 | ReportInput 번들 (봉인·불변) | `manifest.json`, `run/report.json`, `run/events.json`, `history/casper.json`, `hints/capture.json`, `evidence/*`(작성 단계) |
+| 내부 | ReportInput 번들 (수집분 봉인) | `manifest.json`·`run/`·`history/`·`hints/`(봉인) + `evidence/*`(작성 단계에서 추가) |
 | 출력 | `report.hwpx` + `ReportResult` JSON | `ok`, `files[]`, `summary{vulnerability,target,exploit}`, `sections`, `error` |
 
 **결과 원천별 수집 방식(구현 완료)**
@@ -102,6 +102,11 @@ flowchart TB
 4. **도구가 위험 행동 차단** — 대상 origin 고정, 쓰기 요청 차단, 번들 밖 읽기 차단, 원시 XML 삽입 차단. LLM이 속아도 범위 제한.
 5. **마스킹** — 쿠키·`Set-Cookie`·API 키·chain-of-thought는 LLM 입력·로그·출력 어디에도 안 남김.
 6. **LLM 실패 = 실패 전달** — 템플릿 대체 없이 `LLM_FAILED`(exit 8)로 main Agent에 전달.
+
+## 4.1 알려진 한계
+- 보고서 내용의 **의미적 정확성은 코드가 보장하지 않는다**(검증기 없음). 틀린 판정·조작된 CVSS·누락된 고지·번들 payload로 인한 서술 오염이 통과할 수 있다. synthetic 실습이라 감수하며, **사람 최종 검토가 마지막 방어선**이다(§1.4.1).
+- 실제 findings로 넘어가려면(졸업 기준) 최소한의 검증(예: `finding.status` 문자열 일치 확인)이나 사람 서명 절차가 필요하다.
+- `test_boundaries.py`는 `ca3p_report/` 전체에서 네트워크 import·환경변수 접근을 금지하므로, `llm/client.py` 추가 시 예외 규칙을 둬야 한다(C-4).
 
 ## 5. 마일스톤 현황
 
