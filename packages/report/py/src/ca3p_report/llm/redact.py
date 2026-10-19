@@ -29,7 +29,8 @@ _HEADER = re.compile(
     re.IGNORECASE | re.ASCII,
 )
 _BEARER = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]+", re.IGNORECASE | re.ASCII)
-_OPENAI_KEY = re.compile(r"sk-[A-Za-z0-9]{16,}")
+# Classic sk-... plus newer prefixed formats (sk-proj-, sk-svcacct-, sk-ant-...).
+_OPENAI_KEY = re.compile(r"sk-(?:proj-|svcacct-|ant-(?:api\d+-)?)?[A-Za-z0-9_-]{16,}")
 
 # Model reasoning, raw responses and the prompt itself never leave the LLM stage.
 DROP_KEYS = frozenset(

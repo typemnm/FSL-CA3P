@@ -184,3 +184,31 @@ def test_llm_failure_propagates(tmp_path):
             origin="http://127.0.0.1:1",
             session_switch=None,
         )
+
+
+def test_capture_origin_must_be_loopback(tmp_path):
+    from ca3p_report.llm.tools import ReportTools, ToolError
+
+    for bad in (
+        "http://example.com:80",
+        "https://127.0.0.1:8080",
+        "http://127.0.0.1:",
+        "http://127.0.0.1:99999",
+        None,
+    ):
+        with pytest.raises(ToolError):
+            ReportTools(tmp_path, tmp_path / "o", origin=bad, session_switch=None)
+    # A valid loopback origin is accepted.
+    ReportTools(tmp_path, tmp_path / "o", origin="http://127.0.0.1:8080", session_switch=None)
+
+
+def test_redact_masks_newer_openai_key_formats():
+    from ca3p_report.llm.redact import redact
+
+    for key in (
+        "sk-ABCDEFGHIJKLMNOP1234",
+        "sk-proj-ABCdef1234567890abcd",
+        "sk-svcacct-ABCdef1234567890abcd",
+        "sk-ant-api03-ABCdef1234567890abcd",
+    ):
+        assert key not in redact(f"token is {key} end")

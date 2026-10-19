@@ -12,6 +12,7 @@ bound actions. Content accuracy rests on the prompt and human review.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,16 @@ from .redact import redact
 
 CAPTURE_CLI = Path(__file__).resolve().parents[4] / "capture" / "cli.mjs"
 MAX_READ_BYTES = 2_000_000
+# The capture target must be a loopback origin with a valid port (defense-in-depth on the
+# Python side; the Node sandbox enforces the same). Blocks SSRF to an arbitrary host/port.
+_LOOPBACK_ORIGIN = re.compile(r"^http://(?:127\.0\.0\.1|\[::1\]):([1-9]\d{0,4})$")
+
+
+def _validate_origin(origin: object) -> str:
+    match = _LOOPBACK_ORIGIN.fullmatch(origin) if isinstance(origin, str) else None
+    if not match or int(match.group(1)) > 65535:
+        raise ToolError("capture origin must be http://127.0.0.1:<port>")
+    return origin
 
 
 class ToolError(RuntimeError):
@@ -47,7 +58,7 @@ class ReportTools:
     ):
         self._bundle = Path(bundle).resolve()
         self._out = Path(out_dir)
-        self._origin = origin
+        self._origin = _validate_origin(origin)
         self._session_switch = session_switch
         self._node = node
         self._evidence = self._bundle / "evidence" / "images"
@@ -91,9 +102,19 @@ class ReportTools:
         if viewer is not None:
             if not self._session_switch:
                 raise ToolError("no session-switch is permitted for this run")
+            path = self._session_switch.get("path")
+            # The path comes from the collector, but a crafted hints file could carry an
+            # odd value; require a plain absolute path (no scheme/host/query) before replay.
+            if (
+                not isinstance(path, str)
+                or not path.startswith("/")
+                or any(c in path for c in " ?#\\")
+                or path.startswith("//")
+            ):
+                raise ToolError("session-switch path is not a plain absolute path")
             switch = {
                 "method": self._session_switch.get("method", "POST"),
-                "path": self._session_switch.get("path"),
+                "path": path,
                 "body": {"userId": viewer},
             }
             args += ["--session", json.dumps(switch), "--allow-session", json.dumps([switch])]
