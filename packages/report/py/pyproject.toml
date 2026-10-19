@@ -7,7 +7,8 @@ name = "ca3p-report"
 version = "0.1.0"
 description = "CA3P report agent: collects run results and renders HWPX reports"
 requires-python = ">=3.11"
-dependencies = []
+# HWPX writing (build stage). python-hwpx is Alpha; pin to the verified minor.
+dependencies = ["python-hwpx>=6.8,<7"]
 
 [project.optional-dependencies]
 # collect-history reads casper-db only through its public read-only API.
