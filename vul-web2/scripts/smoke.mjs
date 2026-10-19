@@ -117,6 +117,24 @@ function serviceRecordIds(html) {
     .map(match => Number(match[1]));
 }
 
+function makeSmallTar(name, content) {
+  const data = Buffer.from(content);
+  const header = Buffer.alloc(512);
+  header.write(name, 0, 100);
+  header.write('0000644\0', 100, 8);
+  header.write('0000000\0', 108, 8);
+  header.write('0000000\0', 116, 8);
+  header.write(`${data.length.toString(8).padStart(11, '0')}\0`, 124, 12);
+  header.write('00000000000\0', 136, 12);
+  header.fill(32, 148, 156);
+  header.write('0', 156, 1);
+  header.write('ustar\0', 257, 6);
+  header.write('00', 263, 2);
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8);
+  return Buffer.concat([header, data, Buffer.alloc((512 - data.length % 512) % 512), Buffer.alloc(1024)]);
+}
+
 async function expectStatus(base, path, status, options = {}) {
   const response = await request(base, path, options);
   assert.equal(response.status, status, `${options.method || 'GET'} ${path}`);
@@ -168,6 +186,16 @@ try {
     assert.equal((await noMatch.json()).results.length, 0);
     const matching = await request(base, '/api/search?q=' + encodeURIComponent('학년도'));
     assert.ok((await matching.json()).results.length > 0, 'global search returns seeded posts');
+    if (siteKey === 'daehan') {
+      const filtered = await request(base, '/api/search?filters=' + encodeURIComponent('{type:"news",limit:2,}'));
+      const filteredResults = (await filtered.json()).results;
+      assert.equal(filteredResults.length, 2, 'JSON5 advanced search limits the result count');
+      assert.ok(filteredResults.every(post => post.type === 'news'), 'JSON5 advanced search filters post type');
+      const inherited = await request(base, '/api/search?filters=' + encodeURIComponent('{__proto__:{type:"notice",limit:1}}'));
+      const inheritedResults = (await inherited.json()).results;
+      assert.equal(inheritedResults.length, 1, 'JSON5 parsed object inherits a limit');
+      assert.equal(inheritedResults[0].type, 'notice', 'JSON5 parsed object inherits a post type');
+    }
     const injected = await request(base, '/api/search?q=' + encodeURIComponent("' OR 1=1 --"));
     assert.ok((await injected.json()).results.length > 0, 'A05 SQL injection probe');
     const diagnostic = await request(base, '/_diag/config');
@@ -202,7 +230,9 @@ try {
     for (const guarded of [
       { path: '/admin' }, { path: '/admin/posts/new' }, { path: '/admin/posts/1/edit' },
       { path: '/admin/posts', method: 'POST' }, { path: '/admin/posts/1', method: 'POST' },
-      { path: '/admin/import', method: 'POST' }, { path: '/admin/settings', method: 'POST' }
+      { path: '/admin/import', method: 'POST' }, { path: '/admin/settings', method: 'POST' },
+      ...(siteKey === 'wonchang' ? [{ path: '/admin/schedule/preview', method: 'POST' },
+        { path: '/admin/archive/preview', method: 'POST' }] : [])
     ]) {
       const denied = await expectStatus(base, guarded.path, 403, { method: guarded.method || 'GET' });
       if (siteKey === 'wonchang' && guarded.path === '/admin') {
@@ -259,6 +289,22 @@ try {
 
     const adminCookie = await login(base, 'admin', 'admin1234');
     assert.equal((await request(base, '/admin', { headers: { cookie: adminCookie } })).status, 200);
+    if (siteKey === 'wonchang') {
+      const preview = await request(base, '/admin/schedule/preview', {
+        method: 'POST', headers: { cookie: adminCookie, 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ payload: 'events:\n  - title: 학사 일정 미리보기\n    date: 2026-11-02' })
+      });
+      assert.equal(preview.status, 200, 'YAML schedule preview renders');
+      assert.match(await preview.text(), /학사 일정 미리보기/, 'YAML schedule preview uses parsed content');
+      const bundle = new FormData();
+      bundle.append('bundle', new Blob([makeSmallTar('course-guide.txt', 'fictional course guide')],
+        { type: 'application/x-tar' }), 'course-guide.tar');
+      const archive = await request(base, '/admin/archive/preview', {
+        method: 'POST', headers: { cookie: adminCookie }, body: bundle
+      });
+      assert.equal(archive.status, 200, 'TAR archive preview renders');
+      assert.match(await archive.text(), /course-guide\.txt/, 'TAR archive preview lists file names');
+    }
     await expectStatus(base, sideService.page, 403, { headers: { cookie: adminCookie } });
     await expectStatus(base, `${sideService.api}/1`, 403, { headers: { cookie: adminCookie } });
     await expectStatus(base, '/admin/posts/new', 200, { headers: { cookie: adminCookie } });
@@ -266,13 +312,17 @@ try {
     await expectStatus(base, '/admin/posts/999999/edit', 404, { headers: { cookie: adminCookie } });
     const created = await request(base, '/admin/posts', {
       method: 'POST', headers: { cookie: adminCookie, 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ type: 'notice', title: '검증용 공지', body: '기능 검증 본문' })
+      body: new URLSearchParams({ type: 'notice', title: '검증용 공지',
+        body: siteKey === 'daehan' ? '기능 **검증** 본문' : '기능 검증 본문' })
     });
     assert.equal(created.status, 302);
     const createdNoticeHtml = await (await request(base, '/notices?q=' + encodeURIComponent('검증용 공지'))).text();
     const createdNoticePath = boardLinks(createdNoticeHtml)[0];
     assert.ok(createdNoticePath, 'created notice is stored');
     assert.match(await (await request(base, createdNoticePath)).text(), /검증용 공지/);
+    if (siteKey === 'daehan') {
+      assert.match(await (await request(base, createdNoticePath)).text(), /<strong>검증<\/strong>/, 'Markdown renders in post detail');
+    }
     const createdNoticeId = Number(createdNoticePath.match(/\/(\d+)$/)?.[1]);
     assert.ok(createdNoticeId);
     const edited = await request(base, `/admin/posts/${createdNoticeId}`, {

@@ -1,6 +1,6 @@
 # 대한대학교 · 원창대학교 웹사이트
 
-두 가상 대학의 다중 페이지 웹사이트입니다. 공개 화면에는 대학 소개, 입학, 단과대학, 학사, 연구·산학, 대학생활, 공지, 대학소식, 일정, FAQ, 시설대여가 있습니다. 로그인 후 마이페이지에서 문의를 접수할 수 있고 관리자는 게시글과 일정을 관리할 수 있습니다. 대한대학교에는 협력기관 입학 접수 조회, 원창대학교에는 교직원 모바일 업무 조회가 있습니다. 공개 화면은 실제 대학 포털처럼 구성했으며 평가 환경 안내 문구는 표시하지 않습니다.
+두 가상 대학의 다중 페이지 웹사이트입니다. 공개 화면에는 대학 소개, 입학, 단과대학, 학사, 연구·산학, 대학생활, 공지, 대학소식, 일정, FAQ, 시설대여가 있습니다. 로그인 후 마이페이지에서 문의를 접수할 수 있고 관리자는 게시글과 일정을 관리할 수 있습니다. 대한대학교에는 협력기관 입학 접수 조회·JSON5 검색 필터·Markdown 게시글이, 원창대학교에는 교직원 모바일 업무 조회·관리자 YAML 일정 원고 및 TAR 자료 묶음 미리보기가 있습니다. 공개 화면은 실제 대학 포털처럼 구성했으며 평가 환경 안내 문구는 표시하지 않습니다.
 
 이 저장소는 허가된 보안 평가용으로 의도적인 결함을 포함합니다. 모든 계정과 콘텐츠는 가상입니다. **로컬 환경에서만 실행하고 외부에 공개하거나 실제 개인정보를 입력하지 마세요.**
 
@@ -56,8 +56,11 @@ mvn spring-boot:run
 | 공지·대학소식 | `/notices`, `/news`, 상세 `/notices/:id`, `/news/:id` |
 | 학사일정·FAQ·시설 | `/schedule`, `/faq`, `/facilities` |
 | 검색 | `/api/search?q=...`, 게시판 검색 폼 |
+| 대한대학교 검색 범위 필터 | `/api/search?q=...&filters={type:"notice",limit:8,}` |
+| 대한대학교 Markdown 게시글 | `/notices/:id`, `/news/:id` |
 | 로그인·문의 접수 | `/login`, `/mypage`, `POST /mypage/requests` |
 | 게시글 관리·일정 가져오기 | `/admin`, `/admin/posts/new`, `POST /admin/import` |
+| 원창대학교 일정·자료 미리보기 | `POST /admin/schedule/preview`, `POST /admin/archive/preview` |
 | 대한대학교 협력기관 입학 접수 조회 | `/admissions/partner`, `/api/admissions/partner/applications/:id` |
 | 원창대학교 교직원 모바일 업무 조회 | `/staff/mobile`, `/api/staff/mobile/cases/:id` |
 
@@ -73,10 +76,10 @@ mvn spring-boot:run
 
 | 사이트 | 서버·화면 구성 | 직접 외부 의존성 | 버전 관리 |
 | --- | --- | --- | --- |
-| 대한대학교 | Express · Nunjucks | `express@4.21.2`, `nunjucks@3.2.4`, `cookie-parser@1.4.7`, `dayjs@1.11.13`, `lodash@4.17.15` | 루트 `package-lock.json` |
-| 원창대학교 | Spring Boot 4.1.1 · Spring MVC · Thymeleaf | `spring-boot-starter-webmvc`, `spring-boot-starter-thymeleaf`, `sqlite-jdbc@3.53.4.0`, `gson`, `commons-text@1.9` | `wonchang/pom.xml`의 명시 버전과 Spring Boot 의존성 관리 |
+| 대한대학교 | Express · Nunjucks | `express@4.21.2`, `nunjucks@3.2.4`, `cookie-parser@1.4.7`, `dayjs@1.11.13`, `lodash@4.17.15`, `json5@2.2.1`, `markdown-it@12.3.1` | 루트 `package-lock.json` |
+| 원창대학교 | Spring Boot 4.1.1 · Spring MVC · Thymeleaf | `spring-boot-starter-webmvc`, `spring-boot-starter-thymeleaf`, `sqlite-jdbc@3.53.4.0`, `gson`, `commons-text@1.9`, `snakeyaml@1.33`, `commons-compress@1.23.0` | `wonchang/pom.xml`의 명시 버전과 Spring Boot 의존성 관리 |
 
-두 사이트는 서로 다른 런타임과 직접 의존성 집합을 사용합니다. 대한대학교 DB는 Node.js 내장 `node:sqlite`, 원창대학교 DB는 SQLite JDBC를 사용합니다. `lodash`와 `commons-text`는 보안 평가를 위해 취약 버전으로 고정돼 있습니다. 원창대학교의 HTTP 응답에는 `X-Powered-By: Spring Boot`가 포함돼 서버 기술을 확인할 수 있습니다. Wappalyzer의 실제 표시는 확장 프로그램의 탐지 규칙과 캐시에 따라 달라질 수 있습니다.
+두 사이트는 서로 다른 런타임과 직접 의존성 집합을 사용합니다. 대한대학교 DB는 Node.js 내장 `node:sqlite`, 원창대학교 DB는 SQLite JDBC를 사용합니다. 각 사이트의 직접 의존성 세 개가 공개 CVE의 영향 버전에 해당하며 호출 경로와 검증 범위는 [취약점 보고서](docs/사전_침해분석_및_취약점_보고서.md)에 기록했습니다. 원창대학교의 HTTP 응답에는 `X-Powered-By: Spring Boot`가 포함돼 서버 기술을 확인할 수 있습니다. Wappalyzer의 실제 표시는 확장 프로그램의 탐지 규칙과 캐시에 따라 달라질 수 있습니다.
 
 두 메인 캠퍼스 사진은 가상 대학 전용으로 생성한 로컬 파일입니다. 제작 방식과 최종 프롬프트는 [이미지 제작 기록](docs/이미지_제작기록.md)에 있습니다.
 
@@ -89,7 +92,7 @@ npm run smoke
 node scripts/deployment-check.mjs
 ```
 
-`docker compose config --quiet`는 Compose 설정을 확인하며 컨테이너를 실행하지는 않습니다. `npm run smoke`는 대한대학교를 메모리 DB·임시 로컬 포트로 실행하고 원창대학교 Spring 이미지를 빌드해 **임시 컨테이너와 임시 SQLite DB**에서 검증합니다. Docker Engine이 필요하며 실행 중인 Compose 컨테이너의 지속 DB는 변경하지 않습니다. 공개 페이지와 정적 자산, 게시판 검색·페이지 이동, 로그인·로그아웃, 문의 접수, 역할 제한, 부속 업무 조회와 오류 경로, 관리자 게시글 작성·수정·일정 가져오기 및 대표 취약 동작을 확인합니다. A03은 대한대학교의 `lodash` 경로 오염과 원창대학교의 `commons-text` 설정값 보간을 각각 무해한 입력으로 검증합니다. A09는 정적 코드 검토만 수행했습니다.
+`docker compose config --quiet`는 Compose 설정을 확인하며 컨테이너를 실행하지는 않습니다. `npm run smoke`는 대한대학교를 메모리 DB·임시 로컬 포트로 실행하고 원창대학교 Spring 이미지를 빌드해 **임시 컨테이너와 임시 SQLite DB**에서 검증합니다. Docker Engine이 필요하며 실행 중인 Compose 컨테이너의 지속 DB는 변경하지 않습니다. 공개 페이지와 정적 자산, 게시판 검색·페이지 이동, 로그인·로그아웃, 문의 접수, 역할 제한, 부속 업무 조회와 오류 경로, 관리자 게시글 작성·수정·일정 가져오기를 확인합니다. 대한대학교의 JSON5 필터·Markdown 렌더링, 원창대학교의 YAML·TAR 미리보기와 대표 취약 동작도 검사합니다. 장시간 자원 소모나 코드 실행 형태의 CVE 재현은 수행하지 않았으며 A09는 정적 코드 검토만 수행했습니다.
 
 `node scripts/deployment-check.mjs`는 **Compose로 두 사이트가 실행 중일 때** `127.0.0.1:4101`·`127.0.0.1:4102`에 요청해 공개 화면과 읽기 경로를 점검합니다. 가상 계정으로 로그인 세션을 생성하지만 지속 DB의 글·일정·문의를 작성하거나 삭제하지 않습니다. 분석 범위와 위험·재현 결과는 [사전 침해분석 및 취약점 보고서](docs/사전_침해분석_및_취약점_보고서.md)에 기록합니다.
 

@@ -2,9 +2,11 @@ package edu.wonchang.portal;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,6 +23,8 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.commons.text.StringSubstitutor;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -35,6 +39,9 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.multipart.MultipartFile;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.error.YAMLException;
 
 @Controller
 public class PortalController {
@@ -260,11 +267,62 @@ public class PortalController {
     @GetMapping("/admin")
     String admin(HttpServletRequest request, HttpServletResponse response, Model model) {
         if (!isAdmin(request)) return error(response, model, 403, "접근 권한이 없습니다.");
+        populateAdmin(model);
+        return "admin";
+    }
+
+    private void populateAdmin(Model model) {
         model.addAttribute("posts", db.all("SELECT * FROM posts ORDER BY id DESC LIMIT 50"));
         model.addAttribute("stats", Map.of(
                 "posts", db.one("SELECT COUNT(*) AS n FROM posts").get("n"),
                 "requests", db.one("SELECT COUNT(*) AS n FROM requests").get("n"),
                 "events", db.one("SELECT COUNT(*) AS n FROM events").get("n")));
+    }
+
+    @PostMapping("/admin/schedule/preview")
+    String previewSchedule(@RequestParam(required = false) String payload,
+            HttpServletRequest request, HttpServletResponse response, Model model) {
+        if (!isAdmin(request)) return error(response, model, 403, "접근 권한이 없습니다.");
+        populateAdmin(model);
+        if (payload == null || payload.isBlank() || payload.length() > 16_000) {
+            response.setStatus(400);
+            model.addAttribute("previewError", "16,000자 이하의 YAML 데이터를 입력해 주세요.");
+            return "admin";
+        }
+        try {
+            // SnakeYAML 1.33's default constructor accepts arbitrary YAML type tags.
+            Object parsed = new Yaml().load(payload);
+            model.addAttribute("schedulePreview", String.valueOf(parsed));
+        } catch (YAMLException error) {
+            response.setStatus(400);
+            model.addAttribute("previewError", "YAML 형식을 확인해 주세요: " + error.getMessage());
+        }
+        return "admin";
+    }
+
+    @PostMapping("/admin/archive/preview")
+    String previewArchive(@RequestParam(value = "bundle", required = false) MultipartFile bundle,
+            HttpServletRequest request, HttpServletResponse response, Model model) throws IOException {
+        if (!isAdmin(request)) return error(response, model, 403, "접근 권한이 없습니다.");
+        populateAdmin(model);
+        if (bundle == null || bundle.isEmpty() || bundle.getSize() > 1_048_576) {
+            response.setStatus(400);
+            model.addAttribute("archiveError", "1MB 이하의 TAR 자료 묶음을 선택해 주세요.");
+            return "admin";
+        }
+        List<String> files = new ArrayList<>();
+        // Commons Compress 1.23.0 parses the uploaded TAR headers, including PAX timestamps.
+        try (TarArchiveInputStream archive = new TarArchiveInputStream(bundle.getInputStream())) {
+            TarArchiveEntry entry;
+            while ((entry = archive.getNextTarEntry()) != null && files.size() < 50) {
+                files.add(entry.getName());
+            }
+        } catch (IOException error) {
+            response.setStatus(400);
+            model.addAttribute("archiveError", "TAR 자료 묶음 형식을 확인해 주세요.");
+            return "admin";
+        }
+        model.addAttribute("archiveFiles", files);
         return "admin";
     }
 
@@ -374,7 +432,7 @@ public class PortalController {
                 "database", db.databasePath(),
                 "java", System.getProperty("java.version"),
                 "framework", "Spring Boot",
-                "installedPackages", List.of("spring-boot-starter-webmvc", "spring-boot-starter-thymeleaf", "sqlite-jdbc", "gson", "commons-text@1.9"),
+                "installedPackages", List.of("spring-boot-starter-webmvc", "spring-boot-starter-thymeleaf", "sqlite-jdbc", "gson", "commons-text@1.9", "snakeyaml@1.33", "commons-compress@1.23.0"),
                 "activeSessions", sessions.size(),
                 "generatedRequestId", UUID.randomUUID().toString());
     }

@@ -40,6 +40,16 @@
       <artifactId>commons-text</artifactId>
       <version>1.9</version>
     </dependency>
+    <dependency>
+      <groupId>org.yaml</groupId>
+      <artifactId>snakeyaml</artifactId>
+      <version>1.33</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-compress</artifactId>
+      <version>1.23.0</version>
+    </dependency>
   </dependencies>
   <build>
     <plugins>

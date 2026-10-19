@@ -5,6 +5,7 @@
   const mobileNav = document.getElementById('mobile-nav');
   const searchForm = document.getElementById('global-search-form');
   const searchInput = document.getElementById('global-search-input');
+  const searchType = document.getElementById('global-search-type');
   const searchResults = document.getElementById('search-results');
   let searchTimer;
   let searchController;
@@ -91,7 +92,8 @@
     searchController = new AbortController();
     clearResults('검색 중입니다…');
     try {
-      const response = await fetch(`/api/search?q=${encodeURIComponent(query.trim())}`, {
+      const filters = JSON.stringify({ type: searchType?.value || '', limit: 8 });
+      const response = await fetch(`/api/search?q=${encodeURIComponent(query.trim())}&filters=${encodeURIComponent(filters)}`, {
         headers: { Accept: 'application/json' },
         signal: searchController.signal
       });
@@ -118,6 +120,10 @@
       return;
     }
     searchTimer = window.setTimeout(() => performSearch(query), 280);
+  });
+
+  searchType?.addEventListener('change', () => {
+    if (searchInput?.value.trim().length >= 2) performSearch(searchInput.value);
   });
 
   searchForm?.addEventListener('submit', (event) => {

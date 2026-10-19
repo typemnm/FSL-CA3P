@@ -338,6 +338,12 @@ body[data-site="wonchang"] .footer-mark{border-radius:8px}
 @media(min-width:521px) and (max-width:760px){.news-grid .news-card:nth-child(n+3){display:block}}
 
 .side-service-record-link{color:var(--ink);font-weight:700}
+.search-panel-form select{border:0;border-left:1px solid var(--line);background:#fff;color:var(--ink);font-size:13px;padding:0 10px;max-width:120px}
+.article-body{white-space:normal}
+.article-body p{margin:0 0 1em}
+.article-body h1,.article-body h2,.article-body h3{margin:1.4em 0 .5em;line-height:1.4}
+.article-body ul,.article-body ol{padding-left:1.5em;margin:0 0 1em}
+.article-body pre{overflow-x:auto;background:var(--soft);padding:16px}
 .side-service-record-link:hover{color:var(--primary);text-decoration:underline}
 .side-service-search{margin-top:48px}
 .side-service-search .stacked-form{align-content:center}

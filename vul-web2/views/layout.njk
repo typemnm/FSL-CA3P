@@ -67,6 +67,8 @@
           <form id="global-search-form" action="/notices" method="get" role="search">
             <label class="sr-only" for="global-search-input">통합검색어</label>
             <input id="global-search-input" type="search" name="q" placeholder="검색어를 입력하세요" autocomplete="off" required>
+            <label class="sr-only" for="global-search-type">검색 범위</label>
+            <select id="global-search-type" name="type" aria-label="검색 범위"><option value="">전체</option><option value="notice">공지사항</option><option value="news">대학 소식</option></select>
             <button type="submit">검색 <span aria-hidden="true">→</span></button>
           </form>
           <div id="search-results" class="search-results" role="status" aria-live="polite"></div>

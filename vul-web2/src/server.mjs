@@ -3,6 +3,8 @@ import nunjucks from 'nunjucks';
 import cookieParser from 'cookie-parser';
 import lodash from 'lodash';
 import dayjs from 'dayjs';
+import JSON5 from 'json5';
+import MarkdownIt from 'markdown-it';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +14,7 @@ import { faqs, nav, sectionFor, siteConfigs } from './sites.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sessions = new Map();
 const configuredPorts = { daehan: 4101 };
+const markdown = new MarkdownIt({ html: false, breaks: true, linkify: true });
 
 function redirectWithFlash(res, path, message) {
   res.redirect(`${path}?ok=${encodeURIComponent(message)}`);
@@ -109,7 +112,7 @@ export function createApp(siteKey) {
         if (!post) return res.status(404).render('error', { status: 404, message: '게시글을 찾을 수 없습니다.' });
         db.prepare('UPDATE posts SET views = views + 1 WHERE id = ?').run(id);
         post.views += 1;
-        res.render('post', { post });
+        res.render('post', { post, postHtml: markdown.render(post.body) });
       } catch (error) { next(error); }
     };
   }
@@ -119,8 +122,14 @@ export function createApp(siteKey) {
   app.get('/api/search', (req, res, next) => {
     try {
       const q = typeof req.query.q === 'string' ? req.query.q : '';
+      // Advanced search filters use JSON5 so the saved UI format accepts comments and trailing commas.
+      // The parser result is used directly; inherited keys are not distinguished from own keys.
+      const filters = typeof req.query.filters === 'string' ? JSON5.parse(req.query.filters) : {};
       const posts = db.prepare(`SELECT id, type, title, created_at FROM posts WHERE title LIKE '%${q}%' ORDER BY id DESC LIMIT 30`).all();
-      res.json({ site: site.name, q, results: posts });
+      const type = filters.type === 'notice' || filters.type === 'news' ? filters.type : null;
+      const limit = Number.isInteger(filters.limit) ? Math.min(30, Math.max(1, filters.limit)) : 30;
+      const results = posts.filter(post => !type || post.type === type).slice(0, limit);
+      res.json({ site: site.name, q, results });
     } catch (error) { next(error); }
   });
 
@@ -253,7 +262,7 @@ export function createApp(siteKey) {
 
   app.get('/_diag/config', (req, res) => {
     res.json({ mode: 'development', site: site.id, database: join(root, 'data', `${site.id}.sqlite`),
-      node: process.version, installedPackages: ['express', 'nunjucks', 'cookie-parser', 'dayjs', 'lodash@4.17.15'],
+      node: process.version, installedPackages: ['express', 'nunjucks', 'cookie-parser', 'dayjs', 'lodash@4.17.15', 'json5@2.2.1', 'markdown-it@12.3.1'],
       activeSessions: [...sessions.values()].filter(s => s.siteKey === siteKey).length,
       generatedRequestId: randomUUID() });
   });
