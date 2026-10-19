@@ -61,7 +61,8 @@ for (const site of sites) {
     const html = await (await expect(site, board, 200)).text();
     const link = html.match(/class="board-row" href="([^"]+)"/);
     assert.ok(link, `${site.key} ${board} has a post`);
-    await expect(site, link[1], 200);
+    // A post detail GET increments the persisted view counter; smoke checks it on an isolated DB.
+    assert.match(link[1], new RegExp(`^${board}/[0-9]+$`), `${site.key} ${board} links to a post`);
   }
   const search = await expect(site, '/api/search?q=' + encodeURIComponent('학년도'), 200);
   assert.ok((await search.json()).results.length > 0, `${site.key} search returns results`);
