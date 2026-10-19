@@ -9,6 +9,7 @@ from pathlib import Path
 from ..trigger import Trigger
 from . import casper, pentest_db, run_store
 from .bundle import EVENTS_SCHEMA, HISTORY_SCHEMA, RUN_SCHEMA, BundleWriter
+from .hints import capture_hints
 from .model import RunRecord
 
 RUN_DRIVERS = {
@@ -75,6 +76,8 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
                 **history,
             },
         )
+        hints = capture_hints(run.events)
+        writer.add_json("hints/capture.json", "capture-hints", {"runId": run.run_id, **hints})
         collected_at = (now or datetime.now(UTC)).isoformat()
         collectors = [
             {
@@ -88,6 +91,12 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
                 "driver": trigger.history.kind,
                 "status": history["status"],
                 **({"reason": history["reason"]} if "reason" in history else {}),
+            },
+            {
+                "name": "collect-hints",
+                "status": "ok",
+                "forms": len(hints.get("inputForms", [])),
+                "sessionSwitch": "sessionSwitch" in hints,
             },
         ]
         manifest = writer.seal(run_id=run.run_id, collected_at=collected_at, collectors=collectors)

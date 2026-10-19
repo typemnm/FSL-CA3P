@@ -70,12 +70,18 @@ def test_collects_a_sealed_bundle(stored_run, casper_db, run_id, tmp_path, kind)
         "run/report.json",
         "run/events.json",
         "history/casper.json",
+        "hints/capture.json",
     }
     for item in manifest["files"]:
         data = (bundle / item["path"]).read_bytes()
         assert item["sha256"] == "sha256:" + hashlib.sha256(data).hexdigest()
         assert item["size"] == len(data)
-    assert [c["driver"] for c in manifest["collectors"]] == [kind, "casper-db"]
+    assert [c.get("driver") for c in manifest["collectors"]] == [kind, "casper-db", None]
+    hints = json.loads((bundle / "hints/capture.json").read_text())
+    # stored_xss fixture carries a compose form and a session-switch API
+    assert any(f["carries_attack_param"] for f in hints.get("inputForms", []))
+    assert hints["sessionSwitch"]["path"].endswith("/session")
+    assert hints["attackerAccount"] == "alice"
     assert json.loads((bundle / "history/casper.json").read_text())["status"] == "ok"
     # The bundle names source kinds only, never where the sources live.
     text = "".join(path.read_text() for path in bundle.rglob("*.json"))
