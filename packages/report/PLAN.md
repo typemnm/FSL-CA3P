@@ -19,6 +19,10 @@
 > - (10-19) 문서는 [python-hwpx](https://github.com/airmang/python-hwpx)로 **HWPX**를 만든다.
 > - (10-19) **범용 설계:** 코어(취약점 종류를 모름) + 취약점 프로필(stored_xss, generic, bola) + 대상 어댑터(vul-web-1)로 나눈다(§3).
 > - (10-19) dashboard/worker 앱 경로는 테스트용이다. 실제 main Agent 파이프라인은 따로 있다(아직 원격 저장소에 없음, §7 Q1).
+> - (10-20) **트리거 시점은 finalize 직후(attack 수행 후)**다.
+> - (10-20) **수집기를 먼저 개발한다.** 결과 원천은 각 DB의 API와 스키마를 분석해 필요한 것을 가져오게 한다. → `collect` 구현 완료(§5 M3, README).
+> - (10-20) **보고서 출력 파일 이름은 LLM Agent가 짓는다.** 단, 경로 문자 제거, 길이 상한, 예약어 회피 같은 정규화를 거치고, 실패하면 `<runId>.hwpx`로 대체한다(§3.8).
+> - (10-20) **계정 전환 등 촬영에 필요한 정보는 수집기가 가져온 데이터에서 얻는다.** 파서 보고서(`loop.observe`)에 폼 선택자, 필드, 버튼, JS에서 찾은 API(`POST /api/session`, `bodyKeys:["userId"]`)가 들어 있다. 어댑터 JSON은 이 데이터로 채울 수 없는 부분만 보충한다(§3.2).
 
 ---
 
@@ -312,7 +316,13 @@ manifest 예시(초안):
 | 사용처 | capture(무엇을 찍을지), build(어떻게 표현할지) | capture만 |
 | 없을 때 | `generic`: 공통 필드와 checks 키-값 표만, 사진 없음, "프로필 미등록" 고지 | 촬영 skip, 사유 기록 |
 
-현재 `target.application`은 `external_target`(core 기본값)이나 `owned-local-board`(테스트 app)라서 사이트를 식별하지 못한다. 그래서 별칭 매핑이나 트리거의 `capture.adapter` 지정이 필요하다(§7 Q11).
+**사이트 식별자란** run 보고서의 `target.application` 값이다. 어떤 사이트용 어댑터를 쓸지 고르는 열쇠다.
+- 지금 값은 `external_target`(core 기본값)이나 `owned-local-board`(테스트 app)라서 사이트를 식별하지 못한다(§7 Q11).
+- 10-20 결정에 따라 **촬영에 필요한 정보는 먼저 수집 데이터에서 얻는다.**
+  - 입력 지점: 파서 보고서의 폼 선택자와 필드 이름. 공격 파라미터(`loop.act`의 body 키)가 들어 있는 폼을 고른다.
+  - 계정 전환: 파서가 JS에서 찾은 `POST …/session` API와 `bodyKeys`
+  - 공격자 계정: `setup.attacker_session` 응답
+- 피해자 계정 값처럼 수집 데이터로 정할 수 없는 부분만 어댑터 JSON이나 트리거에서 보충한다. 그러면 사이트 식별자 의존도가 크게 줄어든다.
 
 ### 3.3 프로필 인터페이스 (Python, build 측)
 ```python
@@ -373,6 +383,8 @@ packages/report/
 - **새 결과 원천:** `collect/` 아래에 드라이버를 추가한다. 번들 계약은 유지한다.
 
 ### 3.8 "Agent"의 범위
+**출력 파일 이름(10-20 결정):** LLM Agent가 보고서 파일 이름을 짓는다. 입력은 마스킹된 ReportModel의 요약(취약점, 대상, 결과)으로 한정한다. 결과는 다음 정규화를 거친다: 경로 구분자·제어문자·`..` 제거, NFC 정규화, 120자 상한, Windows 예약어 회피, 확장자 `.hwpx` 강제. 비었거나 이미 존재하면 `<runId>.hwpx`로 대체한다. 파일 이름이 보고서 내용(판정 등)을 바꾸지는 않는다.
+
 사실 항목(판정, 상태, 심각도, 대상, 요청과 응답, 고지 문구)은 **결정론적 코드가 채운다.** LLM은 "점검 개요" 서술 문단 하나만 맡기는 선택 기능으로 두고, 기본값은 끈다(§7 Q6).
 
 ---
@@ -448,7 +460,7 @@ packages/report/
 | **M0. 결정 정리** | ✅ 브랜치·범위, 트리거 기반 Agent, 수집기 내장, 직접 촬영, 번들, HWPX, 범용 3계층 | 이 문서 | 완료 |
 | **M1. python-hwpx 스파이크** | §3.5의 1~6번 | `spike/` 결과와 짧은 보고 | 한글/뷰어에서 정상으로 열림. 막히면 대안 결정 |
 | **M2. 계약과 스캐폴딩** | `schemas/` 5종(trigger, manifest, shots, adapter, result), 디렉터리, 빈 CLI(`run`, `collect`, `capture`, `seal`, `build`), 경계 테스트 | 스키마, `--help` | `node --test`, `pytest` 통과 |
-| **M3. 수집기 + seal** | `collect-run`(pentest-db-disk, file 우선, run-store는 Q3 이후), `collect-history`(casper-db, none), `seal` | 번들 fixture 생성기 | 원천별 번들 생성. 원천 쓰기 0건, DB가 없을 때 새로 만들지 않음 |
+| **M3. 수집기 + seal** | ✅ (10-20) `collect-run`(pentest-db-disk, run-store), `collect-history`(casper-db, none), 번들 봉인, CLI `collect` | `py/src/ca3p_report/collect/`, 테스트 39개 | 실제 Node writer로 만든 원천으로 검증. 두 원천의 정규화 결과 동일. 원천 내용 불변, DB가 없을 때 생성 안 함, 번들 1회 쓰기·실패 시 잔여물 없음, 원천 위치 미기록 |
 | **M4. capture 엔진** | 계획 해석 → 샌드박스 → 촬영 → `captures.json` + `stored_xss/shots.json` + `adapters/vul-web-1.json` | 사진 4장(요소 + 전체) | 쓰기 요청 차단, 허용 목록 밖 `sessionSwitch` 차단, origin 불일치 시 촬영 안 함, 실패해도 종료 코드 0 |
 | **M5. 코어 + generic 프로필** | 번들 검증, 범용 모델, 마스킹, 프레이밍, 레지스트리, `Generic` | generic 골든 `report-model.json` | 미등록 프로필 번들로도 생성. 해시 불일치·자료 없음 처리 |
 | **M6. stored_xss 프로필** | 재현 단계, 텍스트 증거, 레이블, 영향, 캡션 | stored_xss 골든 | 코어·렌더러 무수정으로 추가 |
@@ -489,13 +501,13 @@ packages/report/
 |---|---|---|---|
 | Q1 | **main Agent 파이프라인 코드의 위치**와 트리거 전달 방식(CLI 또는 envelope) | 파이프라인 담당 | §4.1 `ReportTrigger`를 기준으로 맞춘다 |
 | Q2 | 출력과 번들을 어디에 둘지(보존이 필요하면 영속 위치) | 파이프라인/통합 담당 | 트리거의 `output.dir`로 받는다. 위치 결정은 호출자 몫이다 |
-| Q3 | 실제 파이프라인의 run 결과 원천: pentest-db JSON인가 run-store인가 | 파이프라인 담당 | 수집기 드라이버를 둘 다 준비. pentest-db-disk와 file을 먼저 만든다 |
-| Q4 | 어댑터 `sessionSwitch`(vul-web-1: `POST /api/session {userId:'bob'}`) 1건 허용 여부 | 사용자/보안/guardrail 담당 | 허용(데이터 변경 없음, 정확 일치만, 기록). 트리거의 `allowSessionSwitch`로 켠다 |
-| Q5 | 트리거 시점 보장: finalize 뒤, 환경 정리 전 | 파이프라인 담당 | 보고서 실패가 run을 막지 않는 best-effort 호출 |
+| Q3 | 실제 파이프라인의 run 결과 원천: pentest-db JSON인가 run-store인가 | 파이프라인 담당 | ✅ 두 드라이버 모두 구현. 실제 파이프라인이 다른 원천을 쓰면 드라이버를 추가 |
+| Q4 | 계정 전환 요청 1건 허용 여부 | 사용자 | ✅ (10-20) 수집기가 가져온 데이터(파서가 찾은 세션 API)에 있으면 사용한다. 정확 일치만 허용하고 기록한다. 남은 일: 피해자 계정 값을 어디서 얻을지(수집 데이터에 없음) |
+| Q5 | 트리거 시점 | 사용자/파이프라인 담당 | ✅ (10-20) finalize 직후(attack 수행 후). 환경 정리 전이어야 촬영할 수 있다는 점은 파이프라인 담당자와 확인 필요 |
 | Q6 | "점검 개요" 서술에 LLM을 쓸지 | 사용자 | 기본은 끄고 선택 기능으로 둔다 |
 | Q7 | HWPX 템플릿(표지, 기관 양식). 기존 CERT 양식이 있는가 | 사용자/팀 | 있으면 범용 목차에 맞춰 쓰고, 없으면 직접 만든다 |
 | Q8 | 보고서 단위: run 1건당 1부인가, 집계도 필요한가 | 사용자 | MVP는 run 단위. 모델의 `findings[]`로 확장 가능 |
 | Q10 | 상류가 추가할 취약점 프로필 로드맵 | agent/파이프라인 담당 | 프로필 인터페이스 사전 점검용 |
 | Q11 | `report.target.application` 값 규약. 현재 `external_target`/`owned-local-board`라서 사이트를 식별하지 못함 | 파이프라인 담당 | 사이트 식별자(예: `vul-web-1`)를 넣어 달라고 요청한다. 그 전까지는 트리거의 `capture.adapter`나 별칭으로 대응 |
 | Q12 | 심각도 체계: low~critical 유지 또는 CVSS 추가 | 사용자 | 모델에 선택 필드 `cvss`만 마련 |
-| **Q13** | **번들 세부 규약**: 파일 이름 고정 여부, 해시 형식(`sha256:<hex>`), 이미지 허용 형식(PNG/JPEG/WebP, SVG 금지, 매직 바이트), 크기 상한, 경로 규칙, manifest 자체 무결성, zip 전송 | 사용자(추가 논의) | §2.3의 권장안을 초안으로 논의 |
+| **Q13** | **번들 세부 규약**(보고서 출력 파일 이름이 아니라 번들 내부 파일 배치를 말함. 출력 이름은 §3.8): 내부 파일 이름 고정 여부(현재 구현은 고정 경로), 해시 형식(`sha256:<hex>`), 이미지 허용 형식(PNG/JPEG/WebP, SVG 금지, 매직 바이트), 크기 상한, 경로 규칙, manifest 자체 무결성, zip 전송 | 사용자(추가 논의) | §2.3의 권장안을 초안으로 논의 |
