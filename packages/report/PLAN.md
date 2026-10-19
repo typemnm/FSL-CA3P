@@ -1,14 +1,20 @@
-# 보고서 생성 모듈 — 조사 결과 및 개발 PLAN
+# 보고서 생성 모듈(Report Agent) — 조사 결과 및 개발 PLAN
 
-- 작성일: 2026-10-18
+- 작성일: 2026-10-18 / 개정: 2026-10-19
 - 브랜치: `woohyun212/report-module`. `origin/develop`(`1560b1c`)에서 새로 만들었다.
 - 모듈 위치: `packages/report/`. 이 문서도 모듈 안에 둔다.
 - 상태: **조사 + 계획만 함. 코드 구현 없음.**
 - 근거: §0.1~0.3에 인용한 경로와 줄 번호는 최초 조사 시점(`main` `0c820a0`) 기준이다. `origin/develop` 기준이면 따로 표시했다.
 
-> **결정됨 (2026-10-18):**
-> - Q1: develop에서 새 브랜치를 만들어 작업한다.
-> - Q2: `integration-manifest.json`, CI 등 통합 관리는 별도 담당자가 맡는다. 이 모듈은 `packages/report/` 안에서만 작업하고 **커밋까지만** 한다(push와 PR은 하지 않음). manifest 등록은 통합 담당자에게 넘긴다(§5 M1 참고).
+> **결정됨:**
+> - (10-18) develop에서 새 브랜치를 만들어 작업한다.
+> - (10-18) 통합 관리(`integration-manifest.json`, CI, docker-compose)는 별도 담당자가 맡는다. 이 모듈은 `packages/report/` 안에서만 작업하고 **커밋까지만** 한다.
+> - (10-19) 보고서 모듈은 파이프라인 안의 **독립 Agent**다. 단계는 두 개다.
+>   1. **촬영(capture):** 실습 환경이 내려가기 **전에** 대상 origin에 접속해 사진 2장을 찍는다.
+>   2. **작성(build):** 환경이 내려간 **뒤에** 저장된 데이터와 사진으로 보고서를 만든다.
+> - (10-19) 사진은 ① 입력 지점, ② 피해자 관점 결과 화면 두 장만 넣는다. PoC 요청, 응답, 점검 페이로드는 **텍스트**로 넣는다.
+> - (10-19) 보고서 문서는 [python-hwpx](https://github.com/airmang/python-hwpx)를 써서 **HWPX**로 만든다.
+> - (10-19) dashboard/worker 앱 경로는 테스트용이고, 실제 agent 파이프라인은 따로 있다(아직 원격 저장소에 없음, §7 Q1). 이 모듈은 특정 호출자에 묶이지 않는 계약(§4)으로 만든다.
 
 ---
 
@@ -65,297 +71,309 @@
 - `integration-manifest.json`: 모듈 id, path, layer, dependencies를 등록하고, `scripts/check-boundaries.mjs`가 상대경로 import를 dependencies 기준으로 검사한다. 새 모듈은 **반드시 manifest에 등록**해야 하며, 이 파일은 공용이므로 사람과 합의가 필요하다.
 - 런타임은 Node `>=24 <25`이다(develop의 루트 `package.json`).
 
+### 0.5 실습 게시판 수명과 촬영 관련 사실 (develop, 10-19 확인)
+- **테스트용 app 경로에서는 게시판이 run마다 생성되고 종료된다.**
+  - `startLocalLab`이 임시 디렉터리, `PORT=0`, run별 쿠키 비밀값으로 vul-web-1을 띄운다(`packages/adapters/local-lab-gateway.mjs:520-566`).
+  - run이 끝나면 worker의 `finally`에서 `runtime.close()`가 호출되고, 이어서 프로세스 SIGTERM/SIGKILL과 임시 데이터 삭제가 일어난다(`apps/worker/worker.mjs:110`, `local-runtime.mjs:366-372`).
+  - 상시 실행되는 vul-web-1 서비스는 없다(`docker-compose.yml`에는 `dashboard` 하나뿐).
+  - 따라서 **촬영은 환경을 정리하기 전에** 해야 한다.
+- 원격 브랜치 15개를 확인한 결과, 테스트·데모 외에 `runOnce()`를 호출하는 곳은 `apps/application/local-runtime.mjs:238`뿐이다. 실제 파이프라인 코드는 아직 원격 저장소에 없다.
+- core는 대상을 `http://127.0.0.1:<port>` origin으로만 받는다(`orchestrator.js:14-25`). 게시판 수명은 호출자가 정한다.
+- 게시판은 쿠키가 없는 요청을 **alice로 로그인시킨다**(`vul-web-1/server.js:114-118`). 공격자도 alice다(`orchestrator.js:266-267`). 계정 전환은 `POST /api/session {userId}`로 하고, 이때 쿠키만 바뀐다(`server.js:152-166`).
+- `loop.act` 이벤트 구조
+  - 요청 payload: `{operation:'execute_curl', session, curl:{method, url, body}}` (`agent/src/curl-command.js:16-18`)
+  - 응답 payload: `{success, guardrail, request:{method,url,session}, response:{status, ok, bodyJson}, evidenceId}` (`local-lab-gateway.mjs:286-296`)
+
 ---
 
 ## 1. 목표와 범위
 
 ### 1.1 정의
-**한 번의 CA3P 실행(runId)마다 "점검 결과 보고서" 한 부**를 만든다. 보고서 한 부에는 다음 세 가지가 함께 들어간다.
-1. 이번 실행의 결과: `finding`, 진행 상태, 가드레일 결정, 지표
-2. 과거 사례 대조(재점검 triage): 이번 파서가 관찰한 입력 지점과 전월 CERT 사례의 위치 일치 여부
-3. 관련 전월 보고서 원문과 재점검 이력: casper-db의 사례 스냅숏(revision 고정)과 check 기록
+Report Agent는 **한 번의 실행(runId)마다 한글(HWPX) 취약점 보고서 한 부**를 만든다. 보고서에는 다음이 들어간다.
+1. 이번 실행 결과: 판정(finding), 재현 절차, PoC 요청과 응답(텍스트), 점검 페이로드(텍스트)
+2. 증거 사진 2장: ① 입력 지점 ② 피해자 관점 결과 화면
+3. 과거 사례 대조(재점검 triage)와 관련 전월 보고서, 재점검 이력(casper-db)
 
-### 1.2 하는 일
-- 읽기 전용으로 데이터를 모은다(pentest-db 디스크, casper-db SQLite, 이후 run-store).
-- 정규화된 **ReportModel(JSON)** 을 만든다.
-- 그 모델을 **Markdown(기본)** 과 **HTML(선택, 독립 실행 파일)** 로 렌더링한다.
-- 모든 출력에 고지 문구, 출처, 한계를 넣는다.
-- 출력할 때 값은 HTML 이스케이프하고 비밀값은 마스킹한다.
-- CLI와 프로그램 API를 함께 제공한다.
+### 1.2 두 단계 구조
+```
+ 실제 agent 파이프라인
+ ─ observe → knowledge → think → act → verify → reflect → finalize ─┐
+                                                                     │ (환경 종료 전)
+                                     ┌───────────────────────────────▼──────────────┐
+                                     │ ① report.capture  (Node + Playwright)        │
+                                     │   target origin 접속 → 사진 2장 → PNG + 해시  │
+                                     │   → 영속 볼륨에 저장                          │
+                                     └───────────────────────────────┬──────────────┘
+                                                      실습 환경 / Docker 종료
+                                     ┌───────────────────────────────▼──────────────┐
+                                     │ ② report.build    (Python + python-hwpx)     │
+                                     │   run 보고서·이벤트 + casper-db + 사진 2장     │
+                                     │   → ReportModel(JSON) → report.hwpx           │
+                                     └──────────────────────────────────────────────┘
+```
 
-### 1.3 하지 않는 일
-- 취약점을 판정하거나 다시 판정하지 않는다. `finding.status`를 그대로 옮기고, triage 결과를 "취약함"으로 바꾸지 않는다.
-- 어떤 저장소에도 쓰지 않는다: casper-db(`add_check`, `review_check`, `initialize_database`), pentest-db(`append`, `finalize`), run-store 모두 해당한다. 출력 파일만 쓴다.
-- 대상 사이트, 외부 호스트, LLM에 접근하지 않는다. 네트워크 import를 금지하고 테스트로 강제한다.
-- 증거 캡처를 **직접 만들지 않는다**(브라우저 실행 없음). 이미 존재하고 해시가 검증된 이미지 파일만 첨부한다(§2.6).
-- 다른 담당자 모듈을 수정하지 않는다. 필요해지면 §7에 적은 합의 항목으로 처리한다.
+### 1.3 하는 일
+- **capture:** 대상 origin을 읽기 전용 샌드박스 브라우저로 열어 두 화면을 찍고, 해시와 메타데이터를 함께 저장한다.
+- **build:** 저장소를 읽기 전용으로 읽어 ReportModel을 만들고, 이를 HWPX로 렌더링한다. Markdown 미리보기는 선택 출력이다.
+- 모든 출력에 고지 문구, 출처, 한계를 넣는다. 비밀값은 마스킹한다.
 
-### 1.4 반드시 지킬 프레이밍 (렌더러 불변식)
+### 1.4 하지 않는 일
+- **판정하지 않는다.** `finding.status`를 그대로 옮긴다. 사진 촬영 중 canary가 실행되었는지는 기록할 수 있지만 판정에 쓰지 않는다.
+- **공격하지 않는다.** capture는 대상 게시판에 데이터를 만들거나 바꾸는 요청을 보내지 않는다(§2.6 샌드박스).
+- **저장소에 쓰지 않는다.** casper-db, pentest-db, run-store는 모두 읽기만 한다. 쓰는 곳은 이 모듈의 출력 디렉터리뿐이다.
+- 기록된 loopback origin이 아닌 곳(외부 호스트, 임의 URL)에는 접속하지 않는다.
+- 다른 담당자 모듈을 수정하지 않는다. 필요한 변경은 §7에 요청 항목으로 적는다.
+
+### 1.5 반드시 지킬 프레이밍 (불변식)
 | 규칙 | 구현 방법 |
 |---|---|
-| 위치 일치는 재점검 후보일 뿐이고 현재 취약하다는 판정이 아니다 | triage 섹션 머리에 고정 문구를 넣는다. 레이블은 `demo.py`를 그대로 따른다. "취약", "확인됨" 같은 표현은 이 섹션에서 쓰지 않는다 |
+| 위치 일치는 재점검 후보일 뿐 현재 취약 판정이 아니다 | triage 섹션 머리에 고정 문구를 넣는다. 레이블은 `demo.py`와 같게 "재점검 후보 / 수동 확인 / 일치 없음"을 쓴다 |
 | `ready`/`reviewed`는 상태 표시일 뿐 취약 판정이 아니다 | 상태 열 머리말에 "(상태 표시)"를 붙이고 각주를 단다 |
-| 현재 데이터는 전부 synthetic이다 | 문서 맨 위 배너에 넣는다. `source==='synthetic'`인 사례와 check는 행마다 `[가상]` 표시를 붙인다. `run.simulated`가 true이면 배너를 더 강하게 한다 |
-| 해시는 바이트를 증명할 뿐 XSS를 증명하지 않는다 | `evidence_metadata` 표 바로 밑에 고정 각주를 넣는다 |
-| 저장소는 내용을 검증하지 않는다 | `provenance.verifiedByStorage:false`를 그대로 표시한다. "에이전트가 제출한 결과이며 저장소가 검증하지 않음" |
-| 카탈로그는 draft 참고 자료다 | `referenceContext.pentestDb.category`와 `draft_advisory` 문구를 함께 표시한다 |
+| 현재 데이터는 전부 synthetic이다 | 문서 첫 페이지에 고지 상자를 넣고, synthetic 행에는 `[가상]`을 붙인다 |
+| 해시는 바이트만 증명할 뿐 XSS를 증명하지 않는다 | 해시 표 각주 |
+| **사진은 보조 자료이며 실행 판정 근거가 아니다** | 두 사진 캡션 아래에 고정 문구: "실행 판정 근거는 결정론적 검사(`finding.checks`)" |
+| 저장소는 내용을 검증하지 않는다 | `verifiedByStorage:false`를 그대로 표시한다 |
+| 카탈로그는 draft 참고 자료다 | `draft_advisory` 표시 |
 
 ---
 
 ## 2. 입력과 출력
 
-### 2.1 입력 1 — 실행 보고서와 이벤트 (pentest-db 디스크)
-- 입력값: `runId`(검증 대상), `reportsDir`(절대 경로, 기본값 `<repo>/reports/pentest-db-runs/`)
-- 읽기 방법: `createPentestDb({ reportsDir }).readRun(runId)`를 재사용한다. 디스크 규약을 다시 구현하지 않는다(§7 Q4).
-- 사용할 필드:
-  - `report.json`: `storedAt`, `provenance`, `report.*`
-  - 이벤트에서 꺼낼 것:
-    - `stage==='loop.history'` → `event.response.payload.{readyCaseCount, observations[], assessments[], evidenceId}`
-    - `stage==='loop.catalog'` → `payload.attackInfo.provenance`. 카탈로그 상태만 쓰고 payload 목록은 출력하지 않는다.
-    - `stage` 목록 → 타임라인 부록
-- 결측 처리: `report===null`이면 "미완료 실행"으로 표시하고 종료 코드를 따로 둔다. `loop.history` 이벤트가 없으면 triage 섹션을 "자료 없음"으로 렌더링한다.
+### 2.1 입력 — 실행 보고서와 이벤트
+- 1차 원천은 pentest-db 디스크 규약(§0.1)이다: `reports/pentest-db-runs/<sha256(runId)>/report.json`, `events/*.json`.
+  실제 파이프라인이 run-store(SQLite)를 쓴다면 읽기 전용 로더를 추가한다(§7 Q3).
+- 보고서에 쓰는 필드
 
-### 2.2 입력 2 — casper-db (읽기 전용 Python API)
-- 입력값: `casperDbPath`(절대 경로, **필수 입력**, 기본값 없음 — `data/*.sqlite3`는 gitignore 대상이다), 선택 입력 `python`(기본값은 `CASPER_DB_PYTHON` 또는 `python3`)
-- 읽기 방법: `packages/history/check-sync.mjs`와 같은 구조의 브리지를 쓴다.
-  `spawn(python, ['-I', '-c', PROGRAM], { shell:false, env:{PYTHONPATH:<repo>/casper-db/src}, stdin:JSON })`
-  - `-I` 플래그는 cwd 오염을 막는다. 단, `PYTHONPATH`까지 무시하므로 `sys.path.insert`로 경로를 넣는다(§7 Q6).
-- Python 프로그램이 하는 일(읽기만):
-  ```
-  store = CaseStore(db)                     # initialize_database 호출 금지
-  for (case_id, rev) in 요청된 쌍:           # assessments[].matches[]의 (case_id, case_revision)
-      snapshot = store.get_version(case_id, rev).model_dump()   # 대조 당시 revision으로 고정
-      current  = store.get(case_id).model_dump()                # 현재 revision과의 차이 표시용
-      checks   = [c.model_dump() for c in store.list_checks(case_id)]
-  → {status:'ok'|'unavailable', reason?, cases:[{case_id, revision, snapshot, currentRevision, checks}]}
-  ```
-- 출력 크기 1MB 상한, 시간 제한 15초, stderr는 보고서에 넣지 않는다(경로 노출 방지). 대시보드 어댑터의 `MAX_OUTPUT_BYTES`와 15초 타임아웃 관례를 따른다.
-- `assess_observation`을 **다시 실행하지 않는다.** 실행 당시 이벤트에 저장된 assessments를 그대로 쓰는 것이 재현성 면에서 맞다. 다시 실행할지는 "현재 DB 기준 재평가" 옵션으로 둘지 §7 Q5에서 결정한다.
+| 보고서 항목 | 원천 |
+|---|---|
+| 실행 메타 | `report.{runId, status, testProfile, target, startedAt, completedAt, metrics, progress}`, `storedAt`, `provenance` |
+| 판정 | `report.finding` (status, confidence, severity, cwe, checks, summary, limitations, remediation, evidenceRefs) |
+| **PoC 요청(텍스트)** | `stage==='loop.act'` 이벤트의 `event.request.payload.curl` (method, url, body). 쿠키는 agent가 다루지 않으므로(`agentHandlesCookies:false`) 포함되지 않지만, `redact()`를 한 번 더 적용한다 |
+| **응답(텍스트)** | `loop.act` 이벤트의 `event.response.payload.response` (status, bodyJson). `setCookie`가 있으면 제거한다 |
+| **점검 페이로드(텍스트)** | `loop.act` request body의 `content` (= canary 원문). 대조용으로 `finding.marker`도 넣는다 |
+| 재현 절차 | 이벤트 stage 순서로 자동 생성한다: 세션 준비(`setup.attacker_session`) → 입력 지점 관찰(`loop.observe`) → PoC 전송(`loop.act`) → 새 브라우저로 재방문해 확인(`loop.verify`) |
+| triage | `stage==='loop.history'` 이벤트의 `payload.{readyCaseCount, observations, assessments}` |
+| 가드레일 | `report.guardrail.decisions` |
 
-### 2.3 입력 3 — 보고서 양식
-- `previous-month-xss-report.md`의 2열 표 행 정의를 **코드 상수(필드 매핑 표)** 로 둔다. 런타임에 md 파일을 파싱하지 않는다. 양식이 바뀌면 테스트가 깨지도록 골든 테스트에서 행 레이블 목록이 같은지 대조한다.
-- 매핑(`Case` → 표 행):
+### 2.2 입력 — casper-db
+build를 Python으로 만들기 때문에 **`casper_db.CaseStore`를 직접 import해서 읽는다**(서브프로세스 브리지가 필요 없음).
+- 사용 메서드: `get_version(case_id, revision)`(대조 당시 스냅숏), `get(case_id)`(현재 revision), `list_checks(case_id)`
+- `initialize_database()`는 호출하지 않는다. DB가 없거나 스키마 버전이 다르면 "과거 사례 DB 사용 불가"로 표시하고 계속 진행한다.
+- DB 경로는 필수 입력이다(기본값 없음).
 
-| 보고서 항목 | Case 필드 | 비고 |
+### 2.3 입력 — 증거 사진
+capture 단계가 남긴 `captures.json` 매니페스트와 PNG 파일을 읽는다(§2.6). 각 파일의 sha256을 다시 계산해 매니페스트와 다르면 그 사진은 넣지 않고 "무결성 불일치" 자리표시를 넣는다.
+
+### 2.4 출력
+| 출력 | 용도 | 비고 |
 |---|---|---|
-| 보고일 | `reported_on` | |
-| 취약점 유형 | `vulnerability_type` | |
-| 발생 URL | `vulnerability_url` | 링크로 만들지 않고 코드 스팬으로 출력 |
-| 심각도 | `severity` | |
-| 상세 발생 방법 | `description` + `preconditions[]` + `procedure[]` | 목록은 `<br>`로 잇지 않고 번호를 붙여 한 줄로 직렬화 |
-| 시험 입력 | `payload` | **HTML 이스케이프 + 코드 스팬**. 양식에는 없는 행이므로 접힘 처리 여부는 §7 Q8 |
-| 성공 조건 | `success_condition` | |
-| 전월 증거 | `prior_evidence` | |
-| 조치 방안 | `remediation[]` | |
-| 현재 패치 상태 | `patch_status` | "보고서 작성 당시 값" 각주 |
-| 출처 | `source`, `source_report`, `revision`, `updated_at` | synthetic이면 `[가상]` 표시 |
+| **`report.hwpx`** | 최종 보고서(한글) | python-hwpx로 만든다. 2열 표 레이아웃 템플릿을 사용한다(§3.2) |
+| `report-model.json` | 렌더러 입력, 테스트 기준, 다른 모듈 연동 | `schemaVersion:'report-1.0'`. 사진은 메타데이터만 넣고 바이트는 넣지 않는다 |
+| `report.md` (선택) | 한글 프로그램 없이 내용을 확인하는 미리보기, diff | 사진은 상대 링크 |
 
-### 2.4 출력 포맷 결정
-| 포맷 | 용도 | 결정 |
-|---|---|---|
-| **ReportModel JSON** | 렌더러 입력, 테스트 기준, 다른 모듈(대시보드, run-store artifact) 연동 | **MVP 포함.** `schemaVersion:'report-1.0'` |
-| **Markdown** | 기존 양식(`previous-month-xss-report.md`)과 같은 형식, diff 가능, 한국어 CERT 문서 관례 | **MVP 기본 출력** |
-| **HTML** | 브라우저 열람과 인쇄. `demo.py`의 독립 HTML 선례 | M4. 외부 리소스와 `<script>` 없이 만들고, `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">`를 넣는다 |
+**형식별 이스케이프 규칙**(ReportModel에는 원문을 저장하고, 렌더러 출력 경계에서만 처리한다)
+- **HWPX:** payload와 응답은 **텍스트 노드로만** 넣는다. lxml이 XML 이스케이프를 해 준다. HTML 이스케이프를 따로 하면 문서에 `&lt;`가 그대로 보이므로 하지 않는다. 원시 XML 조각을 끼워 넣는 API는 쓰지 않고, 테스트로 금지한다.
+- **Markdown:** 많은 뷰어가 원시 HTML을 렌더링하므로 HTML 이스케이프를 한다. 표 안의 `|`와 개행도 처리한다.
+- **JSON:** 원문을 그대로 넣는다. 소비자가 출력할 때 이스케이프할 책임이 있다는 점을 계약에 명시한다.
 
-이유: 판정과 상태는 모델(JSON)에서 한 번만 계산하고 렌더러는 표현만 맡게 한다. 그래야 프레이밍 불변식과 이스케이프를 렌더러마다 따로 검증할 수 있다. Markdown은 많은 뷰어가 **원시 HTML을 그대로 렌더링하므로**, Markdown에서도 HTML 이스케이프는 필수다.
-
-### 2.5 한 문서로 합치는 섹션 구조 (Markdown 기준)
+### 2.5 보고서 목차 (HWPX)
 ```
-# CA3P 점검 결과 보고서 — <runId>
-> [고지 배너] 격리된 로컬 실습 결과 / 데이터 synthetic 여부 / 저장소 미검증(verifiedByStorage:false) / 위치 일치≠취약 판정
+[표지] CA3P 취약점 점검 보고서 — <runId>, 생성일, 고지 상자(격리 실습 / synthetic / 저장소 미검증 / 위치 일치≠판정)
 
-## 1. 실행 요약                 (2열 표: 실행 ID, 상태, 시험 프로필, 대상(origin·mode·application), 출처(source/simulated/targetContacted),
-                                 시작/종료 시각, 요청 수·파서 실행 수·반복 수, 진행 단계(progress), 저장 시각·provenance)
-## 2. 이번 실행 결과(finding)    (표준 2열 레이아웃 재사용 —
-                                 보고일=completedAt | 취약점 유형=title+cwe | 발생 위치=target.origin + 행위(POST /api/posts) |
-                                 심각도=severity(+severityBasis) | 판정 상태=status·confidence (에이전트의 결정론적 판정, 저장소 미검증) |
-                                 상세=summary + checks 표(항목별 true/false) | 증거 참조=evidenceRefs(불투명 ID, 원본 미포함) |
-                                 조치 방안=remediation | 한계=limitations)
-   실패 실행이면 → "2. 실행 실패" (error.code/source/message, progress 단계별 도달 여부)
-## 3. 과거 사례 대조 (재점검 triage)   [고정 문구: "위치 일치는 재점검 후보 신호이며 현재 취약 판정이 아님"]
-   표: 요청 위치 | 입력 변수 | 입력 위치 | 판정(재점검 후보/수동 확인/일치 없음) | 관련 사례(case_id@rev) | 일치/변경 필드 | 이유 | 다음 단계
-   + readyCaseCount, casper evidenceId
-## 4. 관련 전월 보고서           사례마다 "### CASE-001 (rev N) [가상]" + 표준 2열 표(§2.3 매핑) — 대조 당시 revision 스냅숏
-                                 현재 revision이 다르면 "이후 rev M으로 갱신됨" 표시
-## 5. 재점검 이력                사례별 표: 관찰 시각 | 결과 | 출처 | 검토 상태(상태 표시) | 검토자 | run_id | 증거 참조
-                                 evidence_metadata 표(reference, sha256, size) + 각주 "해시는 바이트 일치만 증명, XSS 증명 아님"
-                                 이번 runId와 같은 run_id의 check는 강조 표시(develop의 historyWrite 연동)
-## 6. 가드레일 결정과 안전 속성     decisions 표(stage, decision, ruleId, reason) + safety 불리언 표
-## 7. 참고 자료 출처와 한계         pentest-db 카탈로그(draft_advisory, currentRunVerified:false), casper-db 경로·스키마 버전, 생성기 버전
-## 부록 A. 실행 타임라인            이벤트 stage·recordedAt·iteration 목록 (요청·응답 본문은 기본 생략, --include-payloads로 마스킹 후 포함)
+1. 점검 개요        2열 표: 실행 ID, 상태, 시험 프로필, 대상(loopback origin), 시작/종료 시각, 요청 수, 출처(source)
+2. 취약점 상세      표준 2열 표(previous-month-xss-report.md 레이아웃):
+                    보고일 | 취약점 유형(title, CWE) | 발생 위치(origin + POST /api/posts, content) |
+                    심각도(+근거) | 판정 상태(status, confidence — 에이전트의 결정론적 판정, 저장소 미검증) |
+                    상세 설명(summary) | 조치 방안(remediation) | 한계(limitations)
+3. 재현 절차        번호 목록(§2.1 stage 순서)
+   3.1 입력 지점     [사진 ①] + 캡션
+   3.2 PoC 요청     코드 블록(텍스트): method, url, body
+   3.3 점검 페이로드  코드 블록(텍스트): canary 원문, marker
+   3.4 응답         코드 블록(텍스트): status, body
+   3.5 결과 확인     [사진 ②] + 캡션 + 판정 검사표(checks, 항목별 참/거짓)
+4. 과거 사례 대조(재점검 triage)   고정 문구 + 표
+5. 관련 전월 보고서  사례별 2열 표(대조 당시 revision)
+6. 재점검 이력      check 표 + 해시 표 + 각주
+7. 가드레일 결정과 안전 속성
+8. 출처와 한계
 ```
+실패한 run이면 2절을 "실행 실패"(error code, source, message, 도달한 단계)로 바꾸고, 사진은 찍힌 것만 넣는다.
 
-### 2.6 증거 이미지(캡처) — 현재 구조로 가능한가?
+### 2.6 증거 사진 촬영 (capture 단계)
 
-**결론: 지금은 불가능하다.** 첨부할 캡처가 만들어지지도 저장되지도 않는다. 근거는 모두 `origin/develop` 기준이다.
-
-| # | 단계 | 현황 | 근거 |
+**무엇을 찍는가**(vul-web-1 마크업 기준. `vul-web-1/public/index.html`, `app.js`)
+| 사진 | 화면 | 선택자 | 범위 |
 |---|---|---|---|
-| 1 | **생성** | 브라우저 검증 함수 `observeStoredXssExecution`은 `{executed, marker, postId, pageUrl, postVisible, payloadPresent, bindingCalled, errors}` 불리언과 문자열만 반환한다. `page.screenshot` 호출이 저장소 전체에 없다 | `packages/adapters/integrations/xss-parser.mjs:194-302`. `git grep screenshot` 결과 0건 |
-| 2 | **참조** | `evidenceId`/`evidenceRefs`는 `parser-evidence-<uuid>`, `lab-evidence-<uuid>` 같은 **무작위 ID**이고 파일을 가리키지 않는다 | `packages/adapters/local-lab-gateway.mjs:218, 241, 295` |
-| 3 | **저장(run-store)** | `writeArtifact(id, kind, value)`는 값을 JSON으로 직렬화해 `<sha256>.json`으로만 쓴다. API `/api/artifacts/:id`도 `application/json` 첨부로만 내보낸다. **바이너리를 지원하지 않는다** | `packages/run-store/index.mjs:240-251`, `apps/api/server.mjs:89-100` |
-| 4 | **저장(pentest-db)** | 이벤트와 보고서는 JSON이고 envelope 상한이 1MB다. 이미지를 base64로 넣는 것은 부적절하다 | `agent/src/protocol.js:6` (`MAX_MESSAGE_BYTES`) |
-| 5 | **전월 사례** | `Case.prior_evidence`는 텍스트 필드 하나뿐이다. 파일 참조 필드가 없다 | `models.py:67` |
-| 6 | **재점검 check** | ✅ **유일하게 파일을 다룰 수 있는 경로.** `evidence_refs`(evidence_root 기준 상대 경로) + `evidence_metadata{reference, sha256, size_bytes}`로 기록되고, `inspect_evidence`는 **어떤 형식의 파일이든** 바이트 해시를 계산한다(PNG도 가능). 문서 예시에도 `RUN-REAL-001/browser-proof.png`가 있다. 다만 현재 worker가 연결하는 파일은 run-report JSON artifact 하나뿐이다 | `casper_db/evidence.py`, `CHECK_REVIEW.md:36`, `packages/history/check-sync.mjs:47-48` |
+| ① 입력 지점 | 게시판 첫 화면의 글쓰기 폼(제목, 내용 입력란) | `#post-form` (`#post-title`, `#post-content`) | 요소 캡처 + 전체 페이지 1장 |
+| ② 피해자 결과 화면 | canary 게시글이 렌더링된 게시글 목록 | `#post-list .post-card` 중 `.post-number`가 `NO. <postId>`인 카드 | 요소 캡처 + 전체 페이지 1장 |
 
-**보고서 모듈 범위 안에서 할 수 있는 것(계획에 포함):** 이미지를 *받아서 검증하고 넣는* 쪽만 만든다. 캡처가 생기면 바로 쓸 수 있게 해 둔다.
+- 입력값은 run 보고서에 이미 있다: `target.origin`, `finding.resourceId`(postId), `finding.marker`.
+- 메타데이터: `kind, runId, capturedAt, pageUrl, viewport, selector, viewerUserId, canaryCallbackObserved, sha256, sizeBytes, mime`
 
-- **입력 경로 2가지**
-  - (a) casper check의 `evidence_refs`를 `--evidence-root` 아래에서 찾아 sha256을 다시 계산한다. `evidence_metadata`와 일치할 때만 넣고, 다르면 "무결성 불일치 — 이미지 생략" 자리표시를 넣는다.
-  - (b) 점검자가 수동으로 찍은 캡처를 `--attach <file>[:caption]`으로 넘긴다. 이 경우 보고서에 해시와 "수동 첨부(출처 미검증)" 표시를 남긴다.
-- **파일 검증**
-  - 확장자가 아니라 매직 바이트로 PNG, JPEG, WebP만 허용한다. **SVG는 거부**한다(스크립트 위험).
-  - 크기 상한은 파일당 5MB, 전체 20MB로 한다.
-  - realpath가 루트 안에 있어야 하고 심링크는 거부한다. 경로 규칙은 `inspect_evidence`와 같게 맞춘다.
-- **렌더링**
-  - HTML: `data:` URI로 넣고 CSP는 `img-src data:`만 연다.
-  - Markdown: `<out>/assets/<sha256>.<ext>`로 복사하고 상대 링크를 단다.
-  - ReportModel JSON: 메타데이터(ref, sha256, size, mime, caption, source)만 넣고 바이트는 넣지 않는다.
-- **프레이밍:** 모든 이미지 캡션 아래에 "캡처는 화면의 바이트일 뿐 XSS 실행을 증명하지 않음. 실행 판정 근거는 `finding.checks.bindingCalled` 등 결정론적 검사"라는 문구를 고정으로 넣는다. synthetic이면 `[가상]`을 붙인다.
-- **민감정보:** 이미지는 자동 마스킹이 불가능하다. 그래서 `--no-images` 옵션을 두고, 이미지가 들어간 출력에는 "이미지 내 민감정보는 사람이 확인해야 함" 경고를 단다.
+**샌드박스**(verify 단계 `observeStoredXssExecution`과 같은 수준). 이 화면은 저장된 payload가 실제로 실행되는 페이지이기 때문이다.
+- origin은 run 보고서의 `target.origin`이고 `http://127.0.0.1:<port>` 형식일 때만 접속한다.
+- 같은 origin의 GET/HEAD만 허용하고, 그 밖의 요청은 `route.abort`로 막는다. WebSocket 차단, service worker 차단, 다운로드 거부, 팝업 즉시 닫기, 대화상자 자동 닫기를 적용한다.
+- canary 콜백 이름(`__ca3pXssProbe`)에 기록만 하는 바인딩을 걸어 `canaryCallbackObserved`로 남긴다. **판정에는 쓰지 않는다.**
+- 시간 상한은 전체 30초, 출력 크기 상한은 장당 5MB로 둔다.
 
-**다른 담당자 작업이 필요한 것(제안만 하고 직접 수정하지 않음):** 자동 캡처를 하려면 아래 세 가지가 필요하다.
-1. **xss-parser 어댑터**(`packages/adapters`): 검증 직후 해당 `.post-card` 요소를 `page.screenshot({type:'png'})`로 찍는다. 결과는 envelope에 넣지 않고 artifacts 디렉터리에 파일로 쓴 다음, `{kind:'screenshot', sha256, ref}`만 반환한다.
-2. **run-store**: 바이너리 artifact API를 추가한다. 예: `writeArtifactBytes(runId, kind, bytes, {contentType})`. 지금은 `.json` 전용이다.
-3. **worker/history**: 스크린샷 artifact를 check의 `evidence_refs`에 연결해 casper 리뷰 대상에 포함시킨다.
+⚠️ **"피해자 관점"의 실제 의미 — 확인 필요(§7 Q4).**
+- vul-web-1은 쿠키가 없는 새 브라우저를 **기본 계정 alice로 로그인시킨다**(`server.js:114-118`, `currentUser`).
+- 그런데 공격자도 alice다(`orchestrator.js:266-267`). 그러니까 지금 verify 단계의 "새 브라우저"는 **공격자와 같은 계정**의 다른 브라우저일 뿐이다.
+- 진짜 피해자(bob) 화면을 찍으려면 `POST /api/session {userId:'bob'}` 요청이 한 번 필요하다. 게시판 데이터는 바꾸지 않고 세션 쿠키만 바꾸는 요청이다.
+- 제안: capture 샌드박스에서 **이 요청 하나만** 허용 목록에 넣고, 메타데이터에 `viewerUserId:'bob'`과 "세션 전환 요청 1회"를 기록한다.
 
-→ 위 세 가지가 생기면 보고서 모듈은 경로 (a)로 **코드 변경 없이** 자동 첨부할 수 있다.
+**저장과 영속성(⚠️ 차단 요소, §7 Q2)**
+- 저장 위치: `<outputRoot>/<sha256(runId)>/captures/{input-point,victim-view}[-full].png`와 `captures.json`
+- 파일 쓰기 방식은 pentest-db 규약과 같다: 0600 권한, 임시 파일 → fsync → hard-link, 같은 이름이 있으면 덮어쓰지 않는다.
+- **Docker가 내려간 뒤 build가 읽으려면 `outputRoot`가 영속 볼륨에 있어야 한다.** 지금 `docker-compose.yml`의 볼륨은 `casper-db/data`, `reports/pentest-db-runs`, `.runtime` 세 개뿐이다.
+  다른 모듈의 디렉터리에 끼워 쓰지 않으려면 **새 볼륨(예: `report-output:/app/reports/report-module`)이 필요하다.** 이는 통합 담당자 소관이다.
 
 ---
 
 ## 3. 모듈 위치와 언어 결정
 
-| 안 | 내용 | 장점 | 단점 |
-|---|---|---|---|
-| **A. Node ESM 모듈 신설** (`packages/report/`, develop 기준) | Node 내장 기능만 사용. casper-db는 Python 서브프로세스 브리지로 읽기 | 프로젝트 관례(Node 내장만, `node --test`, 서브프로세스 브리지)와 같다. pentest-db `readRun`과 contracts `redact()`를 그대로 재사용할 수 있다. 이후 대시보드, worker, run-store artifact 연동이 자연스럽다. 소유 경계가 분명하다(새 디렉터리) | casper-db 모델을 Python 쪽에서 직렬화한 JSON으로만 받는다(타입 공유 없음). Python 런타임이 필요하지만 DB가 없을 때는 우아하게 강등한다 |
-| B. casper-db Python 확장 (`casper_db/report.py`) | `demo.py`의 `render()`를 발전시킨다 | pydantic 모델을 직접 쓰고 `html.escape` 선례가 있다 | **다른 담당자(gyun) 모듈을 수정해야 한다**(PR 규칙 위반 소지). pentest-db JSON과 contracts `redact()`를 Python으로 다시 구현해야 하고 Node 쪽과 이중 관리가 된다. 대시보드 연동 시 또 서브프로세스가 필요하다 |
-| C. 대시보드 통합 (`agent-dashboard/` 또는 `apps/`) | 실행 직후 UI에서 바로 생성 | 사용자 동선이 짧다 | 표현 계층에 도메인 로직이 섞인다. 대시보드 담당 영역이고, develop에서 구조가 이미 크게 바뀌었다. CLI와 배치 생성이 어렵다 |
+### 3.1 결정
+| 단계 | 언어 | 근거 |
+|---|---|---|
+| **capture** | Node ESM(`.mjs`) + Playwright | 대상이 살아 있는 동안 파이프라인 안에서 실행된다. Playwright와 Chromium은 이미 Docker 이미지와 xss-parser에 있다. 샌드박스 패턴(`observeStoredXssExecution`)을 그대로 따를 수 있다 |
+| **build** | **Python ≥3.11** | python-hwpx가 Python 전용이다. casper-db를 `CaseStore`로 직접 읽을 수 있다. pentest-db JSON과 SQLite도 표준 라이브러리로 읽는다. Docker 이미지에 Python venv(`/opt/ca3p-venv`)가 이미 있다 |
 
-**추천: A안.** 핵심 근거는 다음과 같다.
-1. 다른 담당자 모듈을 수정하지 않고(새 디렉터리) 저장된 산출물만 읽는다.
-2. Node에서 casper-db를 쓰는 관례는 이미 두 곳(`casper-db.mjs`, `check-sync.mjs`)에 있다.
-3. 비밀값 마스킹은 develop의 공용 `redact()`를 재사용해 다른 모듈과 같은 기준을 지킨다.
-4. C안(대시보드 버튼, API 엔드포인트)은 A안 위에 얇은 연동으로 나중에 붙인다(M5, 담당자 합의 후).
+- 기존 PLAN의 "Node 단일 모듈 + Python 서브프로세스 브리지" 안은 **폐기한다.** HWPX 생성 요구 때문에 build의 중심이 Python으로 옮겨 갔다.
+- 의존성
+  - capture: `playwright`. 이미 있는 버전(1.58.2, manifest runtime 기준)과 맞춘다.
+  - build: `python-hwpx`(Apache-2.0, `lxml` 의존), `pydantic`(casper-db와 공유)
 
-- 위치: develop 기준이면 **`packages/report/`**(layer `reporting`), main 기준이면 루트 `report/`.
-- 브랜치: `woohyun212/report-module`. README 규칙이 `닉네임/모듈명`이므로 이미 맞다.
-- 언어 규약: `.mjs`, Node 내장 기능만, `'use strict'`가 필요 없는 ESM, 런타임 의존성 0개.
+### 3.2 python-hwpx 사용 방침
+- **Alpha 단계라 API가 바뀔 수 있다.** 커밋 SHA나 정확한 버전으로 고정하고, 모든 호출을 `hwpx_writer.py` 한 파일로 감싼다. 라이브러리를 교체하거나 버전을 올릴 때 바꿀 곳이 하나가 된다.
+- **템플릿 방식:** 한글에서 `templates/ca3p-report.hwpx`(표지, 목차 제목, 2열 표 양식)를 만들어 두고, `HwpxDocument.open()` → `tables.fill_by_path()`로 라벨 칸을 채운다. 사진은 `add_picture()`, 제목은 `add_heading()`, 문단은 `add_paragraph()`로 넣는다.
+- **스파이크로 먼저 확인할 것(M1):**
+  1. 행 수가 바뀌는 표(재점검 이력, triage)를 만들 수 있는가. 표 생성 API가 README에 명확하지 않다.
+  2. 이미지를 넣고 크기와 캡션을 지정할 수 있는가.
+  3. 코드 블록(고정폭 글꼴, 줄바꿈 유지)을 표현할 수 있는가.
+  4. 만든 파일이 한글이나 한컴 뷰어에서 깨지지 않고 열리는가. 라이브러리의 검증 기능과 사람의 육안 확인을 함께 쓴다.
+  5. `<script>`, `&`, `]]>` 같은 문자열이 텍스트로 정확히 보이는가.
+- 스파이크에서 막히면 대안은 **HWPX 템플릿의 XML을 직접 다루는 것**이다(lxml, OWPML). 이 경우 범위가 커지므로 다시 상의한다.
+
+### 3.3 디렉터리 구성(안)
+```
+packages/report/
+  PLAN.md  README.md
+  capture/            # Node
+    package.json  capture.mjs  sandbox.mjs  cli.mjs  tests/
+  build/              # Python
+    pyproject.toml
+    src/ca3p_report/  __init__.py  loaders.py  model.py  redact.py  escape.py
+                      hwpx_writer.py  markdown_writer.py  cli.py
+    templates/ca3p-report.hwpx
+    tests/
+```
+
+### 3.4 "Agent"의 범위
+보고서의 사실 항목(판정, 상태, 심각도, 요청과 응답, 고지 문구)은 **결정론적 코드가 채운다.** LLM을 쓴다면 "점검 개요" 서술 문단 하나만 맡기는 선택 기능으로 둔다. 이때 입력은 마스킹된 ReportModel로 한정하고, 출력에 판정 관련 단어가 들어가지 않았는지 검사한다. 기본값은 끈다(§7 Q6).
 
 ---
 
 ## 4. 인터페이스와 계약
+특정 호출자(테스트용 app 또는 실제 파이프라인)에 묶이지 않도록, **CLI와 JSON 입출력**을 기본 계약으로 둔다. agent의 JSON envelope 형식(`receiver:'report'`)으로 감싸는 일은 실제 파이프라인 담당자와 정한다(§7 Q1).
 
-### 4.1 다른 모듈과의 경계 (전부 읽기 전용)
-| 대상 | 접근 방식 | 금지 사항 |
-|---|---|---|
-| pentest-db 디스크 | `readRun(runId)` (develop: `packages/adapters/integrations/pentest-db.mjs` import → manifest 의존성 `adapters`) | `exchange()`(append, finalize) 호출 금지 |
-| casper-db | Python 서브프로세스. `CaseStore` 읽기 메서드만 사용 | `initialize_database`, `add*`, `update`, `review_check` 금지. DB 경로 기본값 금지 |
-| run-store (M5) | 별도 읽기 함수. `createRunRepository`는 DDL을 실행하므로 쓰지 않는다. `new DatabaseSync(path, {readOnly:true})`로 직접 SELECT하거나 run-store 담당자에게 `openReadOnly` 추가를 요청(§7 Q3) | runs, artifacts 테이블 쓰기 금지 |
-| contracts | `redact`, `assertIdentifier`, `digest` import | — |
-| 네트워크 | 없음. `node:http/https/net/tls`와 `fetch` 사용 금지(테스트로 강제) | — |
-
-### 4.2 호출 방식
-- **CLI**
-  ```
-  node packages/report/cli.mjs --run-id <id> --reports-dir <abs> [--casper-db <abs>] \
-       [--format md|html|json] [--out <path>|-] [--include-payloads] [--generated-at <iso>]
-  ```
-  - 종료 코드: `0` 성공, `2` 입력 오류(runId 형식, 상대 경로), `3` 실행 없음, `4` 보고서 미완료(이벤트만 있음)
-  - `--out` 파일은 `wx` 플래그(0600)로 쓰고 기존 파일을 덮어쓰지 않는다.
-- **프로그램 API**
-  ```js
-  loadRun({ runId, reportsDir })                         // → { runId, events, report } | null
-  loadCasperContext({ dbPath, refs, python, signal })    // → { status, cases[] } (unavailable 허용)
-  buildReportModel({ run, casper, generatedAt, generator }) // 순수 함수 → ReportModel
-  renderMarkdown(model) / renderHtml(model)              // 순수 함수 → string
-  ```
-  `buildReportModel`과 렌더러는 순수 함수이고, I/O는 `load*`에만 둔다. 같은 입력이면 같은 바이트가 나오도록 결정적으로 만든다. `generatedAt`은 주입받는다.
-
-### 4.3 데이터 계약 — ReportModel `report-1.0` (요지)
-```jsonc
-{
-  "schemaVersion": "report-1.0",
-  "generator": { "module": "report", "version": "0.1.0" },
-  "generatedAt": "<ISO>",
-  "notices": ["synthetic", "isolated-local-lab", "storage-unverified", "location-match-is-not-verdict"],
-  "run": { "runId", "status", "testProfile", "target", "source", "simulated", "targetContacted",
-           "startedAt", "completedAt", "storedAt", "provenance": { "verifiedByStorage": false, ... },
-           "progress", "metrics", "error"? },
-  "finding": { ...finding 원본 필드, "verdictSource": "agent-deterministic-reflect" } | null,
-  "triage": { "available": bool, "readyCaseCount", "evidenceId",
-              "rows": [{ "observation", "decision", "decisionLabel", "explanation", "matches": [...] }] },
-  "priorCases": { "status": "ok|unavailable|not-requested", "reason"?,
-                  "cases": [{ "caseId", "revision", "currentRevision", "synthetic": bool, "fields": {...}, "checks": [...] }] },
-  "guardrail": { "decisions": [...] },
-  "safety": {...} | null,
-  "references": { "catalog": { "status": "draft_advisory", "currentRunVerified": false, "evidenceId" } },
-  "timeline": [{ "stage", "recordedAt", "iteration" }]
-}
+### 4.1 capture
 ```
-- ReportModel에 들어가는 문자열은 **원문**이다(이스케이프 전). 이스케이프는 **렌더러 출력 경계에서만** 한다. 이중 이스케이프를 막고, JSON 소비자가 직접 이스케이프 책임을 진다는 점을 계약에 명시한다.
-- 마스킹은 **모델을 만들 때 먼저** 적용한다(`redact()` + 보조 규칙). 모델 JSON 자체에도 비밀값이 남지 않게 한다.
-  - 보조 규칙: `reasoning_content`, `reasoning`, `chainOfThought`, `rawResponse`, `prompt`, `messages` 키는 삭제한다.
-  - `sk-[A-Za-z0-9]{16,}` 형태 문자열은 `[REDACTED]`로 바꾼다.
-- 이스케이프 규칙:
-  - HTML: `& < > " '`를 엔티티로 바꾼다(`demo.py`의 `escaped()`와 같다).
-  - Markdown 표 셀: 위 HTML 이스케이프를 한 뒤 `|`→`\|`로 바꾸고 개행은 공백으로 바꾼다. 코드 스팬은 내용 안의 백틱 길이보다 긴 펜스로 감싼다.
-  - URL은 절대 자동 링크로 만들지 않는다. `vulnerability_url`과 `target.origin`은 코드 스팬으로 출력한다.
+node packages/report/capture/cli.mjs --run-id <id> --origin http://127.0.0.1:<port> \
+     --post-id <n> --marker <m> --output-root <abs> [--viewer bob|default]
+```
+- 입력은 run 보고서에서 그대로 가져온다: `target.origin`, `finding.resourceId`, `finding.marker`.
+  finding이 없는 실패 run이면 ①만 찍는다.
+- 출력은 표준출력으로 JSON 한 개를 낸다.
+  ```json
+  { "schemaVersion": "report-capture-1.0", "runId": "...", "status": "captured|partial|failed",
+    "captures": [{ "kind": "input-point|victim-view", "variant": "element|full-page",
+                   "ref": "<runHash>/captures/victim-view.png", "sha256": "...", "sizeBytes": 0,
+                   "mime": "image/png", "capturedAt": "...", "pageUrl": "...", "viewport": {...},
+                   "selector": "...", "viewerUserId": "alice|bob", "canaryCallbackObserved": true }],
+    "errors": [] }
+  ```
+- 종료 코드: `0` 전부 성공, `5` 일부 성공, `6` 대상에 접속할 수 없음.
+- **파이프라인을 멈추지 않는다.** 촬영이 실패해도 run 결과에는 영향을 주지 않는다. 실패는 매니페스트에만 기록한다.
+- 호출 시점: run finalize **뒤**, 실습 환경을 정리(`labSession.close()`나 컨테이너 종료)하기 **전**.
+
+### 4.2 build
+```
+python -m ca3p_report build --run-id <id> --reports-dir <abs> --casper-db <abs> \
+       --captures-root <abs> --out-dir <abs> [--format hwpx,json,md] [--generated-at <iso>] [--no-images]
+```
+- 출력: `<out-dir>/<sha256(runId)>/report.hwpx`, `report-model.json`, 그리고 선택 시 `report.md`와 `assets/`
+- 기존 파일은 덮어쓰지 않는다(`wx`). 종료 코드: `0` 성공, `2` 입력 오류, `3` run 없음, `4` 보고서 미완료.
+- 프로그램 API(순수 함수와 I/O 분리)
+  ```python
+  load_run(run_id, reports_dir) -> RunData | None
+  load_casper(db_path, refs) -> CasperContext          # unavailable 허용
+  load_captures(captures_root, run_id) -> list[Capture] # 해시 재검증
+  build_model(run, casper, captures, generated_at) -> ReportModel   # 순수 함수
+  write_hwpx(model, template, out) / write_markdown(model, out)
+  ```
+
+### 4.3 경계(읽기 전용)
+| 대상 | 접근 | 금지 |
+|---|---|---|
+| 대상 게시판 | capture만 접속. 기록된 loopback origin에 GET/HEAD만, 그리고 (합의 시) `POST /api/session` 1회 | 게시글 생성, 수정, 삭제. 외부 origin |
+| pentest-db 디스크 | 파일 읽기만. runId 검증 후 `sha256(runId)` 디렉터리 | 쓰기 |
+| casper-db | `CaseStore` 읽기 메서드만(`mode=ro`) | `initialize_database`, `add*`, `update`, `review_check` |
+| run-store | (필요 시) `sqlite3` `?mode=ro` URI | DDL, 쓰기 |
+| 네트워크 | capture의 loopback 접속 외에는 없음 | build의 모든 네트워크 |
+
+### 4.4 ReportModel `report-1.0`
+§0과 §2.1의 필드를 정규화한다. 주요 키는 `run, finding, reproduction{steps[], poc{request,response,payload,marker}}, captures[], triage, priorCases, guardrail, safety, notices[], references, generator, generatedAt`이다.
+- 문자열은 원문(이스케이프 전)으로 저장한다.
+- 마스킹은 모델을 만들 때 먼저 적용한다. 대상: authorization, cookie, set-cookie, api key, Bearer, `sk-…` 형태 문자열, `reasoning_content`/`prompt`/`rawResponse` 키.
+- Python 쪽 마스킹 규칙은 `packages/contracts/index.mjs`의 `redact()`와 **같은 테스트 벡터**로 검증해 두 구현이 어긋나지 않게 한다.
 
 ---
 
 ## 5. 마일스톤
-
 | 단계 | 작업 | 산출물 | 완료 기준 |
 |---|---|---|---|
-| **M0. 합의와 기준 정리** | ✅ Q1(develop 기준), Q2(모듈 범위 내 작업, 커밋만) 결정. 나머지 Q3 이후 항목 확인 | 이 문서 | 완료 |
-| **M1. 스캐폴딩** | `packages/report/{package.json, index.mjs, cli.mjs, README.md, tests/}`. 네트워크와 쓰기 금지 경계 테스트. manifest는 **수정하지 않는다.** 통합 담당자에게 넘길 등록안 `{id:'report', path:'packages/report', layer:'reporting', dependencies:['contracts','adapters']}`을 README에 적는다 | 빈 API와 CLI `--help`, 경계 테스트 | `node --test packages/report/tests/` 통과 |
-| **M2. 데이터 로더** | `loadRun`(readRun 래핑, runId 검증, 미완료와 실패 구분, `loop.history`·`loop.catalog` 추출), `loadCasperContext`(Python 브리지, 읽기 전용, unavailable 강등, 1MB와 15s 제한) | 로더 2종과 synthetic fixture 생성기 | 정상, 실패 run, 이벤트만 있는 run, 없는 run, DB 없음, 스키마 불일치 모두 테스트 |
-| **M3. 모델과 Markdown 렌더러** | `buildReportModel`(마스킹, 프레이밍 notices, 레이블 매핑), `renderMarkdown`(§2.5 구조, 이스케이프 유틸) | `report.md` 골든 파일(completed와 failed 2종) | 골든 일치, 이스케이프·마스킹·프레이밍 테스트 통과 |
-| **M3.5 증거 이미지 첨부** | §2.6 경로 (a) casper `evidence_refs` 재해시 검증, (b) `--attach`. 매직 바이트, 크기, 경로 검증. MD는 assets 복사, HTML은 data URI | 이미지 포함 골든 출력 | 해시 불일치 시 생략, SVG와 심링크와 루트 밖 경로 거부, `--no-images` 동작 |
-| **M4. HTML 렌더러** | 독립 HTML(CSP meta, 스크립트 없음). `demo.py` 스타일을 참고 | `report.html` 골든 | `<script`, `on*=` 속성이 없음을 검증. 페이로드가 이스케이프된 형태로만 나타남 |
-| **M5. 연동 (선택, 합의 필요)** | run-store 읽기 어댑터. `writeArtifact(runId,'report',model)`로 보고서를 붙이는 훅(worker 또는 application 담당과 합의). 대시보드 "보고서 내려받기" 버튼 | 연동 PR(각 담당자 리뷰) | 담당자 승인과 해당 모듈 테스트 통과 |
-| **M6. 검증과 문서** | 독립 리뷰(code-reviewer, security-reviewer). README와 AGENTS.md 작성. VERIFICATION 기록 | 리뷰 결과, 문서 | 리뷰 지적 해소, CI 통과 |
+| **M0. 결정 정리** | ✅ 브랜치, 작업 범위, 2단계 구조, 사진 2장, HWPX 결정 | 이 문서 | 완료 |
+| **M1. python-hwpx 스파이크** | §3.2의 1~5번 확인. 간이 템플릿으로 2열 표, 이미지, 코드 블록, 가변 행 표를 만든다 | `spike/` 결과와 짧은 보고 | 한글/뷰어에서 정상으로 열림. 막히면 대안 결정 |
+| **M2. 스캐폴딩** | §3.3 구조. 두 하위 패키지와 빈 CLI. 경계 테스트(build에 네트워크 없음, capture는 loopback만) | 실행 가능한 `--help` | `node --test`와 `pytest` 통과 |
+| **M3. capture** | 샌드박스 브라우저, 사진 ①②, 매니페스트, 원자적 저장. synthetic 게시판으로 테스트 | `capture.mjs`, 매니페스트 계약 | 로컬 vul-web-1에서 사진 4장(요소 + 전체) 생성. 쓰기 요청이 차단됨을 검증 |
+| **M4. build 로더와 모델** | `load_run`/`load_casper`/`load_captures`, `build_model`, 마스킹 | `report-model.json` 골든 | 정상, 실패, 미완료, DB 없음, 해시 불일치 케이스 |
+| **M5. HWPX 렌더러** | 템플릿 채우기, 사진, 코드 블록, 표 | `report.hwpx`(+ md 미리보기) | 골든 구조 검사(XML), 이스케이프 테스트, 육안 확인 |
+| **M6. 연동 요청과 문서** | 호출 지점, 볼륨, 세션 전환 허용을 담당자에게 요청할 문안. README | 요청 문안, README | 담당자 회신 |
+| **M7. 검증** | 독립 리뷰(code-reviewer, security-reviewer) | 리뷰 결과 | 지적 해소 |
 
 ---
 
 ## 6. 테스트 전략
+- **러너:** capture는 `node --test packages/report/capture/tests/`, build는 `pytest packages/report/build/tests`.
+  manifest에 등록되기 전까지는 CI가 이 모듈을 실행하지 않으므로 커밋 전에 직접 돌린다.
+- **fixture(모두 synthetic)**
+  - 게시판: 테스트에서 vul-web-1을 `PORT=0`, 임시 데이터 파일로 직접 띄운다. canary 게시글은 **테스트 준비 단계에서만** POST로 만든다. capture 코드 자체는 쓰지 않는다.
+  - run 데이터: 임시 디렉터리에 pentest-db 규약대로 `report.json`과 이벤트 파일을 만든다(`loop.act`, `loop.history` 포함).
+  - casper-db: 임시 DB에 `initialize_database`와 `add`로 synthetic 사례와 check를 넣는다. 이 쓰기도 테스트 준비 단계에서만 한다.
 
-- **러너:** `node --test packages/report/tests/`. ⚠️ manifest에 등록하기 전까지는 `scripts/ci-plan.mjs`(active 모듈만 탐색)와 `check-boundaries.mjs`가 **이 모듈을 검사하지 않는다.** 따라서 커밋 전에 직접 실행하고, import 경계(contracts와 adapters만 허용)는 모듈 자체 테스트로 확인한다.
-  - casper-db 쪽 코드는 수정하지 않으므로 pytest는 추가하지 않는다.
-  - Python 브리지는 node 테스트에서 실제 Python으로 검증한다. Python이나 pydantic이 없으면 `t.skip`하고, CI 환경(`requirements-ci.lock`)에서는 실행한다.
-- **synthetic fixture 구성**
-  1. pentest-db: 임시 디렉터리에서 **실제 `createPentestDb({reportsDir:tmp}).exchange()`** 로 append·finalize envelope를 써서 run을 만든다. 손으로 JSON을 만드는 것보다 디스크 규약이 바뀔 때 테스트가 깨지므로 계약 테스트 역할을 한다. completed(confirmed와 not_confirmed), failed(`GUARDRAIL_DENIED`) 세 종류를 만든다.
-  2. casper-db: 임시 경로에서 `initialize_database`와 `add`(`case.example.json` 기반으로 `target_id='vul-web-1'`, `/api/posts`, `content`, `body`, `ready` — `scripts/seed-lab-history.mjs`와 같은 형태), `add_check`(synthetic, draft)를 실행한다. **이 쓰기는 테스트 준비 단계에서만** 하고, 보고서 코드는 읽기만 한다.
-- **검증 항목**
-
-| 범주 | 테스트 |
+| 범주 | 검증 |
 |---|---|
-| 정합성 | finding 필드, triage assessments, 사례 스냅숏(revision 고정), checks가 모델과 출력에 빠짐없이 그대로 반영된다. `loop.history` 이벤트가 정확히 매핑된다 |
-| 프레이밍 | 모든 출력에 고지 배너와 triage 고정 문구가 있다. `retest_candidate` 행 근처에 "취약/확인됨" 단어가 없다. synthetic 행에 `[가상]`이 붙는다. `verifiedByStorage:false`가 노출된다. 해시 각주가 있다 |
-| 이스케이프 | payload `"<script>alert(1)</script>"`, `<img src=x onerror=…>`, `"`, `'`, `` ` ``, `|`, 개행이 들어 있는 사례 → MD와 HTML 출력에 원문 `<script`, `onerror=`가 없고 엔티티 형태만 있다. 이중 이스케이프(`&amp;lt;`)가 없다 |
-| 마스킹 | fixture 이벤트에 `Authorization`, `Cookie`, `Set-Cookie: sid=…`, `deepseekApiKey`, `sk-…`, `reasoning_content`를 심는다 → 모델 JSON, MD, HTML 어디에도 원문이 없다 |
-| 실패와 결측 | failed run → error 섹션. 이벤트만 있는 run → 종료 코드 4. DB 경로 미지정이나 파일 없음 → `priorCases.status='unavailable'`이고 크래시하지 않는다. DB 파일이 없을 때 **새로 만들지 않는다**(실행 후 파일 부재 확인) |
-| 읽기 전용 | 보고서 생성 전후로 casper DB 파일과 reports 디렉터리의 sha256이 같다 |
-| 보안 경계 | runId `../x`와 129자 거부. 상대 경로 거부. 소스에 `node:http(s)|net|tls|fetch(`가 없다(`run-once.test.js`의 방식). 출력 파일이 이미 있으면 덮어쓰지 않는다 |
-| 결정성 | 같은 입력과 `generatedAt`이면 바이트가 같다(골든 파일) |
+| capture 샌드박스 | 외부 origin, POST/DELETE, WebSocket 시도가 차단되고 `errors`에 기록된다. 허용되지 않은 origin 입력(`http://example.com`, `https://127.0.0.1`, 경로 포함)은 거부된다 |
+| capture 결과 | 사진 ①②의 요소 캡처에 대상 선택자가 들어 있다. 매니페스트 sha256이 파일과 일치한다. 대상에 접속할 수 없을 때 종료 코드 6이고 파이프라인 예외가 없다 |
+| 이스케이프 | payload `<img src=x onerror=…>`, `<script>`, `&`, `]]>`, `|`가 HWPX XML에서 텍스트 노드로 있다(원시 요소로 들어가지 않음). MD에서는 엔티티 형태다. 이중 이스케이프가 없다 |
+| 마스킹 | fixture에 심은 `Cookie`, `Set-Cookie`, `Authorization`, `sk-…`, `reasoning_content`가 JSON, MD, HWPX 어디에도 없다. contracts `redact()`와 같은 벡터로 결과가 일치한다 |
+| 프레이밍 | 고지 상자, triage 고정 문구, 사진 캡션의 "판정 근거 아님" 문구, `[가상]`, `verifiedByStorage:false`가 출력에 있다 |
+| 무결성 | 사진 파일을 1바이트 바꾸면 해당 사진이 빠지고 "무결성 불일치"가 표시된다 |
+| 읽기 전용 | build 전후로 casper DB와 reports 디렉터리의 해시가 같다. DB 경로에 파일이 없으면 새로 만들지 않는다 |
+| 결정성 | 같은 입력과 `--generated-at`이면 `report-model.json`이 바이트 단위로 같다. HWPX는 ZIP 타임스탬프 때문에 XML 내용 기준으로 비교한다 |
 
 ---
 
-## 7. 미해결 질문과 결정이 필요한 항목
-
-| # | 질문 | 담당자 | 제안 |
+## 7. 미해결 질문과 요청 항목
+| # | 질문/요청 | 대상 | 제안 |
 |---|---|---|---|
-| Q1 | ~~develop 기준으로 개발할지~~ | — | ✅ **결정:** develop에서 새 브랜치 |
-| Q2 | ~~manifest 등록~~ | 통합 담당 | ✅ **결정:** 통합 담당자가 처리. 이 모듈은 범위 안에서 작업하고 커밋만 한다 |
-| Q13 | 자동 증거 캡처(§2.6의 1~3번: xss-parser 스크린샷, run-store 바이너리 artifact, check 연결)를 각 담당자에게 요청할지 | adapters/run-store/worker 담당 | 요청한다. 보고서 모듈은 그 전까지 수동 첨부와 casper `evidence_refs`로 대응 |
-| Q14 | 이미지 내 민감정보 확인 책임자(자동 마스킹 불가) | 사용자/보안 | 보고서 생성자가 확인. 기본은 이미지 포함, `--no-images` 제공 |
-| Q3 | run-store(`.runtime/runs.sqlite`)도 입력으로 지원해야 하는가? 그렇다면 읽기 전용 열기 API(`openReadOnly`)를 run-store에 추가해 줄 수 있는가? | run-store 담당 | MVP는 pentest-db 디스크만 지원, M5에서 추가 |
-| Q4 | pentest-db `readRun`을 adapters에서 import해 재사용할지, 보고서 모듈 안에서 읽기 전용 리더를 별도로 둘지 | pentest-db 담당(nahyun06) | 재사용(디스크 규약의 단일 소스) |
-| Q5 | triage는 실행 당시 저장된 assessments만 쓸지, "현재 DB 기준 재평가"(`assess_observation` 재실행)를 옵션으로 둘지 | casper-db 담당(gyun) | 저장값만 기본으로 하고, 재평가는 별도 섹션으로 둘지 추후 논의 |
-| Q6 | Python 브리지에 `-I`(격리 모드)를 쓰고 `sys.path`를 직접 주입할지, 기존 관례(`PYTHONPATH`, `-I` 없음)를 따를지 | casper-db/보안 | `-I` + 명시 주입 |
-| Q7 | 보고서 단위: run 1건당 1부만인가, 월간 집계(여러 run과 사례 묶음)도 필요한가? | PM/사용자 | MVP는 run 단위 |
-| Q8 | 시험 입력(payload) 원문을 보고서 본문에 보일지, 해시나 접힘 처리만 할지 | 사용자/보안 | 이스케이프한 코드 스팬으로 노출하되 `--redact-payloads` 옵션 제공 |
-| Q9 | 생성된 보고서 파일의 저장 위치와 보존 정책(`reports/generated/`? gitignore?) | 팀 | `reports/generated/<sha256(runId)>/report.{md,html,json}`, gitignore 대상 |
-| Q10 | BOLA 레거시 프로필(`agent_cross_user_delete_canary`)의 finding도 지원해야 하는가? (checks 필드 구성이 다름) | agent 담당 | 공통 필드만 렌더링하고 checks는 일반 키-값 표로 처리 |
-| Q11 | 대시보드나 API에 "보고서 생성" 버튼과 엔드포인트를 둘지, 둔다면 누가 구현할지 | dashboard/api 담당 | M5, 담당자 구현 + 보고서 모듈 API 제공 |
-| Q12 | 출력 언어: 한국어만인가, 영문 병기가 필요한가? | 사용자 | 한국어만 |
+| Q1 | **실제 agent 파이프라인 코드의 위치**(원격 저장소에 없음). report 단계를 어디서, 어떤 형식(CLI, envelope)으로 호출할지 | 파이프라인 담당 | §4 CLI 계약을 기준으로 맞춘다 |
+| Q2 | **capture 출력의 영속 볼륨**(예: `report-output:/app/reports/report-module`) 추가 | 통합 담당(docker-compose) | 새 볼륨. 다른 모듈의 볼륨을 공유하지 않는다 |
+| Q3 | 실제 파이프라인이 run 결과를 pentest-db JSON에 저장하는가, run-store에 저장하는가 | 파이프라인 담당 | 둘 다 지원할 수 있게 로더를 분리한다 |
+| Q4 | 피해자 화면을 **bob 계정**으로 찍기 위해 capture 샌드박스에서 `POST /api/session {userId:'bob'}` 1회를 허용할지 | 사용자/보안/guardrail 담당 | 허용(데이터 변경 없음, 메타데이터에 기록). 불허 시 "기본 계정(alice) 새 브라우저"로 캡션 |
+| Q5 | 촬영 호출 시점 보장: finalize 뒤, 환경 정리 전 | 파이프라인 담당 | 실패해도 run을 막지 않는 best-effort 호출 |
+| Q6 | "점검 개요" 서술에 LLM을 쓸지 | 사용자 | 기본은 끄고, 선택 기능으로 둔다 |
+| Q7 | HWPX 템플릿(표지, 기관 양식)을 누가 만드는가. 기존 CERT 양식이 있는가 | 사용자/팀 | 있으면 그 양식을 기반으로 하고, 없으면 2열 표 기본 양식을 직접 만든다 |
+| Q8 | 보고서 단위: run 1건당 1부인가, 월간 집계도 필요한가 | 사용자 | MVP는 run 단위 |
+| Q9 | 보고서 출력의 보존 정책, gitignore | 팀 | 출력 루트는 gitignore 대상 |
+| Q10 | BOLA 레거시 프로필도 지원하는가 | agent 담당 | 공통 필드와 일반 checks 표만 지원 |
