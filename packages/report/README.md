@@ -3,8 +3,17 @@
 main Agent가 트리거하면 기존 모듈들의 실행 결과를 수집하고, 대상을 직접 촬영해 HWPX 보고서를 만드는 Agent입니다.
 설계와 결정 사항은 [`PLAN.md`](PLAN.md)에 있습니다.
 
-> 현재 구현된 범위는 **수집 단계**(`collect`)뿐입니다.
-> 보고서 작성 단계(LLM Agent가 OpenAI-compatible API로 도구를 호출해 촬영·HWPX 작성)와 전체 실행(`run`)은 아직 없습니다. 설계는 PLAN.md §3.8을 보세요.
+## 구현 현황
+
+- **수집 단계 `collect`** — pentest-db-disk / run-store에서 run을, casper-db에서 과거 사례를 읽고, 파서 보고서에서 촬영 힌트를 뽑아 봉인된 ReportInput 번들을 만듭니다(읽기 전용).
+- **작성 단계 `run`** — 번들을 수집한 뒤 LLM(OpenAI-compatible, `DEEPSEEK_*` 환경변수)이 도구(`read_bundle`, `capture_screenshot`, `finish_report`)를 호출해 HWPX 보고서를 작성합니다. 촬영은 `packages/report/capture/`의 Node 샌드박스가, HWPX 렌더링은 `hwpx/writer.py`(python-hwpx)가 맡습니다.
+
+```bash
+cd packages/report/py && .venv/bin/python -m ca3p_report run --trigger trigger.json
+# 결과: <output.dir>/report/{<보고서>.hwpx, report-model.json, report.md}, 그리고 ReportResult JSON
+```
+
+LLM 접속 정보는 agent core와 공유하는 `DEEPSEEK_BASE_URL`·`DEEPSEEK_API_KEY`·`DEEPSEEK_MODEL`에서 읽습니다(이 모듈의 유일한 환경변수·네트워크 예외). 보고서는 **초안**이며 사람이 최종 검토합니다(PLAN §1.4.1). LLM 실패 시 종료 코드 8(`LLM_FAILED`), 템플릿 대체는 없습니다.
 
 ## 수집 단계
 
@@ -53,7 +62,8 @@ history/casper.json    # { status, reason?, cases:[{caseId, revision, currentRev
 ## 테스트
 
 ```bash
-cd packages/report/py && .venv/bin/python -m pytest -q && .venv/bin/ruff check src tests
+cd packages/report/py && .venv/bin/python -m pytest -q && .venv/bin/ruff check src tests   # Python
+cd packages/report/capture && npm install && node --test                                   # Node 촬영 도구
 ```
 
 - 원천 fixture는 실제 pentest-db 어댑터와 run-store 저장소 코드(`tests/write_sources.mjs`, Node + `node:sqlite`)로 만듭니다. 그래서 저장 규약이 바뀌면 테스트가 깨집니다. Node가 없으면 해당 테스트는 건너뜁니다.
