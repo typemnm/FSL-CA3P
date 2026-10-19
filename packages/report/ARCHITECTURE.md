@@ -38,8 +38,6 @@ flowchart TB
             LLM -.tool.-> T2["capture_screenshot"]
             LLM -.tool.-> T3["hwpx_*"]
             LLM -.tool.-> T4["finish_report"]
-            T4 --> VERIFY["검증기 (결정론)<br/>핵심 사실·고지 대조"]
-            VERIFY -->|불일치| LLM
         end
 
         BUNDLE --> REDACT
@@ -47,7 +45,7 @@ flowchart TB
 
     CLI --> COLLECT
     T2 ==>|번들 origin에 GET + 수집된 세션전환만| TARGET["대상 사이트<br/>(살아있는 동안)"]
-    VERIFY ==>|통과| OUT["report.hwpx<br/>report-model.json"]
+    T4 ==> OUT["report.hwpx<br/>report-model.json"]
     OUT --> RESULT["ReportResult JSON"]
     RESULT --> MAIN
 
@@ -61,7 +59,7 @@ flowchart TB
     classDef todo fill:#fff0d6,stroke:#c97800,color:#5a3600;
     classDef data fill:#eef2f8,stroke:#5b6b85,color:#1f2a40;
     class COLLECT,CR,CH,SEAL done;
-    class BUILD,REDACT,LLM,T1,T2,T3,T4,VERIFY todo;
+    class BUILD,REDACT,LLM,T1,T2,T3,T4 todo;
     class BUNDLE,PDB,RS,CDB,ENV,OUT data;
 ```
 
@@ -99,7 +97,7 @@ flowchart TB
 
 1. **환경 정보 무보유** — 경로·포트·대상 URL을 하드코딩/추측하지 않음. 모두 트리거로 받음. 예외는 LLM 접속 환경변수(`DEEPSEEK_*`) 하나.
 2. **읽기 전용** — 원천(pentest-db, run-store, casper-db)에 쓰지 않음. 쓰는 곳은 출력 위치뿐.
-3. **판정 안 함** — exploit 여부는 상류 판정을 옮김. 검증기가 번들과 대조해 보장. LLM이 바꿀 수 없음.
+3. **판정 안 함** — exploit 여부와 CVSS는 LLM이 보고서에 적음. 코드 강제·재계산 없음. 사실성은 프롬프트 지침과 LLM 품질에 의존(한계).
 4. **도구가 위험 행동 차단** — 대상 origin 고정, 쓰기 요청 차단, 번들 밖 읽기 차단, 원시 XML 삽입 차단. LLM이 속아도 범위 제한.
 5. **마스킹** — 쿠키·`Set-Cookie`·API 키·chain-of-thought는 LLM 입력·로그·출력 어디에도 안 남김.
 6. **LLM 실패 = 실패 전달** — 템플릿 대체 없이 `LLM_FAILED`(exit 8)로 main Agent에 전달.
@@ -113,7 +111,7 @@ flowchart TB
 | M3 | HWPX 작성기 | ⬜ |
 | M4 | 스크린샷 도구 (Node 샌드박스) | ⬜ |
 | M5 | LLM 도구 계층 | ⬜ |
-| M6 | 마스킹 + 검증기 | ⬜ |
+| M6 | 마스킹 | ⬜ |
 | M7 | LLM 루프 + 클라이언트 | ⬜ |
 | M8 | 진입점 `run` + stored_xss 프로필 | ⬜ |
 | M9 | generic·bola 프로필 | ⬜ |
@@ -128,6 +126,6 @@ flowchart TB
 - **Q13** 종결 — 이미지는 LLM이 필요에 따라 PNG로 촬영, 보고서 본문에 해시 미표기(manifest에만)
 - **Q7** 종결 — HWPX 목차 확정(§2.7). 기관 양식은 추후 반영
 - **Q8** 종결 — run 1건 = 보고서 1부. 월간/다건 집계 없음
-- **Q12** 종결 — 심각도는 LLM이 CVSS 3.1로 산출(상류 severity 병기, 검증기가 벡터↔점수 재계산)
+- **Q12** 종결 — 심각도는 LLM이 CVSS 3.1로 산출(상류 severity 병기). 재계산·검증 없음: LLM이 쓴 값을 그대로 둠
 
 남은 사용자 확인: 표지 기관 양식·로고 유무(Q7 세부)
