@@ -8,7 +8,9 @@
     "start": "docker compose up --build",
     "start:daehan": "node src/server.mjs daehan",
     "start:wonchang": "docker compose up --build wonchang",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "probe:idor": "node scripts/idor-probe.mjs",
+    "test:idor": "node --test tests/idor-probe.test.mjs"
   },
   "dependencies": {
     "cookie-parser": "1.4.7",

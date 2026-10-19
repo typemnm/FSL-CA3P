@@ -14,7 +14,7 @@ const {
 const { DeepSeekReasoningEngine } = require('./deepseek-reasoning-engine');
 
 const DEFAULT_ENV_FILE = path.resolve(__dirname, '..', '.env');
-const SUPPORTED_MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
+const SUPPORTED_MODELS = new Set(require('./model-definitions').DEEPSEEK_MODELS);
 
 function parseEnvText(text) {
   const values = {};

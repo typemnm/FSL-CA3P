@@ -13,8 +13,14 @@ import { faqs, nav, sectionFor, siteConfigs } from './sites.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sessions = new Map();
+const sessionCookie = 'daehan_sid';
 const configuredPorts = { daehan: 4101 };
 const markdown = new MarkdownIt({ html: false, breaks: true, linkify: true });
+
+function safeNextPath(value) {
+  const path = String(value || '/mypage');
+  return path.startsWith('/') && !path.startsWith('//') && !/[\\\x00-\x1f\x7f]/.test(path) ? path : '/mypage';
+}
 
 function redirectWithFlash(res, path, message) {
   res.redirect(`${path}?ok=${encodeURIComponent(message)}`);
@@ -53,7 +59,7 @@ export function createApp(siteKey) {
   app.use(cookieParser());
 
   app.use((req, res, next) => {
-    const session = sessions.get(req.cookies.sid);
+    const session = sessions.get(req.cookies[sessionCookie]);
     req.user = session?.siteKey === siteKey ? db.prepare('SELECT id, username, display_name, role FROM users WHERE id = ?').get(session.userId) : null;
     res.locals.site = site;
     res.locals.nav = nav;
@@ -169,13 +175,12 @@ export function createApp(siteKey) {
     // The token uses Math.random and sessions have no expiry or failed-login throttle.
     const token = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
     sessions.set(token, { siteKey, userId: user.id, createdAt: Date.now() });
-    res.cookie('sid', token, { httpOnly: true });
-    const nextPath = String(req.body.next || '/mypage');
-    res.redirect(nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : '/mypage');
+    res.cookie(sessionCookie, token, { httpOnly: true });
+    res.redirect(safeNextPath(req.body.next));
   });
   app.get('/logout', (req, res) => {
-    sessions.delete(req.cookies.sid);
-    res.clearCookie('sid');
+    sessions.delete(req.cookies[sessionCookie]);
+    res.clearCookie(sessionCookie);
     res.redirect('/');
   });
 

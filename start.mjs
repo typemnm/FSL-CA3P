@@ -12,12 +12,8 @@ Options:
   --port, -p  Local dashboard port (1-65535, default: PORT or 4173)
   --help, -h  Show this help
 
-The dashboard binds to 127.0.0.1 by default. For LAN access, set
-DASHBOARD_HOST=0.0.0.0 and DASHBOARD_PUBLIC_ORIGINS=http://<server-ip>:<port>.
-This host allowance is not authentication; Internet access requires an
-authenticated HTTPS reverse proxy. The fixture run uses scripted modules.
+The dashboard binds to 127.0.0.1 by default. The fixture run uses scripted modules.
 The separate local lab action starts an isolated board and may call DeepSeek.
-The lab board stays on 127.0.0.1 when the dashboard is reachable over LAN.
 Stop it with Ctrl+C. Arbitrary target URLs are not used by the lab.`;
 
 function resolveOptions(args) {
@@ -53,7 +49,7 @@ try {
     console.log(usage);
   } else {
     const nodeMajor = Number(process.versions.node.split('.')[0]);
-    if (nodeMajor < 18) throw new Error('Node.js 18 or newer is required.');
+    if (nodeMajor < 24) throw new Error('Node.js 24 or newer is required.');
     process.env.PORT = String(options.port);
     console.log('Starting CA3P local dashboard. Lab checks require an explicit action in the UI.');
     // Resolve relative to this script, independent of the current working directory.

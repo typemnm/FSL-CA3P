@@ -9,7 +9,7 @@ const ACTION_CATALOG_ID = 'delete_observed_canary';
 const STORED_XSS_ACTION_CATALOG_ID = 'create_stored_xss_canary_post';
 const STORED_XSS_PROFILE = 'stored_xss_canary';
 const MODEL_CANDIDATE_ID = 'candidate-0';
-const SUPPORTED_MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
+const SUPPORTED_MODELS = new Set(require('./model-definitions').DEEPSEEK_MODELS);
 const DECISION_KEYS = [
   'actionCatalogId',
   'candidateId',
@@ -64,6 +64,7 @@ function sanitizeMetadata(metadata) {
   };
   if (!isPlainObject(metadata)) return safe;
   if (SUPPORTED_MODELS.has(metadata.model)) safe.model = metadata.model;
+  if (typeof metadata.reportedModel === 'string' && /^[a-zA-Z0-9._:/-]{1,128}$/.test(metadata.reportedModel)) safe.reportedModel = metadata.reportedModel;
   if (metadata.finishReason === 'stop') safe.finishReason = metadata.finishReason;
   if (isPlainObject(metadata.usage)) {
     const usage = {};

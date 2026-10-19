@@ -2,6 +2,12 @@
 /xss-fuzzer/
 
 # Local generated files and credentials.
+/.runtime/
+/.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+/reports/ci/
 node_modules/
 .env
 .env.*

@@ -1,4 +1,6 @@
 .git
+.runtime
+.venv
 **/node_modules
 **/.env
 **/.env.*
@@ -8,5 +10,9 @@
 **/.venv
 **/venv
 casper-db/data
-reports
+reports/*
+!reports/ci
+reports/ci/*
+!reports/ci/latest.json
 xss-fuzzer
+vul-web2

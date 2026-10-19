@@ -1,5 +1,5 @@
 FROM maven:3.9-eclipse-temurin-17 AS build
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 WORKDIR /build
 COPY wonchang/pom.xml ./pom.xml
 RUN mvn -B -ntp dependency:go-offline

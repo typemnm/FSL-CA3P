@@ -213,6 +213,12 @@ try {
       });
       assert.equal(denied.status, 401, 'A07 no failed-login throttle');
     }
+    const unsafeNext = await request(base, '/login', {
+      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'student1', password: 'Welcome2026', next: '/\\evil.example/path' })
+    });
+    assert.equal(unsafeNext.status, 302);
+    assert.equal(unsafeNext.headers.get('location'), '/mypage', 'backslash return path cannot redirect to another host');
 
     const studentCookie = await login(base, 'student1', 'Welcome2026');
     assert.equal((await request(base, '/mypage', { headers: { cookie: studentCookie } })).status, 200);
@@ -375,6 +381,24 @@ try {
     assert.match(await brokenHome.text(), /TypeError|Cannot read properties|NullPointerException|Cannot invoke/);
     console.log(`${siteKey}: pages, assets, search, pagination, login/logout, roles, requests, auxiliary lookup, admin CRUD/import, A01-A08 and A10 probes passed; A09 static review only`);
   }
+
+  // Browser cookies are scoped by host and path, not port; both local sites share a cookie jar.
+  const browserCookies = new Map();
+  for (const { base } of instances) {
+    const cookie = await login(base, 'student1', 'Welcome2026');
+    const separator = cookie.indexOf('=');
+    browserCookies.set(cookie.slice(0, separator), cookie.slice(separator + 1));
+  }
+  assert.equal(browserCookies.size, 2, 'each site uses its own session cookie name');
+  const cookieHeader = () => [...browserCookies].map(([name, value]) => `${name}=${value}`).join('; ');
+  for (const { base } of instances) {
+    await expectStatus(base, '/mypage', 200, { headers: { cookie: cookieHeader() } });
+  }
+  const logout = await expectStatus(instances[0].base, '/logout', 302, { headers: { cookie: cookieHeader() } });
+  const clearedCookie = logout.headers.get('set-cookie').split('=')[0];
+  assert.ok(browserCookies.delete(clearedCookie), 'logout clears its own session cookie');
+  await expectStatus(instances[0].base, '/mypage', 302, { headers: { cookie: cookieHeader() } });
+  await expectStatus(instances[1].base, '/mypage', 200, { headers: { cookie: cookieHeader() } });
 } finally {
   await Promise.all(instances.map(instance => instance.close()));
 }

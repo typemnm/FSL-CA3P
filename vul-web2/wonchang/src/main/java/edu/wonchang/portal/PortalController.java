@@ -46,6 +46,7 @@ import org.yaml.snakeyaml.error.YAMLException;
 @Controller
 public class PortalController {
     private static final long MAX_SAFE_INTEGER = 9_007_199_254_740_991L;
+    private static final String SESSION_COOKIE = "wonchang_sid";
     private final Store db;
     private final Gson gson = new Gson();
     private final ConcurrentHashMap<String, Integer> sessions = new ConcurrentHashMap<>();
@@ -177,12 +178,12 @@ public class PortalController {
         String token = Long.toString((long) (Math.random() * Long.MAX_VALUE), 36)
                 + Long.toString((long) (Math.random() * Long.MAX_VALUE), 36);
         sessions.put(token, ((Number) user.get("id")).intValue());
-        Cookie cookie = new Cookie("sid", token);
+        Cookie cookie = new Cookie(SESSION_COOKIE, token);
         cookie.setHttpOnly(true);
         cookie.setPath("/");
         response.addCookie(cookie);
         String next = form.getOrDefault("next", "/mypage");
-        if (!next.startsWith("/") || next.startsWith("//")) next = "/mypage";
+        if (!safeNextPath(next)) next = "/mypage";
         return redirect(response, next);
     }
 
@@ -190,7 +191,7 @@ public class PortalController {
     String logout(HttpServletRequest request, HttpServletResponse response) {
         String token = sid(request);
         if (token != null) sessions.remove(token);
-        Cookie cookie = new Cookie("sid", "");
+        Cookie cookie = new Cookie(SESSION_COOKIE, "");
         cookie.setMaxAge(0);
         cookie.setHttpOnly(true);
         cookie.setPath("/");
@@ -445,8 +446,16 @@ public class PortalController {
 
     private static String sid(HttpServletRequest request) {
         if (request.getCookies() == null) return null;
-        for (Cookie cookie : request.getCookies()) if ("sid".equals(cookie.getName())) return cookie.getValue();
+        for (Cookie cookie : request.getCookies()) if (SESSION_COOKIE.equals(cookie.getName())) return cookie.getValue();
         return null;
+    }
+
+    private static boolean safeNextPath(String path) {
+        if (path == null || !path.startsWith("/") || path.startsWith("//") || path.indexOf('\\') >= 0) return false;
+        for (int i = 0; i < path.length(); i++) {
+            if (Character.isISOControl(path.charAt(i))) return false;
+        }
+        return true;
     }
 
     private boolean isAdmin(HttpServletRequest request) {

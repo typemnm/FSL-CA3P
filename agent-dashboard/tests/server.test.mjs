@@ -5,9 +5,9 @@ import { request } from 'node:http';
 import { createLocalRuntime } from '../local-runtime.mjs';
 import { createDashboardServer } from '../local-server.mjs';
 
-async function serve(t, { delayMs = 0, publicOrigins } = {}) {
+async function serve(t, { delayMs = 0 } = {}) {
   const runtime = createLocalRuntime({ defaultDelayMs: delayMs });
-  const server = createDashboardServer({ runtime, publicOrigins });
+  const server = createDashboardServer({ runtime });
   assert.equal(server.listening, false, 'Creating the server must have no listen side effect');
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -43,31 +43,6 @@ function statusWithHostHeader(url, host) {
     });
     req.on('error', reject);
     req.setTimeout(5000, () => req.destroy(new Error('Local Host-header check timed out')));
-    req.end();
-  });
-}
-
-function requestWithHeaders(url, { method = 'GET', headers = {}, body, streaming = false } = {}) {
-  // Connect only to the loopback test listener; Host models the external URL.
-  assert.equal(new URL(url).hostname, '127.0.0.1');
-  return new Promise((resolve, reject) => {
-    const req = request(url, { method, agent: false, headers }, res => {
-      if (streaming) {
-        resolve({ status: res.statusCode, headers: res.headers });
-        res.destroy();
-        return;
-      }
-      const chunks = [];
-      res.on('data', chunk => chunks.push(chunk));
-      res.on('end', () => resolve({
-        status: res.statusCode, headers: res.headers,
-        body: Buffer.concat(chunks).toString('utf8'),
-      }));
-      res.on('error', reject);
-    });
-    req.on('error', reject);
-    req.setTimeout(5000, () => req.destroy(new Error('Local public-origin check timed out')));
-    if (body !== undefined) req.write(body);
     req.end();
   });
 }
@@ -146,7 +121,7 @@ test('the API rejects invalid input, oversized JSON, unsupported methods, and un
     ['/api/runs', jsonPost({ target: 'https://metadata-only.invalid', gateway: {} }), 400],
     ['/api/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: `https://metadata-only.invalid/${'x'.repeat(8192)}` }) }, 413],
     ['/api/state', { method: 'POST' }, 405],
-    ['/api/runs', { method: 'GET' }, 405],
+    ['/api/runs', { method: 'PUT' }, 405],
     ['/api/missing', undefined, 404],
   ];
   for (const [path, options, expected] of cases) {
@@ -176,88 +151,6 @@ test('cross-origin requests and non-local Host values cannot read or mutate the 
   const sameOrigin = await fetch(`${base}/api/state`, { headers: { Origin: base } });
   assert.equal(sameOrigin.status, 200);
   await sameOrigin.text();
-});
-
-test('configured LAN and HTTPS proxy origins serve the UI, API, and event stream', async t => {
-  const { runtime, base } = await serve(t, {
-    publicOrigins: 'http://192.168.0.84:4173,https://ca3p.casper.or.kr',
-  });
-  const lanHost = '192.168.0.84:4173';
-  const lanOrigin = `http://${lanHost}`;
-  const proxyHost = 'ca3p.casper.or.kr';
-  const proxyOrigin = `https://${proxyHost}`;
-
-  for (const host of [lanHost, proxyHost]) {
-    const page = await requestWithHeaders(`${base}/`, { headers: { Host: host } });
-    assert.equal(page.status, 200, `UI via ${host}`);
-    assert.match(page.body, /CA3P/);
-  }
-  for (const [host, origin] of [[lanHost, lanOrigin], [proxyHost, proxyOrigin]]) {
-    const state = await requestWithHeaders(`${base}/api/state`, {
-      headers: { Host: host, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-    });
-    assert.equal(state.status, 200, `API via ${origin}`);
-    assert.deepEqual(JSON.parse(state.body), runtime.getState());
-    assert.equal(state.headers['access-control-allow-origin'], undefined);
-
-    const events = await requestWithHeaders(`${base}/api/events`, {
-      headers: { Host: host, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-      streaming: true,
-    });
-    assert.equal(events.status, 200, `SSE via ${origin}`);
-    assert.match(events.headers['content-type'], /text\/event-stream/);
-  }
-
-  const started = await requestWithHeaders(`${base}/api/runs`, {
-    method: 'POST',
-    headers: {
-      Host: proxyHost, Origin: proxyOrigin, 'Sec-Fetch-Site': 'same-origin',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ target: 'https://metadata-only.invalid', delayMs: 0 }),
-  });
-  assert.equal(started.status, 201);
-  assert.equal(JSON.parse(started.body).run.targetContacted, false);
-});
-
-test('public-origin allowlist rejects unknown Hosts, scheme mismatches, and cross-site API calls', async t => {
-  const { runtime, base } = await serve(t, {
-    publicOrigins: 'http://192.168.0.84:4173,https://ca3p.casper.or.kr',
-  });
-  const idle = runtime.getState();
-  const denied = [
-    { path: '/', headers: { Host: 'untrusted.invalid' } },
-    { path: '/api/state', headers: { Host: 'untrusted.invalid', Origin: 'https://untrusted.invalid' } },
-    { path: '/api/state', headers: { Host: 'ca3p.casper.or.kr', Origin: 'http://ca3p.casper.or.kr' } },
-    { path: '/api/events', headers: { Host: '192.168.0.84:4173', Origin: 'https://ca3p.casper.or.kr' } },
-    {
-      path: '/api/lab-runs', method: 'POST', body: '{}',
-      headers: { Host: '192.168.0.84:4173', Origin: 'https://untrusted.invalid', 'Content-Type': 'application/json' },
-    },
-    {
-      path: '/api/lab-runs', method: 'POST', body: '{}',
-      headers: {
-        Host: 'ca3p.casper.or.kr', Origin: 'https://ca3p.casper.or.kr',
-        'Sec-Fetch-Site': 'cross-site', 'Content-Type': 'application/json',
-      },
-    },
-  ];
-  for (const { path, ...options } of denied) {
-    const response = await requestWithHeaders(`${base}${path}`, options);
-    assert.equal(response.status, 403, `${options.method ?? 'GET'} ${path} ${options.headers.Host}`);
-    assert.deepEqual(runtime.getState(), idle, 'Denied requests must not alter the runtime');
-  }
-});
-
-test('public origins must be exact HTTP(S) origins', () => {
-  for (const publicOrigins of [
-    'https://ca3p.casper.or.kr/',
-    'https://ca3p.casper.or.kr/path',
-    'ftp://ca3p.casper.or.kr',
-    'https://ca3p.casper.or.kr,',
-  ]) {
-    assert.throws(() => createDashboardServer({ runtime: {}, publicOrigins }), TypeError, publicOrigins);
-  }
 });
 
 test('SSE sends an initial snapshot and live core events through completion', async t => {
