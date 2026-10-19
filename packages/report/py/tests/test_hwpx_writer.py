@@ -9,7 +9,7 @@ from ca3p_report.hwpx import write_hwpx, write_markdown
 from ca3p_report.hwpx.writer import PHOTO_MISSING, PHOTO_NOTE, TRIAGE_CAVEAT, VERDICT_CAVEAT
 
 RUN = "run-20261020-xss"
-PAYLOAD = '<img src=x onerror=alert(document.cookie)> & ]]> | <script>alert(1)</script>'
+PAYLOAD = "<img src=x onerror=alert(document.cookie)> & ]]> | <script>alert(1)</script>"
 HEADINGS = [
     f"CA3P 취약점 점검 보고서 — {RUN}",
     "1. 점검 개요",
@@ -87,10 +87,18 @@ def model(status="completed"):
                     {"label": "점검 페이로드", "text": PAYLOAD},
                 ],
                 "images": [
-                    {"ref": "evidence/images/input.png", "integrity": "ok", "step": 1,
-                     "caption": "① 입력 지점"},
-                    {"ref": "evidence/images/victim.png", "integrity": "mismatch", "step": 2,
-                     "caption": "② 피해자 화면"},
+                    {
+                        "ref": "evidence/images/input.png",
+                        "integrity": "ok",
+                        "step": 1,
+                        "caption": "① 입력 지점",
+                    },
+                    {
+                        "ref": "evidence/images/victim.png",
+                        "integrity": "mismatch",
+                        "step": 2,
+                        "caption": "② 피해자 화면",
+                    },
                     {"ref": "../../outside.png", "integrity": "ok", "caption": "범위 밖 경로"},
                 ],
                 "impact": "열람자 세션에서 임의 스크립트가 실행될 수 있습니다.",
@@ -99,12 +107,21 @@ def model(status="completed"):
         ],
         "triage": {
             "readyCaseCount": 1,
-            "rows": [{"caseId": "CERT-2026-09", "location": "POST /api/posts content",
-                      "label": "재점검 후보"}],
+            "rows": [
+                {
+                    "caseId": "CERT-2026-09",
+                    "location": "POST /api/posts content",
+                    "label": "재점검 후보",
+                }
+            ],
         },
         "priorCases": [
-            {"caseId": "CERT-2026-09", "revision": 2, "title": "9월 저장형 XSS",
-             "checks": [{"checkId": "chk-1", "status": "ready", "createdAt": "2026-10-19"}]}
+            {
+                "caseId": "CERT-2026-09",
+                "revision": 2,
+                "title": "9월 저장형 XSS",
+                "checks": [{"checkId": "chk-1", "status": "ready", "createdAt": "2026-10-19"}],
+            }
         ],
         "guardrail": {"decisions": [{"decision": "ALLOW", "ruleId": "XSS-CANARY"}]},
         "safety": {"isolatedLab": True},

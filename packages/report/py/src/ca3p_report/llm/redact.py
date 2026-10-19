@@ -34,8 +34,13 @@ _OPENAI_KEY = re.compile(r"sk-[A-Za-z0-9]{16,}")
 # Model reasoning, raw responses and the prompt itself never leave the LLM stage.
 DROP_KEYS = frozenset(
     {
-        "reasoning_content", "reasoning", "chainOfThought",
-        "raw_response", "rawResponse", "prompt", "messages",
+        "reasoning_content",
+        "reasoning",
+        "chainOfThought",
+        "raw_response",
+        "rawResponse",
+        "prompt",
+        "messages",
     }
 )
 

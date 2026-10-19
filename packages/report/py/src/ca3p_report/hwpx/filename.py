@@ -7,8 +7,14 @@ import unicodedata
 
 MAX_LENGTH = 120
 EXTENSION = ".hwpx"
-RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
-            *(f"LPT{i}" for i in range(1, 10))}
+RESERVED = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 UNSAFE = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
 
 

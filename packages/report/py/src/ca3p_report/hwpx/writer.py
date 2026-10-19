@@ -99,15 +99,18 @@ def _overview(run: dict) -> list[tuple]:
     requests = metrics.get("requests", metrics.get("requestCount"))
     return [
         ("h", 1, "1. 점검 개요"),
-        ("table", [
-            ["실행 ID", _text(run.get("runId"))],
-            ["상태", _text(run.get("status"))],
-            ["시험 프로필", _text(run.get("testProfile"))],
-            ["공격 대상(origin)", _text(_obj(run, "target").get("origin"))],
-            ["시작 시각", _text(run.get("startedAt"))],
-            ["종료 시각", _text(run.get("completedAt"))],
-            ["요청 수", _text(requests)],
-        ]),
+        (
+            "table",
+            [
+                ["실행 ID", _text(run.get("runId"))],
+                ["상태", _text(run.get("status"))],
+                ["시험 프로필", _text(run.get("testProfile"))],
+                ["공격 대상(origin)", _text(_obj(run, "target").get("origin"))],
+                ["시작 시각", _text(run.get("startedAt"))],
+                ["종료 시각", _text(run.get("completedAt"))],
+                ["요청 수", _text(requests)],
+            ],
+        ),
     ]
 
 
@@ -121,10 +124,16 @@ def _summary(model: dict, failed: bool) -> list[tuple]:
     rows = [["번호", "취약점", "CWE", "CVSS 점수·등급", "공격 대상", "exploit 여부(판정 상태)"]]
     for index, finding in enumerate(findings, 1):
         common = _obj(finding, "common")
-        rows.append([
-            str(index), _text(common.get("title")), _text(common.get("cwe")),
-            _cvss(common)[0], origin, _text(common.get("status")),
-        ])
+        rows.append(
+            [
+                str(index),
+                _text(common.get("title")),
+                _text(common.get("cwe")),
+                _cvss(common)[0],
+                origin,
+                _text(common.get("status")),
+            ]
+        )
     return [*blocks, ("table", rows), ("p", f"CVSS: {CVSS_NOTE} 판정 상태: {VERDICT_CAVEAT}")]
 
 
@@ -134,16 +143,22 @@ def _finding(n: int, finding: dict) -> list[tuple]:
     blocks: list[tuple] = [
         ("h", 2, f"3.{n} {_text(common.get('title'))}"),
         ("h", 3, f"3.{n}.1 기본 정보"),
-        ("table", [
-            ["취약점 유형", f"{_text(common.get('title'))} ({_text(common.get('cwe'))})"],
-            ["발생 위치", _location(common)],
-            ["심각도", f"{vector} / {score} — {CVSS_NOTE} 상류 severity: "
-                     f"{_text(common.get('severity'))}"],
-            ["판정 상태", f"{_text(common.get('status'))} — {VERDICT_CAVEAT}"],
-            ["상세 설명", _text(common.get("summary"))],
-            ["조치 방안", _text(common.get("remediation"))],
-            ["한계", _text(common.get("limitations"))],
-        ]),
+        (
+            "table",
+            [
+                ["취약점 유형", f"{_text(common.get('title'))} ({_text(common.get('cwe'))})"],
+                ["발생 위치", _location(common)],
+                [
+                    "심각도",
+                    f"{vector} / {score} — {CVSS_NOTE} 상류 severity: "
+                    f"{_text(common.get('severity'))}",
+                ],
+                ["판정 상태", f"{_text(common.get('status'))} — {VERDICT_CAVEAT}"],
+                ["상세 설명", _text(common.get("summary"))],
+                ["조치 방안", _text(common.get("remediation"))],
+                ["한계", _text(common.get("limitations"))],
+            ],
+        ),
         ("h", 3, f"3.{n}.2 재현 절차"),
     ]
     images = _dicts(finding, "images")
@@ -164,9 +179,12 @@ def _finding(n: int, finding: dict) -> list[tuple]:
     checks = _dicts(finding, "checks")
     blocks += [
         ("h", 3, f"3.{n}.4 판정 검사표"),
-        ("table", [["레이블", "결과"]] + [
-            [_text(c.get("label")), _text(c.get("result"))] for c in checks
-        ] if checks else [["레이블", "결과"], [NONE, NONE]]),
+        (
+            "table",
+            [["레이블", "결과"]] + [[_text(c.get("label")), _text(c.get("result"))] for c in checks]
+            if checks
+            else [["레이블", "결과"], [NONE, NONE]],
+        ),
         ("h", 3, f"3.{n}.5 영향"),
         ("p", _text(finding.get("impact"))),
         ("h", 3, f"3.{n}.6 기타 정보"),
@@ -180,12 +198,15 @@ def _failure(run: dict) -> list[tuple]:
     return [
         ("h", 1, "3. 실행 실패"),
         ("p", "실행이 실패하여 취약점 상세 대신 실패 정보를 적습니다."),
-        ("table", [
-            ["오류 코드", _text(error.get("code"))],
-            ["발생 위치(source)", _text(error.get("source"))],
-            ["메시지", _text(error.get("message"))],
-            ["도달한 단계", _text(error.get("stage"))],
-        ]),
+        (
+            "table",
+            [
+                ["오류 코드", _text(error.get("code"))],
+                ["발생 위치(source)", _text(error.get("source"))],
+                ["메시지", _text(error.get("message"))],
+                ["도달한 단계", _text(error.get("stage"))],
+            ],
+        ),
     ]
 
 
@@ -196,9 +217,16 @@ def _history(model: dict) -> list[tuple]:
     if triage.get("status") == "unavailable" or not rows:
         blocks.append(("p", f"대조 결과가 없습니다. 사유: {_text(triage.get('reason'))}"))
     else:
-        blocks.append(("table", [["사례", "위치", "대조 결과"]] + [
-            [_text(r.get("caseId")), _text(r.get("location")), _text(r.get("label"))] for r in rows
-        ]))
+        blocks.append(
+            (
+                "table",
+                [["사례", "위치", "대조 결과"]]
+                + [
+                    [_text(r.get("caseId")), _text(r.get("location")), _text(r.get("label"))]
+                    for r in rows
+                ],
+            )
+        )
 
     cases = _dicts(model, "priorCases")
     blocks.append(("h", 1, "5. 관련 전월 보고서"))
@@ -206,18 +234,32 @@ def _history(model: dict) -> list[tuple]:
         blocks.append(("p", "관련 전월 보고서가 없습니다."))
     for case in cases:
         blocks += [
-            ("h", 2, f"{_text(case.get('caseId'))} "
-                     f"(대조 당시 revision {_text(case.get('revision'))})"),
+            (
+                "h",
+                2,
+                f"{_text(case.get('caseId'))} (대조 당시 revision {_text(case.get('revision'))})",
+            ),
             ("table", _kv_rows({k: v for k, v in case.items() if k != "checks"})),
         ]
 
     checks = [(case, check) for case in cases for check in _dicts(case, "checks")]
     blocks.append(("h", 1, "6. 재점검 이력"))
     if checks:
-        blocks.append(("table", [["사례", "check", "상태(상태 표시)", "시각"]] + [
-            [_text(case.get("caseId")), _text(c.get("checkId")), _text(c.get("status")),
-             _text(c.get("reviewedAt") or c.get("createdAt"))] for case, c in checks
-        ]))
+        blocks.append(
+            (
+                "table",
+                [["사례", "check", "상태(상태 표시)", "시각"]]
+                + [
+                    [
+                        _text(case.get("caseId")),
+                        _text(c.get("checkId")),
+                        _text(c.get("status")),
+                        _text(c.get("reviewedAt") or c.get("createdAt")),
+                    ]
+                    for case, c in checks
+                ],
+            )
+        )
     else:
         blocks.append(("p", "재점검 이력이 없습니다."))
     return [*blocks, ("p", CHECK_FOOTNOTE)]
@@ -243,27 +285,50 @@ def _sources(model: dict) -> list[tuple]:
     blocks: list[tuple] = [
         ("h", 1, "8. 출처와 한계"),
         ("p", f"프로필: {_text(_obj(model, 'generator').get('profile'))}"),
-        ("table", [["수집기", "원천 종류", "상태", "사유"]] + [
-            [_text(c.get("name")), _text(c.get("driver")), _text(c.get("status")),
-             _text(c.get("reason"))] for c in collectors
-        ] if collectors else [["수집기", "상태"], [NONE, NONE]]),
+        (
+            "table",
+            [["수집기", "원천 종류", "상태", "사유"]]
+            + [
+                [
+                    _text(c.get("name")),
+                    _text(c.get("driver")),
+                    _text(c.get("status")),
+                    _text(c.get("reason")),
+                ]
+                for c in collectors
+            ]
+            if collectors
+            else [["수집기", "상태"], [NONE, NONE]],
+        ),
     ]
     if "verifiedByStorage" in refs:
         verified = _text(refs["verifiedByStorage"])
         blocks.append(("p", f"저장소 검증 여부(verifiedByStorage): {verified}"))
-    blocks += [("p", f"생략된 섹션: {_text(o.get('section'))} — 사유: {_text(o.get('reason'))}")
-               for o in omitted]
+    blocks += [
+        ("p", f"생략된 섹션: {_text(o.get('section'))} — 사유: {_text(o.get('reason'))}")
+        for o in omitted
+    ]
     return [*blocks, ("p", "이 보고서는 초안이며, 사람이 최종 검토한 뒤 배포합니다.")]
 
 
 def build_blocks(model: dict) -> list[tuple]:
     run = _obj(model, "run")
     failed = run.get("status") == "failed"
-    body = _failure(run) if failed else [("h", 1, "3. 취약점 상세")] + [
-        block for n, f in enumerate(_dicts(model, "findings"), 1) for block in _finding(n, f)
+    body = (
+        _failure(run)
+        if failed
+        else [("h", 1, "3. 취약점 상세")]
+        + [block for n, f in enumerate(_dicts(model, "findings"), 1) for block in _finding(n, f)]
+    )
+    return [
+        *_cover(model),
+        *_overview(run),
+        *_summary(model, failed),
+        *body,
+        *_history(model),
+        *_safety(model),
+        *_sources(model),
     ]
-    return [*_cover(model), *_overview(run), *_summary(model, failed), *body,
-            *_history(model), *_safety(model), *_sources(model)]
 
 
 def _caption(image: dict) -> str:
@@ -346,8 +411,11 @@ def write_markdown(model: dict, out_path) -> Path:
             lines.append("")
         elif kind == "image":
             image = block[1]
-            text = (f"[사진: {image.get('ref')}] {_caption(image)}"
-                    if image.get("integrity") == "ok" else PHOTO_MISSING)
+            text = (
+                f"[사진: {image.get('ref')}] {_caption(image)}"
+                if image.get("integrity") == "ok"
+                else PHOTO_MISSING
+            )
             lines += [_md(text), ""]
     out = Path(out_path)
     out.write_text("\n".join(lines), encoding="utf-8")
