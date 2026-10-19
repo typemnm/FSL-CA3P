@@ -22,6 +22,11 @@
 > - (10-20) **트리거 시점은 finalize 직후(attack 수행 후)**다.
 > - (10-20) **수집기를 먼저 개발한다.** 결과 원천은 각 DB의 API와 스키마를 분석해 필요한 것을 가져오게 한다. → `collect` 구현 완료(§5 M3, README).
 > - (10-20) **보고서 출력 파일 이름은 LLM Agent가 짓는다.** 단, 경로 문자 제거, 길이 상한, 예약어 회피 같은 정규화를 거치고, 실패하면 `<runId>.hwpx`로 대체한다(§3.8).
+> - (10-20) **보고서 작성은 LLM Agent가 한다(§3.8).** OpenAI-compatible API로 호출하고, 수집된 정보와 context를 전부 전달한다. LLM은 도구(사진 촬영, HWPX 작성)를 호출해 보고서를 만든다.
+>   - LLM 접속 정보는 agent core와 같은 환경변수 `DEEPSEEK_BASE_URL`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`에서 읽는다. 같은 시스템 파이프라인 안이기 때문이며, "환경 정보 무보유" 원칙의 유일한 예외다.
+>   - LLM 데이터 정책(외부 전송 여부)은 지금 다루지 않는다. 나중에 로컬 LLM으로 전환할 예정이다.
+>   - LLM이 실패하면 템플릿으로 다시 만들지 않고, 실패(`LLM_FAILED`)를 agent core에 그대로 전달한다.
+>   - 반복 횟수, 촬영 장수, 시간에 상한을 두지 않는다.
 > - (10-20) **계정 전환 등 촬영에 필요한 정보는 수집기가 가져온 데이터에서 얻는다.** 파서 보고서(`loop.observe`)에 폼 선택자, 필드, 버튼, JS에서 찾은 API(`POST /api/session`, `bodyKeys:["userId"]`)가 들어 있다. 어댑터 JSON은 이 데이터로 채울 수 없는 부분만 보충한다(§3.2).
 
 ---
@@ -119,8 +124,10 @@
  │   capture           대상 URL에 직접 접속 → 사진 ① ②               ─┼─▶ ReportInput 번들        │
  │   seal              manifest.json(해시·출처·해석 결과) 확정        ─┘     (자기완결, 불변)      │
  │                                                                            │               │
- │  [작성 단계 — 번들만 읽음]                                                   ▼               │
- │   build (코어)   번들 → ReportModel(JSON) → report.hwpx (+ md 미리보기)                      │
+ │  [작성 단계 — LLM Agent 루프]                                                ▼               │
+ │   LLM(OpenAI-compatible, tool calling) ← 번들 전체(마스킹) + 작성 규칙                        │
+ │     도구: read_bundle · capture_screenshot · hwpx_* · finish_report                        │
+ │   검증기(결정론): 핵심 사실·필수 고지 대조 → 통과 시 report.hwpx 확정                         │
  └───────────────────────────────────────────────────────────┬────────────────────────────────┘
                                                              ▼
                                               ReportResult(JSON) → main Agent
@@ -340,11 +347,13 @@ class VulnProfile(Protocol):
 ### 3.4 언어
 | 부분 | 언어 | 근거 |
 |---|---|---|
-| capture | Node ESM + Playwright | Playwright와 Chromium이 이미 이미지와 xss-parser에 있다. verify 샌드박스 패턴을 그대로 따른다 |
-| 수집기(run, history), seal, 코어, CLI 진입점 | Python ≥3.11 | python-hwpx가 Python 전용이다. casper-db `CaseStore`를 직접 읽는다. JSON과 SQLite는 표준 라이브러리로 읽는다 |
+| capture(스크린샷 도구) | Node ESM + Playwright | Playwright와 Chromium이 이미 이미지와 xss-parser에 있다. verify 샌드박스 패턴을 그대로 따른다 |
+| 수집기(run, history), seal, LLM 루프·도구·검증기, HWPX 작성, CLI 진입점 | Python ≥3.11 | python-hwpx가 Python 전용이다. casper-db `CaseStore`를 직접 읽는다. JSON과 SQLite는 표준 라이브러리로 읽는다 |
 
-- **진입점은 하나다.** `python -m ca3p_report run --trigger <file|->`가 수집 → capture(Node 서브프로세스) → seal → build를 순서대로 실행한다. 단계별 서브명령(`collect`, `capture`, `seal`, `build`)도 따로 제공한다.
-- 의존성: capture는 `playwright`(1.58.2와 맞춤). Python 쪽은 `python-hwpx`(Apache-2.0, `lxml`), `pydantic`. casper-db는 `collect-history` 드라이버에서만 import하고, 코어는 import하지 않는다.
+- **진입점은 하나다.** `python -m ca3p_report run --trigger <file|->`가 수집 → seal → LLM 작성 루프(도구로 capture와 HWPX 호출)를 순서대로 실행한다. 단계별 서브명령(`collect`, `build`)도 따로 제공한다.
+- `capture_screenshot` 도구는 Node 스크린샷 스크립트를 서브프로세스로 호출한다. LLM이 직접 Node를 실행하지는 않는다.
+- LLM 호출은 `urllib`나 최소 HTTP 클라이언트로 OpenAI-compatible 엔드포인트에 보낸다. 이 네트워크는 LLM 루프 모듈에만 둔다.
+- 의존성: 스크린샷 도구는 `playwright`(1.58.2와 맞춤). Python 쪽은 `python-hwpx`(Apache-2.0, `lxml`), `pydantic`. casper-db는 `collect-history` 드라이버에서만 import한다.
 
 ### 3.5 python-hwpx 사용 방침
 - **Alpha 단계라 API가 바뀔 수 있다.** 정확한 버전이나 커밋 SHA로 고정하고, 모든 호출을 `hwpx_writer.py` 한 파일로 감싼다.
@@ -365,27 +374,41 @@ packages/report/
   schemas/        trigger.schema.json  manifest.schema.json  shots.schema.json  adapter.schema.json  result.schema.json
   profiles/       stored_xss/shots.json  bola/shots.json
   adapters/       vul-web-1.json
-  capture/        package.json  engine.mjs  sandbox.mjs  plan.mjs  cli.mjs  tests/          # Node
+  capture/        screenshot.mjs  sandbox.mjs  cli.mjs  tests/                            # Node 스크린샷 도구
   py/             pyproject.toml                                                           # Python
     src/ca3p_report/
-      collect/    run_pentest_db.py  run_store.py  run_file.py  history_casper.py  seal.py
-      core/       bundle.py  model.py  redact.py  escape.py  framing.py
-      profiles/   base.py  registry.py  generic.py  stored_xss.py  bola.py
-      render/     hwpx_writer.py  markdown_writer.py
-      cli.py      # run | collect | capture | seal | build
-    templates/ca3p-report.hwpx
+      trigger.py                                                              # 구현 완료
+      collect/    model.py  pentest_db.py  run_store.py  casper.py  bundle.py  collector.py   # 구현 완료
+      llm/        client.py(OpenAI-compatible)  loop.py  tools.py  verify.py  redact.py
+      hwpx/       writer.py  templates/ca3p-report.hwpx
+      profiles/   registry.py  generic.py  stored_xss.py  bola.py            # 작성 힌트 + 검증 항목
+      cli.py      # run | collect
     tests/
 ```
 
 ### 3.7 새 취약점·새 사이트·새 원천을 추가하는 절차
-- **새 취약점:** `profiles/<id>/shots.json`과 `profiles/<id>.py`를 추가하고 레지스트리에 한 줄 등록한다. 코어, 템플릿, 엔진은 바꾸지 않는다.
+- **새 취약점:** `profiles/<id>.py`(LLM 작성 힌트 + 검증 항목)와 `profiles/<id>/shots.json`을 추가하고 레지스트리에 한 줄 등록한다. LLM 루프, 도구, HWPX 작성기는 바꾸지 않는다.
 - **새 실습 사이트:** `adapters/<application>.json`을 추가한다. `sessionSwitch` 허용 범위는 보안 리뷰를 거친다.
 - **새 결과 원천:** `collect/` 아래에 드라이버를 추가한다. 번들 계약은 유지한다.
 
 ### 3.8 "Agent"의 범위
 **출력 파일 이름(10-20 결정):** LLM Agent가 보고서 파일 이름을 짓는다. 입력은 마스킹된 ReportModel의 요약(취약점, 대상, 결과)으로 한정한다. 결과는 다음 정규화를 거친다: 경로 구분자·제어문자·`..` 제거, NFC 정규화, 120자 상한, Windows 예약어 회피, 확장자 `.hwpx` 강제. 비었거나 이미 존재하면 `<runId>.hwpx`로 대체한다. 파일 이름이 보고서 내용(판정 등)을 바꾸지는 않는다.
 
-사실 항목(판정, 상태, 심각도, 대상, 요청과 응답, 고지 문구)은 **결정론적 코드가 채운다.** LLM은 "점검 개요" 서술 문단 하나만 맡기는 선택 기능으로 두고, 기본값은 끈다(§7 Q6).
+**보고서 작성 주체(10-20 결정): LLM Agent.** 이전 안("사실 항목은 결정론적 코드가 채우고 LLM은 개요 문단만")을 대체한다.
+
+| 요소 | 내용 |
+|---|---|
+| 호출 | OpenAI-compatible `POST {DEEPSEEK_BASE_URL}/chat/completions`, `tools`/`tool_calls` 사용. 모델은 `DEEPSEEK_MODEL` |
+| 입력 context | 작성 규칙(필수 섹션, §1.5 프레이밍, 출력 형식)을 system 메시지로, 봉인된 번들 전체를 마스킹한 뒤 데이터로 전달. 수집 자료는 지시가 아닌 데이터로 구분해서 넣는다 |
+| 도구 | `read_bundle`(번들 안 파일 읽기), `capture_screenshot`(번들에 기록된 대상 origin에만 접속, §2.5 샌드박스), `hwpx_*`(제목·문단·표·코드 블록·이미지 추가, python-hwpx), `finish_report`(파일 이름 확정) |
+| 도구 쪽 제약 | 도구가 스스로 강제한다: 대상 origin 고정, 쓰기 요청 차단, 번들 밖 읽기 차단, 텍스트는 텍스트 노드로만 삽입. LLM의 요청과 무관하게 적용된다 |
+| 검증기 | `finish_report` 시 결정론적으로 대조: 취약점 종류, 공격 대상, exploit 여부가 번들과 일치하는지, 필수 고지 문구가 있는지. 불일치하면 사유와 함께 LLM에 되돌려 고치게 한다 |
+| 실패 처리 | API 오류, 응답 형식 오류 등 LLM이 끝내 보고서를 완성하지 못하면 템플릿 대체 없이 `ReportResult{ok:false, error:{code:'LLM_FAILED'}}`를 agent core에 전달한다 |
+| 상한 | 반복 횟수, 촬영 장수, 시간 모두 상한 없음 |
+| 기록 | LLM 대화와 도구 호출 로그를 출력 위치에 남긴다(마스킹 적용, API 키 제외) |
+
+- 판정(exploit 여부)은 여전히 상류의 결정을 옮기는 것이다. LLM은 이를 바꿀 수 없고, 검증기가 보장한다.
+- 프로필(§3.2~3.3)은 LLM에 주는 취약점별 작성 힌트와 검증기의 대조 항목으로 역할이 바뀐다.
 
 ---
 
@@ -427,7 +450,7 @@ packages/report/
   "sections": { "capture": "ok|partial|skipped|failed", "history": "ok|unavailable" },
   "warnings": [] }
 ```
-- 종료 코드: `0` 성공(일부 섹션 생략 포함), `2` 트리거 오류, `3` run 없음, `4` run 미완료, `7` 렌더링 실패.
+- 종료 코드: `0` 성공(일부 섹션 생략 포함), `2` 트리거 오류, `3` run 없음, `4` run 미완료, `5` 원천 데이터 이상, `6` 번들이 이미 있음, `7` 출력 위치에 쓸 수 없음, `8` LLM 실패(`LLM_FAILED`, 템플릿 대체 없음).
 - **파이프라인을 멈추지 않는다.** 보고서 생성이 실패해도 run 결과에는 영향을 주지 않는다. main Agent는 `ok`만 확인하면 된다.
 
 ### 4.3 내부 계약
@@ -458,41 +481,43 @@ packages/report/
 | 단계 | 작업 | 산출물 | 완료 기준 |
 |---|---|---|---|
 | **M0. 결정 정리** | ✅ 브랜치·범위, 트리거 기반 Agent, 수집기 내장, 직접 촬영, 번들, HWPX, 범용 3계층 | 이 문서 | 완료 |
-| **M1. python-hwpx 스파이크** | §3.5의 1~6번 | `spike/` 결과와 짧은 보고 | 한글/뷰어에서 정상으로 열림. 막히면 대안 결정 |
-| **M2. 계약과 스캐폴딩** | `schemas/` 5종(trigger, manifest, shots, adapter, result), 디렉터리, 빈 CLI(`run`, `collect`, `capture`, `seal`, `build`), 경계 테스트 | 스키마, `--help` | `node --test`, `pytest` 통과 |
-| **M3. 수집기 + seal** | ✅ (10-20) `collect-run`(pentest-db-disk, run-store), `collect-history`(casper-db, none), 번들 봉인, CLI `collect` | `py/src/ca3p_report/collect/`, 테스트 39개 | 실제 Node writer로 만든 원천으로 검증. 두 원천의 정규화 결과 동일. 원천 내용 불변, DB가 없을 때 생성 안 함, 번들 1회 쓰기·실패 시 잔여물 없음, 원천 위치 미기록 |
-| **M4. capture 엔진** | 계획 해석 → 샌드박스 → 촬영 → `captures.json` + `stored_xss/shots.json` + `adapters/vul-web-1.json` | 사진 4장(요소 + 전체) | 쓰기 요청 차단, 허용 목록 밖 `sessionSwitch` 차단, origin 불일치 시 촬영 안 함, 실패해도 종료 코드 0 |
-| **M5. 코어 + generic 프로필** | 번들 검증, 범용 모델, 마스킹, 프레이밍, 레지스트리, `Generic` | generic 골든 `report-model.json` | 미등록 프로필 번들로도 생성. 해시 불일치·자료 없음 처리 |
-| **M6. stored_xss 프로필** | 재현 단계, 텍스트 증거, 레이블, 영향, 캡션 | stored_xss 골든 | 코어·렌더러 무수정으로 추가 |
-| **M7. HWPX 렌더러** | 템플릿, 섹션 반복, 사진, 코드 블록, 표 (+ MD 미리보기) | `report.hwpx` | XML 구조 골든, 이스케이프 테스트, 육안 확인 |
-| **M8. 진입점 `run`** | 트리거 하나로 수집 → 촬영 → seal → build → `ReportResult` | end-to-end 테스트 | 로컬 vul-web-1 + synthetic 원천으로 보고서 1부 생성 |
-| **M9. bola 프로필(인터페이스 검증)** | `bola.py` + `bola/shots.json` | bola 골든 | 코어·렌더러·엔진 무수정 |
-| **M10. 연동 요청·문서·검증** | 트리거 호출 지점과 시점, `target.application`, 계정 전환 허용을 담당자에게 요청할 문안. README. 독립 리뷰 | 요청 문안, README, 리뷰 결과 | 담당자 회신, 지적 해소 |
+| **M1. 수집기 + seal** | ✅ (10-20) `collect-run`(pentest-db-disk, run-store), `collect-history`(casper-db, none), 번들 봉인, CLI `collect` | `py/src/ca3p_report/collect/`, 테스트 55개 | 실제 Node writer로 만든 원천으로 검증. 두 원천의 정규화 결과 동일. 원천 내용 불변, DB가 없을 때 생성 안 함, 번들 1회 쓰기·실패 시 잔여물 없음, 원천 위치·traceback 미노출 |
+| **M2. python-hwpx 스파이크** | §3.5의 1~6번 | `spike/` 결과와 짧은 보고 | 한글/뷰어에서 정상으로 열림. 막히면 대안 결정 |
+| **M3. HWPX 작성기** | `hwpx/writer.py`: 제목·문단·표·코드 블록·이미지 추가, 텍스트 노드 삽입(이스케이프), 파일 이름 정규화 | 단위 테스트 | 특수문자가 텍스트로 보임, 원시 XML 삽입 불가, 이미지는 번들 경로만 |
+| **M4. 스크린샷 도구** | Node `capture/`: 샌드박스(대상 origin 고정, GET 위주, 허용된 세션 전환만), 사진 저장, `captures.json` | `node --test` | 쓰기 요청 차단, 허용 목록 밖 요청 차단, origin 불일치 시 촬영 안 함 |
+| **M5. LLM 도구 계층** | `llm/tools.py`: `read_bundle`·`capture_screenshot`(M4 서브프로세스)·`hwpx_*`(M3)·`finish_report`. 각 도구가 자체 제약을 강제 | 도구 단위 테스트(LLM 없이) | 번들 밖 읽기·대상 외 접속·원시 XML 모두 거부 |
+| **M6. 마스킹 + 검증기** | `llm/redact.py`(core redact 벡터와 동일), `llm/verify.py`(핵심 사실·고지 대조) | 단위 테스트 | 비밀값이 LLM 입력·로그에 없음. 사실 불일치 시 반려 |
+| **M7. LLM 루프 + 클라이언트** | `llm/client.py`(OpenAI-compatible, 환경변수 접속), `llm/loop.py`(tool calling, 검증 반려 재시도, 상한 없음) | 가짜 LLM(스크립트된 tool_calls)로 테스트 | 가짜 LLM이 번들로 HWPX 생성. LLM 오류 → `LLM_FAILED`(exit 8), 템플릿 대체 없음 |
+| **M8. 진입점 `run` + stored_xss 프로필** | 트리거 하나로 수집 → seal → LLM 작성 → `ReportResult`. `profiles/stored_xss.py` | end-to-end(가짜 LLM) | 로컬 vul-web-1 + synthetic 원천으로 보고서 1부 |
+| **M9. generic·bola 프로필** | `generic`(미등록 대체), `bola` | 각 프로필 테스트 | 루프·도구·작성기 무수정으로 추가. 미등록 프로필도 보고서 생성 |
+| **M10. 라이브 LLM 점검(opt-in)** | 환경변수 있을 때만 실제 엔드포인트로 1회 | 수동/표시 | 기본 테스트는 네트워크·키 없이 가짜 LLM만 사용 |
+| **M11. 연동 요청·문서·검증** | 트리거 호출 지점·시점, `target.application`, 계정 전환 허용, 환경변수를 담당자에게 요청할 문안. README. 독립 리뷰 | 요청 문안, README, 리뷰 결과 | 담당자 회신, 지적 해소 |
 
 ---
 
 ## 6. 테스트 전략
-- **러너:** capture는 `node --test packages/report/capture/tests/`, Python 부분은 `pytest packages/report/py/tests`.
+- **러너:** 스크린샷 도구는 `node --test packages/report/capture/tests/`, Python 부분은 `pytest packages/report/py/tests`.
   manifest에 등록되기 전까지는 CI가 이 모듈을 실행하지 않으므로 커밋 전에 직접 돌린다.
+- **LLM은 테스트에서 가짜로 대체한다.** 스크립트된 `tool_calls` 시퀀스를 돌려주는 가짜 클라이언트를 주입한다. 기본 테스트는 **네트워크와 API 키 없이** 돈다. 실제 엔드포인트 호출은 opt-in이다(M10).
 - **fixture(모두 synthetic)**
   - 사이트: vul-web-1을 `PORT=0`, 임시 데이터 파일로 직접 띄운다. canary 게시글은 **테스트 준비 단계에서만** 만든다.
-  - run 원천: pentest-db 디스크 규약대로 만든 디렉터리와 `file` 형식 둘 다. 종류는 stored_xss(confirmed / not_confirmed), bola, 미등록 프로필, failed.
+  - run 원천: 실제 Node writer(`tests/write_sources.mjs`)로 pentest-db 디스크와 run-store를 만든다. 종류는 stored_xss(confirmed / not_confirmed), bola, 미등록 프로필, failed.
   - casper-db: 임시 DB에 synthetic 사례와 check를 넣는다(테스트 준비 단계에서만).
-  - **코어 테스트는 번들 fixture만 쓴다.** DB, 사이트, 네트워크 없이 돈다.
 
 | 범주 | 검증 |
 |---|---|
-| **환경 정보 무보유** | 트리거에 없는 경로·URL에 접근하지 않는다. 소스에 기본 경로, 포트, 환경변수 fallback이 없다(정적 검사). 번들과 보고서에 원천 위치(경로)가 남지 않는다 |
-| 코어 격리 | 코어 모듈에 `socket`·`urllib`·`sqlite3`·`casper_db` import가 없다. 번들 밖 파일을 열지 않는다 |
-| 핵심 3가지 | 모든 프로필의 보고서 "취약점 요약" 표에 취약점, 공격 대상, exploit 여부가 있다. 실패 run에서도 표시된다 |
-| 범용성 | 미등록 프로필로 generic 보고서가 나온다. 렌더러와 코어에 프로필 이름 분기가 없다. 프로필 추가 시 코어 diff가 없다 |
+| **환경 정보 무보유** | 트리거에 없는 경로·URL에 접근하지 않는다. 소스에 기본 경로, 포트가 없다(정적 검사). 환경변수는 LLM 접속 정보(`DEEPSEEK_*`)만, `llm/client.py`에서만 읽는다. 번들과 보고서에 원천 위치가 남지 않는다 |
+| 수집기 격리 | 수집기 모듈에 `socket`·`urllib`·네트워크 import가 없다. 번들 밖 파일을 열지 않는다. 네트워크는 `llm/` 아래에만 있다 |
+| 핵심 3가지 | 완성된 보고서에 취약점, 공격 대상, exploit 여부가 들어간다. 실패 run에서도 표시된다. 검증기가 이를 번들과 대조해 통과시킨다 |
+| LLM 경계 | 가짜 LLM이 번들 밖 읽기·대상 외 접속·원시 XML을 요청하면 도구가 거부한다. LLM이 exploit 판정을 번들과 다르게 쓰면 검증기가 반려한다. LLM 오류 시 `LLM_FAILED`(exit 8)이고 템플릿 대체가 없다 |
+| 범용성 | 미등록 프로필로 generic 보고서가 나온다. 프로필 추가 시 LLM 루프·도구·작성기 diff가 없다 |
 | 수집기 | 원천 전후 해시가 같다(읽기 전용). casper DB가 없으면 `unavailable`로 기록하고 새로 만들지 않는다. run 원천이 없으면 종료 코드 3 |
-| capture 샌드박스 | 외부 origin, POST/DELETE, WebSocket이 차단·기록된다. `sessionSwitch`는 정확히 일치할 때만, `allowSessionSwitch:false`면 차단된다. `targetUrl`과 `target.origin`이 다르면 촬영하지 않는다 |
+| capture 샌드박스 | 외부 origin, POST/DELETE, WebSocket이 차단·기록된다. 허용된 세션 전환만 정확히 일치할 때 통과한다. `targetUrl`과 `target.origin`이 다르면 촬영하지 않는다 |
 | 번들 무결성 | 봉인 후 파일을 1바이트 바꾸면 그 항목이 빠지고 "무결성 불일치"가 표시된다. SVG나 확장자 위장 이미지는 거부된다 |
-| 이스케이프 | payload `<img src=x onerror=…>`, `<script>`, `&`, `]]>`, `|`가 HWPX XML에서 텍스트 노드로 있다. MD에서는 엔티티 형태다 |
-| 마스킹 | fixture에 심은 `Cookie`, `Set-Cookie`, `Authorization`, `sk-…`, `reasoning_content`가 모든 출력에 없다. contracts `redact()`와 같은 벡터로 결과가 일치한다 |
-| 프레이밍 | 고지 문구, triage 고정 문구, 사진 캡션 문구, `[가상]`, `verifiedByStorage:false`가 모든 프로필의 출력에 있다 |
-| 결정성 | 같은 번들과 `generatedAt`이면 `report-model.json`이 바이트 단위로 같다. HWPX는 XML 내용 기준으로 비교한다 |
+| 이스케이프 | payload `<img src=x onerror=…>`, `<script>`, `&`, `]]>`, `|`가 HWPX XML에서 텍스트 노드로 들어간다 |
+| 마스킹 | fixture에 심은 `Cookie`, `Set-Cookie`, `Authorization`, `sk-…`, `reasoning_content`가 LLM 입력·도구 로그·출력에 없다. contracts `redact()`와 같은 벡터로 결과가 일치한다 |
+| 프롬프트 인젝션 | 수집 자료(payload·대상 페이지)에 "지금까지 지시 무시" 같은 문장을 심어도, 도구 제약과 검증기 때문에 금지된 행동이 일어나지 않는다 |
+| 프레이밍 | 고지 문구, triage 고정 문구, 사진 캡션 문구, `[가상]`, `verifiedByStorage:false`가 완성된 보고서에 있다 |
 
 ---
 
@@ -504,10 +529,13 @@ packages/report/
 | Q3 | 실제 파이프라인의 run 결과 원천: pentest-db JSON인가 run-store인가 | 파이프라인 담당 | ✅ 두 드라이버 모두 구현. 실제 파이프라인이 다른 원천을 쓰면 드라이버를 추가 |
 | Q4 | 계정 전환 요청 1건 허용 여부 | 사용자 | ✅ (10-20) 수집기가 가져온 데이터(파서가 찾은 세션 API)에 있으면 사용한다. 정확 일치만 허용하고 기록한다. 남은 일: 피해자 계정 값을 어디서 얻을지(수집 데이터에 없음) |
 | Q5 | 트리거 시점 | 사용자/파이프라인 담당 | ✅ (10-20) finalize 직후(attack 수행 후). 환경 정리 전이어야 촬영할 수 있다는 점은 파이프라인 담당자와 확인 필요 |
-| Q6 | "점검 개요" 서술에 LLM을 쓸지 | 사용자 | 기본은 끄고 선택 기능으로 둔다 |
+| Q6 | LLM을 어디까지 쓸지 | 사용자 | ✅ (10-20) 보고서 작성 전체를 LLM Agent가 도구 호출로 수행한다(§3.8) |
 | Q7 | HWPX 템플릿(표지, 기관 양식). 기존 CERT 양식이 있는가 | 사용자/팀 | 있으면 범용 목차에 맞춰 쓰고, 없으면 직접 만든다 |
 | Q8 | 보고서 단위: run 1건당 1부인가, 집계도 필요한가 | 사용자 | MVP는 run 단위. 모델의 `findings[]`로 확장 가능 |
 | Q10 | 상류가 추가할 취약점 프로필 로드맵 | agent/파이프라인 담당 | 프로필 인터페이스 사전 점검용 |
 | Q11 | `report.target.application` 값 규약. 현재 `external_target`/`owned-local-board`라서 사이트를 식별하지 못함 | 파이프라인 담당 | 사이트 식별자(예: `vul-web-1`)를 넣어 달라고 요청한다. 그 전까지는 트리거의 `capture.adapter`나 별칭으로 대응 |
 | Q12 | 심각도 체계: low~critical 유지 또는 CVSS 추가 | 사용자 | 모델에 선택 필드 `cvss`만 마련 |
 | **Q13** | **번들 세부 규약**(보고서 출력 파일 이름이 아니라 번들 내부 파일 배치를 말함. 출력 이름은 §3.8): 내부 파일 이름 고정 여부(현재 구현은 고정 경로), 해시 형식(`sha256:<hex>`), 이미지 허용 형식(PNG/JPEG/WebP, SVG 금지, 매직 바이트), 크기 상한, 경로 규칙, manifest 자체 무결성, zip 전송 | 사용자(추가 논의) | §2.3의 권장안을 초안으로 논의 |
+| Q14 | LLM 접속 환경변수를 agent core와 공유(`DEEPSEEK_*`)할지, report 전용 변수를 둘지 | 파이프라인 담당 | ✅ (10-20) 공유. 로컬 LLM 전환 시 `DEEPSEEK_BASE_URL`만 바꾸면 된다 |
+| Q15 | LLM 데이터 정책(수집 자료 외부 전송) | 사용자 | ✅ (10-20) 지금은 다루지 않음. 로컬 LLM 전환 예정이고 데이터는 synthetic |
+| Q16 | 상한 없음(반복·촬영·시간)으로 인한 비용·무한 루프 위험을 감수할지 | 사용자 | ✅ (10-20) 상한 없음. 필요하면 나중에 안전 상한만 추가 |
