@@ -1,6 +1,6 @@
 """The tools the LLM calls to write the report. Each enforces its own limits.
 
-- read_bundle: read a file from inside the sealed bundle only.
+- read_bundle: read a redacted view of a file inside the sealed bundle only.
 - capture_screenshot: drive the Node sandbox against the bundle's loopback origin only,
   replaying at most the one session-switch the collector recorded.
 - finish_report: mask the LLM-assembled ReportModel, render HWPX + Markdown + JSON, and end.
@@ -76,7 +76,14 @@ class ReportTools:
         data = target.read_bytes()
         if len(data) > MAX_READ_BYTES:
             raise ToolError("file too large to read")
-        return data.decode("utf-8", errors="replace")
+        text = data.decode("utf-8", errors="replace")
+        try:
+            value = json.loads(text)
+        except ValueError:
+            return redact(text)
+        # Keep the sealed evidence and its hashes unchanged; only the view sent
+        # to the report model is masked, including structured credential keys.
+        return json.dumps(redact(value), ensure_ascii=False)
 
     # -- capture_screenshot ------------------------------------------------------------
     def capture_screenshot(

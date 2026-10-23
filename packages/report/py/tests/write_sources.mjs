@@ -6,12 +6,12 @@ import { createRequire } from 'node:module';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const require = createRequire(import.meta.url);
 const { createEnvelope } = require(`${root}agent/src/protocol.js`);
-const { createPentestDb } = await import(`${root}packages/adapters/integrations/pentest-db.mjs`);
+const { createPentestDb } = await import(pathToFileURL(join(root, 'packages/adapters/integrations/pentest-db.mjs')));
 
 const spec = JSON.parse(readFileSync(0, 'utf8'));
 const { runId } = spec;
@@ -31,7 +31,7 @@ const replies = [];
 for (const request of requests) replies.push(JSON.parse(await pentestDb.exchange(JSON.stringify(request))));
 
 const { createRunRepository } = spec.storePath || spec.legacyStorePath
-  ? await import(`${root}packages/run-store/index.mjs`) : {};
+  ? await import(pathToFileURL(join(root, 'packages/run-store/index.mjs'))) : {};
 
 if (spec.storePath) {
   const repository = createRunRepository({ path: spec.storePath });

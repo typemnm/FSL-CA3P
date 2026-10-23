@@ -1,137 +1,120 @@
-<!-- 생성: 2026-10-20 · 근거: packages/report/PLAN.md (origin/develop 기준) -->
+# Report Agent — 현재 구현과 플랫폼 연동
 
-# Report Agent — 모듈 설계 현황
+기존 검사 결과를 읽기 전용으로 수집하고, LLM의 도구 호출로 HWPX 보고서 초안을 작성한다.
+수집·촬영·LLM 작성·HWPX 렌더링과 worker/API/dashboard 연동이 구현되어 있다.
+설계 결정의 이력은 [PLAN.md](PLAN.md)에 보존한다.
 
-main Agent가 트리거하면, 기존 모듈들의 실행 결과를 **읽기 전용으로 수집**하고 대상을 **직접 촬영**해,
-LLM Agent가 도구를 호출하며 **HWPX 보고서**를 작성하는 모듈이다.
-보고서는 무엇보다 **① 어떤 취약점 ② 공격 대상 ③ 실제 exploit 여부**를 담는다.
-
-- 위치: `packages/report/` (브랜치 `woohyun212/report-module`, `origin/develop` 기준)
-- 범위: 이 모듈 안에서만 작업하고 커밋까지. 통합 관리(manifest, CI, docker-compose)는 별도 담당.
-
-## 1. 아키텍처 개요 (mermaid)
+## 실행 흐름
 
 ```mermaid
 flowchart TB
-    MAIN["main Agent"] -->|ReportTrigger JSON| CLI["ca3p_report (CLI 진입점)"]
-
-    subgraph AGENT["Report Agent — packages/report"]
-        direction TB
-
-        subgraph COLLECT["① 수집 단계 (결정론 · 읽기 전용)"]
-            direction TB
-            CR["collect-run<br/>pentest-db-disk · run-store<br/>(구현 완료)"]
-            CH["collect-history<br/>casper-db · none<br/>(구현 완료)"]
-            HINT["collect-hints<br/>촬영 힌트(선택자·세션 API)<br/>(미구현)"]
-            SEAL["seal<br/>manifest.json 해시·종류"]
-            CR --> SEAL
-            CH --> SEAL
-            HINT --> SEAL
-        end
-
-        SEAL ==> BUNDLE[("ReportInput 번들<br/>run/ · history/ · hints/ 봉인<br/>evidence/는 작성 단계에서 추가")]
-
-        subgraph BUILD["② 작성 단계 — LLM Agent 루프 (미구현)"]
-            direction TB
-            REDACT["마스킹 (redact)"] --> LLM{{"LLM<br/>OpenAI-compatible<br/>tool calling"}}
-            LLM -.tool.-> T1["read_bundle"]
-            LLM -.tool.-> T2["capture_screenshot"]
-            LLM -.tool.-> T3["hwpx_*"]
-            LLM -.tool.-> T4["finish_report"]
-        end
-
-        BUNDLE --> REDACT
-    end
-
-    CLI --> COLLECT
-    T2 ==>|번들 origin에 GET + 수집된 세션전환만| TARGET["대상 사이트<br/>(살아있는 동안)"]
-    T4 ==> OUT["report.hwpx<br/>report-model.json"]
-    OUT --> RESULT["ReportResult JSON"]
-    RESULT --> MAIN
-
-    %% 외부 데이터 소스 (읽기 전용)
-    PDB[("pentest-db<br/>reports/*")] -.->|read| CR
-    RS[("run-store<br/>runs.sqlite")] -.->|read ?mode=ro| CR
-    CDB[("casper-db<br/>CaseStore")] -.->|read| CH
-    ENV["환경변수<br/>DEEPSEEK_*"] -.->|접속정보만| LLM
-
-    classDef done fill:#d9f2e6,stroke:#1a7f52,color:#0b3a26;
-    classDef todo fill:#fff0d6,stroke:#c97800,color:#5a3600;
-    classDef data fill:#eef2f8,stroke:#5b6b85,color:#1f2a40;
-    class COLLECT,CR,CH,SEAL done;
-    class BUILD,REDACT,LLM,T1,T2,T3,T4 todo;
-    class BUNDLE,PDB,RS,CDB,ENV,OUT data;
+  CORE[Agent 검사와 최종 JSON] --> WORKER[apps/worker/worker.mjs]
+  WORKER -->|JSON 먼저 저장| STORE[(run-store SQLite)]
+  WORKER --> RUNNER[packages/report/index.mjs]
+  RUNNER -->|ReportTrigger stdin| CLI[Python ca3p_report run]
+  STORE -. 읽기 전용 .-> COLLECT[collect: run · history · hints]
+  HISTORY[(casper-db)] -. 읽기 전용 .-> COLLECT
+  CLI --> COLLECT --> BUNDLE[봉인 ReportInput 번들]
+  BUNDLE -->|마스킹한 읽기 뷰| LLM[LLM 도구 호출 루프]
+  LLM -->|선택| CAPTURE[Node Playwright 촬영 sandbox]
+  CAPTURE --> TARGET[worker가 유지하는 로컬 게시판]
+  LLM --> FINISH[finish_report]
+  FINISH --> FILES[HWPX · report-model.json · report.md]
+  FILES -->|식별자·경계·해시 검증| RUNNER
+  RUNNER -->|검증된 bytes| ARTIFACT[run-store binary artifact]
+  ARTIFACT --> API[인증된 HWPX 다운로드 API]
+  API --> UI[대시보드 리포트 화면]
 ```
 
-> 초록 = 구현 완료, 주황 = 미구현. 굵은 실선 = 데이터 흐름, 점선 = 읽기/도구 호출.
+worker는 실제 실습의 완료·실패 보고서를 저장한 뒤 문서 생성을 시작한다. 생성 중에는 job lease와
+heartbeat, 로컬 게시판을 유지하고 상태를 발행한다. 생성이 끝나거나 취소되면 `finally`에서 runtime을
+닫는다. 문서 생성 실패는 검사의 finding이나 완료·실패 결과를 변경하지 않는다.
+코어 fixture와 중지된 실행은 생성을 건너뛰며, 보고서용 API 설정이 없으면 `unavailable`로 표시한다.
 
-## 2. 계층과 책임
+## 계층과 책임
 
-| 계층 | 책임 | 환경 접근 | 상태 |
-|---|---|---|---|
-| 수집기 `collect/` | 트리거가 지정한 원천을 읽기 전용으로 읽어 번들에 모음. 촬영 힌트도 찾아 둠 | 지정된 원천만 | ✅ run·history 완료 / hints 미구현 |
-| seal `bundle.py` | 파일 해시·출처를 manifest로 봉인. 위치는 기록 안 함 | 출력 위치만 | ✅ 구현 완료 |
-| 코어/LLM 루프 `llm/` | 번들을 마스킹해 LLM에 전달, 도구 호출 루프 (검증 없음) | LLM 엔드포인트(환경변수) | ⬜ 미구현 |
-| 도구 `llm/tools.py` | `read_bundle`·`capture_screenshot`·`hwpx_*`·`finish_report`. 각 도구가 자체 제약 강제 | capture만 번들 origin | ⬜ 미구현 |
-| HWPX 작성 `hwpx/` | python-hwpx로 문서 작성. 텍스트 노드 삽입(이스케이프) | 없음 | ⬜ 미구현 |
-| 스크린샷 도구 `capture/` (Node) | 샌드박스 브라우저로 촬영. LLM이 선택자·세션을 넘김 | 번들 loopback origin | ⬜ 미구현 |
-| 프로필 `profiles/` | 취약점별 LLM 작성 힌트 + check 표시 레이블. 사이트 어댑터 없음 | 없음 | ⬜ 미구현 |
+| 경로 | 구현된 책임 |
+| --- | --- |
+| `apps/worker/worker.mjs` | 최종 검사 JSON 저장, 자동 생성 호출, 상태 발행, binary artifact 저장, 게시판 수명 관리 |
+| `packages/report/index.mjs` | 기존 DeepSeek 설정 해석, Python 실행, 취소·시간·출력 제한, 산출물 검증 |
+| `py/src/ca3p_report/trigger.py` | run ID·원천 종류·절대 경로 검증, 원천과 출력 위치의 겹침 거부 |
+| `py/src/ca3p_report/collect/` | run·과거 사례·촬영 힌트 수집, SHA-256 manifest와 번들 봉인 |
+| `py/src/ca3p_report/llm/` | OpenAI-compatible 클라이언트, 도구 호출 루프, 읽기 뷰와 출력 모델 마스킹 |
+| `py/src/ca3p_report/profiles/` | `stored_xss`, `bola`, 미등록 유형용 `generic` 작성 힌트·검사 레이블 |
+| `capture/` | loopback origin에 고정된 선택자·전체 페이지·viewport PNG 촬영 |
+| `py/src/ca3p_report/hwpx/` | 파일명 정규화, 고정 목차·표·이미지·실패-run 변형, HWPX·Markdown 렌더링 |
+| `packages/run-store/index.mjs` | `hwpx-report` binary artifact의 bytes·해시·크기·파일명 보관 |
+| `apps/api/server.mjs` | 실행과 artifact의 연결·무결성 검사 후 인증된 사용자에게 다운로드 제공 |
+| `agent-dashboard/dist/` | 문서 상태·과금 안내 표시, 준비된 실행의 HWPX 다운로드 |
 
-## 3. 입력 · 출력 계약
+## 입력과 출력
 
-| | 형식 | 핵심 필드 |
-|---|---|---|
-| 입력 | `ReportTrigger` JSON | `runId`, `sources.run{kind,location}`, `sources.history`, `output.dir`, (선택)`capture.targetUrl` |
-| 내부 | ReportInput 번들 (수집분 봉인) | `manifest.json`·`run/`·`history/`·`hints/`(봉인) + `evidence/*`(작성 단계에서 추가) |
-| 출력 | `report.hwpx` + `ReportResult` JSON | `ok`, `files[]`, `summary{vulnerability,target,exploit}`, `sections`, `error` |
+Python CLI는 파일 또는 stdin의 `ReportTrigger` JSON을 받는다. 필수 입력은
+`schemaVersion: "report-trigger-1.0"`, `runId`, `sources.run{kind,location}`, `output.dir`이다.
+`sources.history`는 생략하면 `none`이다. 촬영 origin은 수집한 최종 보고서의 `target.origin`에서 얻고,
+세션 전환 정보는 parser 관찰에서 만든 `hints/capture.json`에서 얻는다.
 
-**결과 원천별 수집 방식(구현 완료)**
+| 명령 | 결과와 호출 범위 |
+| --- | --- |
+| `python -m ca3p_report collect --trigger ...` | LLM·대상 접속 없이 `bundle/`만 생성 |
+| `python -m ca3p_report run --trigger ...` | 새 번들 수집 후 LLM 작성, 필요시 live target 촬영, 문서 생성 |
 
-| kind | 읽기 방법 | 비고 |
-|---|---|---|
-| `pentest-db-disk` | `readRun` 규약(`sha256(runId)` 디렉터리). 모든 레벨에서 심링크 거부 | 파일당 5MB 상한 |
-| `run-store` | SQLite `?mode=ro`. 승인된 pentest-db append와 legacy-import 이벤트만 | WAL 미체크포인트 쓰기도 읽음 |
-| `casper-db` | `CaseStore.get_version`/`get`/`list_checks`. 대조 사례는 `loop.history`에서 | DB 없으면 `unavailable`, 생성 안 함 |
+`run`은 기존 번들에서 재개하는 명령이 아니다. 같은 출력 위치에 `collect` 후 `run`을 호출하면
+이미 봉인된 번들이 있어 거부된다. 플랫폼 runner는 실행별·시도별 별도 출력 위치를 만든다.
 
-## 4. 불변 원칙
+| 수집 원천 | 읽는 내용과 경계 |
+| --- | --- |
+| `pentest-db-disk` | `sha256(runId)` 아래 최종 보고서와 정렬된 이벤트. run 하위 심링크·특수 파일 거부, 파일당 5MB 제한 |
+| `run-store` | SQLite `mode=ro`, `runs.state_json`의 report, sequence 순서의 승인된 append·legacy-import 이벤트 |
+| `casper-db` | `loop.history`가 참조한 당시 revision snapshot·현재 revision·재점검 checks. 없거나 읽지 못하면 `unavailable` |
 
-1. **환경 정보 무보유** — 경로·포트·대상 URL을 하드코딩/추측하지 않음. 모두 트리거로 받음. 예외는 LLM 접속 환경변수(`DEEPSEEK_*`) 하나.
-2. **읽기 전용** — 원천(pentest-db, run-store, casper-db)에 쓰지 않음. 쓰는 곳은 출력 위치뿐.
-3. **판정 안 함** — exploit 여부와 CVSS는 LLM이 보고서에 적음. 코드 강제·재계산 없음. 사실성은 프롬프트 지침과 LLM 품질에 의존(한계).
-   - **산출물은 초안이고 사람이 최종 검토한다.** 의미적 정확성을 코드로 검증하지 않는 이유. synthetic 실습이라 성립하며, 실제 findings에는 사람 검토 전 배포 금지.
-4. **도구가 위험 행동 차단** — 대상 origin 고정, 쓰기 요청 차단, 번들 밖 읽기 차단, 원시 XML 삽입 차단. LLM이 속아도 범위 제한.
-5. **마스킹** — 쿠키·`Set-Cookie`·API 키·chain-of-thought는 LLM 입력·로그·출력 어디에도 안 남김.
-6. **LLM 실패 = 실패 전달** — 템플릿 대체 없이 `LLM_FAILED`(exit 8)로 main Agent에 전달.
+원천 DB의 내용은 변경하지 않는다. SQLite WAL을 읽을 때 빈 `-wal`/`-shm` 파일은 생길 수 있다.
+번들에는 `manifest.json`, `run/report.json`, `run/events.json`, `history/casper.json`,
+`hints/capture.json`을 저장한다. 수집분의 해시와 수집기 상태를 봉인하고 원천 경로는 manifest에 기록하지
+않는다. 선택적인 사진은 작성 단계에서 `bundle/evidence/images/`에 추가한다.
 
-## 4.1 알려진 한계
-- 보고서 내용의 **의미적 정확성은 코드가 보장하지 않는다**(검증기 없음). 틀린 판정·조작된 CVSS·누락된 고지·번들 payload로 인한 서술 오염이 통과할 수 있다. synthetic 실습이라 감수하며, **사람 최종 검토가 마지막 방어선**이다(§1.4.1).
-- 실제 findings로 넘어가려면(졸업 기준) 최소한의 검증(예: `finding.status` 문자열 일치 확인)이나 사람 서명 절차가 필요하다.
-- `test_boundaries.py`는 `ca3p_report/` 전체에서 네트워크 import·환경변수 접근을 금지하므로, `llm/client.py` 추가 시 예외 규칙을 둬야 한다(C-4).
+작성 결과는 `report/<이름>.hwpx`, `report/report-model.json`, `report/report.md`와 한 줄의
+`report-result-1.0` JSON이다. runner는 CLI 응답과 ReportModel의 run ID, 파일명·출력 경계,
+파일 크기·SHA-256·ZIP signature를 검사하고 HWPX bytes를 별도 artifact로 보관한다.
 
-## 5. 마일스톤 현황
+## 플랫폼 상태와 다운로드
 
-| | 단계 | 상태 |
-|---|---|---|
-| M1 | 수집기 + seal (CLI `collect`) | ✅ 완료 (테스트 55) |
-| M2 | python-hwpx 스파이크 | ⬜ 다음 |
-| M3 | HWPX 작성기 | ⬜ |
-| M4 | 스크린샷 도구 (Node 샌드박스) | ⬜ |
-| M5 | LLM 도구 계층 | ⬜ |
-| M6 | 마스킹 | ⬜ |
-| M7 | LLM 루프 + 클라이언트 | ⬜ |
-| M8 | 진입점 `run` + stored_xss 프로필 | ⬜ |
-| M9 | generic·bola 프로필 | ⬜ |
-| M10 | 라이브 LLM 점검 (opt-in) | ⬜ |
-| M11 | 연동 요청·문서·검증 | ⬜ |
+`run.report`는 원래 검사 JSON이며 문서 상태는 별도 `run.reportDocument`로 저장한다.
 
-## 6. 결정 반영 현황 (PLAN §7)
+| 상태 | 의미 |
+| --- | --- |
+| `generating` | 문서 작성 중 |
+| `ready` | `artifactId`, `filename`이 있는 다운로드 가능 상태 |
+| `failed` | 모델·실행 환경·시간 제한·산출물 검사 등의 실패 또는 문서 생성 취소 |
+| `unavailable` | 보고서용 DeepSeek API 설정 없음·오류 |
+| `skipped` | fixture·중지·최종 검사 보고서 부재로 생성 생략 |
 
-- **Q11** 종결 — 사이트 어댑터와 `target.application` 식별 제거. 촬영을 LLM이 직접 하므로 불필요
-- **Q4** 종결 — 촬영에 필요한 정보는 수집기가 `hints/capture.json`에 담고, 없으면 LLM이 페이지에서 찾음
-- **Q1/Q5** 종결 — 호출 방식·시점을 우리가 설계. finalize 직후 CLI를 `ReportTrigger`로 호출
-- **Q13** 종결 — 이미지는 LLM이 필요에 따라 PNG로 촬영, 보고서 본문에 해시 미표기(manifest에만)
-- **Q7** 종결 — HWPX 목차 확정(§2.7). 기관 양식은 추후 반영
-- **Q8** 종결 — run 1건 = 보고서 1부. 월간/다건 집계 없음
-- **Q12** 종결 — 심각도는 LLM이 CVSS 3.1로 산출(상류 severity 병기). 재계산·검증 없음: LLM이 쓴 값을 그대로 둠
+상태에는 안전한 메시지·오류 코드·시각을 담으며 로컬 출력 경로나 API 키를 담지 않는다.
+`GET /api/runs/:runId/report.hwpx`는 로그인한 viewer도 이용할 수 있다. API는 해당 실행의
+준비된 `hwpx-report` artifact만 허용하고 bytes의 크기·해시를 다시 확인한다.
+`Content-Disposition`의 UTF-8 파일명으로 한국어 이름을 전달하며, DB를 다시 열어도 다운로드할 수 있다.
 
-남은 사용자 확인: 표지 기관 양식·로고 유무(Q7 세부)
+## 실행·보호 경계와 한계
+
+- 자동 생성은 Node runner가 기존 `agent/src/deepseek-config.js`로 설정을 해석해 Python에 전달한다.
+  Python CLI를 직접 실행할 때는 `DEEPSEEK_BASE_URL`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` 환경변수가
+  모두 필요하며 `.env`를 직접 읽지 않는다. 실제 실습의 자동 보고서는 모델 API 과금이 발생할 수 있다.
+- 플랫폼 runner는 기본 180초, 합산 stdout/stderr 1MB, HWPX 20MB 제한과 AbortSignal 취소를 적용한다.
+  Python 실행 파일은 `CA3P_REPORT_PYTHON`, `CASPER_DB_PYTHON`, OS 기본 Python 순으로 선택한다.
+  Python의 개별 모델 요청 제한은 300초이며 직접 실행한 도구 호출 루프에는 반복 상한이 없다.
+- 촬영은 정확한 `http://127.0.0.1:<port>`에 고정한다. GET/HEAD 외에는 수집된 세션 전환 한 번만
+  허용하고 외부 origin·일반 쓰기·WebSocket·서비스 워커·다운로드를 차단한다. 사진은 선택적인 보조 자료다.
+- `read_bundle`은 원본 봉인 bytes를 유지하면서 JSON 구조·텍스트를 마스킹한 뷰를 모델에 보낸다.
+  `finish_report`도 출력 모델을 마스킹한다. 모델의 원시 XML 삽입 대신 text-node API를 사용한다.
+- 취약점 판정·CVSS의 의미적 정확성은 검증하지 않는다. HWPX 구조 검사·식별자·파일 해시 검사는
+  보고서 서술의 사실성을 보장하지 않는다. 모델 실패 시 템플릿으로 대체하지 않으며 사람이 초안을 최종 검토한다.
+- 한 run당 한 보고서가 범위다. 월간·다건 집계와 기관 표지·로고 양식은 별도 후속 작업이다.
+
+## 검증 범위
+
+`report`는 integration manifest의 활성 모듈이며 CI는 Node runner·capture 테스트와 Python 테스트를
+실행한다. 가짜 모델을 사용해 수집·경로·마스킹·렌더링·취소·실패·게시판 수명·다운로드를 검사한다.
+`tests/integration.test.mjs`는 loopback 가짜 HTTP 모델 2턴으로 실제 Python CLI와 HWPX writer를 실행하고,
+ZIP·XML·한국어·escaping, binary 저장, viewer 다운로드, DB 재오픈 후 동일 bytes를 검증한다.
+capture sandbox의 요청 차단은 별도 브라우저 테스트로 확인한다. 유료 live LLM의 보고서 품질을 검증한
+결과는 이 문서에 포함하지 않는다.
