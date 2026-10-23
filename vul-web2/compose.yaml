@@ -1,0 +1,60 @@
+name: ca3p-universities
+
+services:
+  daehan:
+    build:
+      context: .
+      dockerfile: Dockerfile.daehan
+    image: ca3p-daehan:local
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "4101"
+    ports:
+      - "127.0.0.1:4101:4101"
+    volumes:
+      - daehan-data:/app/data
+    networks:
+      - daehan-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    init: true
+
+  wonchang:
+    build:
+      context: .
+      dockerfile: wonchang/Dockerfile
+    image: ca3p-wonchang:local
+    environment:
+      SERVER_ADDRESS: 0.0.0.0
+      SERVER_PORT: "4102"
+      WONCHANG_DB_PATH: /app/data/wonchang.sqlite
+    ports:
+      - "127.0.0.1:4102:4102"
+    volumes:
+      - wonchang-data:/app/data
+    networks:
+      - wonchang-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    init: true
+
+volumes:
+  daehan-data:
+  wonchang-data:
+
+networks:
+  daehan-net:
+    driver: bridge
+  wonchang-net:
+    driver: bridge

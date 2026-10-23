@@ -65,6 +65,17 @@
       "dependencies": []
     },
     {
+      "id": "vul-web2",
+      "path": "vul-web2",
+      "layer": "fixture",
+      "status": "active",
+      "sourceBranch": "typemnm/vul-web2",
+      "dependencies": [
+        "attack-module",
+        "guardrail"
+      ]
+    },
+    {
       "id": "agent-dashboard",
       "path": "agent-dashboard",
       "layer": "presentation",

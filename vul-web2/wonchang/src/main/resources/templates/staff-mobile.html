@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org" th:with="pageTitle=${'교직원 모바일 업무 | ' + site.name}">
+<head th:replace="~{fragments/head :: head}"></head>
+<body data-site="wonchang" th:attr="data-path=${activePath}">
+<th:block th:replace="~{fragments/header :: header}"></th:block>
+<main id="main-content">
+  <section class="page-hero page-hero-compact"><div class="container"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a><span aria-hidden="true">/</span><span>교직원 서비스</span><span aria-hidden="true">/</span><span>모바일 업무</span></nav><span class="eyebrow">STAFF SERVICE</span><h1>모바일 업무</h1><p>담당 중인 학생 지원 업무와 처리 현황을 확인하세요.</p></div></section>
+  <section class="content-section"><div class="container">
+    <div class="content-heading"><div><span class="eyebrow">MY CASES</span><h2>나의 담당 업무</h2></div><span class="status-chip" th:text="|${user.display_name} 담당|">담당</span></div>
+    <div class="side-service-layout">
+      <div class="side-service-list">
+        <a th:each="item : ${cases}" class="side-service-list-item" th:classappend="${selectedCase != null and selectedCase.id == item.id} ? ' is-selected'" th:href="@{/staff/mobile(id=${item.id})}"><span class="side-service-list-number" th:text="|관리번호 ${item.id} · ${item.case_no}|">관리번호</span><strong th:text="${item.category}">업무 분류</strong><span th:text="|${item.student_name} · ${item.updated_at}|">학생 · 처리일</span><span class="status-chip" th:text="${item.status}">접수</span></a>
+        <p th:if="${#lists.isEmpty(cases)}" class="empty-state">현재 배정된 업무가 없습니다.</p>
+      </div>
+      <div class="side-service-main">
+        <form class="side-service-lookup" action="/staff/mobile" method="get"><label for="staff-case-id">관리번호로 업무 조회</label><div class="side-service-lookup-controls"><input id="staff-case-id" name="id" type="number" min="1" step="1" inputmode="numeric" th:value="${lookupId}" placeholder="관리번호 입력" required><button class="button button-primary" type="submit">조회</button></div></form>
+        <article th:if="${selectedCase != null}" class="side-service-detail"><div class="side-service-detail-head"><span class="eyebrow">CASE DETAILS</span><h2 th:text="${selectedCase.category}">업무 분류</h2><p th:text="|접수번호 ${selectedCase.case_no} · 최종 변경 ${selectedCase.updated_at}|">접수번호</p></div><dl class="side-service-fields"><div class="side-service-field"><dt>관리번호</dt><dd th:text="${selectedCase.id}">1</dd></div><div class="side-service-field"><dt>처리 상태</dt><dd><span class="status-chip" th:text="${selectedCase.status}">접수</span></dd></div><div class="side-service-field"><dt>학생 이름</dt><dd th:text="${selectedCase.student_name}">학생</dd></div><div class="side-service-field"><dt>학번</dt><dd th:text="${selectedCase.student_no}">학번</dd></div><div class="side-service-field"><dt>연락처</dt><dd th:text="${selectedCase.contact}">연락처</dd></div></dl><div class="side-service-note"><h3>업무 메모</h3><p th:text="${selectedCase.note}">메모</p></div></article>
+        <div th:unless="${selectedCase != null}" class="side-service-empty"><strong>업무를 선택해 주세요.</strong><p>담당 업무 목록에서 항목을 선택하거나 관리번호를 입력하면 상세 내용을 확인할 수 있습니다.</p></div>
+      </div>
+    </div>
+  </div></section>
+</main>
+<footer th:replace="~{fragments/footer :: footer}"></footer>
+<script defer src="/js/site.js"></script>
+</body>
+</html>
