@@ -1,0 +1,10 @@
+.git
+**/node_modules
+**/target
+**/data
+**/*.log
+.env
+.env.*
+docs
+scripts
+README.md

@@ -1,0 +1,6 @@
+{% extends "layout.njk" %}
+{% block title %}{{ post.title }} | {{ site.name }}{% endblock %}
+{% block main %}
+<section class="page-hero page-hero-compact"><div class="container"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a><span aria-hidden="true">/</span><a href="/{% if post.type == 'news' %}news{% else %}notices{% endif %}">{% if post.type == 'news' %}대학 소식{% else %}공지사항{% endif %}</a><span aria-hidden="true">/</span><span>상세 보기</span></nav><span class="eyebrow">{{ site.enName }}</span><h1>{% if post.type == 'news' %}대학 소식{% else %}공지사항{% endif %}</h1></div></section>
+<article class="content-section"><div class="container article-container"><div class="article-head"><span class="pill">{% if post.type == 'news' %}대학 소식{% else %}공지사항{% endif %}</span><h2>{{ post.title }}</h2><div class="article-meta"><span>{{ post.author or site.name }}</span><time>{{ post.created_at }}</time><span>조회 {{ post.views or 0 }}</span></div></div><div class="article-body">{{ postHtml | safe }}</div><div class="article-actions"><a class="button button-dark" href="/{% if post.type == 'news' %}news{% else %}notices{% endif %}">목록으로</a>{% if user and user.role == 'admin' %}<a class="button button-line" href="/admin/posts/{{ post.id }}/edit">수정하기</a>{% endif %}</div></div></article>
+{% endblock %}

@@ -18,6 +18,8 @@ CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run verify
 
 `scripts/ci.mjs`는 integration-manifest에 등록된 활성 모듈의 test/tests를 자동 탐색한다. 새 파일을 package.json에 매번 열거하지 않는다. 독립 테스트 디렉터리가 없는 활성 모듈은 manifest의 `ci.suiteAssignments`에서 실제 통합 테스트 파일의 소유 suite를 지정한다. `pentest-db`는 카탈로그 조회·저장 영속성·잘못된 입력 거부, `adapters`는 casper-db·guardrail·xss-parser·gateway 경계, `worker`는 별도 프로세스의 큐 실행·기록 재개·취소를 검증한다. 배정한 파일이 사라지거나 활성 모듈의 suite가 비면 CI는 실패하고 `completeSuite=false`를 기록한다. Node skip/todo/cancelled, pytest skip/error는 게이트 실패다. Chromium 실제 실행, curl, Python 의존성을 먼저 확인한다.
 
+`vul-web2`는 독립 fixture 모듈로 등록한다. Node suite는 사이트별 IDOR 검증기의 경계와 정책을 검사한다. `container-smoke`는 두 대학 사이트의 임시 기능 smoke, 별도 Compose의 health check, 지속 DB를 변경하지 않는 배포 검사 및 기존 `guardrail`·`attack-module`을 사용한 제한된 IDOR 조회를 실행한다. 기존 대시보드 이미지는 `.dockerignore`에서 두 대학 사이트를 제외한다.
+
 요약의 `jobs`는 테스트 suite 단위이며 모든 활성 모듈에 별도 행이 있다. 배정된 통합 테스트는 한 suite에서만 실행·집계해 건수를 중복하지 않는다. `changedModules`는 코드 경로 변경을 나타내며 suite의 소유와 별개다.
 
 결과는 `reports/ci/latest.json`, 모듈별 로그, pytest JUnit XML에 저장한다. 보고서는 검사한 `commitSha`, GitHub event/ref, branch, worktreeDirty, completeSuite, 시각, 모듈별 통과·실패·skip을 기록한다. 준비 단계나 검증 프로세스가 중단되면 실패 보고서를 남기고 completeSuite=false로 표시한다. 일부 모듈이 실패해도 나머지 suite를 실행한 경우 completeSuite=true일 수 있으며, 이때 status는 failed다. `--node-only`, `--modules=agent,guardrail`, `--skip-preflight`는 일부 확인용이며 completeSuite=false다. 정식 검증은 옵션 없는 `npm run verify`다.

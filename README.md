@@ -6,6 +6,20 @@ Future Security Lab 지원사업으로 진행하는 CA3P 프로젝트에 대한
 
 [CI/CD 실행·배포 안내](docs/CI_CD.md), [이 장치에서 외부 접속하기](docs/DEVICE_DEPLOYMENT.md), [모듈 구조](docs/ARCHITECTURE.md)를 참고하세요. Node.js 24, Python 3.11+를 사용하며 전체 검증은 `npm run verify`입니다. GitHub PR의 `integration-gate`는 모든 모듈, 실제 Chromium 통합 및 Docker health check를 요구합니다.
 
+## 별도 대학 사이트 실습
+
+[`vul-web2`](vul-web2/README.md)의 대한대학교와 원창대학교는 기존 `vul-web-1` 게시판과 별도 이미지·컨테이너·네트워크·SQLite 볼륨에서 실행합니다. 각 사이트는 호스트의 `127.0.0.1:4101`과 `127.0.0.1:4102`에만 공개됩니다. 기존 대시보드 이미지는 두 실습 사이트를 포함하지 않습니다.
+
+```sh
+npm ci --prefix vul-web2
+docker compose -f vul-web2/compose.yaml up --build -d --wait
+node vul-web2/scripts/deployment-check.mjs
+npm --prefix vul-web2 run probe:idor
+docker compose -f vul-web2/compose.yaml down
+```
+
+`probe:idor`는 기존 `guardrail`의 정책 평가기와 `attack-module`의 제한된 curl 실행기를 사용해 두 사이트의 알려진 가상 레코드만 읽습니다. 담당자 본인·다른 담당자·학생 세션의 응답을 비교하며 로그인 정보와 레코드 본문은 결과에 남기지 않습니다. 더 넓은 사이트 기능 검증은 `npm --prefix vul-web2 run smoke`로 실행하며 임시 DB와 컨테이너를 사용합니다. 이 독립 실습은 대시보드의 `vul-web-1` XSS 실행과 별도로 CLI에서 시작합니다.
+
 # CI/CD 및 대시보드 테스트 가이드
 
 ## 1. 변경 전 로컬 검증

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org" th:with="pageTitle=${post.title + ' | ' + site.name}">
+<head th:replace="~{fragments/head :: head}"></head>
+<body data-site="wonchang" th:attr="data-path=${activePath}">
+<th:block th:replace="~{fragments/header :: header}"></th:block>
+<main id="main-content">
+  <section class="page-hero page-hero-compact"><div class="container"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a><span aria-hidden="true">/</span><a th:href="${post.type == 'news' ? '/news' : '/notices'}" th:text="${post.type == 'news' ? '대학 소식' : '공지사항'}">공지사항</a><span aria-hidden="true">/</span><span>상세 보기</span></nav><span class="eyebrow" th:text="${site.enName}">WONCHANG UNIVERSITY</span><h1 th:text="${post.type == 'news' ? '대학 소식' : '공지사항'}">공지사항</h1></div></section>
+  <article class="content-section"><div class="container article-container"><div class="article-head"><span class="pill" th:text="${post.type == 'news' ? '대학 소식' : '공지사항'}">공지사항</span><h2 th:text="${post.title}">제목</h2><div class="article-meta"><span th:text="${post.author != null and !#strings.isEmpty(post.author) ? post.author : site.name}">원창대학교</span><time th:text="${post.created_at}">2026-10-20</time><span th:text="|조회 ${post.views != null ? post.views : 0}|">조회 0</span></div></div><div class="article-body" th:text="${post.body}">내용</div><div class="article-actions"><a class="button button-dark" th:href="${post.type == 'news' ? '/news' : '/notices'}">목록으로</a><a th:if="${user != null and user.role == 'admin'}" class="button button-line" th:href="|/admin/posts/${post.id}/edit|">수정하기</a></div></div></article>
+</main>
+<footer th:replace="~{fragments/footer :: footer}"></footer>
+<script defer src="/js/site.js"></script>
+</body>
+</html>
