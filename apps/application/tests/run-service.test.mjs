@@ -8,8 +8,13 @@ import { createRunService } from '../run-service.mjs';
 function setup(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-service-test-')); const storePath = join(directory, 'runs.sqlite');
   const service = createRunService({ storePath, envFile: null, env: { ...process.env, DEEPSEEK_API_KEY: '' }, ...options });
-  t.after(async () => { await service.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { service, storePath };
+  const services = [service];
+  t.after(async () => { for (const item of services.reverse()) await item.close(); rmSync(directory, { recursive: true, force: true }); });
+  return { service, storePath, reopen(options = {}) {
+    const restarted = createRunService({ storePath, autoStartWorker: false, envFile: null,
+      env: { ...process.env, DEEPSEEK_API_KEY: '' }, ...options });
+    services.push(restarted); return restarted;
+  } };
 }
 async function waitFor(service, id, terminal = ['completed', 'failed', 'interrupted', 'cancelled']) {
   const deadline = Date.now() + 10_000;
@@ -21,7 +26,7 @@ async function waitFor(service, id, terminal = ['completed', 'failed', 'interrup
   throw new Error('Worker did not finish the run.');
 }
 test('a separate worker executes queued fixture runs and history survives API restart', async t => {
-  const { service, storePath } = setup(t);
+  const { service, reopen } = setup(t);
   const started = await service.start({ mode: 'core-fixture', target: 'https://display.invalid', delayMs: 0 });
   assert.equal(started.run.status, 'queued');
   const final = await waitFor(service, started.run.id);
@@ -30,7 +35,7 @@ test('a separate worker executes queued fixture runs and history survives API re
   assert.equal(final.events.length, 25); assert.equal(final.events.at(-1).sequence, 25);
   assert.ok(final.manifest.modules.agent.contentDigest); assert.ok(final.artifacts.some(item => item.kind === 'run-report'));
   await service.close();
-  const restarted = createRunService({ storePath, autoStartWorker: false, envFile: null }); t.after(() => restarted.close());
+  const restarted = reopen();
   assert.equal(restarted.getState().run.id, final.id); assert.equal(restarted.getRun(final.id).status, 'completed');
 });
 test('queued cancellation never reaches a worker; arbitrary lab targets are rejected', async t => {
@@ -42,28 +47,26 @@ test('queued cancellation never reaches a worker; arbitrary lab targets are reje
 });
 
 test('legacy imports remain in history without replacing the current interactive run', async t => {
-  const { service, storePath } = setup(t, { autoStartWorker: false, importLegacy: false });
+  const { service, reopen } = setup(t, { autoStartWorker: false, importLegacy: false });
   const live = await service.start({ mode: 'core-fixture' });
   service.store.importLegacyRun({ runId: 'legacy-after-live', report: {
     runId: 'legacy-after-live', status: 'completed', startedAt: new Date().toISOString(),
   }, events: [] });
   await service.close();
 
-  const restarted = createRunService({ storePath, autoStartWorker: false, importLegacy: false, envFile: null });
-  t.after(() => restarted.close());
+  const restarted = reopen({ importLegacy: false });
   assert.equal(restarted.getState().run.id, live.run.id);
   assert.equal(restarted.getRun('legacy-after-live').mode, 'legacy-import');
 });
 
 test('a store containing only legacy reports starts with an idle interactive state', async t => {
-  const { service, storePath } = setup(t, { autoStartWorker: false, importLegacy: false });
+  const { service, reopen } = setup(t, { autoStartWorker: false, importLegacy: false });
   service.store.importLegacyRun({ runId: 'legacy-only', report: {
     runId: 'legacy-only', status: 'completed', startedAt: new Date().toISOString(),
   }, events: [] });
   await service.close();
 
-  const restarted = createRunService({ storePath, autoStartWorker: false, importLegacy: false, envFile: null });
-  t.after(() => restarted.close());
+  const restarted = reopen({ importLegacy: false });
   assert.equal(restarted.getState().run.status, 'idle');
   assert.equal(restarted.listRuns({ mode: 'legacy-import' }).items.length, 1);
 });

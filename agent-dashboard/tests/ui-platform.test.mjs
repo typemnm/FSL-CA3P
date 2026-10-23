@@ -12,9 +12,15 @@ function snapshot(id, mode = 'core-fixture') {
 }
 const idle = { ...snapshot('', 'core-fixture'), id: null, status: 'idle', events: [], snapshots: {}, totalSteps: 19, step: 0 };
 const wrap = run => ({ instanceId: 'test-server', mode: run.mode, run, lab: { available: false } });
-async function setup(t, role = 'operator', ciRuns = null) {
+async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   const server = http.createServer(async (req, res) => {
     try {
+      if (req.url === '/api/runs/candidate/report.hwpx') {
+        const bytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 255]);
+        res.writeHead(200, { 'Content-Type': 'application/hwp+zip', 'Content-Length': bytes.length,
+          'Content-Disposition': `attachment; filename="report.hwpx"; filename*=UTF-8''${encodeURIComponent('검사 보고서.hwpx')}` });
+        return res.end(bytes);
+      }
       const filename = new URL(req.url, 'http://test').pathname.split('/').pop() || 'index.html';
       if (!/^[a-z-]+\.(?:html|js|css|svg)$/.test(filename)) { res.writeHead(404); return res.end(); }
       const body = await readFile(new URL(`../dist/${filename}`, import.meta.url));
@@ -33,6 +39,10 @@ async function setup(t, role = 'operator', ciRuns = null) {
     report: { result: 'prior evidence <img src=x onerror=alert(1)>' },
     manifest: { source: { commitSha: null }, provenance: 'legacy-import' },
   }];
+  if (reportOptions.document) {
+    runs[0] = { ...snapshot('candidate', 'local-lab-rule'), reportDocument: reportOptions.document };
+    if (reportOptions.live) state = runs[0];
+  }
   await page.route('**/api/**', async route => {
     const request = route.request(); const path = new URL(request.url()).pathname;
     const json = value => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
@@ -59,6 +69,7 @@ async function setup(t, role = 'operator', ciRuns = null) {
     if (path === '/api/comparisons') return json({ comparable: false, kind: 'code', baselineRunId: 'baseline', candidateRunId: 'candidate', conditions: [{ name: 'logicalInput', before: 'digest-a', after: 'digest-b', equal: false, available: true }], metrics: { baseline: { elapsedMs: 100, events: 1, modelCalls: 0, promptTokens: 0, tokenUsageAvailable: false }, candidate: { elapsedMs: 120, events: 2, modelCalls: 0, promptTokens: 0, tokenUsageAvailable: false } }, findingTransition: { before: 'not_reproduced', after: '<img src=x onerror=alert(1)>' }, moduleDiffs: [{ module: 'agent', changes: [{ path: '/value', before: 1, after: 2 }] }] });
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs });
     if (path === '/api/runs' && request.method() === 'POST') { mutations.push({ body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] }); state = snapshot('new-rule', request.postDataJSON().mode); runs.unshift(state); return json(wrap(state)); }
+    if (/^\/api\/runs\/[^/]+\/report\.hwpx$/.test(path)) return route.continue();
     const review = /^\/api\/runs\/([^/]+)\/reviews\/([^/]+)$/.exec(path);
     if (review && request.method() === 'POST') {
       reviews.push({ body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] });
@@ -74,8 +85,54 @@ async function setup(t, role = 'operator', ciRuns = null) {
   await page.locator('#login-username').fill('test-user'); await page.locator('#login-password').fill('test-password'); await page.locator('#login-submit').click();
   await page.locator('#login-dialog').waitFor({ state: 'hidden' });
   await page.waitForFunction(() => document.querySelector('#connection-status').textContent.includes('연결됨'));
-  return { page, mutations, reviews, errors, detailCalls: () => detailCalls };
+  return { page, mutations, reviews, errors, detailCalls: () => detailCalls,
+    setReportDocument(value) { runs[0].reportDocument = value; } };
 }
+
+test('a viewer downloads the saved HWPX after reopening central history and reloading', async t => {
+  const { page, errors } = await setup(t, 'viewer', null, { document: { status: 'ready', artifactId: 'a'.repeat(64), filename: '검사 보고서.hwpx' } });
+  await page.reload();
+  await page.locator('[data-view=sessions]').click();
+  await page.locator('[data-session=candidate]').click();
+  await page.locator('#history-banner').waitFor({ state: 'visible' });
+  await page.locator('[data-view=reports]').click();
+  const link = page.locator('#report-download-button');
+  await link.waitFor(); assert.equal(await link.getAttribute('href'), '/api/runs/candidate/report.hwpx');
+  assert.match(await page.locator('#report-document-status').textContent(), /준비됨/);
+  const downloading = page.waitForEvent('download'); await link.click();
+  const download = await downloading;
+  assert.equal(download.suggestedFilename(), '검사 보고서.hwpx');
+  assert.equal(await download.failure(), null);
+  assert.deepEqual(await readFile(await download.path()), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 255]));
+  assert.deepEqual(errors, []);
+});
+
+test('live report progress becomes downloadable, and failed or unconfigured reports stay disabled', async t => {
+  const { page, errors, setReportDocument } = await setup(t, 'viewer', null, { live: true, document: { status: 'generating' } });
+  await page.locator('[data-view=reports]').click();
+  await page.waitForFunction(() => document.querySelector('#report-document-status').textContent.includes('생성 중'));
+  assert.equal(await page.locator('#report-download-button').isDisabled(), true);
+  for (const [status, label] of [['failed', '생성 실패'], ['unavailable', '설정 필요']]) {
+    setReportDocument({ status, message: '<img src=x onerror=alert(1)>' });
+    await page.waitForFunction(text => document.querySelector('#report-document-status').textContent.includes(text), label);
+    assert.equal(await page.locator('#report-download-button').isDisabled(), true);
+    assert.equal(await page.locator('.report-document img').count(), 0);
+  }
+  setReportDocument({ status: 'ready', artifactId: 'b'.repeat(64), filename: '완료.hwpx' });
+  await page.waitForFunction(() => document.querySelector('#report-download-button').tagName === 'A');
+  assert.equal(await page.locator('#report-download-button').getAttribute('href'), '/api/runs/candidate/report.hwpx');
+  assert.deepEqual(errors, []);
+});
+
+test('fixture reports skip model generation while JSON export remains available', async t => {
+  const { page } = await setup(t);
+  await page.locator('[data-view=sessions]').click(); await page.locator('[data-session=candidate]').click();
+  await page.locator('#history-banner').waitFor({ state: 'visible' });
+  await page.locator('[data-view=reports]').click();
+  assert.match(await page.locator('#report-document-status').textContent(), /보고서 생성 생략/);
+  assert.equal(await page.locator('#report-download-button').isDisabled(), true);
+  assert.equal(await page.locator('#export-button').isEnabled(), true);
+});
 
 test('authenticated workspace loads central runs, starts a selected rule lab, and safely renders comparisons and platform evidence', async t => {
   const { page, mutations, reviews, errors, detailCalls } = await setup(t);
