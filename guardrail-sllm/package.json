@@ -1,0 +1,13 @@
+{
+  "name": "fsl-ca3p-sllm-guardrail",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Validate security test payloads with a local sLLM guardrail",
+  "main": "src/sllm-verdict.js",
+  "scripts": {
+    "test": "node --test test/sllm-guardrail.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
