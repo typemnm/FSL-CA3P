@@ -1,3 +1,5 @@
+// STRUCTURE_OUTPUT_V1
+import { toStructure } from './structure-output.mjs';
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 import { readDom } from './dom.mjs';
@@ -16,6 +18,13 @@ function checkLocalUrl(value) {
     throw new Error('--url must be an http(s) loopback URL: localhost, 127.0.0.1, or [::1].');
   }
   return url;
+}
+
+// Raw identity is used only in memory. Never compare redacted display URLs.
+function navigationKey(value) {
+  const url = new URL(value);
+  url.hash = '';
+  return url.href;
 }
 
 function displayUrl(value) {
@@ -113,7 +122,7 @@ function awaitWithSignal(promise, signal, onLateResolve) {
   });
 }
 
-function pageFromDom(id, pageUrl, dom, queryValues) {
+function pageFromDom(id, pageUrl, dom, queryValues, targetUrls) {
   const areas = dom.areas.map((area, index) => ({
     id: id + '-area-' + (index + 1),
     name: area.name,
@@ -128,11 +137,20 @@ function pageFromDom(id, pageUrl, dom, queryValues) {
     buttons: area.buttons,
     links: area.links.map(link => {
       rememberQueryValues(queryValues, link.url);
-      return { text: link.text, url: displayUrl(link.url), visited: false };
+      const item = { text: link.text, url: displayUrl(link.url), visited: false, targetPageId: null };
+      targetUrls.set(item, navigationKey(link.url));
+      return item;
     }),
     outputs: area.outputs
   }));
-  return { id, url: displayUrl(pageUrl), title: dom.title, areas, posts: dom.posts };
+  const posts = dom.posts.map(post => {
+    if (!post.url) return post;
+    rememberQueryValues(queryValues, post.url);
+    const item = { ...post, url: displayUrl(post.url), targetPageId: null };
+    targetUrls.set(item, navigationKey(post.url));
+    return item;
+  });
+  return { id, url: displayUrl(pageUrl), title: dom.title, areas, posts, events: dom.events || [] };
 }
 
 function compactReport(report) {
@@ -144,7 +162,7 @@ function compactReport(report) {
       }
     }
     for (const post of page.posts || []) if (!post.buttons.length) delete post.buttons;
-    for (const key of ['areas', 'posts', 'behaviors', 'renderRules', 'observedRequests']) {
+    for (const key of ['areas', 'posts', 'events', 'behaviors', 'renderRules', 'observedRequests']) {
       if (Array.isArray(page[key]) && !page[key].length) delete page[key];
     }
   }
@@ -169,9 +187,12 @@ export async function scan(inputUrl, options = {}) {
   const report = { schemaVersion: '3.4', startUrl: displayUrl(seed), pages: [], summary: {} };
   const queryValues = new Set();
   rememberQueryValues(queryValues, seed.href);
-  const queue = [seed.href];
+  const queue = [navigationKey(seed.href)];
   const queued = new Set(queue);
   const visited = new Set();
+  const loadedPages = new Map();
+  const targetUrls = new WeakMap();
+  const pageUrls = new Map();
   let elementListsTruncated = false;
   let scriptListsTruncated = false;
   let activeScriptBodies = null;
@@ -227,6 +248,7 @@ export async function scan(inputUrl, options = {}) {
         latePage => latePage.close().catch(() => {}));
       page.setDefaultNavigationTimeout(timeoutMs);
       const id = 'page-' + (report.pages.length + 1);
+      pageUrls.set(id, next);
       const scriptBodies = new Map();
       const observedRequests = [];
       activeScriptBodies = scriptBodies;
@@ -242,7 +264,11 @@ export async function scan(inputUrl, options = {}) {
         } catch { /* Ignore malformed request URLs. */ }
       });
       try {
-        await awaitWithSignal(page.goto(next, { waitUntil: 'domcontentloaded' }), signal);
+        const navigation = await awaitWithSignal(page.goto(next, { waitUntil: 'domcontentloaded' }), signal);
+        // goto resolves for HTTP errors as well. A denied/failed page is not a successful visit.
+        if (!navigation || navigation.status() >= 400) {
+          throw new Error('Navigation returned HTTP ' + (navigation?.status() ?? 'no response') + '.');
+        }
         if (options.readySelector) {
           await awaitWithSignal(page.waitForSelector(options.readySelector, { timeout: timeoutMs }), signal);
         }
@@ -252,8 +278,9 @@ export async function scan(inputUrl, options = {}) {
         const dom = await awaitWithSignal(page.evaluate(readDom, { includeBodyPreview: !options.hideBody }), signal);
         elementListsTruncated ||= dom.counts.areas > 100 || dom.counts.forms > 80 ||
           dom.counts.fields > 250 || dom.counts.buttons > 150 ||
-          dom.counts.links > 250 || dom.counts.outputs > 100 || dom.counts.posts > 50;
-        const reportPage = pageFromDom(id, page.url(), dom, queryValues);
+          dom.counts.links > 250 || dom.counts.outputs > 100 || dom.counts.posts > 50 ||
+          (dom.counts.events || 0) > 50;
+        const reportPage = pageFromDom(id, page.url(), dom, queryValues, targetUrls);
         const scripts = await awaitWithSignal(page.evaluate(() => [...document.scripts].map((script, index) => ({
           url: script.src || location.href + '#inline-' + (index + 1),
           source: script.src ? null : (script.textContent || '').slice(0, 1_000_001),
@@ -309,6 +336,8 @@ export async function scan(inputUrl, options = {}) {
           delete post.body.matchSelectors;
         }
         report.pages.push(reportPage);
+        loadedPages.set(navigationKey(next), id);
+        loadedPages.set(navigationKey(page.url()), id);
         for (const area of dom.areas) {
           for (const link of area.links) {
             let target;
@@ -331,16 +360,21 @@ export async function scan(inputUrl, options = {}) {
       }
     }
     throwIfAborted(signal);
-    const visitedUrls = new Set(report.pages.filter(page => !page.error).map(page => page.url));
     for (const page of report.pages) {
       for (const area of page.areas) {
         for (const link of area.links) {
-          const withoutHash = new URL(link.url);
-          withoutHash.hash = '';
-          link.visited = visitedUrls.has(withoutHash.href);
+          link.targetPageId = loadedPages.get(targetUrls.get(link)) ?? null;
+          link.visited = link.targetPageId !== null;
         }
       }
+      for (const post of page.posts || []) {
+        if (targetUrls.has(post)) post.targetPageId = loadedPages.get(targetUrls.get(post)) ?? null;
+      }
     }
+    const truncationReasons = [];
+    if (queue.length) truncationReasons.push('max-pages');
+    if (elementListsTruncated) truncationReasons.push('dom-limits');
+    if (scriptListsTruncated) truncationReasons.push('script-or-request-incomplete');
     const allAreas = report.pages.flatMap(page => page.areas);
     report.summary = {
       scope: 'visited-client-pages',
@@ -353,13 +387,15 @@ export async function scan(inputUrl, options = {}) {
       links: allAreas.reduce((sum, area) => sum + area.links.length, 0),
       outputs: allAreas.reduce((sum, area) => sum + area.outputs.reduce((count, output) => count + output.count, 0), 0),
       posts: report.pages.reduce((sum, page) => sum + (page.posts?.length || 0), 0),
+      events: report.pages.reduce((sum, page) => sum + (page.events?.length || 0), 0),
       behaviors: report.pages.reduce((sum, page) => sum + (page.behaviors?.length || 0), 0),
       observedRequests: report.pages.reduce((sum, page) => sum + (page.observedRequests?.length || 0), 0),
       errors: report.pages.filter(page => page.error).length,
-      truncated: queue.length > 0 || elementListsTruncated || scriptListsTruncated
+      truncated: truncationReasons.length > 0,
+      truncationReasons
     };
     compactReport(report);
-    return redactValues(report, queryValues);
+    return redactValues(options.structure ? toStructure(report, { targetUrls, pageUrls, loadedPages }) : report, queryValues);
   } finally {
     signal?.removeEventListener('abort', onAbort);
     if (closeOnAbort) await closeOnAbort;
