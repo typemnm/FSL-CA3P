@@ -1,56 +1,58 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from ca3p_report.trigger import TriggerError, parse_trigger
 
 
-def trigger(**overrides) -> dict:
+def trigger(root: Path, **overrides) -> dict:
     value = {
         "schemaVersion": "report-trigger-1.0",
         "runId": "run-1-abc",
         "sources": {
-            "run": {"kind": "pentest-db-disk", "location": "/data/runs"},
-            "history": {"kind": "casper-db", "location": "/data/cases.sqlite3"},
+            "run": {"kind": "pentest-db-disk", "location": str(root / "data/runs")},
+            "history": {"kind": "casper-db", "location": str(root / "data/cases.sqlite3")},
         },
-        "output": {"dir": "/out/run-1-abc"},
+        "output": {"dir": str(root / "out/run-1-abc")},
     }
     value.update(overrides)
     return value
 
 
-def test_parses_sources_and_output():
-    parsed = parse_trigger(trigger())
+def test_parses_sources_and_output(tmp_path):
+    parsed = parse_trigger(trigger(tmp_path))
     assert parsed.run.kind == "pentest-db-disk"
-    assert str(parsed.history.location) == "/data/cases.sqlite3"
-    assert str(parsed.output_dir) == "/out/run-1-abc"
+    assert parsed.history.location == tmp_path / "data/cases.sqlite3"
+    assert parsed.output_dir == tmp_path / "out/run-1-abc"
 
 
-def test_history_defaults_to_none():
-    parsed = parse_trigger(trigger(sources={"run": {"kind": "run-store", "location": "/r.sqlite"}}))
+def test_history_defaults_to_none(tmp_path):
+    parsed = parse_trigger(trigger(tmp_path,
+        sources={"run": {"kind": "run-store", "location": str(tmp_path / "r.sqlite")}}))
     assert parsed.history.kind == "none" and parsed.history.location is None
 
 
 @pytest.mark.parametrize(
-    "value",
+    "malform",
     [
-        trigger(runId="../escape"),
-        trigger(runId="x" * 129),
-        trigger(schemaVersion="report-trigger-0.9"),
-        trigger(unexpected=True),
-        trigger(output={"dir": "relative/out"}),
-        trigger(sources={"run": {"kind": "pentest-db-disk", "location": "runs"}}),
-        trigger(sources={"run": {"kind": "ftp", "location": "/x"}}),
-        trigger(sources={"run": {"kind": "run-store", "location": "/r", "extra": 1}}),
-        trigger(
-            sources={
-                "run": {"kind": "run-store", "location": "/r"},
-                "history": {"kind": "none", "location": "/x"},
-            }
-        ),
-        [],
+        lambda value: value.update(runId="../escape"),
+        lambda value: value.update(runId="x" * 129),
+        lambda value: value.update(schemaVersion="report-trigger-0.9"),
+        lambda value: value.update(unexpected=True),
+        lambda value: value.update(output={"dir": "relative/out"}),
+        lambda value: value["sources"]["run"].update(location="runs"),
+        lambda value: value["sources"]["run"].update(kind="ftp"),
+        lambda value: value["sources"]["run"].update(extra=1),
+        lambda value: value["sources"]["history"].update(kind="none"),
+        lambda value: [],
     ],
 )
-def test_rejects_malformed_triggers(value):
+def test_rejects_malformed_triggers(tmp_path, malform):
+    value = trigger(tmp_path)
+    changed = malform(value)
+    if changed is not None:
+        value = changed
     with pytest.raises(TriggerError):
         parse_trigger(value)

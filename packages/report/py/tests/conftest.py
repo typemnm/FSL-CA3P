@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import stat
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fixtures import CASE_ID, stored_xss_events, stored_xss_report
@@ -23,6 +27,34 @@ def _node_ready() -> bool:
 
 NODE_READY = _node_ready()
 needs_node = pytest.mark.skipif(not NODE_READY, reason="node with node:sqlite is required")
+
+
+@contextmanager
+def linked_entry(target: Path, link: Path, *, directory: bool = False):
+    """Use a real link when permitted; emulate its stat on Windows without link privilege.
+
+    Linux CI keeps the filesystem integration checks. The Windows fallback still exercises
+    the production link guards, without requiring an administrator or skipping the check.
+    """
+    try:
+        os.symlink(target, link, target_is_directory=directory)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 1314:
+            raise
+        original_lstat, original_is_symlink = Path.lstat, Path.is_symlink
+
+        def lstat(path, *args, **kwargs):
+            if path == link:
+                return os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+            return original_lstat(path, *args, **kwargs)
+
+        def is_symlink(path):
+            return path == link or original_is_symlink(path)
+
+        with patch.object(Path, "lstat", lstat), patch.object(Path, "is_symlink", is_symlink):
+            yield False
+    else:
+        yield True
 
 
 def write_sources(

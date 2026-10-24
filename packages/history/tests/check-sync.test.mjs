@@ -18,7 +18,7 @@ test('populated history matches a pinned revision, writes a draft idempotently, 
   Object.assign(example, { target_id: 'vul-web-1', endpoint: '/api/posts', method: 'POST', parameter: 'content', parameter_location: 'body', status: 'ready', vulnerability_url: 'http://127.0.0.1/api/posts' });
   const setup = spawnSync(python, ['-c', 'import json,sys; from casper_db.repository import CaseStore,initialize_database; r=json.load(sys.stdin); initialize_database(r["database"]); CaseStore(r["database"]).add(r["case"])'], {
     cwd: root, encoding: 'utf8', input: JSON.stringify({ database: databasePath, case: example }),
-    env: { ...process.env, PYTHONPATH: join(root, 'casper-db/src') } });
+    env: { ...process.env, PYTHONPATH: join(root, 'casper-db/src'), PYTHONIOENCODING: 'utf-8' } });
   assert.equal(setup.status, 0, setup.stderr);
   const origin = 'http://127.0.0.1:32123';
   const result = await matchCasperHistory({ report: { schemaVersion: '3.4', pages: [{ behaviors: [{ api: [{ method: 'POST', url: `${origin}/api/posts`, bodyKeys: ['content'] }] }] }] }, origin, databasePath, python });
