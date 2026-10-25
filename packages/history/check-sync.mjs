@@ -27,7 +27,7 @@ json.dump({'status':'synced','checks':saved},sys.stdout)
 function pythonJson(code, input, { python = process.env.CASPER_DB_PYTHON ?? 'python', signal } = {}) {
   return new Promise((resolveResult, reject) => {
     const child = spawn(python, ['-c', code], { cwd: root, shell: false, signal,
-      env: { ...process.env, PYTHONPATH: join(root, 'casper-db/src') }, stdio: ['pipe', 'pipe', 'pipe'] });
+      env: { ...process.env, PYTHONPATH: join(root, 'casper-db/src'), PYTHONIOENCODING: 'utf-8' }, stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '', bytes = 0;
     child.stdout.on('data', chunk => { bytes += chunk.length; if (bytes > 1024 * 1024) child.kill(); else output += chunk; });
     child.stderr.resume();

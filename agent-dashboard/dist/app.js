@@ -291,7 +291,7 @@ function renderStats() {
   $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || !model?.available;
   $('model-select').disabled = controlPending || active || !canOperate();
   $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : model?.available ? `${model.name || model.id} · 실행 준비됨` : '선택한 엔진을 사용할 수 없습니다. 서버 실행 환경과 모델 설정을 확인하세요.';
-  $('model-scope').textContent = model?.mode === 'local-lab-deepseek' ? 'AI는 허용된 단일 후보를 선택합니다. 최종 취약점 판정은 브라우저 증거와 규칙 엔진이 수행하며 API 호출은 과금될 수 있습니다.' : '규칙 엔진으로 실제 격리 게시판과 Chromium을 검사합니다. 모델 API 호출은 없습니다.';
+  $('model-scope').textContent = model?.mode === 'local-lab-deepseek' ? 'AI는 허용된 단일 후보를 선택하며 최종 판정은 브라우저 증거와 규칙 엔진이 수행합니다. 검사와 완료 후 보고서 생성의 모델 API 호출은 과금될 수 있습니다.' : '규칙 엔진 검사는 모델 API를 호출하지 않습니다. 완료 후 자동 보고서는 설정된 보고서 모델을 호출하며 과금될 수 있습니다.';
   $('new-session-button').disabled = !canOperate() || !connected || controlPending || active;
   $('export-button').disabled = item.events.length === 0;
   $('target-url').disabled = controlPending;
@@ -392,6 +392,23 @@ function renderModules() {
   }).join('');
   hydrateIcons($('module-grid'));
 }
+function reportDocumentMarkup(item) {
+  const document = item.reportDocument;
+  const status = document?.status ?? (item.simulated || item.mode === 'core-fixture' ? 'skipped'
+    : ['completed', 'failed', 'stopped', 'cancelled', 'interrupted'].includes(item.status) ? 'missing' : 'waiting');
+  const labels = { generating: '보고서 생성 중', ready: 'HWPX 보고서 준비됨', failed: '보고서 생성 실패', unavailable: '보고서 모델 설정 필요', skipped: '보고서 생성 생략', waiting: '실행 완료 후 보고서 생성', missing: '저장된 HWPX 보고서 없음' };
+  const descriptions = {
+    generating: '검사 결과로 보고서를 작성하고 있습니다. 생성이 완료되면 다운로드할 수 있습니다.',
+    ready: '저장된 HWPX 문서를 다운로드할 수 있습니다.',
+    failed: '검사 결과는 보존되어 있습니다. 보고서 생성 중 오류가 발생했습니다.',
+    unavailable: '보고서 모델 설정을 확인하세요. 검사 결과 JSON은 계속 확인할 수 있습니다.',
+    skipped: '모의 fixture, 중지되었거나 최종 검사 결과가 없는 실행은 보고서를 생성하지 않습니다. 저장된 실행 기록은 JSON으로 내보낼 수 있습니다.',
+    waiting: '실제 격리 실습이 완료되면 설정된 모델로 보고서를 자동 생성합니다.',
+    missing: '이 실행에는 생성된 HWPX 보고서 기록이 없습니다. 검사 결과 JSON을 확인하세요.',
+  };
+  const ready = status === 'ready' && typeof document?.artifactId === 'string' && !!item.id;
+  return `<section class="panel report-document" aria-labelledby="report-document-title"><div><h2 id="report-document-title">HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(labels[status] || labels.waiting)}</p><small>${escape(descriptions[status] || descriptions.waiting)}</small>${document?.message ? `<p class="report-document-message">${escape(document.message)}</p>` : ''}<small class="report-cost-note">실제 실습의 자동 보고서는 모델 API를 호출하며 과금될 수 있습니다.</small></div>${ready ? `<a class="button primary" id="report-download-button" href="${escape(runtime.reportDownloadUrl(item.id))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</a>` : `<button class="button secondary" id="report-download-button" disabled aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</button>`}</section>`;
+}
 function renderReports() {
   const item = currentRun();
   const lab = isLab(item);
@@ -400,6 +417,7 @@ function renderReports() {
     : lab ? `서버가 생성한 격리된 로컬 게시판(${escape(item.target || '준비 중')})에서 삭제 권한 가설 한 건을 검사했습니다. 입력 URL은 사용하지 않았습니다.`
     : 'RunOnce와 RuleReasoningEngine의 실제 코어 실행 결과입니다. 외부 모듈의 응답은 scripted fixture이며, 입력 URL은 표시용 메타데이터입니다. 실제 대상에 접속하거나 취약점을 확인하지 않았습니다.';
   $('report-content').innerHTML = `<section class="panel report-top"><div><div class="eyebrow">${lab ? 'ISOLATED LOCAL LAB REPORT' : 'CORE FIXTURE REPORT'}</div><h2>${lab ? '로컬 실습 게시판 실행 결과' : '코어 실행 결과와 fixture 검토 항목'}</h2><p>${escape(item.target || '실행 전')}</p><small>${escape(statusNames[item.status])} · ${item.step} / ${item.totalSteps} 이벤트 · ${escape(formatElapsed(item.elapsedMs))}</small></div><div class="report-count"><strong>${String(item.reviewItems.length).padStart(2,'0')}</strong><span>${lab ? '로컬 실습 검토 항목' : 'fixture 검토 항목'}</span></div></section><div class="report-items">${item.reviewItems.length ? item.reviewItems.map((review) => `<article class="panel report-item"><span class="review-tag"><span class="tiny-dot"></span>${lab ? review.vulnerabilityConfirmed ? 'LOCAL LAB · CONFIRMED' : 'LOCAL LAB · REVIEW' : 'FIXTURE · UNCONFIRMED'}</span><h2>${escape(review.title)}</h2><p>${escape(review.description)}</p><div class="evidence-box"><strong>${lab ? 'LOCAL LAB' : 'FIXTURE'} EVIDENCE / ${escape(review.evidenceId)}</strong>${escape(review.evidence)}</div></article>`).join('') : `<section class="panel empty-state"><span data-icon="file"></span><h3>최종 ${lab ? '실습' : 'fixture'} 결과 대기</h3><p>코어 실행 완료 후 검토 항목이 표시됩니다.</p></section>`}</div><div class="report-note">${note}</div>${item.report ? `<section class="panel core-report"><h2>${icon('file')}RunOnce 최종 리포트</h2><p>코어가 반환한 결과 · 내부 실행 ID ${escape(item.coreRunId || '—')} · 코어 origin ${escape(item.coreTargetOrigin || (lab ? '—' : 'http://127.0.0.1:3000'))}</p><pre tabindex="0" aria-label="RunOnce 최종 리포트 JSON">${highlightJSON(item.report)}</pre></section>` : ''}`;
+  $('report-content').insertAdjacentHTML('afterbegin', reportDocumentMarkup(item));
   hydrateIcons($('report-content'));
   if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
   if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
@@ -620,6 +638,8 @@ async function refreshHistory() {
       if (!payload.runs.length || !Number.isSafeInteger(payload.total) || offset >= payload.total) break;
     }
     history = records.map(item => redactTelemetry(item)).filter(item => isRun(item) || isLegacyRun(item)).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+    const inspectedUpdate = inspectedRun && history.find(item => item.id === inspectedRun.id);
+    if (inspectedUpdate) inspectedRun = { ...inspectedRun, reportDocument: inspectedUpdate.reportDocument };
     if (run.id && isRun(run) && !history.some(item => item.id === run.id)) history.unshift(structuredClone(run));
     centralHistoryLoaded = true; historyError = ''; updateComparisonSelectors(); render();
   } catch (error) { historyError = error.message; if (activeView === 'sessions') renderSessions(); }

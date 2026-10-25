@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { resolve, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { parseTap, parseJUnit, suitePassed } from './ci-results.mjs';
-import { createSuitePlan } from './ci-plan.mjs';
+import { createSuitePlan, completeSuiteCoverage } from './ci-plan.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const reportDir = resolve(root, 'reports/ci');
@@ -17,7 +17,8 @@ if (args.some(arg => !['--node-only', '--skip-preflight', '--dry-run'].includes(
 const manifest = JSON.parse(await readFile(resolve(root, 'integration-manifest.json'), 'utf8'));
 const { suites, problems, activeIds } = await createSuitePlan({ root, manifest, nodeOnly, selection });
 if (dryRun) {
-  console.log(JSON.stringify(suites.map(({ id, cwd, args }) => ({ id, cwd: relative(root, cwd), args })), null, 2));
+  console.log(JSON.stringify(suites.map(({ id, moduleId, resultFormat, cwd, args }) =>
+    ({ id, moduleId, resultFormat, cwd: relative(root, cwd), args })), null, 2));
   if (problems.length) { console.error(`CI suite discovery failed:\n${problems.join('\n')}`); process.exitCode = 1; }
   else process.exitCode = 0;
   process.exit();
@@ -72,12 +73,13 @@ for (const [id, file] of [['boundaries', 'check-boundaries.mjs'], ...(!skipPrefl
 }
 if (prerequisites) for (const suite of suites) {
   console.log(`\nRunning ${suite.id} tests`);
+  if (suite.resultFormat === 'junit') await rm(suite.resultFile, { force: true });
   const result = await execute(suite.command, suite.args, suite.cwd);
   await writeFile(join(reportDir, `${suite.id}.log`), result.output);
   let totals;
-  if (suite.id === 'casper-db') {
+  if (suite.resultFormat === 'junit') {
     let xml = '';
-    try { xml = await readFile(join(reportDir, 'casper-db.xml'), 'utf8'); } catch { /* pytest startup failure is reflected by exitCode. */ }
+    try { xml = await readFile(suite.resultFile, 'utf8'); } catch { /* pytest startup failure is reflected by exitCode. */ }
     totals = parseJUnit(xml);
   } else totals = parseTap(result.output);
   const passed = suitePassed(result.exitCode, totals);
@@ -87,8 +89,7 @@ if (prerequisites) for (const suite of suites) {
 }
 report.completedAt = new Date().toISOString();
 report.completeSuite = fullSuiteRequested && prerequisites && activeIds.length > 0
-  && activeIds.every(id => suites.some(suite => suite.id === id)
-    && report.jobs.some(job => job.id === id));
+  && completeSuiteCoverage({ activeIds, suites, jobs: report.jobs });
 report.status = prerequisites && report.jobs.every(job => job.status === 'passed')
   && suites.length > 0 && (!fullSuiteRequested || report.completeSuite) ? 'passed' : 'failed';
 report.failedJobs = report.jobs.filter(job => job.status === 'failed').length;

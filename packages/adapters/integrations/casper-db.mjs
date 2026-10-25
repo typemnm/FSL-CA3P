@@ -78,7 +78,7 @@ function runPython(input, { python, signal } = {}) {
       shell: false,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PYTHONPATH: PYTHON_SOURCE },
+      env: { ...process.env, PYTHONPATH: PYTHON_SOURCE, PYTHONIOENCODING: 'utf-8' },
       signal,
     });
     const stdout = [];

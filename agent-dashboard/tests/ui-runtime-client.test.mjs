@@ -30,6 +30,7 @@ test('remote deployment defaults to polling, forwards CSRF, and requests a selec
   assert.deepEqual(JSON.parse(start.options.body), { mode: 'local-lab-rule', modelId: 'rule-baseline' });
   assert.equal(start.options.headers['X-CSRF-Token'], 'csrf-a');
   await client.compare('baseline /?', 'candidate #');
+  assert.equal(client.reportDownloadUrl('run /?#'), '/api/runs/run%20%2F%3F%23/report.hwpx');
   const comparison = calls.find(call => call.path.startsWith('/api/comparisons'));
   assert.equal(new URL(comparison.path, 'http://test').searchParams.get('baseline'), 'baseline /?');
   client.close(); const count = calls.length; await pause(30); assert.equal(calls.length, count);

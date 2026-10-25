@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 from pathlib import Path
 
 import pytest
-from conftest import needs_node, tree_digest, write_sources
+from conftest import linked_entry, needs_node, tree_digest, write_sources
 from fixtures import PAYLOAD, stored_xss_events, stored_xss_report
 
 from ca3p_report.collect import CollectError, pentest_db, run_store
@@ -91,7 +90,7 @@ def test_events_without_final_report(tmp_path, run_id):
 @needs_node
 def test_pentest_db_rejects_mismatched_run_id(stored_run, run_id):
     report_file = run_dir(stored_run["reports_dir"], run_id) / "report.json"
-    record = json.loads(report_file.read_text())
+    record = json.loads(report_file.read_text(encoding="utf-8"))
     report_file.chmod(0o600)
     report_file.write_text(json.dumps({**record, "runId": "run-other"}))
     with pytest.raises(CollectError, match="mismatched runId"):
@@ -102,11 +101,11 @@ def test_pentest_db_rejects_mismatched_run_id(stored_run, run_id):
 def test_pentest_db_refuses_symlinked_artifacts(stored_run, run_id, tmp_path):
     report_file = run_dir(stored_run["reports_dir"], run_id) / "report.json"
     outside = tmp_path / "outside.json"
-    outside.write_text(report_file.read_text())
+    outside.write_text(report_file.read_text(encoding="utf-8"), encoding="utf-8")
     report_file.unlink()
-    os.symlink(outside, report_file)
-    with pytest.raises(CollectError, match="not a regular file"):
-        pentest_db.read_run(stored_run["reports_dir"], run_id)
+    with linked_entry(outside, report_file):
+        with pytest.raises(CollectError, match="not a regular file"):
+            pentest_db.read_run(stored_run["reports_dir"], run_id)
 
 
 @needs_node
@@ -185,9 +184,9 @@ def test_pentest_db_refuses_a_symlinked_run_directory(stored_run, run_id, tmp_pa
     real = run_dir(stored_run["reports_dir"], run_id)
     moved = tmp_path / "elsewhere"
     real.rename(moved)
-    os.symlink(moved, real)
-    with pytest.raises(CollectError, match="run entry is not a directory"):
-        pentest_db.read_run(stored_run["reports_dir"], run_id)
+    with linked_entry(moved, real, directory=True):
+        with pytest.raises(CollectError, match="run entry is not a directory"):
+            pentest_db.read_run(stored_run["reports_dir"], run_id)
 
 
 @needs_node
@@ -195,6 +194,6 @@ def test_pentest_db_refuses_a_symlinked_events_directory(stored_run, run_id, tmp
     events = run_dir(stored_run["reports_dir"], run_id) / "events"
     moved = tmp_path / "events-elsewhere"
     events.rename(moved)
-    os.symlink(moved, events)
-    with pytest.raises(CollectError, match="events entry is not a directory"):
-        pentest_db.read_run(stored_run["reports_dir"], run_id)
+    with linked_entry(moved, events, directory=True):
+        with pytest.raises(CollectError, match="events entry is not a directory"):
+            pentest_db.read_run(stored_run["reports_dir"], run_id)

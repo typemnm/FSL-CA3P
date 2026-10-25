@@ -27,15 +27,19 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-          cache-dependency-path: xss-parser/package-lock.json
+          cache-dependency-path: |
+            xss-parser/package-lock.json
+            packages/report/capture/package-lock.json
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
       - name: Install deterministic browser dependencies and Python test extras
         run: |
           npm ci --prefix xss-parser
+          npm ci --prefix packages/report/capture
           python -m pip install -r casper-db/requirements-ci.lock
-          python -m pip install --no-deps -e ./casper-db
+          python -m pip install -r packages/report/requirements-ci.lock
+          python -m pip install --no-deps -e ./casper-db -e ./packages/report/py
           cd xss-parser
           npx playwright install --with-deps chromium
       - name: Verify all modules, real browser integration and zero skips
@@ -43,6 +47,7 @@ jobs:
         run: node scripts/ci.mjs
         env:
           CASPER_DB_PYTHON: python
+          CA3P_REPORT_PYTHON: python
           CA3P_REQUIRE_BROWSER: '1'
       - name: Preserve a failed report when setup or verification stops early
         if: always()
