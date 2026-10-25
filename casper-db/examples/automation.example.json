@@ -1,0 +1,20 @@
+{
+  "schema_version": "db-automation-1",
+  "reports": [
+    {
+      "id": "cert-report",
+      "file": "../data/input/report.hwpx",
+      "target_id": null,
+      "source_kind": "imported",
+      "local_ocr": false,
+      "ocr_language": "ko"
+    }
+  ],
+  "external": [
+    {
+      "id": "github-advisories",
+      "source": "github",
+      "file": "../data/input/advisories.json"
+    }
+  ]
+}
