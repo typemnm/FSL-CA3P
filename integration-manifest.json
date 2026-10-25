@@ -62,7 +62,10 @@
       "layer": "fixture",
       "status": "active",
       "sourceBranch": "typemnm/vul-web",
-      "dependencies": []
+      "dependencies": [
+        "attack-module",
+        "guardrail"
+      ]
     },
     {
       "id": "vul-web2",
