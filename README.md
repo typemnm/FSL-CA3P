@@ -8,7 +8,7 @@ Future Security Lab 지원사업으로 진행하는 CA3P 프로젝트에 대한
 
 ## 별도 대학 사이트 실습
 
-[`vul-web2`](vul-web2/README.md)의 대한대학교와 원창대학교는 기존 `vul-web-1` 게시판과 별도 이미지·컨테이너·네트워크·SQLite 볼륨에서 실행합니다. 각 사이트는 호스트의 `127.0.0.1:4101`과 `127.0.0.1:4102`에만 공개됩니다. 기존 대시보드 이미지는 두 실습 사이트를 포함하지 않습니다.
+[`vul-web2`](vul-web2/README.md)의 대한대학교와 원창대학교는 기존 `vul-web-1` 게시판과 별도 이미지·컨테이너·네트워크·SQLite 볼륨에서 실행합니다. 각 사이트는 호스트의 `127.0.0.1:4101`과 `127.0.0.1:4102`에만 공개됩니다. 대시보드의 **실습 대상**에서 대학을 선택하고 에이전트가 접속할 IP·포트를 입력하면, 기존 IDOR 검증을 worker에서 실행하고 이벤트·판정·JSON 보고서를 중앙 실행 이력에 저장합니다. 실행 권한이 있는 관리자 계정이 필요하며 조회 계정은 저장된 결과만 볼 수 있습니다.
 
 ```sh
 npm ci --prefix vul-web2
@@ -18,7 +18,16 @@ npm --prefix vul-web2 run probe:idor
 docker compose -f vul-web2/compose.yaml down
 ```
 
-`probe:idor`는 기존 `guardrail`의 정책 평가기와 `attack-module`의 제한된 curl 실행기를 사용해 두 사이트의 알려진 가상 레코드만 읽습니다. 담당자 본인·다른 담당자·학생 세션의 응답을 비교하며 로그인 정보와 레코드 본문은 결과에 남기지 않습니다. 더 넓은 사이트 기능 검증은 `npm --prefix vul-web2 run smoke`로 실행하며 임시 DB와 컨테이너를 사용합니다. 이 독립 실습은 대시보드의 `vul-web-1` XSS 실행과 별도로 CLI에서 시작합니다.
+`probe:idor`는 기존 `guardrail`의 정책 평가기와 `attack-module`의 제한된 curl 실행기를 사용해 두 사이트의 알려진 가상 레코드만 읽습니다. 담당자 본인·다른 담당자·학생 세션의 응답을 비교하며 로그인 정보와 레코드 본문은 결과에 남기지 않습니다. CLI는 두 고정 루프백 주소를 사용합니다. 대시보드에서는 대학 프로필과 내부 HTTP 원점만 선택할 수 있고, 본문·경로·임의 명령은 입력하지 않습니다. 알려진 조회번호 1·3에 대한 GET 네 건을 허용하며, 규칙 기반 판정으로 모델 API를 호출하지 않습니다. IDOR는 JSON 보고서를 제공하고 XSS용 과거 사례 DB 기록과 HWPX 생성은 건너뜁니다. 이 검사는 범용 CERT 자동 탐색을 수행하지 않습니다. 더 넓은 사이트 기능 검증은 `npm --prefix vul-web2 run smoke`로 실행하며 임시 DB와 컨테이너를 사용합니다.
+
+Mac의 대시보드가 직접 실행 중이면 대한대는 `127.0.0.1:4101`, 원창대는 `127.0.0.1:4102`를 입력합니다. 주소는 사용자 브라우저가 아닌 **에이전트 서버 기준**입니다. 내부 IPv4(10/8, 172.16/12, 192.168/16)·루프백과 `localhost`, `host.docker.internal`, `daehan`, `wonchang`만 허용합니다. 사이트를 외부에 공개할 필요는 없습니다.
+
+대시보드도 Docker로 실행하면 별도 대학 네트워크에 연결하는 overlay를 사용합니다. 대학 Compose를 먼저 시작하고 다음 명령으로 대시보드를 올린 뒤, 주소에 각각 `daehan:4101`, `wonchang:4102`를 입력합니다.
+
+```sh
+docker compose -f vul-web2/compose.yaml up --build -d
+docker compose -f docker-compose.yml -f docker-compose.vul-web2.yml up --build -d
+```
 
 # CI/CD 및 대시보드 테스트 가이드
 

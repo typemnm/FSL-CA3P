@@ -29,8 +29,17 @@ function runtimeVersion(command, args) {
   catch { return null; }
 }
 export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
-  const modules = Object.fromEntries(['agent', 'xss-parser', 'attack-module', 'guardrail', 'casper-db', 'pentest-db',
-    'packages/adapters', 'packages/history', 'packages/evaluation', 'packages/report', 'apps/application', 'apps/worker']
+  const fixtureId = options.fixtureId ?? 'vul-web-1';
+  const universityOrigins = { 'vul-web2-daehan': 'http://127.0.0.1:4101', 'vul-web2-wonchang': 'http://127.0.0.1:4102' };
+  const universityLab = mode !== 'core-fixture' && Object.hasOwn(universityOrigins, fixtureId);
+  const universityOrigin = universityLab ? options.target ?? universityOrigins[fixtureId] : null;
+  const testProfile = options.testProfile ?? (universityLab ? 'known_record_idor_read'
+    : mode === 'core-fixture' ? 'agent_cross_user_delete_canary' : 'stored_xss_canary');
+  const moduleNames = universityLab
+    ? ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker']
+    : ['agent', 'xss-parser', 'attack-module', 'guardrail', 'casper-db', 'pentest-db',
+      'packages/adapters', 'packages/history', 'packages/evaluation', 'packages/report', 'apps/application', 'apps/worker'];
+  const modules = Object.fromEntries(moduleNames
     .map(name => [name, { contentDigest: treeDigest(join(PROJECT_ROOT, name)),
       packageVersion: (() => { try { return JSON.parse(readFileSync(join(PROJECT_ROOT, name, 'package.json'), 'utf8')).version; } catch { return null; } })() }]));
   const requestedModel = modelId === 'rule-baseline' ? null : modelId;
@@ -40,28 +49,31 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       ciWorkflowRunId: process.env.GITHUB_RUN_ID ?? null, ciAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
     contracts: CONTRACT_VERSIONS, modules,
     shared: { contractDigest: treeDigest(join(PROJECT_ROOT, 'packages/contracts')),
-      lockDigest: treeDigest(join(PROJECT_ROOT, 'xss-parser/package-lock.json')),
-      modelRegistryDigest: treeDigest(join(PROJECT_ROOT, 'packages/models')) },
+      lockDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'xss-parser/package-lock.json')),
+      modelRegistryDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')) },
     execution: { mode, simulated: mode === 'core-fixture', maxIterations: 1, delayMs: options.delayMs ?? 0 },
     model: { id: modelId, provider: model.provider ?? (requestedModel ? 'deepseek' : 'rules'), requestedModel,
-      reportedModel: null, snapshot: null, adapterDigest: treeDigest(join(PROJECT_ROOT, 'packages/models')),
-      promptTemplateDigest: treeDigest(join(PROJECT_ROOT, 'agent/src/deepseek-reasoning-engine.js')),
+      reportedModel: null, snapshot: null, adapterDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')),
+      promptTemplateDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'agent/src/deepseek-reasoning-engine.js')),
+      ...(universityLab ? { executionRole: 'not-used-fixed-probe' } : {}),
       settings: model.settings ?? {}, actualPromptDigests: [] },
-    data: { logicalInputDigest: digest({ mode, fixtureId: 'vul-web-1', testProfile: options.testProfile ?? 'stored_xss_canary' }),
-      datasetDigest: treeDigest(join(PROJECT_ROOT, mode === 'core-fixture' ? 'apps/application/scripted-gateway.cjs' : 'vul-web-1')),
-      catalogDigest: treeDigest(join(PROJECT_ROOT, 'pentest-db/cases.json')),
-      caseSnapshotDigest: mode === 'core-fixture' ? treeDigest(join(PROJECT_ROOT, 'apps/application/scripted-gateway.cjs'))
+    data: { logicalInputDigest: digest({ mode, fixtureId, testProfile, ...(universityLab ? { origin: universityOrigin } : {}) }),
+      datasetDigest: treeDigest(join(PROJECT_ROOT, universityLab ? 'vul-web2'
+        : mode === 'core-fixture' ? 'apps/application/scripted-gateway.cjs' : 'vul-web-1')),
+      catalogDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'pentest-db/cases.json')),
+      caseSnapshotDigest: universityLab ? null : mode === 'core-fixture' ? treeDigest(join(PROJECT_ROOT, 'apps/application/scripted-gateway.cjs'))
         : treeDigest(process.env.CASPER_DB_PATH ?? join(PROJECT_ROOT, 'casper-db/data/cases.sqlite3')),
       caseRevisions: [] },
-    target: { fixtureId: mode === 'core-fixture' ? 'scripted-contract-fixture' : 'vul-web-1',
+    target: { fixtureId: mode === 'core-fixture' ? 'scripted-contract-fixture' : fixtureId,
       imageDigest: process.env.CA3P_FIXTURE_IMAGE_DIGEST ?? null,
-      initialStateDigest: treeDigest(join(PROJECT_ROOT, 'vul-web-1/server.js')),
-      testProfile: options.testProfile ?? (mode === 'core-fixture' ? 'agent_cross_user_delete_canary' : 'stored_xss_canary') },
+      initialStateDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'vul-web-1/server.js')),
+      ...(universityLab ? { origin: universityOrigin, stateCapture: 'running-fixture-not-snapshotted' } : {}),
+      testProfile },
     policy: { rulesetDigest: treeDigest(join(PROJECT_ROOT, 'guardrail/rules')),
       mutationRetry: 'never', recovery: 'interrupted-new-run-required', maxIterations: 1 },
     environment: { nodeVersion: process.version,
-      pythonVersion: mode === 'core-fixture' ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? 'python', ['--version']),
-      browserVersion: mode === 'core-fixture' ? 'not-applicable' : (() => {
+      pythonVersion: mode === 'core-fixture' || universityLab ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? 'python', ['--version']),
+      browserVersion: mode === 'core-fixture' || universityLab ? 'not-applicable' : (() => {
         try {
           const require = createRequire(new URL('../../xss-parser/package.json', import.meta.url));
           const path = env.XSS_PARSER_BROWSER_PATH ?? require('playwright').chromium.executablePath();
@@ -75,7 +87,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
           return runtimeVersion(path, ['--version']);
         } catch { return null; }
       })(),
-      playwrightVersion: (() => { try { return JSON.parse(readFileSync(join(PROJECT_ROOT, 'xss-parser/node_modules/playwright/package.json'), 'utf8')).version; } catch { return null; } })(),
+      playwrightVersion: universityLab ? 'not-applicable' : (() => { try { return JSON.parse(readFileSync(join(PROJECT_ROOT, 'xss-parser/node_modules/playwright/package.json'), 'utf8')).version; } catch { return null; } })(),
       runnerImageDigest: process.env.CA3P_RUNNER_IMAGE_DIGEST ?? null },
     provenance: 'captured-before-execution', missingValuesMean: 'unavailable' };
 }

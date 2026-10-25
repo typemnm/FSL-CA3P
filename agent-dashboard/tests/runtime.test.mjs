@@ -33,6 +33,20 @@ function assertHttpError(operation, status) {
   });
 }
 
+test('the board runtime rejects university fixtures and target options before opening a lab', async t => {
+  let starts = 0;
+  const runtime = createLocalRuntime({ labConfigProvider: () => ({ provider: 'rules', available: true }),
+    labFactory: async () => { starts += 1; throw new Error('Unexpected board startup'); } });
+  t.after(() => runtime.close());
+  for (const options of [null, [], { target: 'http://127.0.0.1:4101' },
+    { fixtureId: 'vul-web2-daehan' }, { fixtureId: 'vul-web2-wonchang' }, { fixtureId: null },
+    { fixtureId: 'vul-web-1', target: undefined }]) {
+    await assert.rejects(runtime.startLab(options), { status: 400 });
+    assert.equal(runtime.getState().run.status, 'idle');
+  }
+  assert.equal(starts, 0);
+});
+
 test('the real core completes through fixture I/O without any network or provider connection', async t => {
   const runtime = createLocalRuntime({ defaultDelayMs: 0 });
   const originalFetch = globalThis.fetch;
