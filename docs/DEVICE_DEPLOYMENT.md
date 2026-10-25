@@ -38,4 +38,21 @@ CASPER_DB_PYTHON="$PWD/.venv/bin/python" PORT=4174 npm run serve:external
 
 출력과 `.runtime/public-url.txt`에서 임시 HTTPS 주소를 확인한다. 서버·터널 로그는 `.runtime/server.log`, `.runtime/tunnel.log`에 저장된다. 주소는 터널 재시작 시 바뀔 수 있다. 이미 4174 포트의 Quick Tunnel이 실행 중이면 두 번째 인스턴스를 시작하지 않는다.
 
-외부 사용자의 실제 검사는 서버가 생성한 `vul-web-1` 격리 게시판으로 제한된다. fixture 입력 URL은 표시용이며 접속하지 않는다. 실습 시작을 누를 때만 별도 브라우저와 게시판을 실행한다. DeepSeek 모델은 API 키를 별도로 설정한 경우에만 호출되며 비용이 발생할 수 있다.
+기존 게시판 실습은 서버가 생성한 `vul-web-1`에서 실행한다. 모의 코어의 fixture 입력 URL은 표시용이며 접속하지 않는다. 게시판 실습 시작을 누를 때만 별도 브라우저와 게시판을 실행한다. DeepSeek 모델은 API 키를 별도로 설정한 경우에만 호출되며 비용이 발생할 수 있다. 아래 대학 실습은 별도로 실행 중인 컨테이너의 입력 원점에 접속한다.
+
+## 대학 사이트 실습 반영
+
+대시보드의 대학 실습 선택과 IP·포트 입력 기능은 해당 변경이 포함된 체크아웃을 배포한 뒤 사용할 수 있다. `develop` 병합이나 CI 결과 수집만으로 실행 중인 LaunchAgent가 바뀌지 않는다. **통합 상태**의 소스 SHA로 실제 반영 여부를 확인한다.
+
+Mac의 실행 체크아웃에서 대학 사이트를 시작한다.
+
+```sh
+docker compose -f vul-web2/compose.yaml up --build -d
+docker compose -f vul-web2/compose.yaml ps
+```
+
+새 대시보드 코드를 배포하고 LaunchAgent를 재시작한 뒤 관리자 계정으로 대학 실습을 실행한다. 현재처럼 대시보드를 Mac에서 직접 실행하면 대한대 주소는 `127.0.0.1:4101`, 원창대 주소는 `127.0.0.1:4102`다. 사이트 포트를 외부 공개하거나 Nginx Proxy Manager에 추가할 필요는 없다. 조회 전용 계정은 실행 이력과 JSON 결과를 볼 수 있지만 실행을 시작하지 못한다.
+
+대시보드를 Docker로 전환하면 `docker-compose.yml`(또는 `docker-compose.deploy.yml`)과 `docker-compose.vul-web2.yml`을 함께 적용한다. 대학 Compose의 전용 네트워크가 이미 존재해야 하며 입력 주소는 `daehan:4101`, `wonchang:4102`다. 컨테이너의 `127.0.0.1`은 Mac 호스트를 가리키지 않는다.
+
+대학 실습은 가상 계정 로그인 후 알려진 레코드 네 건을 읽는 IDOR 검증이며 모델 API·HWPX를 호출하지 않는다. 실행 이력의 대학명·입력 원점·증거·판정과 JSON 내보내기로 확인한다. 임의 CERT 탐색이나 vul-web2의 다른 취약점 검사는 포함하지 않는다.

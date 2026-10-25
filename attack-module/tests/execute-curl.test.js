@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const { createServer } = require('node:http');
 const { after, before, test } = require('node:test');
-const { executeCurl } = require('../index');
+const { executeCurl, executeUniversityRead } = require('../index');
 
 const requests = [];
 let server;
@@ -48,6 +48,32 @@ before(async () => {
 after(async () => {
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
+});
+
+test('university transport accepts only the chosen profile records and GET without query/body', async () => {
+  const options = { allowedOrigin: origin, siteKey: 'daehan' };
+  const initialCount = requests.length;
+  const result = await executeUniversityRead({ method: 'GET', url: `${origin}/api/admissions/partner/applications/3` }, options);
+  assert.equal(result.success, true);
+  assert.equal(requests.length, initialCount + 1);
+  for (const command of [
+    { method: 'POST', url: `${origin}/api/admissions/partner/applications/3` },
+    { method: 'DELETE', url: `${origin}/api/admissions/partner/applications/3` },
+    { method: 'GET', url: `${origin}/api/admissions/partner/applications/2` },
+    { method: 'GET', url: `${origin}/api/staff/mobile/cases/3` },
+    { method: 'GET', url: `${origin}/api/admissions/partner/applications/3?x=1` },
+  ]) assert.equal((await executeUniversityRead(command, options)).error, 'university_read_not_allowed');
+  assert.equal(requests.length, initialCount + 1);
+});
+
+test('private university addresses require the explicit read-only transport', async () => {
+  const privateOrigin = 'http://192.168.0.84:4101';
+  const command = { method: 'GET', url: `${privateOrigin}/api/admissions/partner/applications/1` };
+  assert.equal((await executeCurl(command, { allowedOrigin: privateOrigin })).error, 'invalid_allowed_origin');
+  assert.equal((await executeUniversityRead(command, { allowedOrigin: privateOrigin, siteKey: 'unknown' })).error, 'invalid_university_profile');
+  const publicOrigin = 'http://8.8.8.8:4101';
+  assert.equal((await executeUniversityRead({ ...command, url: `${publicOrigin}/api/admissions/partner/applications/1` },
+    { allowedOrigin: publicOrigin, siteKey: 'daehan' })).error, 'invalid_allowed_origin');
 });
 
 test('executes JSON GET, POST, and DELETE requests with trusted cookies', async () => {
