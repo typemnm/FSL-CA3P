@@ -1,0 +1,34 @@
+{% extends "layout.njk" %}
+{% block title %}{{ site.name }} | {{ site.tagline }}{% endblock %}
+{% block main %}
+<section class="home-hero" aria-labelledby="hero-title">
+  <div class="hero-photo" aria-hidden="true"></div><div class="hero-overlay" aria-hidden="true"></div>
+  <div class="container hero-inner">
+    <div class="hero-copy"><span class="hero-kicker">{{ site.enName }}</span><h1 id="hero-title">{{ site.heroTitle }}</h1><p>{{ site.heroSubtitle }}</p><div class="hero-actions"><a class="button button-light" href="/about">대학 알아보기 <span aria-hidden="true">↗</span></a><a class="button button-outline-light" href="/admissions">입학 안내 <span aria-hidden="true">→</span></a></div></div>
+    <div class="hero-index" aria-hidden="true"><span>01</span><i></i><span>03</span></div>
+  </div>
+  <div class="container hero-quicklinks" aria-label="자주 찾는 서비스">
+    <a href="/admissions"><span class="quick-icon" aria-hidden="true">01</span><span>입학 안내<small>새로운 시작을 위한 길</small></span><b aria-hidden="true">↗</b></a>
+    <a href="/academics"><span class="quick-icon" aria-hidden="true">02</span><span>학사 안내<small>배움의 모든 과정</small></span><b aria-hidden="true">↗</b></a>
+    <a href="/research"><span class="quick-icon" aria-hidden="true">03</span><span>연구·산학<small>내일을 향한 도전</small></span><b aria-hidden="true">↗</b></a>
+    <a href="/campus"><span class="quick-icon" aria-hidden="true">04</span><span>캠퍼스 안내<small>함께하는 대학 생활</small></span><b aria-hidden="true">↗</b></a>
+  </div>
+</section>
+
+<section class="home-section home-notice-section" aria-labelledby="notice-heading"><div class="container">
+  <div class="section-title-row"><div><span class="eyebrow">CAMPUS NOTICE</span><h2 id="notice-heading">알림과 안내</h2><p>대학의 주요 소식을 가장 먼저 전합니다.</p></div><a class="text-link" href="/notices">공지사항 전체보기 <span aria-hidden="true">↗</span></a></div>
+  <div class="notice-layout">
+    {% if featured %}<a class="featured-notice" href="/notices/{{ featured.id }}"><span class="pill">주요 공지</span><h3>{{ featured.title }}</h3><p>{{ featured.body | truncate(140) }}</p><span class="featured-more">자세히 보기 <span aria-hidden="true">→</span></span></a>{% endif %}
+    <div class="notice-list">{% for item in notices %}<a href="/notices/{{ item.id }}"><span class="notice-type">공지</span><span class="notice-text">{{ item.title }}</span><time>{{ item.created_at }}</time><span class="notice-arrow" aria-hidden="true">↗</span></a>{% else %}<p class="empty-state">등록된 공지사항이 없습니다.</p>{% endfor %}</div>
+  </div>
+</div></section>
+
+<section class="home-section home-news-section" aria-labelledby="news-heading"><div class="container">
+  <div class="section-title-row"><div><span class="eyebrow">UNIVERSITY NEWS</span><h2 id="news-heading">{{ site.name }}의 오늘</h2><p>배움과 도전이 이어지는 현장을 만나보세요.</p></div><a class="text-link" href="/news">소식 전체보기 <span aria-hidden="true">↗</span></a></div>
+  <div class="news-grid">{% for item in news %}<a class="news-card" href="/news/{{ item.id }}"><div class="news-visual news-visual-{{ loop.index }}"><span>{% if loop.index < 10 %}0{% endif %}{{ loop.index }}</span></div><div class="news-card-body"><span class="card-kicker">CAMPUS STORY</span><h3>{{ item.title }}</h3><p>{{ item.body | truncate(90) }}</p><time>{{ item.created_at }}</time></div></a>{% else %}<p class="empty-state">등록된 대학 소식이 없습니다.</p>{% endfor %}</div>
+</div></section>
+
+<section class="feature-band"><div class="container feature-band-inner"><div><span class="eyebrow">BEYOND THE CLASSROOM</span><h2>배움이 지역과 만나<br>새로운 내일이 됩니다.</h2><p>{{ site.name }}는 교육과 연구를 통해 더 나은 미래를 만들어 갑니다.</p></div><a class="round-arrow" href="/research" aria-label="연구·산학 안내 보기">↗</a></div></section>
+
+<section class="home-section events-section" aria-labelledby="events-heading"><div class="container"><div class="section-title-row"><div><span class="eyebrow">ACADEMIC CALENDAR</span><h2 id="events-heading">학사일정</h2><p>학기 주요 일정을 확인하세요.</p></div><a class="text-link" href="/schedule">일정 전체보기 <span aria-hidden="true">↗</span></a></div><div class="event-strip">{% for event in events %}<a href="/schedule"><span class="event-date">{{ event.date }}</span><strong>{{ event.title }}</strong><small>{{ event.location }}</small><span aria-hidden="true">↗</span></a>{% else %}<p class="empty-state">등록된 일정이 없습니다.</p>{% endfor %}</div></div></section>
+{% endblock %}

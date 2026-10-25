@@ -1,0 +1,181 @@
+{
+  "$defs": {
+    "CandidateMatch": {
+      "properties": {
+        "case_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_revision": {
+          "title": "Case Revision",
+          "type": "integer"
+        },
+        "report_source": {
+          "enum": [
+            "synthetic",
+            "manual",
+            "imported",
+            "unknown"
+          ],
+          "title": "Report Source",
+          "type": "string"
+        },
+        "vulnerability_type": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Vulnerability Type",
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "retest_candidate",
+            "manual_review"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "matched_fields": {
+          "items": {
+            "enum": [
+              "target_id",
+              "endpoint",
+              "method",
+              "parameter",
+              "parameter_location"
+            ],
+            "type": "string"
+          },
+          "title": "Matched Fields",
+          "type": "array"
+        },
+        "changed_fields": {
+          "items": {
+            "enum": [
+              "target_id",
+              "endpoint",
+              "method",
+              "parameter",
+              "parameter_location"
+            ],
+            "type": "string"
+          },
+          "title": "Changed Fields",
+          "type": "array"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "next_step": {
+          "title": "Next Step",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "case_revision",
+        "report_source",
+        "vulnerability_type",
+        "decision",
+        "matched_fields",
+        "changed_fields",
+        "reason",
+        "next_step"
+      ],
+      "title": "CandidateMatch",
+      "type": "object"
+    },
+    "ParserObservation": {
+      "additionalProperties": false,
+      "description": "Minimum agreed output from the endpoint parser for one input point.",
+      "properties": {
+        "target_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "endpoint": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD",
+            "OPTIONS"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "parameter": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Parameter",
+          "type": "string"
+        },
+        "parameter_location": {
+          "default": "unknown",
+          "enum": [
+            "query",
+            "body",
+            "path",
+            "header",
+            "cookie",
+            "fragment",
+            "unknown"
+          ],
+          "title": "Parameter Location",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_id",
+        "endpoint",
+        "method",
+        "parameter"
+      ],
+      "title": "ParserObservation",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "observation": {
+      "$ref": "#/$defs/ParserObservation"
+    },
+    "decision": {
+      "enum": [
+        "retest_candidate",
+        "manual_review",
+        "no_match"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "matches": {
+      "items": {
+        "$ref": "#/$defs/CandidateMatch"
+      },
+      "title": "Matches",
+      "type": "array"
+    },
+    "explanation": {
+      "title": "Explanation",
+      "type": "string"
+    }
+  },
+  "required": [
+    "observation",
+    "decision",
+    "matches",
+    "explanation"
+  ],
+  "title": "ObservationAssessment",
+  "type": "object"
+}

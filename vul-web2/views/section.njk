@@ -1,0 +1,9 @@
+{% extends "layout.njk" %}
+{% block title %}{{ heading }} | {{ site.name }}{% endblock %}
+{% block main %}
+<section class="page-hero"><div class="container"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a><span aria-hidden="true">/</span><span>{{ heading }}</span></nav><span class="eyebrow">{{ site.enName }}</span><h1>{{ heading }}</h1><p>{{ intro }}</p></div></section>
+<section class="content-section"><div class="container">
+  {% if bodyHtml %}<div class="section-prose"{% if activePath == '/about' %} id="vision"{% endif %}>{{ bodyHtml | safe }}</div>{% endif %}
+  {% if cards and cards.length %}<div class="section-cards"{% if activePath == '/colleges' %} id="departments"{% endif %}>{% for card in cards %}<a class="section-card" href="{{ card.href }}"{% if activePath == '/about' and loop.index == 3 %} id="campus"{% elif activePath == '/research' and loop.index == 2 %} id="industry"{% endif %}><span class="card-number">{% if loop.index < 10 %}0{% endif %}{{ loop.index }}</span><span class="card-content"><h2>{{ card.title }}</h2><p>{{ card.description }}</p></span><span class="card-arrow" aria-hidden="true">↗</span></a>{% endfor %}</div>{% endif %}
+</div></section>
+{% endblock %}

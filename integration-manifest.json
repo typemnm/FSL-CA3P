@@ -1,0 +1,282 @@
+{
+  "schemaVersion": "1.0",
+  "baselineSha": "0e850e02788381fac2b6b33d0b29c0c8408e0905",
+  "runtime": {
+    "node": "24",
+    "python": "3.11",
+    "playwright": "1.58.2"
+  },
+  "integrationBranch": "develop",
+  "releaseBranch": "main",
+  "modules": [
+    {
+      "id": "agent",
+      "path": "agent",
+      "layer": "core",
+      "status": "active",
+      "sourceBranch": "1mn2147/loop_agent",
+      "dependencies": []
+    },
+    {
+      "id": "xss-parser",
+      "path": "xss-parser",
+      "layer": "adapter",
+      "status": "active",
+      "sourceBranch": "Skirt/xss-parser",
+      "dependencies": []
+    },
+    {
+      "id": "attack-module",
+      "path": "attack-module",
+      "layer": "adapter",
+      "status": "active",
+      "dependencies": []
+    },
+    {
+      "id": "guardrail",
+      "path": "guardrail",
+      "layer": "policy",
+      "status": "active",
+      "sourceBranch": "finedust06/guardrail",
+      "dependencies": []
+    },
+    {
+      "id": "casper-db",
+      "path": "casper-db",
+      "layer": "knowledge",
+      "status": "active",
+      "sourceBranch": "gyun/previous_db",
+      "dependencies": []
+    },
+    {
+      "id": "pentest-db",
+      "path": "pentest-db",
+      "layer": "knowledge",
+      "status": "active",
+      "sourceBranch": "nahyun06/pentest-db",
+      "dependencies": []
+    },
+    {
+      "id": "vul-web-1",
+      "path": "vul-web-1",
+      "layer": "fixture",
+      "status": "active",
+      "sourceBranch": "typemnm/vul-web",
+      "dependencies": []
+    },
+    {
+      "id": "vul-web2",
+      "path": "vul-web2",
+      "layer": "fixture",
+      "status": "active",
+      "sourceBranch": "typemnm/vul-web2",
+      "dependencies": [
+        "attack-module",
+        "guardrail"
+      ]
+    },
+    {
+      "id": "agent-dashboard",
+      "path": "agent-dashboard",
+      "layer": "presentation",
+      "status": "active",
+      "dependencies": [
+        "agent",
+        "xss-parser",
+        "attack-module",
+        "guardrail",
+        "casper-db",
+        "pentest-db",
+        "vul-web-1",
+        "contracts",
+        "run-store",
+        "evaluation",
+        "models",
+        "application",
+        "api",
+        "adapters"
+      ]
+    },
+    {
+      "id": "contracts",
+      "path": "packages/contracts",
+      "layer": "contracts",
+      "status": "active",
+      "dependencies": []
+    },
+    {
+      "id": "run-store",
+      "path": "packages/run-store",
+      "layer": "persistence",
+      "status": "active",
+      "dependencies": [
+        "contracts"
+      ]
+    },
+    {
+      "id": "evaluation",
+      "path": "packages/evaluation",
+      "layer": "evaluation",
+      "status": "active",
+      "dependencies": [
+        "contracts"
+      ]
+    },
+    {
+      "id": "adapters",
+      "path": "packages/adapters",
+      "layer": "adapter",
+      "status": "active",
+      "dependencies": [
+        "agent",
+        "xss-parser",
+        "attack-module",
+        "guardrail",
+        "casper-db",
+        "pentest-db",
+        "vul-web-1"
+      ]
+    },
+    {
+      "id": "models",
+      "path": "packages/models",
+      "layer": "model-adapters",
+      "status": "active",
+      "dependencies": [
+        "contracts",
+        "agent"
+      ]
+    },
+    {
+      "id": "history",
+      "path": "packages/history",
+      "layer": "knowledge-adapter",
+      "status": "active",
+      "dependencies": [
+        "contracts",
+        "casper-db",
+        "run-store"
+      ]
+    },
+    {
+      "id": "application",
+      "path": "apps/application",
+      "layer": "application",
+      "status": "active",
+      "dependencies": [
+        "contracts",
+        "run-store",
+        "evaluation",
+        "models",
+        "agent",
+        "worker",
+        "adapters"
+      ]
+    },
+    {
+      "id": "worker",
+      "path": "apps/worker",
+      "layer": "execution",
+      "status": "active",
+      "dependencies": [
+        "contracts",
+        "run-store",
+        "evaluation",
+        "models",
+        "history",
+        "application",
+        "adapters"
+      ]
+    },
+    {
+      "id": "api",
+      "path": "apps/api",
+      "layer": "transport",
+      "status": "active",
+      "dependencies": [
+        "contracts",
+        "run-store",
+        "evaluation",
+        "models",
+        "history",
+        "application"
+      ]
+    },
+    {
+      "id": "xss-fuzzer",
+      "path": "xss-fuzzer",
+      "layer": "legacy",
+      "status": "replaced",
+      "sourceBranch": "Skirt/xss-fuzzer",
+      "replacement": [
+        "attack-module",
+        "xss-parser"
+      ],
+      "reason": "Replaced by the current parser/attack execution pipeline; source branch remains available for reference."
+    }
+  ],
+  "boundaries": [
+    {
+      "path": "agent-dashboard/dist",
+      "allow": [
+        "agent-dashboard"
+      ]
+    },
+    {
+      "path": "packages/contracts",
+      "allow": [
+        "contracts"
+      ]
+    },
+    {
+      "path": "packages/run-store",
+      "allow": [
+        "run-store",
+        "contracts"
+      ]
+    },
+    {
+      "path": "packages/evaluation",
+      "allow": [
+        "evaluation",
+        "contracts"
+      ]
+    },
+    {
+      "path": "packages/adapters",
+      "allow": [
+        "adapters",
+        "agent",
+        "xss-parser",
+        "attack-module",
+        "guardrail",
+        "casper-db",
+        "pentest-db",
+        "vul-web-1"
+      ]
+    }
+  ],
+  "ci": {
+    "requiredCheck": "integration-gate",
+    "allModules": true,
+    "requiredSkippedTests": 0,
+    "liveModelCalls": false,
+    "suiteAssignments": {
+      "pentest-db": [
+        "agent-dashboard/tests/pentest-db-integration.test.mjs"
+      ],
+      "adapters": [
+        "agent-dashboard/tests/casper-db-integration.test.mjs",
+        "agent-dashboard/tests/guardrail-integration.test.mjs",
+        "agent-dashboard/tests/xss-gateway.test.mjs",
+        "agent-dashboard/tests/xss-parser-integration.test.mjs"
+      ],
+      "worker": [
+        "apps/application/tests/run-service.test.mjs"
+      ]
+    }
+  },
+  "migration": {
+    "legacyComposition": "Compatibility wrappers remain in agent-dashboard; execution adapters and lab gateway live in packages/adapters."
+  }
+}

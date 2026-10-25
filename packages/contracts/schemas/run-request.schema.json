@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ca3p.local/contracts/run-request/1.0",
+  "title": "CA3P bounded lab request",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "mode": {"enum": ["core-fixture", "local-lab-rule", "local-lab-deepseek"]},
+    "modelId": {"enum": ["rule-baseline", "deepseek-flash", "deepseek-v4-pro"]},
+    "fixtureId": {"const": "vul-web-1"},
+    "target": {"type": "string", "maxLength": 2048},
+    "delayMs": {"type": "integer", "minimum": 0, "maximum": 3000},
+    "testProfile": {"enum": ["stored_xss_canary", "agent_cross_user_delete_canary"]}
+  },
+  "allOf": [{"if": {"properties": {"mode": {"enum": ["local-lab-rule", "local-lab-deepseek"]}}, "required": ["mode"]},
+    "then": {"not": {"required": ["target"]}}}]
+}
