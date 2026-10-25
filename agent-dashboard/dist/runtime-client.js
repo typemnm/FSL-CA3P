@@ -130,8 +130,8 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       const value = await request('/api/runs', { target, delayMs, mode: 'core-fixture', ...options });
       receive(value); return value;
     },
-    async startLab(modelId, mode = 'local-lab-deepseek') {
-      const value = await request('/api/runs', { mode, ...(modelId ? { modelId } : {}) });
+    async startLab(modelId, mode = 'local-lab-deepseek', fixtureId = 'vul-web-1', target) {
+      const value = await request('/api/runs', { mode, ...(modelId ? { modelId } : {}), ...(fixtureId !== 'vul-web-1' ? { fixtureId } : {}), ...(target ? { target } : {}) });
       receive(value); return value;
     },
     async stop(id) { const value = await request(`/api/runs/${encodeURIComponent(id)}/stop`, {}); receive(value); return value; },

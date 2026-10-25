@@ -156,3 +156,65 @@ test('CLI selection is fixed to the two Compose loopback origins', async () => {
   await assert.rejects(runConfiguredSites({ args: ['--url', 'http://example.com'] }),
     /accepts no URL/);
 });
+
+test('progress callbacks expose only bounded observations with the supplied run identity', async () => {
+  const target = await mockUniversity('daehan');
+  const observations = [];
+  try {
+    const report = await probeSite({ siteKey: 'daehan', origin: target.origin, runId: 'dashboard-run',
+      onObservation: value => observations.push(value) });
+    assert.equal(report.runId, 'dashboard-run');
+    assert.deepEqual(observations, report.evidence);
+    assert.ok(observations.every(value => Object.keys(value).sort().join(',') === 'check,ownerId,recordId,status'));
+    assert.doesNotMatch(JSON.stringify(observations), /private fixture|private@example|sid=|Partner2026/);
+  } finally { await target.close(); }
+});
+
+test('cancellation and a bounded deadline interrupt login before any read is issued', async () => {
+  for (const cancel of [true, false]) {
+    const controller = new AbortController();
+    let requests = 0; let reads = 0;
+    // Keep the process alive while AbortSignal.timeout uses its unref timer.
+    const keepAlive = setTimeout(() => {}, 1000);
+    const cancelling = cancel ? setTimeout(() => controller.abort(), 10) : null;
+    try {
+      await assert.rejects(probeSite({ siteKey: 'daehan', signal: controller.signal, timeoutMs: cancel ? 1000 : 10,
+        fetchImpl: (_url, { signal }) => { requests += 1; return new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }); }, curlImpl: async () => { reads += 1; } }));
+      assert.equal(requests, 1); assert.equal(reads, 0);
+    } finally { clearTimeout(keepAlive); clearTimeout(cancelling); }
+  }
+});
+
+test('transport failures stop the probe and never claim an inconclusive successful execution', async () => {
+  let reads = 0; const observations = [];
+  await assert.rejects(probeSite({ siteKey: 'daehan',
+    fetchImpl: async () => new Response(null, { status: 302,
+      headers: { location: '/mypage', 'set-cookie': 'sid=fixturetoken; Path=/' } }),
+    curlImpl: async () => { reads += 1; return { success: false, status: null, error: 'PRIVATE ERROR' }; },
+    onObservation: value => observations.push(value),
+  }), error => error.code === 'IDOR_REQUEST_FAILED' && !error.message.includes('PRIVATE'));
+  assert.equal(reads, 1); assert.equal(observations.length, 0);
+});
+
+test('private target policy preserves exact origins while rejecting public hosts and URL paths', () => {
+  for (const origin of ['http://192.168.0.84:4101', 'http://10.0.0.2:4102', 'http://host.docker.internal:4101']) {
+    const ruleset = createIdorRuleset({ siteKey: 'daehan', origin });
+    assert.equal(ruleset.hardDenyRules.find(rule => rule.id === 'SCOPE-ORIGIN').when.value, origin);
+  }
+  for (const origin of ['http://8.8.8.8:4101', 'http://example.com:4101', 'http://127.0.0.1:4101/admin',
+    'http://user:pass@192.168.0.84:4101', 'http://192.168.0.84:4101?target=x']) {
+    assert.throws(() => createIdorRuleset({ siteKey: 'daehan', origin }));
+  }
+});
+
+test('a failed login still records contact without exposing its response or credentials', async () => {
+  const contacts = [];
+  await assert.rejects(probeSite({ siteKey: 'daehan',
+    fetchImpl: async () => new Response('PRIVATE LOGIN BODY', { status: 401 }),
+    onContact: (...args) => contacts.push(args),
+    curlImpl: () => assert.fail('failed login must not issue record reads'),
+  }), /login did not complete/);
+  assert.deepEqual(contacts, [[]]);
+});
