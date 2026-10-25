@@ -1,6 +1,10 @@
+// STRUCTURE_OUTPUT_V1
+import { toStructure } from './structure-output.mjs';
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 import { readDom } from './dom.mjs';
+import { createWebInventory, readResourceReferences, MODULE_ID, LIMITS } from './web-dependencies.mjs';
+export { MODULE_ID } from './web-dependencies.mjs';
 import { analyzeScript } from './script-hints.mjs';
 
 const CHROME_ON_MAC = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -16,6 +20,13 @@ function checkLocalUrl(value) {
     throw new Error('--url must be an http(s) loopback URL: localhost, 127.0.0.1, or [::1].');
   }
   return url;
+}
+
+// Raw identity is used only in memory. Never compare redacted display URLs.
+function navigationKey(value) {
+  const url = new URL(value);
+  url.hash = '';
+  return url.href;
 }
 
 function displayUrl(value) {
@@ -75,7 +86,7 @@ function validateOptions(options) {
 }
 
 function abortError(signal) {
-  const error = new Error('xss-parser scan aborted.', { cause: signal?.reason });
+  const error = new Error('web-parser scan aborted.', { cause: signal?.reason });
   error.name = 'AbortError';
   return error;
 }
@@ -113,7 +124,7 @@ function awaitWithSignal(promise, signal, onLateResolve) {
   });
 }
 
-function pageFromDom(id, pageUrl, dom, queryValues) {
+function pageFromDom(id, pageUrl, dom, queryValues, targetUrls) {
   const areas = dom.areas.map((area, index) => ({
     id: id + '-area-' + (index + 1),
     name: area.name,
@@ -128,11 +139,20 @@ function pageFromDom(id, pageUrl, dom, queryValues) {
     buttons: area.buttons,
     links: area.links.map(link => {
       rememberQueryValues(queryValues, link.url);
-      return { text: link.text, url: displayUrl(link.url), visited: false };
+      const item = { text: link.text, url: displayUrl(link.url), visited: false, targetPageId: null };
+      targetUrls.set(item, navigationKey(link.url));
+      return item;
     }),
     outputs: area.outputs
   }));
-  return { id, url: displayUrl(pageUrl), title: dom.title, areas, posts: dom.posts };
+  const posts = dom.posts.map(post => {
+    if (!post.url) return post;
+    rememberQueryValues(queryValues, post.url);
+    const item = { ...post, url: displayUrl(post.url), targetPageId: null };
+    targetUrls.set(item, navigationKey(post.url));
+    return item;
+  });
+  return { id, url: displayUrl(pageUrl), title: dom.title, areas, posts, events: dom.events || [] };
 }
 
 function compactReport(report) {
@@ -144,7 +164,7 @@ function compactReport(report) {
       }
     }
     for (const post of page.posts || []) if (!post.buttons.length) delete post.buttons;
-    for (const key of ['areas', 'posts', 'behaviors', 'renderRules', 'observedRequests']) {
+    for (const key of ['areas', 'posts', 'events', 'behaviors', 'renderRules', 'observedRequests']) {
       if (Array.isArray(page[key]) && !page[key].length) delete page[key];
     }
   }
@@ -158,7 +178,7 @@ export async function scan(inputUrl, options = {}) {
   const maxPages = options.maxPages ?? 10;
   const waitMs = options.waitMs ?? 500;
   const timeoutMs = options.timeoutMs ?? 10000;
-  const chromePath = options.browserPath || process.env.XSS_PARSER_BROWSER_PATH ||
+  const chromePath = options.browserPath || process.env.WEB_PARSER_BROWSER_PATH || process.env.XSS_PARSER_BROWSER_PATH ||
     (existsSync(CHROME_ON_MAC) ? CHROME_ON_MAC : undefined);
   const browser = await awaitWithSignal(
     chromium.launch({ headless: !options.headed,
@@ -169,12 +189,17 @@ export async function scan(inputUrl, options = {}) {
   const report = { schemaVersion: '3.4', startUrl: displayUrl(seed), pages: [], summary: {} };
   const queryValues = new Set();
   rememberQueryValues(queryValues, seed.href);
-  const queue = [seed.href];
+  const queue = [navigationKey(seed.href)];
   const queued = new Set(queue);
   const visited = new Set();
+  const loadedPages = new Map();
+  const targetUrls = new WeakMap();
+  const pageUrls = new Map();
   let elementListsTruncated = false;
   let scriptListsTruncated = false;
   let activeScriptBodies = null;
+  let activePageId = null;
+  const webInventory = createWebInventory(seed.origin, displayUrl);
   let context;
   let closeOnAbort;
   const onAbort = () => {
@@ -192,22 +217,41 @@ export async function scan(inputUrl, options = {}) {
     await awaitWithSignal(context.routeWebSocket('**/*', socket => socket.close()), signal);
     await awaitWithSignal(context.route('**/*', async route => {
       const request = route.request();
+      const ownerPageId = activePageId;
+      const requestScriptBodies = activeScriptBodies;
       const url = new URL(request.url());
-      if (url.origin !== seed.origin || !READ_METHODS.has(request.method())) {
+      if (url.origin !== seed.origin || url.username || url.password || !READ_METHODS.has(request.method())) {
+        if (ownerPageId && ['script', 'stylesheet'].includes(request.resourceType())) {
+          webInventory.mark('resource-request-blocked');
+        }
         await route.abort().catch(() => {});
         return;
       }
       try {
         const response = await route.fetch({ maxRedirects: 0, timeout: timeoutMs });
-        if (activeScriptBodies && request.resourceType() === 'script') {
-          if (activeScriptBodies.size >= 30 || Number(response.headers()['content-length'] || 0) > 1_000_000) {
-            scriptListsTruncated = true;
-          } else {
-            const body = await response.body();
-            if (body.length <= 1_000_000) activeScriptBodies.set(request.url(), body.toString('utf8'));
-            else scriptListsTruncated = true;
-          }
+        const kind = request.resourceType();
+        const status = response.status();
+        const headers = response.headers();
+        if (ownerPageId && kind === 'document' && status >= 200 && status < 300) {
+          webInventory.headers(ownerPageId, headers);
         }
+        let inspectedBody;
+        if (requestScriptBodies && kind === 'script') {
+          if (requestScriptBodies.size >= 30 || Number(headers['content-length'] || 0) > 1_000_000) {
+            scriptListsTruncated = true;
+          } else if (status >= 200 && status < 300) {
+            const body = await response.body();
+            if (body.length <= 1_000_000) {
+              inspectedBody = body.toString('utf8');
+              requestScriptBodies.set(request.url(), inspectedBody);
+            } else scriptListsTruncated = true;
+          }
+        } else if (ownerPageId && kind === 'stylesheet' && status >= 200 && status < 300 &&
+          Number(headers['content-length'] || 0) <= LIMITS.sourceBytes) {
+          const body = await response.body();
+          if (body.length <= LIMITS.sourceBytes) inspectedBody = body.toString('utf8');
+        }
+        if (ownerPageId) webInventory.response(ownerPageId, request.url(), kind, status, inspectedBody);
         if (response.status() >= 300 && response.status() < 400) {
           await route.fulfill({ status: 403, body: '' });
         } else {
@@ -227,6 +271,8 @@ export async function scan(inputUrl, options = {}) {
         latePage => latePage.close().catch(() => {}));
       page.setDefaultNavigationTimeout(timeoutMs);
       const id = 'page-' + (report.pages.length + 1);
+      pageUrls.set(id, next);
+      activePageId = id;
       const scriptBodies = new Map();
       const observedRequests = [];
       activeScriptBodies = scriptBodies;
@@ -242,7 +288,11 @@ export async function scan(inputUrl, options = {}) {
         } catch { /* Ignore malformed request URLs. */ }
       });
       try {
-        await awaitWithSignal(page.goto(next, { waitUntil: 'domcontentloaded' }), signal);
+        const navigation = await awaitWithSignal(page.goto(next, { waitUntil: 'domcontentloaded' }), signal);
+        // goto resolves for HTTP errors as well. A denied/failed page is not a successful visit.
+        if (!navigation || navigation.status() >= 400) {
+          throw new Error('Navigation returned HTTP ' + (navigation?.status() ?? 'no response') + '.');
+        }
         if (options.readySelector) {
           await awaitWithSignal(page.waitForSelector(options.readySelector, { timeout: timeoutMs }), signal);
         }
@@ -252,8 +302,10 @@ export async function scan(inputUrl, options = {}) {
         const dom = await awaitWithSignal(page.evaluate(readDom, { includeBodyPreview: !options.hideBody }), signal);
         elementListsTruncated ||= dom.counts.areas > 100 || dom.counts.forms > 80 ||
           dom.counts.fields > 250 || dom.counts.buttons > 150 ||
-          dom.counts.links > 250 || dom.counts.outputs > 100 || dom.counts.posts > 50;
-        const reportPage = pageFromDom(id, page.url(), dom, queryValues);
+          dom.counts.links > 250 || dom.counts.outputs > 100 || dom.counts.posts > 50 ||
+          (dom.counts.events || 0) > 50;
+        const reportPage = pageFromDom(id, page.url(), dom, queryValues, targetUrls);
+        webInventory.references(id, await awaitWithSignal(page.evaluate(readResourceReferences), signal));
         const scripts = await awaitWithSignal(page.evaluate(() => [...document.scripts].map((script, index) => ({
           url: script.src || location.href + '#inline-' + (index + 1),
           source: script.src ? null : (script.textContent || '').slice(0, 1_000_001),
@@ -264,6 +316,7 @@ export async function scan(inputUrl, options = {}) {
         const behaviors = [];
         for (const script of scripts) {
           if (script.type && !['module', 'text/javascript', 'application/javascript'].includes(script.type)) continue;
+          if (!script.external) webInventory.inline(id, page.url(), scripts.indexOf(script) + 1, script.source, script.type);
           if (script.external ? ++externalCount > 30 : ++inlineCount > 20) {
             scriptListsTruncated = true;
             continue;
@@ -309,6 +362,8 @@ export async function scan(inputUrl, options = {}) {
           delete post.body.matchSelectors;
         }
         report.pages.push(reportPage);
+        loadedPages.set(navigationKey(next), id);
+        loadedPages.set(navigationKey(page.url()), id);
         for (const area of dom.areas) {
           for (const link of area.links) {
             let target;
@@ -327,20 +382,26 @@ export async function scan(inputUrl, options = {}) {
           error: error.message.slice(0, 180) });
       } finally {
         activeScriptBodies = null;
+        activePageId = null;
         try { await page.close(); } catch { /* Aborting may already have closed the browser. */ }
       }
     }
     throwIfAborted(signal);
-    const visitedUrls = new Set(report.pages.filter(page => !page.error).map(page => page.url));
     for (const page of report.pages) {
       for (const area of page.areas) {
         for (const link of area.links) {
-          const withoutHash = new URL(link.url);
-          withoutHash.hash = '';
-          link.visited = visitedUrls.has(withoutHash.href);
+          link.targetPageId = loadedPages.get(targetUrls.get(link)) ?? null;
+          link.visited = link.targetPageId !== null;
         }
       }
+      for (const post of page.posts || []) {
+        if (targetUrls.has(post)) post.targetPageId = loadedPages.get(targetUrls.get(post)) ?? null;
+      }
     }
+    const truncationReasons = [];
+    if (queue.length) truncationReasons.push('max-pages');
+    if (elementListsTruncated) truncationReasons.push('dom-limits');
+    if (scriptListsTruncated) truncationReasons.push('script-or-request-incomplete');
     const allAreas = report.pages.flatMap(page => page.areas);
     report.summary = {
       scope: 'visited-client-pages',
@@ -353,13 +414,25 @@ export async function scan(inputUrl, options = {}) {
       links: allAreas.reduce((sum, area) => sum + area.links.length, 0),
       outputs: allAreas.reduce((sum, area) => sum + area.outputs.reduce((count, output) => count + output.count, 0), 0),
       posts: report.pages.reduce((sum, page) => sum + (page.posts?.length || 0), 0),
+      events: report.pages.reduce((sum, page) => sum + (page.events?.length || 0), 0),
       behaviors: report.pages.reduce((sum, page) => sum + (page.behaviors?.length || 0), 0),
       observedRequests: report.pages.reduce((sum, page) => sum + (page.observedRequests?.length || 0), 0),
       errors: report.pages.filter(page => page.error).length,
-      truncated: queue.length > 0 || elementListsTruncated || scriptListsTruncated
+      truncated: truncationReasons.length > 0,
+      truncationReasons
     };
     compactReport(report);
-    return redactValues(report, queryValues);
+    const result = options.structure ? toStructure(report, { targetUrls, pageUrls, loadedPages }) : report;
+    result.moduleId = MODULE_ID;
+    result.dependencies = webInventory.snapshot();
+    if (report.pages.length && report.summary.errors === report.pages.length) result.dependencies.status = 'unavailable';
+    if (report.summary.truncated) result.dependencies.coverage.reasons.push('page-scan-incomplete');
+    if (report.summary.errors) result.dependencies.coverage.reasons.push('page-errors');
+    const sanitized = redactValues(result, queryValues);
+    // Generated contract identity is not target-controlled text.
+    sanitized.moduleId = MODULE_ID;
+    sanitized.schemaVersion = options.structure ? 'structure-1.0' : '3.4';
+    return sanitized;
   } finally {
     signal?.removeEventListener('abort', onAbort);
     if (closeOnAbort) await closeOnAbort;
