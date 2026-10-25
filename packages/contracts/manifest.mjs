@@ -30,7 +30,7 @@ function runtimeVersion(command, args) {
 }
 export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
   const modules = Object.fromEntries(['agent', 'xss-parser', 'attack-module', 'guardrail', 'casper-db', 'pentest-db',
-    'packages/adapters', 'packages/history', 'packages/evaluation', 'apps/application', 'apps/worker']
+    'packages/adapters', 'packages/history', 'packages/evaluation', 'packages/report', 'apps/application', 'apps/worker']
     .map(name => [name, { contentDigest: treeDigest(join(PROJECT_ROOT, name)),
       packageVersion: (() => { try { return JSON.parse(readFileSync(join(PROJECT_ROOT, name, 'package.json'), 'utf8')).version; } catch { return null; } })() }]));
   const requestedModel = modelId === 'rule-baseline' ? null : modelId;
@@ -65,6 +65,13 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
         try {
           const require = createRequire(new URL('../../xss-parser/package.json', import.meta.url));
           const path = env.XSS_PARSER_BROWSER_PATH ?? require('playwright').chromium.executablePath();
+          // Windows Chromium is a GUI executable and does not print --version.
+          // Read the installed binary's version resource for the same manifest.
+          if (process.platform === 'win32') return execFileSync('powershell.exe', [
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+            '(Get-Item -LiteralPath $env:CA3P_BROWSER_EXECUTABLE).VersionInfo.ProductVersion',
+          ], { env: { ...process.env, CA3P_BROWSER_EXECUTABLE: path }, encoding: 'utf8',
+            windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 }).trim() || null;
           return runtimeVersion(path, ['--version']);
         } catch { return null; }
       })(),

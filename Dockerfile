@@ -13,12 +13,17 @@ ENV PATH="/opt/ca3p-venv/bin:${PATH}" \
 WORKDIR /app
 
 COPY xss-parser/package.json xss-parser/package-lock.json ./xss-parser/
+COPY packages/report/capture/package.json packages/report/capture/package-lock.json ./packages/report/capture/
 RUN npm ci --prefix ./xss-parser --omit=dev
+RUN npm ci --prefix ./packages/report/capture --omit=dev
 RUN cd xss-parser && npx playwright install --with-deps chromium
 
 COPY casper-db/ ./casper-db/
+COPY packages/report/requirements-ci.lock ./packages/report/requirements-ci.lock
+COPY packages/report/py/ ./packages/report/py/
 RUN python -m pip install --no-cache-dir -r ./casper-db/requirements-ci.lock \
-    && python -m pip install --no-cache-dir --no-deps ./casper-db
+    && python -m pip install --no-cache-dir -r ./packages/report/requirements-ci.lock \
+    && python -m pip install --no-cache-dir --no-deps ./casper-db ./packages/report/py
 
 COPY . .
 RUN mkdir -p /app/.runtime /app/casper-db/data /app/reports/pentest-db-runs

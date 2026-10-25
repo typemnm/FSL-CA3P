@@ -23,6 +23,13 @@ function json(res, status, data, extra = {}) {
   res.end(JSON.stringify(redact(data)));
 }
 
+function reportFilename(value) {
+  const name = String(value ?? 'ca3p-report.hwpx').toWellFormed().normalize('NFC')
+    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '-').replace(/^[. ]+|[. ]+$/g, '');
+  const stem = Array.from(name.replace(/\.hwpx$/i, '')).slice(0, 150).join('') || 'ca3p-report';
+  return `${stem}.hwpx`;
+}
+
 function readJson(req) {
   if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) throw error(415, 'Use application/json.');
   if (Number(req.headers['content-length']) > MAX_BODY) { req.resume(); throw error(413, 'Request body exceeds 8192 bytes.'); }
@@ -90,6 +97,7 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
         if (artifactMatch && req.method === 'GET') {
           const artifact = runtime.store?.getArtifact(artifactMatch[1]);
           if (!artifact) throw error(404, 'Artifact not found.');
+          if (artifact.kind === 'hwpx-report') throw error(404, 'Use the run report download.');
           const data = await readFile(artifact.path);
           if (createHash('sha256').update(data).digest('hex') !== artifact.sha256) throw error(409, 'Artifact integrity check failed.');
           // Stored evidence is immutable. Refuse legacy files that would require
@@ -98,6 +106,25 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
           try { parsed = JSON.parse(data.toString('utf8')); } catch { throw error(409, 'Artifact is not valid JSON.'); }
           if (JSON.stringify(redact(parsed)) !== JSON.stringify(parsed)) throw error(409, 'Artifact contains sensitive fields.');
           res.writeHead(200, { ...headers, 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${artifact.id}.json"` });
+          return res.end(data);
+        }
+        const reportMatch = /^\/api\/runs\/([a-zA-Z0-9_-]+)\/report\.hwpx$/.exec(pathname);
+        if (reportMatch && req.method === 'GET') {
+          const run = await (runtime.store?.getRun?.(reportMatch[1]) ?? runtime.getRun?.(reportMatch[1]));
+          if (!run) throw error(404, 'Run not found.');
+          const document = run.reportDocument;
+          if (document?.status !== 'ready') throw error(409, 'The HWPX report is not ready.');
+          const artifact = typeof document.artifactId === 'string' && /^[a-f0-9]{64}$/.test(document.artifactId)
+            ? runtime.store?.getArtifact(document.artifactId) : null;
+          if (!artifact || artifact.runId !== run.id || artifact.kind !== 'hwpx-report') throw error(404, 'Report artifact not found.');
+          const data = await readFile(artifact.path);
+          if (data.length !== artifact.size || createHash('sha256').update(data).digest('hex') !== artifact.sha256) {
+            throw error(409, 'Report integrity check failed.');
+          }
+          const filename = reportFilename(artifact.filename ?? document.filename);
+          const encoded = encodeURIComponent(filename).replace(/['()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+          res.writeHead(200, { ...headers, 'Content-Type': 'application/hwp+zip', 'Content-Length': data.length,
+            'Content-Disposition': `attachment; filename="ca3p-report.hwpx"; filename*=UTF-8''${encoded}` });
           return res.end(data);
         }
         if (pathname === '/api/platform' && req.method === 'GET') return json(res, 200, await platformProvider());

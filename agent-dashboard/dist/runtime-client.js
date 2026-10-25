@@ -143,6 +143,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       return request(`/api/runs${query.size ? `?${query}` : ''}`);
     },
     getRun(id) { return request(`/api/runs/${encodeURIComponent(id)}`); },
+    reportDownloadUrl(id) { return `/api/runs/${encodeURIComponent(id)}/report.hwpx`; },
     getModels() { return request('/api/models'); },
     getPlatform() { return request('/api/platform'); },
     getCiResults() { return request('/api/ci-results'); },

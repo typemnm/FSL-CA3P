@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync, renameSync, lstatSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { assertIdentifier, redact, digest, TERMINAL_STATUSES } from '../contracts/index.mjs';
@@ -248,6 +248,43 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
       const artifactId = digest(`${id}:${kind}:${sha256}`);
       db.prepare('INSERT OR IGNORE INTO artifacts VALUES (?,?,?,?,?,?,?)').run(artifactId, id, kind, path, sha256, bytes.length, json(metadata));
       return { id: artifactId, runId: id, kind, path, sha256, size: bytes.length };
+    },
+    writeBinaryArtifact(id, kind, value, metadata = {}) {
+      assertIdentifier(id, 'runId'); assertIdentifier(kind, 'artifact kind');
+      if (!getRun(id)) throw fault('RUN_NOT_FOUND', 'Run not found.', 404);
+      if (!(value instanceof Uint8Array) || value.byteLength === 0 || value.byteLength > 50 * 1024 * 1024) {
+        throw fault('INVALID_ARTIFACT', 'Binary artifacts must contain between 1 byte and 50 MiB.', 400);
+      }
+      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
+        || Object.keys(metadata).some(key => ['id', 'runId', 'kind', 'path', 'sha256', 'size'].includes(key))) {
+        throw fault('INVALID_ARTIFACT', 'Artifact metadata cannot change its identity or storage path.', 400);
+      }
+      const filename = metadata.filename;
+      if (typeof filename !== 'string' || !filename || filename.length > 240
+        || basename(filename) !== filename || /[\\/\u0000-\u001f\u007f]/u.test(filename)
+        || (kind === 'hwpx-report' && !filename.toLowerCase().endsWith('.hwpx'))) {
+        throw fault('INVALID_ARTIFACT', 'Provide a safe artifact file name.', 400);
+      }
+      const bytes = Buffer.from(value); const sha256 = digest(bytes);
+      const directory = join(dirname(storePath === ':memory:' ? resolve('.runtime/runs.sqlite') : storePath), 'artifacts', digest(id));
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const path = join(directory, `${sha256}${kind === 'hwpx-report' ? '.hwpx' : '.bin'}`);
+      // The file is discoverable through the API only after the DB insert.
+      // Exclusive creation keeps an existing download immutable and works on
+      // filesystems that do not support hard links. An interrupted unpublished
+      // write is rejected by the digest check instead of being overwritten.
+      try { writeFileSync(path, bytes, { mode: 0o600, flag: 'wx' }); }
+      catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const info = lstatSync(path);
+        if (!info.isFile() || info.isSymbolicLink() || digest(readFileSync(path)) !== sha256) {
+          throw fault('ARTIFACT_CHANGED', 'Stored artifact hash no longer matches.', 500);
+        }
+      }
+      const artifactId = digest(`${id}:${kind}:${sha256}`);
+      db.prepare('INSERT OR IGNORE INTO artifacts VALUES (?,?,?,?,?,?,?)')
+        .run(artifactId, id, kind, path, sha256, bytes.length, json(metadata));
+      return { ...redact(metadata), id: artifactId, runId: id, kind, path, sha256, size: bytes.length };
     },
     getArtifact(id) {
       const artifact = db.prepare('SELECT * FROM artifacts WHERE id=?').get(id);

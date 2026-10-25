@@ -9,15 +9,18 @@ function setup(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-store-test-'));
   const path = join(directory, 'runs.sqlite');
   const store = createRunRepository({ path, ...options });
-  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { store, path, directory };
+  const handles = [store];
+  t.after(() => { for (const handle of handles.reverse()) handle.close(); rmSync(directory, { recursive: true, force: true }); });
+  return { store, path, directory, reopen() {
+    const second = createRunRepository({ path }); handles.push(second); return second;
+  } };
 }
 function enqueue(store, id = 'run-test') {
   return store.createRun({ id, mode: 'core-fixture', modelId: 'rule-baseline', manifest: { runId: id },
     state: { id, mode: 'core-fixture', modelId: 'rule-baseline', events: [], status: 'queued' }, options: { delayMs: 0 } });
 }
 test('runs, ordered events and redacted artifacts survive reopen; manifests do not change', t => {
-  const { store, path } = setup(t);
+  const { store, reopen } = setup(t);
   enqueue(store); const lease = store.claimNext('worker-a');
   const state = { id: 'run-test', status: 'running', events: [{ id: 'event-a', payload: { cookie: 'private', total_tokens: 13 } }] };
   store.saveState(lease, state); store.saveState(lease, state);
@@ -26,7 +29,7 @@ test('runs, ordered events and redacted artifacts survive reopen; manifests do n
   const artifact = store.writeArtifact('run-test', 'report', { authorization: 'private', value: 42 });
   assert.equal(JSON.parse(readArtifactBytes(artifact)).authorization, '[REDACTED]');
   store.finish(lease, 'completed');
-  const second = createRunRepository({ path }); t.after(() => second.close());
+  const second = reopen();
   assert.equal(second.getRun('run-test').status, 'completed');
   assert.deepEqual(second.getRun('run-test').manifest, { runId: 'run-test' });
   assert.equal(second.listEvents('run-test')[0].payload.cookie, '[REDACTED]');
@@ -47,8 +50,8 @@ test('lease expiry interrupts a mutation run and fences both stale completion an
   assert.throws(() => store.saveState(lease, { id: 'run-test', status: 'completed' }), { code: 'LEASE_LOST' });
 });
 test('two repositories claim a job once; cancel blocks dispatch while preserving finalization', t => {
-  const { store, path } = setup(t); enqueue(store);
-  const second = createRunRepository({ path }); t.after(() => second.close());
+  const { store, reopen } = setup(t); enqueue(store);
+  const second = reopen();
   const lease = store.claimNext('worker-a'); assert.equal(second.claimNext('worker-b'), null);
   second.requestCancel('run-test');
   assert.throws(() => store.reserveAction(lease, { actionId: 'delete', request: {} }), { code: 'RUN_CANCELLED' });
