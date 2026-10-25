@@ -45,6 +45,10 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
     else:
         history = casper.unavailable("not-requested")
 
+    context = casper.reference_context(run.events)
+    if context is not None:
+        history["referenceContext"] = context
+
     writer = BundleWriter(trigger.output_dir / "bundle")
     try:
         writer.add_json(

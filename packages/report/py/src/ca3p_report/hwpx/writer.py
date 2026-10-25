@@ -117,6 +117,15 @@ def _overview(run: dict) -> list[tuple]:
 def _summary(model: dict, failed: bool) -> list[tuple]:
     blocks: list[tuple] = [("h", 1, "2. 취약점 요약")]
     findings = _dicts(model, "findings")
+    if not failed and not findings and _obj(model, "referenceContext"):
+        return [
+            ("h", 1, "2. 취약점 요약"),
+            (
+                "p",
+                "현재 실행의 취약점 상세 항목이 없습니다. 참고 자료의 검토 대기 항목과 "
+                "입력 위치 확인 필요 사항은 별도 검토 상태 절에 포함했습니다.",
+            ),
+        ]
     if failed or not findings:
         reason = "실행이 실패하여" if failed else "보고된 취약점이 없어"
         return [*blocks, ("p", f"{reason} 요약할 취약점이 없습니다.")]
@@ -265,6 +274,108 @@ def _history(model: dict) -> list[tuple]:
     return [*blocks, ("p", CHECK_FOOTNOTE)]
 
 
+def _reference_review(model: dict) -> list[tuple]:
+    context = _obj(model, "referenceContext")
+    if not context:
+        return []
+    intake = _obj(context, "intake")
+    external = _obj(context, "external")
+    blocks: list[tuple] = [
+        ("h", 1, "참고 자료의 검토 상태와 미확정 사항"),
+        (
+            "p",
+            "등록·검토 상태는 현재 대상의 재현 판정과 별개입니다. "
+            "이 자료는 자동 실행 권한을 부여하지 않습니다.",
+        ),
+        (
+            "p",
+            f"보고서 자료 조회: {_text(intake.get('status'))} / "
+            f"외부 권고 조회: {_text(external.get('status'))}",
+        ),
+    ]
+    for finding in _dicts(context, "findings"):
+        candidate = _obj(finding, "candidate")
+        review = _obj(finding, "review")
+        blocks += [
+            ("h", 2, _text(candidate.get("title"))),
+            (
+                "table",
+                [
+                    ["원문 위치", _text(finding.get("source_ref"))],
+                    ["대상 경로", _text(candidate.get("endpoint"))],
+                    ["등록 상태", _text(finding.get("registration_state"))],
+                    ["재현 평가", _text(finding.get("reproduction_state"))],
+                    ["검토 결정", _text(review.get("decision"))],
+                    [
+                        "검토자·시각",
+                        f"{_text(review.get('reviewer'))} / {_text(review.get('reviewed_at'))}",
+                    ],
+                    ["검토 근거", _text(review.get("reason"))],
+                    ["원문 누락 필드", _text(finding.get("missing_fields"))],
+                    ["후보 미확정 필드", _text(finding.get("unresolved_fields"))],
+                    ["등록 전 보완 필드", _text(finding.get("remaining_fields"))],
+                ],
+            ),
+            ("p", f"확인된 서술: {_text(candidate.get('description'))}"),
+        ]
+        for variant in _dicts(finding, "payload_variants"):
+            blocks += [
+                (
+                    "p",
+                    f"원문 payload 표현 ({_text(variant.get('representation'))}) — "
+                    f"{_text(variant.get('source_ref'))}",
+                ),
+                ("code", _text(variant.get("value"))),
+            ]
+        for field, resolution in _obj(review, "resolutions").items():
+            blocks.append(("p", f"검토 보완 {field}: {_text(resolution)}"))
+    for record in _dicts(external, "records"):
+        blocks += [
+            ("h", 2, f"외부 권고 {_text(record.get('cve_id'))}"),
+            ("p", _text(record.get("description"))),
+            (
+                "table",
+                [
+                    ["대상 적용 여부", _text(record.get("applicability"))],
+                    ["공식 권고 심각도", _text(record.get("severity"))],
+                    ["영향 제품·버전", _text(record.get("affected"))],
+                    ["권고 출처", _text(record.get("source"))],
+                    ["권고 링크", _text(record.get("references"))],
+                    ["철회 여부", _text(record.get("withdrawn"))],
+                ],
+            ),
+        ]
+    for item in _dicts(context, "unresolved_requests"):
+        blocks.append(
+            (
+                "p",
+                f"입력 위치 확인 필요: {_text(item.get('method'))} "
+                f"{_text(item.get('endpoint'))} — {_text(item.get('reason'))}",
+            )
+        )
+    for assessment in _dicts(external, "assessments"):
+        blocks += [
+            ("h", 2, f"대상 버전 대조 {_text(assessment.get('cve_id'))}"),
+            (
+                "table",
+                [
+                    ["영향 버전 대조", _text(assessment.get("decision"))],
+                    ["현재 자료 기준 여부", _text(assessment.get("current"))],
+                    ["구성 정보 관찰 시각", _text(assessment.get("inventory_observed_at"))],
+                    ["판정 근거", _text(assessment.get("reason"))],
+                    ["버전·원문 근거", _text(assessment.get("component_matches"))],
+                    ["재현 상태", _text(assessment.get("reproduction_state"))],
+                ],
+            ),
+        ]
+    for source in (intake, external):
+        if source.get("reason"):
+            blocks.append(("p", f"조회 한계: {_text(source['reason'])}"))
+    if external.get("not_found_cve_ids"):
+        blocks.append(("p", f"저장된 외부 권고 없음: {_text(external['not_found_cve_ids'])}"))
+    return blocks
+
+
 def _safety(model: dict) -> list[tuple]:
     decisions = _dicts(_obj(model, "guardrail"), "decisions")
     rows = [["결정", "규칙", "사유"]] + [
@@ -326,6 +437,7 @@ def build_blocks(model: dict) -> list[tuple]:
         *_summary(model, failed),
         *body,
         *_history(model),
+        *_reference_review(model),
         *_safety(model),
         *_sources(model),
     ]

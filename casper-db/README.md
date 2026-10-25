@@ -1,205 +1,254 @@
-# CASPER 취약점 보고서 DB — 1차 구현
+# CASPER 취약점 DB
 
-지난달 CERT에서 발견한 취약점 보고서를 보관하고, 이번 달 CERT의 재점검에 제공하는 작은 DB다. 팀이 준비하는 모의 사이트 하나와 XSS 사례 하나로 시작한다.
+기존 CERT 보고서의 취약점 정보를 추출하고, 원문 근거를 확인한 검토 기록을 거쳐 SQLite DB에 등록한다. 외부 공개 취약점 정보는 별도 DB에 정규화해 관리한다.
 
-**CASE-001은 가상 보고서다.** 주소·심각도·증거도 예시이며, `https://lab.example.invalid/search`는 존재하지 않는 호스트다. 팀 저장소의 `vul-web-1`은 저장형 XSS 실습 사이트이고, 이 모듈의 검색 입력 예시는 별도 가정이다. 해당 사이트와의 실측 보고서·재점검 연결은 아직 검증하지 않았다.
+보고서에 기록된 URL·입력 위치·재현 절차·payload·해결 방안을 구조화해 이후 점검에서 조회할 수 있도록 한다. 새 보고서 작성, payload 실행, 현재 서비스의 취약 여부 판정은 이 모듈의 범위에 포함하지 않는다.
 
-패키지 버전은 0.2.0, SQLite 구조 버전은 v5다.
+## 기능
 
-## Agent Loop 연결 범위
+- HWPX의 XML·표·명시적 항목명 문단 및 HWP v5 리더 결과에서 취약점별 JSON 초안 생성
+- 서술형 문장의 파라미터·사전 조건·재현 절차·관찰 결과 분류와 근거 구간 보존
+- 필드별 원문 위치, 매핑되지 않은 항목, 서로 다른 payload 표기 보존
+- Windows 로컬 OCR을 통한 내장 이미지의 텍스트·행·단어 좌표 추출
+- 누락값·미확정 후보를 유지하는 검토 기록과 등록 전 검증
+- 원본·초안·검토·검증·등록 이력의 지속 보관
+- 검토된 사례의 명시적 일괄 등록, 동일 내용 재등록 방지, 충돌 시 롤백
+- NVD·GitHub Advisory 정보의 정규화·별도 저장·조회와 설정 기반 일괄 처리
+- 대상 소프트웨어 목록과 공개 영향 범위 비교, 근거·판정 이력 보존
+- 입력 위치별 재점검 결과의 일괄 등록과 관찰 시점 증거 해시 보존
+- 파일 선택과 JSON 검토 도구, 정적 HTML 검토 화면
 
-로컬 Agent Loop의 [`casper-db` 어댑터](../agent-dashboard/integrations/casper-db.mjs)는 실제 이 패키지의 SQLite 저장소를 조회한다. `xss-parser`가 명시적으로 관찰한 같은 원점 API 입력 위치를 추출해 `assess_observation`으로 과거 사례와 비교하고, 결과를 `history.result` JSON으로 Agent에 돌려준다. 기본 DB는 `casper-db/data/cases.sqlite3`이며, `CASPER_DB_PATH` 환경변수에 절대 경로를 넣어 기존 SQLite 파일을 지정할 수 있다. DB가 비어 있으면 과거 사례가 없다는 결과를 반환한다.
+기존 Case CRUD, 버전 이력, 위치 기반 재점검 후보 선정, `checks` 기록·검토와 조회 API를 유지한다. 패키지 버전은 `0.4.0`, Case DB 스키마는 `v7`이며 접수 이력은 별도 DB에 저장한다.
 
-이 연결은 사례를 자동 생성하거나 이번 실행의 재현 결과를 `checks`에 기록하지 않는다. 과거 XSS 위치 일치는 참고 판정이며, 현재 XSS 취약점의 재현·확정을 뜻하지 않는다. 기본 로컬 루프는 별도의 고정 canary 게시와 Chromium 실행 관찰로 저장형 XSS 한 건을 검증한다. Bob canary 삭제 권한 검사는 명시적으로 선택하는 레거시 프로필이다.
+## 처리 흐름
 
-## 왜 이 DB를 만드는가
+단계별 함수와 저장 관계는 [처리 흐름 도식](WORKFLOW.md)에서 확인한다.
 
 ```text
-지난달 CERT: XSS 발견 → 보고서 작성 → 보고서 내용을 DB에 등록
-이번 달 CERT: 사이트를 파서로 조사 → 발견된 엔드포인트와 DB의 전월 사례를 비교
-               → 관련 사례가 있으면 LLM이 절차를 참고해 재점검 제안
-               → 가드레일·점검 도구가 허용된 요청 수행 → 이번 달 결과를 별도 이력으로 저장
+HWP / HWPX → 문단·표 추출 / 선택적 이미지 OCR
+  → 취약점별 초안 → 근거 대조·검토 기록 → 등록 전 검증
+  → 명시적 등록 → Case DB 조회
 ```
 
-**위치 일치는 재점검 후보를 찾는 단계다.** 사이트가 수정되었을 수 있으므로 DB에 전월 XSS가 기록되었다는 이유만으로 이번 달에도 취약하다고 단정하지 않는다. 1차 후보 선정 규칙은 [MATCHING_POLICY.md](MATCHING_POLICY.md)에 정리했다.
+추출본은 최종 사례가 아니다. 근거 없는 값은 생성하지 않으며, 관련 내용이 있어도 확정할 수 없으면 검토 대상으로 보관한다. 검토·검증을 통과한 사례만 `ready`로 등록한다. `ready`는 과거 보고서의 조회 준비 상태이며 현재 취약점의 재현 성공을 뜻하지 않는다.
 
-## 전월 보고서 → DB 필드
+## 저장 구조
 
-| 지난달 보고서 항목 | DB 필드 | 예시 |
-|---|---|---|
-| 발견 날짜 | `reported_on` | `2026-08-20` |
-| 취약점 종류 | `vulnerability_type` | `XSS` |
-| 발생한 URL | `vulnerability_url` | `https://lab.example.invalid/search?q=sample` |
-| 심각도 | `severity` | `medium` |
-| 자세한 발생 설명 | `description` | 검색어가 인코딩 없이 HTML 본문에 포함됨 |
-| 실제 당시 확인한 증거 | `prior_evidence` | 증거 위치 또는 관찰 내용. 예시에서는 가정임을 명시 |
-| 발생 조건·재현 과정 | `preconditions`, `procedure`, `payload` | 로그인 상태, 시험 입력, 실행 순서 |
-| 입력 항목의 위치 | `parameter_location` | `query`, `body` 등. 이름이 같아도 다른 입력 지점을 구분 |
-| 확인할 현상 | `success_condition` | 브라우저에서 실행 결과를 관찰 |
-| 조치 방안 | `remediation` | 문맥에 맞는 출력 인코딩, 수정 후 재점검 |
-| 원문 보고서 위치 | `source_report` | 보고서 파일 경로 또는 식별자 |
-| 보고서 당시 패치 상태 | `patch_status` | unknown / unpatched / patched |
-| 보고서 출처 | `source` | synthetic / manual / imported / unknown |
+`report-db init`은 존재하지 않는 새 디렉터리에 독립 작업 공간을 만든다.
 
-`target_id`는 모의 사이트를 가리키는 공통 ID다. `endpoint`는 URL의 경로(`/search`), `method`는 HTTP 메서드(`GET`), `parameter`는 입력 항목(`q`), `parameter_location`은 그 항목의 위치(`query`)다. 전체 URL도 보존하고, 비교할 필드를 따로 저장한다. 기존 DB의 입력 위치는 보고서 URL의 쿼리에서 확인되는 경우에만 `query`로 옮기고, 나머지는 `unknown`으로 남긴다.
-
-`status=draft`이면 작성 중이라 LLM이 쓰는 기본 조회에서 제외한다. 팀의 실제 보고서 내용을 확인해 필드를 완성한 뒤 `ready`로 바꾼다. `ready`는 **전월 보고서를 조회에 제공할 상태**이며, 이번 달 재현 성공이나 현재 취약 상태를 뜻하지 않는다.
-
-## 지금까지 구현된 것
-
-- JSON 보고서 데이터 한 건을 검증하고 SQLite 파일에 저장.
-- 명시적 수정, 사례 ID로 조회, 대상 ID로 전월 사례 목록 조회.
-- 대상 ID·경로·메서드·입력변수가 정확히 같은 사례 조회.
-- 저장된 HTML의 폼·같은 출처 링크를 읽어 입력 지점 JSON을 만드는 로컬 파서 시제품. 네트워크 요청과 XSS 시험은 하지 않음.
-- 사이트·경로·방식·입력 이름·입력 위치를 비교해 `retest_candidate`·`manual_review`·`no_match`로 분류하고 근거 및 다음 단계를 출력.
-- 재점검 결과를 전월 보고서와 별도의 `checks` 테이블에 추가하고 이력 조회. 가상 결과는 검토 완료로 바꿀 수 없도록 검증.
-- 보고서를 수정할 때 `case_versions`에 이전·새 버전을 보존하고, 체크에 참고한 `case_revision`을 연결.
-- 입력 위치가 달라진 결과는 사람이 관계를 확인한 `link_review`가 있을 때 저장. 과거 위치와 이번 위치는 각각 보존.
-- 관찰 시각을 UTC로 통일하고, 실제 파일·SHA-256·검토자·시각을 확인하는 별도 결과 검토 명령 제공.
-- 다른 프로세스에서 쓸 수 있는 **조회 전용** HTTP API.
-- 기존 DB v1~v4를 v5로 이동. 구조·데이터·버전 번호를 한 트랜잭션에서 변경하며 실패하면 함께 롤백.
-
-`cases`는 최신 보고서, `case_versions`는 보고서 전체 버전, `checks`는 각 관찰·결과·검토 기록을 보관한다. DB 파일은 Git 공유 대상이 아니다. 예시 JSON과 코드를 받아 각자 DB를 만든다. 기존 DB 변환 전에는 서비스 작업을 멈추고 별도로 백업한다. `init`이 백업 파일을 자동 생성하는 것은 아니다.
-
-## 먼저 2분 데모 보기
-
-```powershell
-Set-Location '<클론한 저장소 경로>\casper-db'
-.\.venv\Scripts\python.exe demo.py
+```text
+<작업 공간>/
+├── workspace.json
+├── intake.sqlite3
+├── cases.sqlite3
+└── exports/<draft_sha256>/
+    ├── report.draft.json
+    ├── report.review.pending.json
+    └── report.review.json
 ```
 
-설치 후 실행한다. 데모는 별도 `data/demo/cases.sqlite3`와 가상 입력 `data/demo/parser-observations.json`을 사용하고 `data/demo/index.html`을 브라우저에서 연다. 입력 파일이 없으면 `examples/parser-observations.json`을 복사한다. 실제 점검이 없었다는 `inconclusive` 이력도 `checks` 테이블에 저장한다. 실행 후 파일이 남고 다시 실행해도 같은 예시 기록이 중복되지 않는다. **실제 사이트나 LLM은 실행하지 않는다.** 브라우저 화면은 실행 시점의 DB를 읽어 만든 정적 HTML이다.
+| 위치 | 내용 |
+|---|---|
+| `intake.sqlite3` | 접수한 원본 문서 BLOB, 초안, 검토·검증 스냅샷, 현재 검토 연결, 등록 영수증 |
+| `cases.sqlite3` | 명시적으로 등록한 조회용 Case와 기존 버전·점검 이력 |
+| `report.draft.json` | 문서 구조와 취약점별 필드 후보·근거·누락·미확정 정보 |
+| `report.review.pending.json` | 최초 검토 대기 양식 |
+| `report.review.json` | 사용자가 편집해 제출할 검토 기록 |
 
-데모의 DB에 직접 이력을 추가해 보려면 다음 명령을 실행한 뒤 `demo.py`를 다시 실행하면 된다. `check-add`는 같은 ID를 두 번 넣으면 거부한다.
+`exports`는 비교·편집용 파일이다. 검토 파일은 `report-db review`로 제출해야 intake DB에 반영된다. 제출 후 파일을 수정했다면 다시 제출한다. 재접수 시 기존 편집 파일은 자동 덮어쓰지 않는다.
 
-```powershell
-.\.venv\Scripts\python.exe -m casper_db --db data/demo/cases.sqlite3 check-add examples/check.example.json
-.\.venv\Scripts\python.exe -m casper_db --db data/demo/cases.sqlite3 check-list CASE-001
-.\.venv\Scripts\python.exe demo.py
-```
+### 추출 JSON
 
-## 로컬 HTML 파서 → DB 후보 선정
+| 경로 | 의미 |
+|---|---|
+| `source` | 입력 파일 경로·이름·SHA-256 등 출처 |
+| `document.sections`, `document.tables` | 읽어 낸 문단·표와 원문 위치 식별자 |
+| `document.labeled_sections` | `취약점 유형: …` 등 명시적 항목명으로 묶은 본문 문단과 필드 근거 |
+| `document.images` | 내장 이미지 정보와 문서 내 참조 |
+| `document.local_ocr.bundle` | OCR 원출력·행·단어·좌표, 원본 해시, 처리 상태 |
+| `findings[].candidate` | Case 필드로 옮길 후보 |
+| `findings[].field_evidence` | 필드별 원문 값·위치와 직접 추출/정규화/파생/검토 후보 구분 |
+| `findings[].payload_variants` | payload의 개별 표기, 표현 방식, 원문과 위치 |
+| `findings[].missing_fields` | 값을 뒷받침할 근거를 확보하지 못한 필드 |
+| `findings[].unresolved_fields` | 후보·관련 내용은 있지만 값을 확정하지 못한 필드 |
+| `findings[].unmapped_fields`, `review_issues` | 매핑되지 않은 항목과 검토할 문제 |
 
-이 모듈의 검증은 저장된 [모의 HTML](examples/mock-site/search.html)에서 입력 지점을 추출하는 방식으로 진행했다. 이 HTML에는 취약점이 없으며 파서는 네트워크 요청이나 XSS 시험을 하지 않는다. 아래 명령으로 파서 출력 JSON을 만들고 DB의 전월 사례와 비교할 수 있다.
+payload의 따옴표·공백·URL 인코딩 표기는 임의로 교정하거나 통합하지 않는다. 디코딩 참고값이 있더라도 원문 값은 유지하며 검토자가 대표 후보를 선택한다. OCR에서 읽힌 재현 절차와 payload는 근거 후보로 보관하고 검토 전에 자동 확정하지 않는다.
 
-```powershell
-Set-Location '<클론한 저장소 경로>\casper-db'
-.\.venv\Scripts\python.exe -m casper_db parse-html --target LAB-DEMO --page-url https://lab.example.invalid/search --html examples/mock-site/search.html --output data/demo/parsed-observations.json
-.\.venv\Scripts\python.exe -m casper_db --db data/demo/cases.sqlite3 match data/demo/parsed-observations.json
-.\.venv\Scripts\python.exe demo.py --parser-input data/demo/parsed-observations.json --no-open
-```
+표가 없는 문서는 `취약점 종류:` 또는 `취약점 유형:`으로 시작하는 문단 묶음을 처리한다. 다음 유형 항목·표·섹션에서 경계를 나누고, 다른 명시적 항목까지 이어지는 문단을 해당 값으로 보존한다. 추론한 사례 경계는 검토 문제로 표시한다. 표의 payload 필드와 본문의 `payload:`·`페이로드:` 표기는 취약점 종류와 무관하게 보존한다. 항목명 없는 임의의 문장 전체를 확정값으로 변환하지 않는다.
 
-파서는 `GET /search`의 `q`와 `page`, `POST /feedback`의 `message`를 찾는다. DB는 순서대로 재점검 후보·수동 확인·일치 없음으로 분류한다. 마지막 명령은 같은 결과를 `data/demo/index.html`에 다시 그린다. [팀원에게 줄 JSON 계약](PARSER_INPUT_PROPOSAL.md)과 [파서 관찰 스키마](schemas/parser-observation.schema.json)에 필드와 한계를 정리했다.
+`missing_fields`·`unresolved_fields`, 모든 payload 후보와 OCR 결과는 intake의 초안 스냅샷에 남긴다. Case 테이블에는 검토한 대표값을 저장한다. 원본 이미지는 intake의 문서 BLOB에 포함된다.
 
-## 터미널에서 데이터 확인
+### 최종 Case 필드
 
-이 PC의 독립 `.venv`에 필요한 패키지를 설치해 두었다. 다른 PC에서는 다음 명령으로 준비한다.
+| 구분 | 필드 |
+|---|---|
+| 보고서 정보 | `title`, `vulnerability_type`, `reported_on`, `vulnerability_url`, `severity`, `description`, `remediation`, `prior_evidence` |
+| 발생 위치 | `endpoint`, `method`, `parameter`, `parameter_location` |
+| 재현 정보 | `preconditions`, `procedure`, `payload`, `success_condition` |
+| 식별·출처·상태 | `case_id`, `target_id`, `source_report`, `source`, `status`, `patch_status` |
+| 입력 적용 여부 | `not_applicable_fields`, `applicability_reason` |
+| 경로 연결 | `route_template` |
+| 저장 메타데이터 | `revision`, `created_at`, `updated_at` |
+
+`case_id`는 원본 해시와 취약점 위치로 결정한다. `target_id`는 대상 관리 체계의 ID를 지정한다. 패치 상태의 기본값은 `unknown`이며 근거 없이 변경하지 않는다. 기존 출처 구분과의 호환성을 유지한다.
+
+필수값과 형식은 [Case 모델](src/casper_db/models.py)과 [등록 전 검증](src/casper_db/import_workflow.py)에서 확인한다. 사전 조건·재현 절차와 등록 필수 항목이 비어 있거나 미확인 표시만 있는 경우 등록을 보류한다.
+
+`parameter`·`payload`는 기본적으로 필요하다. 정보 노출·보안 설정 오류·암호화 실패·설계 결함·로깅 실패·예외 처리 실패 등 입력이 적용되지 않을 수 있는 유형은, 검토자가 `not_applicable_fields`에 해당 필드를 지정하고 `applicability_reason` 및 보완 근거를 남긴 경우에만 `null`로 등록할 수 있다. 값의 누락만으로 미적용을 추론하지 않으며, 입력이 필요한 XSS·SQL 인젝션·IDOR 등의 누락값을 이 방식으로 면제할 수 없다. 미적용 필드에 값이 들어 있거나 근거가 없으면 거부한다. 정확한 허용 유형은 [입력 정책](src/casper_db/case_policy.py)에 정의돼 있다.
+
+`route_template`은 검토된 경로의 식별자 자리 하나만 중괄호로 표시한다. 슬롯 이름은 `parameter`와 같고 `parameter_location=path`여야 한다. 현재 정수·UUID 식별자를 지원하며, 고정 경로·대소문자·끝의 슬래시와 식별자 형식은 그대로 비교한다. 템플릿이 없으면 기존의 정확한 경로 비교를 유지한다. 템플릿 일치도 재점검 후보를 연결하는 정보이며 현재 취약점의 확정이나 실행 권한이 아니다.
+
+## 설치
+
+`casper-db` 폴더에서 Python 3.11 이상으로 설치한다. Windows PowerShell 기준:
 
 ```powershell
 py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[api,dev]"
+.\.venv\Scripts\python.exe -m pip install -e ".[api]"
 ```
 
-Mac mini 등 macOS에서는 `casper-db` 폴더에서 Python 3.11 이상을 확인한 뒤 다음처럼 설치한다. 이 환경에서의 실행은 아직 검증하지 않았다.
+이후 명령의 `python`은 이 가상환경의 인터프리터를 뜻한다. Windows에서는 `.\.venv\Scripts\python.exe`로 대체해 실행할 수 있다.
 
-```sh
-python3 --version
-python3 -m venv .venv
-./.venv/bin/python -m pip install -e '.[api,dev]'
-./.venv/bin/python -m pytest
-```
-
-아래 명령 예시는 Windows PowerShell 기준이다.
-
-현재 폴더에서 실행한다.
+HWPX 텍스트 추출에는 한글 프로그램이 필요하지 않다. 바이너리 HWP v5 지원은 선택 의존성을 설치한다.
 
 ```powershell
-# 기존 DB도 검사·업그레이드하고, 새 PC에서는 DB를 만든다.
-.\.venv\Scripts\python.exe -m casper_db init
-
-# 새 실습 DB에 가상 초안 등록. 같은 ID가 이미 있으면 add를 반복하지 않는다.
-.\.venv\Scripts\python.exe -m casper_db add examples/case.example.json
-
-# 전월 보고서 예시의 전체 내용을 확인한다. draft도 보인다.
-.\.venv\Scripts\python.exe -m casper_db get CASE-001
-
-# LLM 담당자에게 줄 이번 사이트의 전월 보고서 목록. 지금은 draft라 [].
-.\.venv\Scripts\python.exe -m casper_db list --target LAB-DEMO
-
-# 입력변수까지 같은 전월 사례를 찾는다. 초안을 직접 확인할 때만 옵션을 붙인다.
-.\.venv\Scripts\python.exe -m casper_db find --target LAB-DEMO --endpoint /search --method GET --parameter q --parameter-location query --include-drafts
+.\.venv\Scripts\python.exe -m pip install -e ".[hwp]"
 ```
 
-다른 DB 파일을 쓰려면 명령어 앞에 `--db data/다른이름.sqlite3`을 둔다.
-
-팀의 실제 전월 보고서를 받으면 [예시 입력 JSON](examples/case.example.json)의 날짜·URL·심각도·재현 방법·조치 방안을 교체한다. `status`를 `ready`로 바꾸고 `data/case.local.json`으로 저장한 뒤 아래처럼 수정한다.
+macOS/Linux에서는 `.venv/bin/python`을 사용한다. 이미지 OCR은 Windows 전용이며 사용할 언어의 인식기가 설치돼 있어야 한다. 한국어는 `ko`를 사용한다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m casper_db update data/case.local.json
+.\.venv\Scripts\python.exe -m casper_db ocr-status
 ```
 
-새로운 ID의 보고서라면 `update` 대신 `add`를 사용한다. 같은 ID를 다시 `add`하면 중복으로 거부한다. URL의 경로와 `endpoint`는 같아야 하며, `ready`에는 보고 날짜·URL·심각도·설명·조치 방안·시험 입력이 필요하다.
+OCR은 Windows `Windows.Media.Ocr`와 Windows PowerShell 5.1 워커를 사용한다. 보고서 추출·OCR·검토는 로컬에서 수행한다.
 
-실제 보고서는 `source`를 `manual` 또는 `imported`로 지정한다. `ready`는 내용의 준비 상태이며 별도의 승인이나 실측 결과를 보증하지 않는다.
+## 보고서 접수·검토·등록
 
-수정은 새 버전을 보존한다. `update data/case.local.json --expected-revision 1`처럼 버전을 지정하면 다른 사람의 수정과 충돌했을 때 덮어쓰지 않는다. 사례의 `target_id`는 변경할 수 없다.
+다음 명령의 `<...>`는 실제 경로·대상 ID·반환된 해시로 교체한다. 원본과 산출물은 Git에서 제외되는 `data/` 등의 로컬 경로에 보관한다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m casper_db history CASE-001
-.\.venv\Scripts\python.exe -m casper_db get CASE-001 --revision 1
+python -m casper_db report-db init '<새 작업 공간>'
+python -m casper_db report-db stage '<작업 공간>' '<보고서 경로>' --target '<대상 ID>'
 ```
 
-체크는 초안으로 저장하고 실제 증거를 확인하는 별도 절차로 검토 완료 처리한다. 버전 지정, 바뀐 입력의 연결, 검토 명령은 [CHECK_REVIEW.md](CHECK_REVIEW.md)에 있다. 예전 승인 정보는 `legacy_review`에 보존하며, 확인되지 않은 예전 파일을 현재 검증 완료로 간주하지 않는다.
+이미지 인식이 필요하면 `stage`에 `--ocr --ocr-language ko`를 추가한다. `stage`는 원본·초안을 intake에 저장하고 `draft_sha256`, `draft_file`, `review_file`을 출력한다. 이 단계에서는 Case를 등록하지 않는다.
 
-## 팀원에게 제공할 조회 방법
+원문과 `report.draft.json`을 대조하고 `report.review.json`에 다음을 기록한다.
 
-같은 Python 환경이면:
+- `reviewer`, 시간대가 포함된 `reviewed_at`
+- 취약점별 `decision=pending|accept|exclude`와 이유 `reason`
+- 확인한 `payload_variant_index`와 필요한 `acknowledged_issue_codes`
+- 값을 보완했다면 `resolutions.<필드>`의 `value`, `reason`, `source_refs`
 
-```python
-from casper_db import CaseStore
+미적용 선언과 경로 템플릿도 같은 `resolutions` 형식으로 기록한다. `not_applicable_fields`는 문자열 배열이며 `applicability_reason`과 `route_template`은 문자열이다. 원문 초안은 수정하지 않는다.
 
-store = CaseStore("data/cases.sqlite3")
-previous_reports = store.list_for_target("LAB-DEMO")
-for case in previous_reports:
-    print(case.model_dump())  # 전월 보고서의 JSON 데이터
-```
-
-이 목록과 **이번 달 엔드포인트 파서 출력**을 LLM 담당자가 함께 받아 비교할 수 있다. 코드에서도 정확한 경로·메서드 비교가 가능하다.
-
-```python
-matches = store.find(target_id="LAB-DEMO", endpoint="/search", method="GET",
-                     parameter="q", parameter_location="query")
-```
-
-1차 후보 선정기를 직접 실행하려면 다음 명령을 사용한다. 출력에는 각 파서 관찰의 분류와 일치·차이 필드가 포함된다. 가상 파서 입력의 `parameter`를 바꾸고 다시 실행해 규칙을 확인할 수 있다.
+근거를 확보하지 못한 값은 `pending`으로 남긴다. 보완 근거는 해당 취약점의 문서 내 참조 또는 명시적인 `manual:` 참조로 기록한다. 다른 보고서·초안의 검토 기록을 재사용하면 해시 검증에서 거부한다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m casper_db --db data/demo/cases.sqlite3 match data/demo/parsed-observations.json
+python -m casper_db report-db review '<작업 공간>' '<초안 해시>' '<검토 파일 경로>'
+python -m casper_db report-db publish '<작업 공간>' '<초안 해시>'
+python -m casper_db report-db show '<작업 공간>' --draft '<초안 해시>'
 ```
 
-다른 프로세스에서 연결할 때는 로컬 조회 API를 시작한다.
+`publish` 기본 동작은 저장 전 검증이다. Case를 실제 등록하려는 경우에만 `--apply`를 지정한다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m casper_db serve --port 8001
+python -m casper_db report-db publish '<작업 공간>' '<초안 해시>' --apply
+python -m casper_db --db '<작업 공간>/cases.sqlite3' list --target '<대상 ID>'
 ```
 
-| 요청 | 반환 |
+검토 대기가 남으면 기본적으로 보고서 전체의 등록을 보류한다. 등록 가능한 일부만 처리하려면 `--ready-only --apply`를 명시한다. 동일 내용은 `unchanged`로 처리하고 동일 ID의 다른 내용은 충돌로 거부한다. 한 배치의 Case 저장은 한 트랜잭션으로 처리한다.
+
+intake와 Case DB의 커밋 전체가 하나의 트랜잭션인 것은 아니다. Case 저장 후 영수증 기록이 실패하면 동일 작업의 재실행으로 영수증을 복구한다. `report-db`는 생성한 독립 작업 공간만 사용하며 전역 `--db`를 접수 DB로 재사용하지 않는다.
+
+### 다른 모듈에 검토 상태 전달
+
+`report-db references '<작업 공간>' --target '<대상 ID>'`는 읽기 전용 `casper-reference-1` JSON을 반환한다. 원문에서 추출한 후보, payload 표현, 필드별 근거, 누락·미확정 필드, 현재 검토 결정과 보완값을 함께 전달한다. 등록 상태와 재현 판정은 별개이며, 이 응답은 실행 권한을 부여하지 않는다. 다른 대상의 보고서와 원본 파일 바이트·로컬 원문 경로는 포함하지 않는다.
+
+`--external-db '<외부 정보 DB>'`를 지정하면 보고서에 명시된 CVE의 저장된 권고와 대상별 영향 범위 평가도 포함한다. 추가 조회에는 `--cve '<CVE ID>'`를 반복한다. 외부 원문 레코드의 `applicability=not_assessed`와 별도로 `external.assessments`에 대상 평가·근거·최신 여부를 제공한다. 자료 원천의 `not_configured`·`unavailable`은 조회 성공 후 결과가 없는 상태와 구분한다. 이 명령은 DB를 만들거나 변환하지 않는다.
+
+로컬 API의 `serve --intake-workspace '<작업 공간>' --external-db '<외부 정보 DB>'`는 `GET /references?target_id=<대상 ID>`를 추가한다. 반복 가능한 `cve_id` 쿼리로 외부 권고 ID를 지정할 수 있다. 원천을 지정하지 않으면 기존 `/cases` API만 제공한다.
+
+팀 어댑터는 선택한 Case DB와 같은 폴더의 접수 작업 공간을 인식한다. 원천을 명시하려면 `CASPER_DB_INTAKE_WORKSPACE`·`CASPER_DB_EXTERNAL_PATH`를 사용한다. 반환된 `referenceContext`는 실행 이벤트와 보고서 수집 자료에 보존되며, 보고서의 HWPX·Markdown·JSON에 원본 검토 상태가 자동 반영된다.
+
+입력 위치를 확인하지 못한 요청은 `unresolved_requests`로 전달한다. 같은 경로나 검토된 경로 템플릿의 관련 사례도 수동 확인 대상으로 연결한다. 명시적인 입력 위치는 어댑터의 `locationHints`로 전달할 수 있으며, 파라미터를 발견하지 못했다는 이유만으로 입력 미적용을 추론하지 않는다.
+
+파서 출력의 선택적 `inputLocations` 계약은 [파서 입력](PARSER_INPUT_PROPOSAL.md)에 정의한다. 검증기가 반환한 `casper-check-results-1`은 [재점검 결과](CHECK_REVIEW.md)의 일괄 입력으로 저장한다. 두 계약은 XSS 전용 필드를 요구하지 않는다.
+
+### 파일만 사용하는 검토
+
+DB에 접수하지 않고 추출·검토·등록 패키지 생성만 수행할 수도 있다.
+
+```powershell
+python -m casper_db parse-report '<보고서 경로>' --output '<초안.json>'
+python -m casper_db review-template '<초안.json>' --output '<검토.json>'
+python -m casper_db prepare-import '<초안.json>' --review '<검토.json>' --target '<대상 ID>' --output '<등록 패키지.json>'
+```
+
+파일 선택 창을 사용하려면 `python -m casper_db.local_review start --state-dir '<로컬 검토 폴더>'`를 실행한다. `validate` 명령으로 현재 검토 기록을 검증한다. 이 도구는 Case를 저장하지 않는다.
+
+`review-hwpx '<초안.json>' --output '<검토.html>'`은 정적 검토 화면을 만든다. 원본 이미지 표시에는 `--source-hwpx`로 해시가 일치하는 HWPX를 지정한다. 화면은 검토 JSON 편집·내려받기를 제공하며 DB 쓰기 API는 제공하지 않는다.
+
+## 외부 취약점 정보·일괄 처리
+
+공개 취약점 정보는 내부 CERT Case와 별도 DB로 관리한다. CVE·Advisory ID, 설명, 공개·수정일, 철회 여부, 심각도·metrics, CWE, 영향 제품·버전, 참고 링크, 원문·해시를 보존한다. 서비스 적용 여부는 `applicability=not_assessed`로 유지한다.
+
+```powershell
+python -m casper_db normalize-external github '<공개 응답.json>' --output '<정규화.json>'
+python -m casper_db external-import '<정규화.json>'
+python -m casper_db external-import '<정규화.json>' --external-db '<외부 정보 DB 경로>' --apply
+python -m casper_db external-get '<외부 정보 DB 경로>' '<CVE ID>'
+```
+
+`collect-external nvd|github --output '<수집.json>'`은 공개 API를 조회한다. `--params`로 조회 조건 JSON을, `--max-pages`로 페이지 한도를 지정한다.
+
+대상에 대한 버전 비교는 근거가 포함된 [소프트웨어 목록 스키마](schemas/software-inventory.schema.json)로 수행한다.
+
+```powershell
+python -m casper_db external-assess '<외부 정보 DB>' '<소프트웨어 목록.json>' --cve '<CVE ID>'
+python -m casper_db external-assess '<외부 정보 DB>' '<소프트웨어 목록.json>' --cve '<CVE ID>' --apply
+python -m casper_db external-assessments '<외부 정보 DB>' --target '<대상 ID>' --cve '<CVE ID>'
+```
+
+기본 동작은 읽기 전용이다. 명시적 저장은 기존 외부 DB에 평가 스냅샷을 추가하며 CERT Case를 만들지 않는다. 비교 문법·판정·자료 갱신 시 처리 기준은 [외부 영향 범위 평가](APPLICABILITY.md)에 정의한다. 버전 일치는 현재 서비스의 취약점 재현이나 공격 허가를 뜻하지 않는다.
+
+[일괄 처리 설정](examples/automation.example.json)에 보고서·대상 ID·검토 파일·외부 자료를 지정해 `automate '<설정.json>' --output-dir '<출력 폴더>'`로 처리한다. 제공 설정은 로컬 파일 입력 형식이며 실제 보고서나 응답을 포함하지 않는다. 경로는 설정 파일 기준이다. 대상 ID와 검토 기록을 지정해야 등록 준비를 완료할 수 있다.
+
+`automate`는 기본 dry run이며 DB 저장에는 `--apply`와 명시적인 `--cert-db`·`--external-db` 경로가 필요하다. 설정의 `collect=true`는 dry run에서도 공개 API를 조회한다. 보고서·외부 DB 전체 실행은 분산 트랜잭션이 아니며 일부 실패는 실행 결과에 남긴다.
+
+## 코드 구조
+
+| 역할 | 파일 |
 |---|---|
-| `GET /cases?target_id=LAB-DEMO` | 그 사이트의 준비된 전월 보고서 목록 |
-| `GET /cases?target_id=LAB-DEMO&endpoint=%2Fsearch&method=GET&parameter=q` | 위치와 입력변수가 같은 전월 사례 |
-| `GET /cases?target_id=LAB-DEMO&endpoint=%2Fsearch&method=GET&parameter=q&parameter_location=query` | 입력 위치까지 같은 전월 사례 |
-| `GET /cases/CASE-001` | 준비된 특정 사례의 상세 내용. 초안은 409 |
+| HWP/HWPX 입력·필드 매핑 | [hwp.py](src/casper_db/hwp.py), [hwpx.py](src/casper_db/hwpx.py) |
+| 서술형 분류·값 확인 | [narrative.py](src/casper_db/narrative.py), [field_values.py](src/casper_db/field_values.py) |
+| 입력 적용 여부·경로 규칙 | [case_policy.py](src/casper_db/case_policy.py) |
+| OCR·근거 후보 연결 | [local_ocr.py](src/casper_db/local_ocr.py), [ocr_review.py](src/casper_db/ocr_review.py) |
+| 초안·검토·등록 패키지 | [report_drafts.py](src/casper_db/report_drafts.py), [import_workflow.py](src/casper_db/import_workflow.py) |
+| 접수·이력·등록·조회 | [report_intake.py](src/casper_db/report_intake.py), [repository.py](src/casper_db/repository.py) |
+| 검토 대기·외부 권고 인계 | [reference_context.py](src/casper_db/reference_context.py) |
+| 외부 정보·일괄 처리 | [external_vulnerabilities.py](src/casper_db/external_vulnerabilities.py), [automation.py](src/casper_db/automation.py) |
+| 대상별 영향 범위 평가 | [applicability.py](src/casper_db/applicability.py), [version_ranges.py](src/casper_db/version_ranges.py) |
+| 검증기 결과 계약·일괄 저장 | [retest.py](src/casper_db/retest.py) |
 
-서버는 `127.0.0.1`에서 실행된다. API 문서는 `http://127.0.0.1:8001/docs`에 있다. API는 조회만 제공하며, DB 내용을 자동으로 LLM에 넣거나 사이트를 점검하지는 않는다.
+## 지원 범위와 제약
 
-## 지금 확인된 것과 남은 연결
+### DB 버전 전환
 
-2026-10-06 기준 저장·조회, 필드 검증, API·CLI, 스키마 이동, 재점검 이력, HTML 데모와 로컬 HTML 파서·후보 선정을 검사했다. 결과는 [검증 기록](VERIFICATION.md)에 있다.
+v6는 Case의 조건부 입력 미적용과 경로 템플릿, v7는 Check의 조건부 입력 미적용과 관찰 시점 증거 메타데이터를 추가한다. 기존 v1~v6 DB는 쓰기 작업을 중지하고 백업한 뒤 `init`으로 명시적으로 전환한다. 조회가 기존 DB를 자동 변경하지는 않는다. 변환은 구조·데이터·버전 번호를 한 트랜잭션에서 처리하며 실패하면 롤백한다. 기존 보고서 버전 JSON·점검 이력·외래키 연결을 보존한다. 기존 Check의 관찰 시점 해시는 소급 생성하지 않는다. `init` 자체가 백업을 생성하는 것은 아니다. 예전 등록 패키지는 현재 규칙으로 다시 준비하고 검증한다.
 
-다음 연결에 필요한 팀 정보는 실제 모의 사이트의 URL·메서드·입력 항목, 지난달 보고서의 심각도·증거·조치 방안, 팀 파서 출력 JSON 형식, 이번 달 재현 성공 기준이다. **전월 보고서 저장·조회와 로컬 HTML 파서의 입력 지점 추출·후보 선정까지 연결했다.** 실제 사이트·팀 파서·LLM·점검 도구의 통합 결과는 아직 없다. 현재 `checks` 기록은 CLI 또는 Python으로 입력한다. 실제 판정과 보고서 자동 생성에는 검증 도구 및 사람의 검토를 연결해야 한다.
+### 입력과 실행 범위
 
-한 건의 이전 취약점을 이미 알고 재점검하는 시연이다. 이 구조를 사용해 성공하더라도 LLM이 알려지지 않은 취약점을 새로 발견했다고 해석하지 않는다.
+- 추출은 표 레이블·명시적 항목명 문단과 서술형 규칙에 기반한다. 미지원 양식도 원문을 보존하고 미분류·검토 상태를 반환한다. 임의의 보고서 양식·모든 문장을 정확히 해석한다고 보장하지 않는다.
+- 원본은 intake에 보존하지만 추출 JSON은 페이지 배치나 모든 문서 개체를 완전히 재현하지 않는다.
+- HWP는 선택 리더의 v5 지원 범위에 제한된다. 암호화·손상·미지원 문서는 처리에 실패할 수 있다.
+- OCR은 따옴표·공백·숫자를 잘못 읽거나 흐린 글자를 인식하지 못할 수 있다. 엔진이 신뢰도 점수를 제공하지 않아 `confidence=null`을 유지한다. 검토 전 자동 확정하지 않는다.
+- 입력 파일은 32 MB, OCR은 이미지 8개·개별 16 MB·8백만 픽셀 등의 한도가 있다. 벡터 개체는 래스터 OCR 대상이 아니다.
+- 해시는 원본·초안·검토의 일관성을 확인한다. 로컬 검토자 이름은 사용자 입력이며 중앙 신원 인증을 대신하지 않는다.
+- 기존 팀 DB 전환·운영 배포·접근 권한·민감 자료 보관/폐기·백업 정책은 운영 통합에서 별도로 구성해야 한다.
 
-코드 읽는 순서: [HTML 입력 추출](src/casper_db/parser.py) → [후보 판정](src/casper_db/matching.py) → [사례 형식](src/casper_db/models.py) → [SQLite 저장·조회](src/casper_db/repository.py) → [증거 파일 확인](src/casper_db/evidence.py). 입력 스키마는 [사례](schemas/case.schema.json), [체크](schemas/check.schema.json), [파서](schemas/parser-observation.schema.json)이며, 비교 출력은 [후보 판정](schemas/candidate-assessment.schema.json)에 있다.
+기존 조회 API는 기본 `127.0.0.1:8001`의 `GET /cases?target_id=...`, `GET /cases/<case_id>`를 제공한다. 기본 조회는 `ready` 사례 대상이며 쓰기 API는 없다. 새 접수 작업 공간을 팀 서비스 DB로 자동 연결하지 않는다.
 
-검토자 이름은 로컬 사용자가 입력하는 기록이다. 중앙 서버의 사용자 인증·권한과 쓰기 API, 실제 XSS 재현·LLM 연동·자동 보고서 생성은 남은 작업이다. `procedure`와 `success_condition`의 자연어를 그대로 자동 실행하지 않고 점검 담당 모듈과 실행·관찰 형식을 합의해야 한다.
+관련 계약: [매칭 정책](MATCHING_POLICY.md), [파서 입력](PARSER_INPUT_PROPOSAL.md), [체크 검토](CHECK_REVIEW.md), [Case 스키마](schemas/case.schema.json), [체크 스키마](schemas/check.schema.json).
