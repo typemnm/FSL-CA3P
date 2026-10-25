@@ -28,9 +28,11 @@ docker compose -f vul-web2/compose.yaml down
 
 ```sh
 npm ci --prefix xss-parser
+npm ci --prefix packages/report/capture
 python3 -m venv .venv
 .venv/bin/python -m pip install -r casper-db/requirements-ci.lock
-.venv/bin/python -m pip install --no-deps -e ./casper-db
+.venv/bin/python -m pip install -r packages/report/requirements-ci.lock
+.venv/bin/python -m pip install --no-deps -e ./casper-db -e ./packages/report/py
 (cd xss-parser && npx playwright install chromium)
 CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run verify
 ```
@@ -103,6 +105,9 @@ npm ci
 npx playwright install chromium
 cd ..
 python -m pip install -e .\casper-db
+python -m pip install -r .\packages\report\requirements-ci.lock
+python -m pip install --no-deps -e .\packages\report\py
+npm ci --prefix packages/report/capture
 ```
 
 프로젝트 루트에서 다음 명령으로 대시보드를 시작합니다. 코어 fixture만 확인할 때는 위 설치가 필요하지 않습니다.
@@ -158,6 +163,24 @@ Agent는 관찰한 입력 위치와 카탈로그 조언을 확인한 뒤 실행�
 실행과 이벤트는 중앙 SQLite registry에 저장하고 서버 조회로 이력을 다시 엽니다. `CA3P_STORE_PATH`로 DB 위치를 설정하며 Docker는 `.runtime` named volume을 사용합니다. 기존 실습 이벤트·보고서는 `reports/pentest-db-runs/`에도 유지합니다. 결과 비교에서 기준·후보 run을 골라 모델, 모듈 digest와 finding 및 처리 지연 차이를 확인합니다. 입력·환경이 다른 실행은 동등한 조건의 실험과 구분합니다.
 
 `xss-fuzzer`는 현재 parser/attack 실행 경로로 대체됐습니다. 원래 브랜치는 참고용으로 유지하며 상태는 integration-manifest에 기록합니다.
+
+## 실행 후 HWPX 보고서
+
+실제 로컬 실습의 검사 결과를 저장한 뒤 worker가 보고서 Agent를 자동 실행합니다. 보고서 촬영이 끝날 때까지 해당 실습 게시판을 유지하며, 완료·실패·중지 시 자식 프로세스를 정리합니다. 검사 결과와 HWPX 생성 상태는 따로 관리하므로 문서 생성 실패가 기존 finding을 바꾸지 않습니다.
+
+대시보드의 **리포트** 화면에 생성 중·완료·실패·설정 필요 상태가 표시됩니다. 생성이 완료되면 **HWPX 다운로드**를 누르세요. 로그인한 조회 계정도 내려받을 수 있고, 서버를 재시작하거나 **실행 이력**에서 해당 run을 열어도 파일이 유지됩니다. 기존 JSON 내보내기도 사용할 수 있습니다. 생성 전의 과거 이력에는 HWPX 파일이 없습니다.
+
+보고서 모델은 `agent/.env` 또는 프로세스의 `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL` 설정을 사용합니다. 원점과 모델의 기본값은 기존 Agent 설정을 따릅니다. **규칙 baseline 실습도 완료 후 보고서 작성에는 설정된 DeepSeek 모델을 호출하므로 API 비용이 발생할 수 있습니다.** 코어 fixture와 중지된 실행은 보고서 생성과 모델 호출을 건너뜁니다. 설정이 없으면 검사 결과는 보존하고 보고서는 설정 필요로 표시합니다.
+
+Python은 `CA3P_REPORT_PYTHON`, `CASPER_DB_PYTHON`, 플랫폼 기본 Python 순서로 선택합니다. Windows의 프로젝트 가상환경을 사용한다면 실행 전에 아래처럼 지정하세요.
+
+```powershell
+$env:CASPER_DB_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
+$env:CA3P_REPORT_PYTHON = $env:CASPER_DB_PYTHON
+npm start
+```
+
+보고서 작성은 기본 180초와 출력 크기 제한을 적용합니다. 완성된 HWPX는 실행 registry 옆 `artifacts/`에 해시로 보관하며 다운로드 때 실행 연결과 파일 무결성을 확인합니다. Docker에서는 기존 `.runtime` 볼륨에 보존됩니다. 보고서는 초안이므로 공유 전에 내용을 검토하세요. 상세 CLI와 출력 규약은 [보고서 모듈](packages/report/README.md)에 있습니다.
 
 # PR 규칙
 ## 브랜치

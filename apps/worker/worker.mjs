@@ -9,13 +9,18 @@ import { startLocalLab } from '../../packages/adapters/local-lab-gateway.mjs';
 import { syncRunChecks } from '../../packages/history/check-sync.mjs';
 import { PROJECT_ROOT, treeDigest } from '../../packages/contracts/manifest.mjs';
 import { join } from 'node:path';
+import { generateReportDocument } from '../../packages/report/index.mjs';
 
 export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
-  pollMs = 150, leaseMs = 15_000, heartbeatMs = 1000, envFile } = {}) {
+  pollMs = 150, leaseMs = 15_000, heartbeatMs = 1000, envFile, env = process.env,
+  reportGenerator = generateReportDocument, runtimeFactory = createLocalRuntime } = {}) {
   const store = createRunRepository({ path: storePath });
-  let stopping = false; let runtime = null; let activeLease = null; let busy = false; let timer; let shutdownTask;
+  let stopping = false; let runtime = null; let activeLease = null; let activeController = null; let busy = false; let timer; let shutdownTask;
   const notify = () => { if (process.connected) process.send({ type: 'state' }); };
-  const cancel = runId => { if (activeLease?.runId === runId && runtime) { try { runtime.stop(runId); } catch { /* Already terminal. */ } } };
+  const cancel = runId => { if (activeLease?.runId === runId) {
+    activeController?.abort();
+    if (runtime) { try { runtime.stop(runId); } catch { /* Already terminal. */ } }
+  } };
   async function tick() {
     if (busy || stopping) return;
     busy = true;
@@ -39,12 +44,14 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         throw Object.assign(new Error('Historical-case snapshot changed after preparation.'), { code: 'CASE_SNAPSHOT_CHANGED' });
       }
       const controller = new AbortController();
+      activeController = controller;
       const engine = await createModelReasoning(lease.modelId, { signal: controller.signal,
+        env,
         ...(envFile ? { envFile } : {}), onModelCall(metadata) {
           store.recordModelCall(lease, metadata); notify();
         } });
       let persistenceError = null;
-      runtime = createLocalRuntime({ defaultDelayMs: lease.options.delayMs,
+      runtime = runtimeFactory({ defaultDelayMs: lease.options.delayMs,
         runIdFactory: () => lease.runId, labMode: lease.mode,
         labTestProfile: lease.options.testProfile,
         labConfigProvider: () => ({ provider: lease.modelId === 'rule-baseline' ? 'rules' : 'deepseek', model: lease.modelId }),
@@ -103,6 +110,33 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
           catch (error) { historyWrite = { status: 'failed', checks: [], error: error.message }; }
           finalState = { ...finalState, historyWrite };
         }
+        // Persist the core JSON before the report collector opens its read-only DB.
+        // The lease/heartbeat and local board stay alive through document capture.
+        const startedAt = new Date().toISOString();
+        finalState.reportDocument = { status: 'generating', startedAt, message: 'HWPX 보고서를 작성하고 있습니다.' };
+        store.saveState(lease, { ...finalState, status: 'running' }); notify();
+        let document;
+        try {
+          if (lease.mode === 'core-fixture') document = { status: 'skipped', errorCode: 'FIXTURE_SKIPPED', message: '코어 fixture는 HWPX 보고서를 생성하지 않습니다.' };
+          else if (status === 'cancelled' || !final.report) document = { status: 'skipped', errorCode: 'RUN_STOPPED', message: '중지했거나 최종 보고서가 없어 문서를 생성하지 않습니다.' };
+          else document = await reportGenerator({ run: finalState, storePath: store.path,
+            historyPath: lease.options.caseSnapshot?.sourcePath, envFile, env, signal: controller.signal });
+          if (document.status === 'ready' && controller.signal.aborted) document = {
+            status: 'failed', errorCode: 'REPORT_CANCELLED', message: '보고서 생성을 취소했습니다.',
+          };
+          if (document.status === 'ready') {
+            const binary = store.writeBinaryArtifact(lease.runId, 'hwpx-report', document.bytes, {
+              filename: document.filename, contentType: 'application/hwp+zip', provenance: 'report-agent-generated',
+            });
+            document = { status: 'ready', artifactId: binary.id, filename: document.filename,
+              message: 'HWPX 보고서 초안이 준비되었습니다. 내려받은 뒤 검토하세요.' };
+          } else document = { status: ['failed', 'unavailable', 'skipped'].includes(document.status) ? document.status : 'failed',
+            message: document.message, errorCode: document.errorCode };
+        } catch {
+          // Document errors must not change the inspection's finding or status.
+          document = { status: 'failed', errorCode: 'REPORT_GENERATION_FAILED', message: 'HWPX 보고서 생성에 실패했습니다.' };
+        }
+        finalState.reportDocument = { ...document, startedAt, completedAt: new Date().toISOString() };
         store.saveState(lease, finalState);
         store.finish(lease, status);
         notify();
@@ -119,7 +153,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       }
       notify();
     } finally {
-      activeLease = null; busy = false;
+      activeLease = null; activeController = null; busy = false;
       if (!stopping) timer = setTimeout(tick, pollMs);
     }
   }

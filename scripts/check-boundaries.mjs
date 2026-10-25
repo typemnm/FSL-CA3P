@@ -6,7 +6,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(await readFile(resolve(root, 'integration-manifest.json'), 'utf8'));
 const modules = manifest.modules.filter(module => module.status === 'active').sort((a, b) => b.path.length - a.path.length);
 const boundaries = [...manifest.boundaries].sort((a, b) => b.path.length - a.path.length);
-const ignored = new Set(['node_modules', '.git', '.venv', '.runtime', 'tests', 'test', 'test-support', 'data', 'reports', '__pycache__']);
+const ignored = new Set(['node_modules', '.git', '.venv', '.runtime', '.pytest_cache', 'tests', 'test', 'test-support', 'data', 'reports', '__pycache__']);
 const owner = path => modules.find(module => path === module.path || path.startsWith(`${module.path}/`));
 async function files(directory) {
   const output = [];
