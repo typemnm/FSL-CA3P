@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "probe:idor": "node scripts/run-probe.mjs"
+    "repeater": "node scripts/run-repeater.mjs"
   },
   "engines": {
     "node": ">=24 <25"
