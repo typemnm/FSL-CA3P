@@ -97,6 +97,13 @@ test('lab API forwards the university fixture and target selection but rejects e
   for (const extra of [{ mode: 'core-fixture' }, { testProfile: 'stored_xss_canary' }]) {
     assert.equal((await api(base, '/api/lab-runs', { method: 'POST', headers: operator.headers, body: { ...selection, ...extra } })).status, 400);
   }
+  for (const body of [
+    { target: selection.target },
+    { fixtureId: 'vul-web-1', target: selection.target },
+    { fixtureId: 'unknown', target: selection.target },
+  ]) {
+    assert.equal((await api(base, '/api/lab-runs', { method: 'POST', headers: operator.headers, body })).status, 400);
+  }
   assert.equal(calls.lab.length, 1);
 });
 

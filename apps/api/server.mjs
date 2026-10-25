@@ -187,6 +187,9 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
         if (pathname === '/api/runs') return json(res, runtime.listRuns ? 202 : 201, await runtime.start(body));
         if (pathname === '/api/lab-runs') {
           if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['modelId', 'fixtureId', 'target'].includes(key))) throw error(400, 'Only modelId, fixtureId and target are accepted.');
+          if (Object.hasOwn(body, 'target') && !['vul-web2-daehan', 'vul-web2-wonchang'].includes(body.fixtureId)) {
+            throw error(400, 'Only registered university fixtures accept a target origin.');
+          }
           return json(res, runtime.listRuns ? 202 : 201, await runtime.startLab(body));
         }
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) throw error(400, 'Provide an empty JSON object.');

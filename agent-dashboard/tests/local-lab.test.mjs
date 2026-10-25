@@ -203,9 +203,17 @@ test('the HTTP lab start route cannot accept an arbitrary target URL', async t =
   t.after(() => server.shutdown());
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const bad = await fetch(`${origin}/api/lab-runs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: 'https://example.com' }) });
-  assert.equal(bad.status, 400);
-  assert.equal(runtime.getState().run.status, 'idle');
+  for (const body of [
+    { target: 'https://example.com' },
+    { fixtureId: 'vul-web-1', target: 'http://127.0.0.1:4101' },
+    { fixtureId: 'unknown', target: 'http://127.0.0.1:4101' },
+    { fixtureId: 'vul-web2-daehan', target: 'http://127.0.0.1:4101' },
+    { fixtureId: 'vul-web2-wonchang' },
+  ]) {
+    const bad = await fetch(`${origin}/api/lab-runs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal(bad.status, 400);
+    assert.equal(runtime.getState().run.status, 'idle');
+  }
   const started = await fetch(`${origin}/api/lab-runs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(started.status, 201);
   const envelope = await started.json();
