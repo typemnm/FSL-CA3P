@@ -36,7 +36,7 @@ function canonical(value) {
   return value;
 }
 
-function pythonJson(code, input, { python = process.env.CASPER_DB_PYTHON ?? 'python', signal } = {}) {
+function pythonJson(code, input, { python = process.env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'), signal } = {}) {
   return new Promise((resolveResult, reject) => {
     const child = spawn(python, ['-c', code], { cwd: root, shell: false, signal,
       env: { ...process.env, PYTHONPATH: join(root, 'casper-db/src'),

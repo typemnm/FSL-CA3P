@@ -11,6 +11,7 @@ dependencies = ["pydantic>=2.10,<3"]
 
 [project.optional-dependencies]
 hwp = ["pyhwp==0.1b15", "six>=1.16,<2"]
+ocr = ["Pillow>=11.3,<13"]
 api = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
 dev = ["pytest>=8,<10", "httpx>=0.27,<1", "ruff>=0.8,<1"]
 
@@ -21,7 +22,7 @@ casper-db = "casper_db.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-casper_db = ["schema.sql", "checks.sql", "history.sql", "review_assets/*", "ocr_assets/windows_ocr.ps1"]
+casper_db = ["schema.sql", "checks.sql", "history.sql", "attack_catalog.sql", "catalog_seed/*.json", "review_assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
