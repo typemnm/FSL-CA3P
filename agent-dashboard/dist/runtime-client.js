@@ -12,7 +12,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
   const remote = !['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname);
 
   function readEnvelope(value) {
-    if (!value || !['core-fixture', 'local-lab-rule', 'local-lab-deepseek'].includes(value.mode ?? value.run?.mode)
+    if (!value || !['core-fixture', 'local-lab-rule', 'local-lab-deepseek', 'local-lab-general'].includes(value.mode ?? value.run?.mode)
       || typeof value.instanceId !== 'string' || !value.run || !Array.isArray(value.run.events)) {
       throw new Error('실행 서버의 상태 형식을 확인할 수 없습니다.');
     }

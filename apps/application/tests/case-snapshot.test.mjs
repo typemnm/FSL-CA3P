@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROJECT_ROOT } from '../../../packages/contracts/manifest.mjs';
@@ -36,4 +36,43 @@ with sqlite3.connect(sys.argv[1]) as c:
   assert.deepEqual(after.caseRevisions, before.caseRevisions, 'curated cases did not change');
   assert.notEqual(after.contentDigest, before.contentDigest, 'check contamination must change the comparison input digest');
   assert.equal(prepareCaseSnapshot({ runId: 'snapshot-repeat', storePath: join(directory, 'runs.sqlite'), env }).contentDigest, after.contentDigest);
+});
+
+test('historical snapshot filters cases by the registered general fixture', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'ca3p-case-snapshot-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const storePath = join(directory, 'runs.sqlite');
+  const sourcePath = join(directory, 'cases.sqlite3');
+  for (const fixtureId of ['vul-web-1', 'vul-web2-daehan', 'vul-web2-wonchang']) {
+    let called = 0;
+    const result = prepareCaseSnapshot({ runId: `run-${fixtureId}`, storePath, fixtureId,
+      env: { CASPER_DB_PYTHON: 'configured-python', CASPER_DB_PATH: sourcePath },
+      spawn(command, args, options) {
+        called += 1;
+        assert.equal(command, 'configured-python');
+        assert.equal(args[0], '-c');
+        assert.match(args[1], /list_for_target\(fixture_id\)/u);
+        assert.equal(args[2], sourcePath);
+        assert.equal(args[4], fixtureId);
+        assert.ok(options.env.PYTHONPATH.endsWith(join('casper-db', 'src')));
+        writeFileSync(args[3], `snapshot for ${fixtureId}`);
+        return { status: 0, stdout: JSON.stringify({ schemaVersion: 5, cases: [{
+          case_id: `case-${fixtureId}`, revision: 2, title: 'Past case',
+          vulnerability_type: 'access_control', endpoint: '/api/posts', method: 'GET',
+          description: 'Historical reference only', status: 'confirmed', patch_status: 'open',
+        }], checks: [] }) };
+      },
+    });
+    assert.equal(called, 1);
+    assert.equal(result.caseSummaries[0].caseId, `case-${fixtureId}`);
+    assert.deepEqual(result.caseRevisions, [{ caseId: `case-${fixtureId}`, revision: 2 }]);
+  }
+});
+
+test('historical snapshot rejects unregistered fixture before calling Python', () => {
+  let called = false;
+  assert.throws(() => prepareCaseSnapshot({ runId: 'run-unsafe', storePath: 'unused', fixtureId: '../other',
+    spawn() { called = true; },
+  }), { status: 400 });
+  assert.equal(called, false);
 });

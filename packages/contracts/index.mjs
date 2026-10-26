@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export const CONTRACT_VERSIONS = Object.freeze({ envelope: '1.0', parserReport: '3.4',
   catalog: '0.1-draft', caseStoreMigration: 5, runManifest: '1.0', runEvent: '1.0' });
-export const RUN_MODES = Object.freeze(['core-fixture', 'local-lab-rule', 'local-lab-deepseek']);
+export const RUN_MODES = Object.freeze(['core-fixture', 'local-lab-rule', 'local-lab-deepseek', 'local-lab-general']);
 export const TERMINAL_STATUSES = Object.freeze(['completed', 'failed', 'cancelled', 'interrupted']);
 export const ACTIVE_STATUSES = Object.freeze(['queued', 'preparing', 'running', 'stopping']);
 export const digest = value => createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value)

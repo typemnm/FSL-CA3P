@@ -1,17 +1,25 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ca3p.local/contracts/run-request/1.0",
-  "title": "CA3P bounded lab request",
+  "title": "CA3P registered lab request",
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "mode": {"enum": ["core-fixture", "local-lab-rule", "local-lab-deepseek"]},
+    "mode": {"enum": ["core-fixture", "local-lab-rule", "local-lab-deepseek", "local-lab-general"]},
     "modelId": {"enum": ["rule-baseline", "deepseek-flash", "deepseek-v4-pro"]},
-    "fixtureId": {"const": "vul-web-1"},
+    "fixtureId": {"enum": ["vul-web-1", "vul-web2-daehan", "vul-web2-wonchang"]},
     "target": {"type": "string", "maxLength": 2048},
     "delayMs": {"type": "integer", "minimum": 0, "maximum": 3000},
-    "testProfile": {"enum": ["stored_xss_canary", "agent_cross_user_delete_canary"]}
+    "testProfile": {"enum": ["stored_xss_canary", "agent_cross_user_delete_canary", "known_record_idor_read", "general"]}
   },
-  "allOf": [{"if": {"properties": {"mode": {"enum": ["local-lab-rule", "local-lab-deepseek"]}}, "required": ["mode"]},
-    "then": {"not": {"required": ["target"]}}}]
+  "allOf": [
+    {"if": {"not": {"properties": {"fixtureId": {"enum": ["vul-web2-daehan", "vul-web2-wonchang"]}}, "required": ["fixtureId"]}},
+      "then": {"if": {"properties": {"mode": {"enum": ["local-lab-rule", "local-lab-deepseek", "local-lab-general"]}}, "required": ["mode"]},
+        "then": {"not": {"required": ["target"]}}}},
+    {"if": {"properties": {"fixtureId": {"enum": ["vul-web2-daehan", "vul-web2-wonchang"]}}, "required": ["fixtureId"]},
+      "then": {"properties": {"mode": {"enum": ["local-lab-rule", "local-lab-general"]}}}},
+    {"if": {"properties": {"mode": {"const": "local-lab-general"}}, "required": ["mode"]},
+      "then": {"properties": {"modelId": {"enum": ["deepseek-flash", "deepseek-v4-pro"]}, "testProfile": {"const": "general"}}},
+      "else": {"properties": {"testProfile": {"not": {"const": "general"}}}}}
+  ]
 }

@@ -1,5 +1,19 @@
 # CA3P 펜테스팅 에이전트 코어 MVP
 
+## 범용 점검 코어 준비 단계
+
+`src/general-assessment.js`의 `runGeneralAssessment()`는 기존 단일 XSS/IDOR `runOnce()`와 독립된 범용 판단 루프다. 호출자가 `observer.observe`, `planner.propose`, `policy.authorize`, `executor.execute`, `verifier.verify` 포트를 제공한다. 코어는 관측 증거를 바탕으로 여러 가설과 검사를 반복하고, 허용 도구·반복·검사·증거 예산을 확인한다. 정책을 거부한 검사는 실행하지 않으며, 완료된 검사의 독립 증거가 없으면 `confirmed`나 `not_reproduced`로 판정하지 않는다. 결과에는 `findings[]`, 미점검 수, 증거 출처와 종료 사유를 남긴다.
+
+`src/general-model-planner.js`는 기존 DeepSeek 클라이언트를 사용하는 구조화 플래너다. `createGeneralModelPlannerFromEnv()`를 선택해 호출하면 실제 모델 API를 사용한다. 대상 페이지와 관측 자료는 비신뢰 데이터로 취급하고, 허용된 도구·증거 ID를 벗어난 출력은 거부한다. 문맥이 모델 입력 한도를 넘으면 자료를 조용히 생략하지 않고 오류를 반환한다.
+
+현재 이 코어는 **에이전트 모듈 안의 사전 통합 구현**이다. 대시보드의 운영 실행 서비스와 worker는 기존 프로필을 사용하므로 새 함수만으로 세 실습 대상의 범용 점검이 시작되지는 않는다. 다른 모듈의 연결 계약은 소유자와 협의 후 적용한다. 브라우저 증거가 필요한 XSS 검사는 `xss-parser` 후속 패치 전까지 실측 확정으로 표시하지 않는다.
+
+```powershell
+npm --prefix agent run test:general
+```
+
+이 검증은 관측·모델·도구 계약 대역을 통해 범용 에이전트의 판단, 정책, 증거 흐름을 확인한다. 실제 사이트 발견율이나 전체 `integration-gate` 성공을 뜻하지 않는다.
+
 이 디렉터리의 production 범위는 **에이전트 코어**다. 코어는 `xss-parser`, `casper-db`, `pentest-db`, `attack-module`에 직렬화된 JSON 요청을 보내고 응답을 받아 한 번의 사고 루프를 수행한다. 대시보드의 기본 로컬 실습은 `stored_xss_canary` 프로필이며, 기존 `agent_cross_user_delete_canary`는 명시적으로 선택하는 레거시 프로필이다. 코어 fixture는 scripted 응답으로 동작한다. 실제 브라우저·DB·curl·`guardrail` 연결은 [`agent-dashboard/local-lab-gateway.mjs`](../agent-dashboard/local-lab-gateway.mjs)와 그 어댑터가 담당한다.
 
 다음 기능은 에이전트 디렉터리의 production 코드에 포함하지 않는다.
@@ -117,7 +131,7 @@ npm run demo
 
 `npm test`와 `npm run demo`는 `test-support/scripted-gateway.js`를 사용한다. 이 gateway는 외부 모듈을 구현하지 않고 미리 정한 JSON 응답과 인메모리 상태 전이만 제공하는 테스트 대역이다.
 
-`npm run demo`는 에이전트 계약과 한 번의 루프를 보여줄 뿐 실제 사이트에 접속하지 않는다. 실제 `vul-web-1` 저장형 XSS 로컬 실습은 프로젝트 루트에서 `npm start` 후 대시보드의 **로컬 실습 시작**을 선택한다. 이 경로는 서버가 만든 격리된 loopback 게시판만 대상으로 하며 `DEEPSEEK_API_KEY`가 필요하다. 브라우저·gateway를 포함한 비용 없는 통합 테스트는 `cd .\agent-dashboard; npm run check; npm test`로 실행한다. 이 테스트는 모델 요청을 가짜 클라이언트로 대체한다.
+`npm run demo`는 에이전트 계약과 한 번의 루프를 보여줄 뿐 실제 사이트에 접속하지 않는다. 프로젝트 루트에서 `npm start` 후 대시보드의 **범용 취약점 점검**을 선택하면 `apps/application/general-runtime.mjs`가 세 등록 실습 대상에 대한 실제 DeepSeek 계획을 `runGeneralAssessment()`에 연결한다. 범용 경로는 읽기 관측과 독립 검증 가능한 도구로 제한되고, 증거가 부족한 후보는 미점검 또는 판정 불가로 남긴다. 기존 `vul-web-1` 저장형 XSS 1회 검사는 **기존 단일 검사**에서 실행한다. 비용 없는 범용 통합 검증은 가짜 모델과 로컬 HTTP 대역을 사용한다.
 
 ## Production 파일
 
@@ -126,6 +140,8 @@ npm run demo
 - `src/deepseek-client.js`: timeout·재시도·JSON Output 검증을 포함한 DeepSeek 전용 HTTP client
 - `src/deepseek-reasoning-engine.js`: 기본 ID 선택 및 선택형 curl JSON 생성·검증 어댑터
 - `src/deepseek-config.js`: `.env`/환경변수 설정 로딩과 어댑터 factory
+- `src/general-assessment.js`: 주입된 관측·정책·실행·검증 포트로 동작하는 범용 다중 가설 루프
+- `src/general-model-planner.js`: 실제 DeepSeek 또는 테스트 클라이언트로 구조화된 다중 가설·검사를 제안하는 플래너
 - `src/curl-command.js`: canonical HTTP action을 구조화된 curl JSON으로 변환
 - `src/xss-canary.js`: 실행별 고유 마커와 고정된 무해한 XSS 확인 본문 생성
 - `src/protocol.js`: JSON envelope, 상관관계, 오류 정규화

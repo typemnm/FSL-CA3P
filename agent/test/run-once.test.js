@@ -66,7 +66,8 @@ test('agent source no longer imports or implements Web Explorer and ActionPolicy
     .filter(entry => entry.isFile()).map(entry => entry.name).sort();
   assert.deepEqual(files, [
     'curl-command.js', 'deepseek-client.js', 'deepseek-config.js',
-    'deepseek-reasoning-engine.js', 'index.js', 'model-definitions.js', 'orchestrator.js',
+    'deepseek-reasoning-engine.js', 'general-assessment.js', 'general-model-planner.js',
+    'index.js', 'model-definitions.js', 'orchestrator.js',
     'protocol.js', 'reasoning-engine.js', 'xss-canary.js',
   ]);
   const source = (await Promise.all(files.map(file => fs.readFile(path.join(directory, file), 'utf8')))).join('\n');

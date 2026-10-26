@@ -50,7 +50,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     const experiment = store.experimentState();
     return { run, mode: run.mode, instanceId, experiment: { epoch: experiment.epoch, lastResetAt: experiment.lastResetAt, status: experiment.status },
       experimentReset: experiment, lab: { available: true, model: 'rule-baseline', provider: 'rules',
-      remoteAvailable: Boolean(remote), models } };
+      remoteAvailable: Boolean(remote), generalSupported: true, generalAvailable: Boolean(remote), models } };
   }
   function publish(force = false) {
     if (closed) return;
@@ -100,8 +100,9 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     const mode = body.mode ?? (idorOrigin ? 'local-lab-rule'
       : body.modelId && body.modelId !== 'rule-baseline' ? 'local-lab-deepseek' : 'core-fixture');
     if (!RUN_MODES.includes(mode)) throw fault(400, 'Unsupported run mode.');
-    const modelId = body.modelId ?? (mode === 'local-lab-deepseek' ? 'deepseek-flash' : 'rule-baseline');
-    if (idorOrigin && (mode !== 'local-lab-rule' || modelId !== 'rule-baseline')) {
+    const general = mode === 'local-lab-general';
+    const modelId = body.modelId ?? (mode === 'local-lab-deepseek' || general ? 'deepseek-flash' : 'rule-baseline');
+    if (idorOrigin && !general && (mode !== 'local-lab-rule' || modelId !== 'rule-baseline')) {
       throw fault(400, 'University fixtures support only the rule baseline known-record IDOR check.');
     }
     const model = listModels().find(item => item.id === modelId);
@@ -109,12 +110,14 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (!model.available) throw fault(503, 'Selected model is unavailable. Configure server credentials before starting.');
     if ((mode === 'core-fixture' || mode === 'local-lab-rule') && modelId !== 'rule-baseline') throw fault(400, 'Rule or fixture mode requires rule-baseline.');
     if (mode === 'local-lab-deepseek' && modelId === 'rule-baseline') throw fault(400, 'DeepSeek mode requires a registered DeepSeek model.');
+    if (general && model.provider !== 'deepseek') throw fault(400, 'General assessment requires a registered DeepSeek model.');
     if (mode !== 'core-fixture' && !idorOrigin && body.target !== undefined) throw fault(400, 'The board lab does not accept a target URL.');
     const delayMs = body.delayMs ?? defaultDelayMs;
     if (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 3000) throw fault(400, 'delayMs must be 0..3000.');
-    const testProfile = body.testProfile ?? (idorOrigin ? 'known_record_idor_read'
+    const testProfile = body.testProfile ?? (general ? 'general' : idorOrigin ? 'known_record_idor_read'
       : mode === 'core-fixture' ? 'agent_cross_user_delete_canary' : 'stored_xss_canary');
-    if (idorOrigin ? testProfile !== 'known_record_idor_read'
+    if (general ? testProfile !== 'general'
+      : idorOrigin ? testProfile !== 'known_record_idor_read'
       : !['stored_xss_canary', 'agent_cross_user_delete_canary'].includes(testProfile)
         || (mode === 'core-fixture' && testProfile !== 'agent_cross_user_delete_canary')) throw fault(400, 'Unsupported fixture test profile.');
     let target = idorOrigin ? validateUniversityOrigin(body.target === undefined ? idorOrigin : body.target) : 'https://demo.ca3p.local';
@@ -128,7 +131,15 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     }
     const id = `run-${randomUUID()}`;
     const options = { mode, modelId, target, delayMs: mode === 'core-fixture' ? delayMs : 0, testProfile, fixtureId };
-    if (mode !== 'core-fixture' && !idorOrigin) options.caseSnapshot = prepareCaseSnapshot({ runId: id, storePath: store.path, env });
+    if (general) {
+      try { options.caseSnapshot = prepareCaseSnapshot({ runId: id, storePath: store.path, fixtureId, env }); }
+      catch (failure) {
+        if (failure.code !== 'CASE_SNAPSHOT_UNAVAILABLE') throw failure;
+        options.unavailableInputs = ['casper-db'];
+      }
+    } else if (mode !== 'core-fixture' && !idorOrigin) {
+      options.caseSnapshot = prepareCaseSnapshot({ runId: id, storePath: store.path, fixtureId, env });
+    }
     const manifest = createRunManifest({ runId: id, mode, modelId, options, model, env });
     const experiment = store.experimentState();
     manifest.experiment = { epoch: experiment.epoch, lastResetAt: experiment.lastResetAt,
@@ -140,6 +151,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       manifest.data.caseDatabaseSourcePath = options.caseSnapshot.sourcePath;
     }
     const state = { ...emptyRun(), id, coreRunId: id, status: 'queued', mode, modelId,
+      ...(general ? { assessmentMode: 'general' } : {}),
       target: mode === 'core-fixture' || idorOrigin ? target : 'http://127.0.0.1/',
       simulated: mode === 'core-fixture', testProfile, fixtureId, manifest };
     store.createRun({ id, mode, modelId, manifest, state, options });

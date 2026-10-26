@@ -126,6 +126,7 @@ function resolveDeepSeekOptions({
   env = process.env,
   envFile = DEFAULT_ENV_FILE,
   readFileSync,
+  defaultMaxTokens = DEFAULT_MAX_TOKENS,
 } = {}) {
   if (!env || typeof env !== 'object') throw configError('env must be an object');
   const fileValues = readOptionalEnvFile(envFile, readFileSync);
@@ -155,7 +156,7 @@ function resolveDeepSeekOptions({
     maxTokens: parseIntegerSetting(
       'DEEPSEEK_MAX_TOKENS',
       pickSetting(env, fileValues, 'DEEPSEEK_MAX_TOKENS'),
-      DEFAULT_MAX_TOKENS,
+      defaultMaxTokens,
       { min: 64, max: 8_192 },
     ),
   });

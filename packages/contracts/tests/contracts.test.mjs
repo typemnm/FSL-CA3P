@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { redact, validateDisplayTarget } from '../index.mjs';
+import { redact, validateDisplayTarget, RUN_MODES } from '../index.mjs';
 import { createRunManifest, PROJECT_ROOT, treeDigest } from '../manifest.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -66,4 +66,21 @@ test('the existing local board manifest keeps its browser and agent execution co
   assert.ok(manifest.shared.lockDigest);
   assert.ok(manifest.model.adapterDigest);
   assert.equal(manifest.modules['vul-web2'], undefined);
+});
+
+test('general university manifests record model execution and omit deferred XSS browser conditions', () => {
+  assert.ok(RUN_MODES.includes('local-lab-general'));
+  const manifest = createRunManifest({ runId: 'general-university', mode: 'local-lab-general',
+    modelId: 'deepseek-flash', model: { provider: 'deepseek' },
+    options: { fixtureId: 'vul-web2-daehan', testProfile: 'general', target: 'http://192.168.0.20:4101' } });
+  assert.equal(manifest.target.fixtureId, 'vul-web2-daehan');
+  assert.equal(manifest.target.origin, 'http://192.168.0.20:4101');
+  assert.equal(manifest.target.testProfile, 'general');
+  assert.equal(manifest.execution.maxIterations, 6);
+  assert.equal(manifest.model.provider, 'deepseek');
+  assert.equal(manifest.model.executionRole, undefined);
+  assert.ok(manifest.model.promptTemplateDigest);
+  assert.ok(manifest.modules.agent.contentDigest);
+  assert.equal(manifest.modules['xss-parser'], undefined);
+  assert.equal(manifest.environment.browserVersion, 'not-applicable');
 });
