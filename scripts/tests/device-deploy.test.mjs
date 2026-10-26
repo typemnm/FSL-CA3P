@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { deploymentTransaction, validateConfiguration, prepareRelease, execute, atomicJson, deploy, localRequest } from '../device-deploy.mjs';
+import { deploymentTransaction, validateConfiguration, prepareRelease, execute, atomicJson, deploy, localRequest, normalizeTrackedModes } from '../device-deploy.mjs';
 
 const config = { repository: 'typemnm/FSL-CA3P', repoDir: '/repo', deployRoot: '/private/deploy',
   runtimeDir: '/private/runtime', caseDbPath: '/private/cases.sqlite', legacyReportsDir: '/private/reports',
@@ -113,6 +113,34 @@ test('command failure never exposes captured output and writes diagnostics priva
     assert.match(await readFile(logFile, 'utf8'), /synthetic-private-value/);
     assert.equal((await stat(logFile)).mode & 0o777, 0o600);
     await assert.rejects(execute(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { timeoutMs: 20 }), /timed out/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('JSON command stdout stays parseable while stderr warnings remain in private diagnostics', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ca3p-stdout-'));
+  try {
+    const logFile = join(directory, 'docker.log');
+    const output = await execute(process.execPath, ['-e', 'console.error("diagnostic warning"); console.log(JSON.stringify({ready:true}))'], { logFile, stdoutOnly: true });
+    assert.deepEqual(JSON.parse(output), { ready: true });
+    assert.match(await readFile(logFile, 'utf8'), /diagnostic warning/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('private checkout modes are normalized only for tracked source and preserve untracked secrets and symlink targets', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ca3p-checkout-mode-'));
+  try {
+    const git = args => execFileSync('/usr/bin/git', args, { cwd: directory, stdio: 'pipe' });
+    git(['init']);
+    await writeFile(join(directory, 'package.json'), '{}', { mode: 0o600 });
+    await writeFile(join(directory, 'run.sh'), '#!/bin/sh\n', { mode: 0o600 });
+    await writeFile(join(directory, '.env'), 'SYNTHETIC_ONLY=private\n', { mode: 0o600 });
+    await symlink('.env', join(directory, 'secret-link'));
+    git(['add', 'package.json', 'run.sh', 'secret-link']); git(['update-index', '--chmod=+x', 'run.sh']);
+    await normalizeTrackedModes(directory);
+    assert.equal((await stat(join(directory, 'package.json'))).mode & 0o777, 0o644);
+    assert.equal((await stat(join(directory, 'run.sh'))).mode & 0o777, 0o755);
+    assert.equal((await stat(join(directory, '.env'))).mode & 0o777, 0o600);
+    assert.equal(await readlink(join(directory, 'secret-link')), '.env');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

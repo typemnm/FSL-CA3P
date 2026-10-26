@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { selectVerifiedRelease, verifyWorkflowRun } from '../device-deploy-verification.mjs';
+import { GitHubRateLimitError, WorkflowPendingError, selectVerifiedRelease, verifyWorkflowRun } from '../device-deploy-verification.mjs';
 
 const repository = 'typemnm/FSL-CA3P';
 const headSha = 'a'.repeat(40);
@@ -102,11 +102,53 @@ test('GitHub verification rejects PRs, wrong repositories, SHAs, branches, workf
   const changes = [{ event: 'pull_request' }, { repository: { full_name: 'evil/repo' } },
     { head_repository: { full_name: 'evil/repo' } }, { head_repository: null },
     { head_sha: 'b'.repeat(40) }, { head_branch: 'main' }, { path: '.github/workflows/other.yml' },
-    { run_attempt: 2 }, { id: 99 }, { html_url: 'https://evil.test/' },
-    { status: 'in_progress', conclusion: null }, { conclusion: 'failure' }];
+    { run_attempt: 2 }, { id: 99 }, { html_url: 'https://evil.test/' }, { conclusion: 'failure' }];
   for (const change of changes) {
     await assert.rejects(verifyWorkflowRun(candidate, api({ run: workflow(change) })), /does not match/);
   }
+});
+
+test('an unfinished exact workflow is pending and never accepted before its overall success', async () => {
+  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
+    const fake = api({ runs: [workflow({ status, conclusion: null })] });
+    await assert.rejects(verifyWorkflowRun(candidate, fake), error => {
+      assert.ok(error instanceof WorkflowPendingError);
+      assert.equal(error.code, 'CI_PENDING');
+      assert.equal(error.sha, candidate.sha);
+      assert.equal(error.runId, candidate.runId);
+      assert.equal(error.runAttempt, candidate.runAttempt);
+      return true;
+    });
+    assert.equal(fake.calls.length, 1, 'pending listing must stop before reading jobs');
+    await assert.rejects(verifyWorkflowRun(candidate, api({ run: workflow({ status, conclusion: null }) })),
+      error => error.code === 'CI_PENDING');
+  }
+});
+
+test('pending status never hides a superseding run, rerun, invalid identity or failure', async () => {
+  const unfinished = { status: 'in_progress', conclusion: null };
+  for (const change of [{ id: Number(candidate.runId) + 1 }, { run_attempt: 2 },
+    { event: 'pull_request' }, { repository: { full_name: 'evil/repo' } },
+    { head_repository: null }, { head_sha: 'b'.repeat(40) }, { head_branch: 'main' },
+    { path: '.github/workflows/other.yml' }, { html_url: 'https://evil.test/' },
+    { conclusion: 'failure' }, { status: 'unknown' }]) {
+    const run = workflow({ ...unfinished, ...change });
+    await assert.rejects(verifyWorkflowRun(candidate, api({ runs: [run] })),
+      error => error.code !== 'CI_PENDING');
+    await assert.rejects(verifyWorkflowRun(candidate, api({ run })),
+      error => error.code !== 'CI_PENDING');
+  }
+});
+
+test('a workflow becoming pending during verification is not accepted after reading successful jobs', async () => {
+  let runReads = 0;
+  const fake = api({ response: url => {
+    if (url.includes('/actions/workflows/')) return json({ total_count: 1, workflow_runs: [workflow()] });
+    if (url.includes('/jobs?')) return json({ total_count: 3, jobs: jobs() });
+    return json(workflow(++runReads === 2 ? { status: 'in_progress', conclusion: null } : {}));
+  } });
+  await assert.rejects(verifyWorkflowRun(candidate, fake), error => error.code === 'CI_PENDING');
+  assert.equal(runReads, 2);
 });
 
 test('newer workflow run or rerun supersedes an old successful counts feed', async () => {
@@ -184,9 +226,59 @@ test('a rerun or new workflow starting during the API read prevents deployment',
 
 test('redirects, unexpected statuses and response origins fail without following redirects', async () => {
   for (const response of [() => new Response('', { status: 302, headers: { location: 'https://evil.test/' } }),
-    () => new Response('', { status: 429 }),
+    () => new Response('', { status: 403 }),
     () => ({ status: 200, redirected: true }), () => ({ status: 200, url: 'https://evil.test/' })]) {
     await assert.rejects(verifyWorkflowRun(candidate, api({ response })), /HTTP|redirect/);
+  }
+});
+
+test('GitHub exhausted 403 and 429 return a bounded retry time without reading response bodies', async t => {
+  const now = Date.parse('2026-10-26T09:00:00.000Z');
+  t.mock.method(Date, 'now', () => now);
+  for (const [status, headers, delay] of [
+    [403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String((now + 600_000) / 1000) }, 600_000],
+    [429, { 'retry-after': '300' }, 300_000],
+    [429, { 'retry-after': new Date(now + 900_000).toUTCString() }, 900_000],
+    [429, { 'retry-after': '300', 'x-ratelimit-reset': String((now + 600_000) / 1000) }, 600_000],
+    [429, { 'retry-after': '9999999999' }, 7_200_000],
+    [429, { 'x-ratelimit-reset': '999999999999' }, 7_200_000],
+    [429, { 'retry-after': '60', 'x-ratelimit-reset': String((now - 1000) / 1000) }, 120_000],
+    [429, {}, 120_000],
+  ]) {
+    const fake = api({ response: () => ({ status, headers: new Headers(headers),
+      get body() { assert.fail('rate-limit response body must not be read'); } }) });
+    await assert.rejects(verifyWorkflowRun(candidate, fake), error => {
+      assert.ok(error instanceof GitHubRateLimitError);
+      assert.equal(error.code, 'GITHUB_RATE_LIMITED');
+      assert.equal(error.retryAt, new Date(now + delay).toISOString());
+      assert.equal(error.message.includes('secret-response'), false);
+      return true;
+    });
+    assert.equal(fake.calls.length, 1);
+  }
+});
+
+test('malformed rate-limit timing headers use the minimum delay and cannot enter error text', async t => {
+  const now = Date.parse('2026-10-26T09:00:00.000Z');
+  t.mock.method(Date, 'now', () => now);
+  for (const invalid of ['secret-response', '-1', 'Infinity', '1e100', '0.5', '9'.repeat(100),
+    '9999999999999', 'Tue, 31 Nov 2026 10:00:00 GMT']) {
+    await assert.rejects(verifyWorkflowRun(candidate, api({ response: () => new Response('secret-response', {
+      status: 429, headers: { 'x-ratelimit-reset': invalid, 'retry-after': invalid },
+    }) })), error => error.code === 'GITHUB_RATE_LIMITED'
+      && error.retryAt === new Date(now + 120_000).toISOString() && !error.message.includes('secret-response'));
+  }
+});
+
+test('ordinary forbidden responses and rate-limited redirects remain fatal verification errors', async () => {
+  for (const response of [
+    () => new Response('secret-response', { status: 403 }),
+    () => new Response('secret-response', { status: 403, headers: { 'x-ratelimit-remaining': '1', 'retry-after': '300' } }),
+    () => ({ status: 429, redirected: true, headers: new Headers({ 'retry-after': '300' }) }),
+    () => ({ status: 403, url: 'https://evil.test/', headers: new Headers({ 'x-ratelimit-remaining': '0' }) }),
+  ]) {
+    await assert.rejects(verifyWorkflowRun(candidate, api({ response })), error =>
+      error.code !== 'GITHUB_RATE_LIMITED' && !error.message.includes('secret-response'));
   }
 });
 

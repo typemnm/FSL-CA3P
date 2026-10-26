@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomBytes, scryptSync, createHash } from 'node:crypto';
-import { access, chmod, copyFile, mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, lstat, mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isIP } from 'node:net';
@@ -61,16 +61,16 @@ async function acquireLock(path) {
   return () => rm(path, { recursive: true, force: true });
 }
 
-export function execute(command, args, { cwd, env = process.env, timeoutMs = 600_000, logFile } = {}) {
+export function execute(command, args, { cwd, env = process.env, timeoutMs = 600_000, logFile, stdoutOnly = false } = {}) {
   return new Promise((done, reject) => {
     const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
-    const output = []; let size = 0; let timedOut = false;
+    const output = []; const stdout = []; let size = 0; let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
     }, timeoutMs);
     const accept = data => { if (size < 2_000_000) { output.push(data); size += data.length; } };
-    child.stdout.on('data', accept); child.stderr.on('data', accept);
+    child.stdout.on('data', data => { if (size < 2_000_000) stdout.push(data); accept(data); }); child.stderr.on('data', accept);
     child.on('error', reject);
     child.once('close', async code => {
       clearTimeout(timer);
@@ -81,7 +81,7 @@ export function execute(command, args, { cwd, env = process.env, timeoutMs = 600
           const failure = new Error(`${command.split('/').at(-1)} ${timedOut ? 'timed out' : `failed (${code})`}${logFile ? '; see private deployment log' : ''}.`);
           failure.exitCode = code; throw failure;
         }
-        done(text.trim());
+        done(stdoutOnly ? Buffer.concat(stdout).toString('utf8').trim() : text.trim());
       } catch (error) { reject(error); }
     });
   });
@@ -275,6 +275,24 @@ async function checkApplication(base, credentials, expectedSha, { fixture = fals
   await localRequest(base, '/api/auth/logout', { ...auth, body: {} });
 }
 
+export async function normalizeTrackedModes(release) {
+  const records = (await execute('/usr/bin/git', ['ls-files', '--stage', '-z'], { cwd: release })).split('\0').filter(Boolean);
+  for (const record of records) {
+    const tab = record.indexOf('\t');
+    const [mode, , stage] = record.slice(0, tab).split(' ');
+    const name = record.slice(tab + 1);
+    if (tab < 0 || stage !== '0' || name.startsWith('/') || name.split('/').includes('..')) throw new Error('Invalid tracked release entry.');
+    if (mode === '120000') continue;
+    if (!['100644', '100755'].includes(mode)) throw new Error('Unsupported tracked release mode.');
+    const path = join(release, name);
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error('Tracked release file changed type.');
+    // launchd's private umask also affects git checkout. Keep secrets private,
+    // while source copied into non-root containers retains Git's standard modes.
+    await chmod(path, mode === '100755' ? 0o755 : 0o644);
+  }
+}
+
 export async function prepareRelease(config, candidate, phase) {
   const release = join(config.deployRoot, 'releases', candidate.sha);
   const env = serviceEnvironment(config, release);
@@ -286,6 +304,7 @@ export async function prepareRelease(config, candidate, phase) {
   }
   if ((await execute('/usr/bin/git', ['rev-parse', 'HEAD'], { cwd: release })) !== candidate.sha
     || await execute('/usr/bin/git', ['status', '--porcelain', '--untracked-files=no'], { cwd: release })) throw new Error('Release worktree is not pristine.');
+  await normalizeTrackedModes(release);
   if (!await exists(join(config.deployRoot, 'prepared', `${candidate.sha}.json`))
     || !await exists(join(release, '.venv/bin/python')) || !await exists(join(release, 'xss-parser/node_modules/playwright/package.json'))
     || !await exists(join(release, 'packages/report/capture/node_modules/playwright/package.json'))) {
@@ -405,13 +424,17 @@ export async function deploy(config, { retry = false, checkOnly = false, prepare
     await update('checking', { deployedSha: currentSha, targetSha: headSha, phase: 'ci-verification' });
     if (selection.status !== 'verified') { await update('waiting-ci', { message: selection.reason }); return state; }
     if (currentSha === selection.candidate.sha && !checkOnly) {
-      await update('up-to-date', { phase: null, error: null, failedSha: null, lastFailedTargetSha: null, failedAt: null,
+      await update('up-to-date', { phase: null, error: null, failedSha: null, lastFailedTargetSha: null, failedAt: null, retryAt: null,
         message: 'Verified develop is already deployed.' }); return state;
+    }
+    if (Number.isFinite(Date.parse(state.retryAt)) && Date.parse(state.retryAt) > Date.now()) {
+      await update('waiting-ci', { phase: 'ci-verification', error: null, message: 'Waiting for the GitHub API rate limit to reset before verifying CI.' }); return state;
     }
     if (!retry && previousState.lastFailedTargetSha === headSha && Date.now() - Date.parse(previousState.failedAt) < 600_000) {
       await update('deferred', { phase: null, message: 'Deployment retry is backing off after a device error.' }); return state;
     }
     const candidate = await verifyWorkflowRun(selection.candidate, { repository: config.repository });
+    state.retryAt = null;
     if (checkOnly) {
       await update('verified', { phase: null, runId: candidate.runId, message: 'The current develop revision passed GitHub workflow verification.' });
       return { ...state, candidate };
@@ -469,13 +492,19 @@ export async function deploy(config, { retry = false, checkOnly = false, prepare
       verifyRollback: () => checkApplication(base, credentials, currentSha),
     });
     await update('deployed', { deployedSha: candidate.sha, previousSha: currentSha, failedSha: null,
-      phase: null, error: null, lastFailedTargetSha: null, failedAt: null,
+      phase: null, error: null, lastFailedTargetSha: null, failedAt: null, retryAt: null,
       deployedAt: stamp(), runId: candidate.runId, message: 'Verified develop deployed and authenticated health checks passed.' });
     await atomicJson(join(config.deployRoot, 'transaction.json'), { ...journal, committed: true });
     await rm(join(config.deployRoot, 'transaction.json'), { force: true });
     await retention(config, release, current).catch(() => {});
     return state;
   } catch (error) {
+    if (!cuttingOver && ['CI_PENDING', 'GITHUB_RATE_LIMITED'].includes(error.code)) {
+      await update('waiting-ci', { phase: 'ci-verification', error: null, lastFailedTargetSha: null, failedAt: null,
+        retryAt: error.code === 'GITHUB_RATE_LIMITED' ? error.retryAt : null,
+        message: error.code === 'CI_PENDING' ? 'The current develop workflow is still running; deployment will wait.' : 'GitHub API rate limit reached; deployment will retry after its reset.' });
+      return state;
+    }
     if (!error.recoveryFailed && cuttingOver) await rm(join(config.deployRoot, 'transaction.json'), { force: true });
     await update(error.recoveryFailed ? 'recovery-required' : 'failed', { phase: null,
       ...(cuttingOver ? { failedSha: state.targetSha } : {}), error: error.message,
