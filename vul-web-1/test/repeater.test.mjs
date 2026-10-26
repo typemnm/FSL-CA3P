@@ -94,3 +94,44 @@ test('guardrail fails closed on budget, origin change, and reused stage', async 
   await request('control');
   await assert.rejects(request('control'), error => error instanceof RepeaterDeniedError && error.ruleId === 'STAGE-UNAVAILABLE');
 });
+
+async function mockVulWeb2Admin({ vulnerable = true } = {}) {
+  let featured = true;
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    if (req.method === 'GET' && url.pathname === '/') {
+      if (featured) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('home'); }
+      else { res.writeHead(500, { 'Content-Type': 'text/html' }); res.end('error'); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/admin/posts/1/delete') {
+      if (vulnerable) { featured = false; res.writeHead(302, { Location: '/admin' }); res.end(); }
+      else { res.writeHead(302, { Location: '/login' }); res.end(); }
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  return { origin: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((done, fail) => server.close(error => error ? fail(error) : done())) };
+}
+
+test('repeater confirms the unauthorized-delete chain by the home page breaking (A01 + A10)', async () => {
+  const target = await mockVulWeb2Admin();
+  try {
+    const report = await run({ origin: target.origin, vulnType: 'broken_access_control' });
+    assert.equal(report.finding.category, 'CWE-862');
+    assert.equal(report.finding.status, 'confirmed');
+    assert.deepEqual(report.evidence.map(item => [item.check, item.status]), [
+      ['control', 200], ['tamper', 302], ['verify', 500],
+    ]);
+  } finally { await target.close(); }
+});
+
+test('a server that blocks the unauthenticated delete keeps the home page up and is not confirmed', async () => {
+  const target = await mockVulWeb2Admin({ vulnerable: false });
+  try {
+    const report = await run({ origin: target.origin, vulnType: 'broken_access_control' });
+    assert.equal(report.finding.status, 'not_confirmed');
+    assert.equal(report.evidence[2].status, 200);
+  } finally { await target.close(); }
+});

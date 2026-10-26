@@ -92,3 +92,42 @@ test('guardrail fails closed on budget, origin change, and reused stage', async 
   await request('baseline');
   await assert.rejects(request('baseline'), error => error instanceof IntruderDeniedError && error.ruleId === 'STAGE-UNAVAILABLE');
 });
+
+async function mockVulWeb2Config({ leaking = true } = {}) {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    if (req.method === 'GET' && url.pathname === '/api/search') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ site: 'mock', q: url.searchParams.get('q') ?? '', results: [] }));
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/_diag/config') {
+      if (!leaking) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ mode: 'development', database: '/data/daehan.sqlite', installedPackages: ['lodash@4.17.15'], activeSessions: 1 }));
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  return { origin: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((done, fail) => server.close(error => error ? fail(error) : done())) };
+}
+
+test('intruder confirms A02 info disclosure when /_diag/config returns sensitive fields', async () => {
+  const target = await mockVulWeb2Config();
+  try {
+    const report = await run({ origin: target.origin, vulnType: 'info_disclosure' });
+    assert.equal(report.finding.category, 'CWE-200');
+    assert.equal(report.finding.status, 'confirmed');
+    assert.ok(report.finding.hits.includes('diag-config-exposure'));
+  } finally { await target.close(); }
+});
+
+test('an endpoint that does not expose the config is not confirmed', async () => {
+  const target = await mockVulWeb2Config({ leaking: false });
+  try {
+    const report = await run({ origin: target.origin, vulnType: 'info_disclosure' });
+    assert.equal(report.finding.status, 'not_confirmed');
+    assert.equal(report.finding.hits.length, 0);
+  } finally { await target.close(); }
+});

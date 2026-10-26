@@ -70,6 +70,7 @@ export function loadIntruderPlan(catalogPath = DEFAULT_CATALOG, vulnType = 'sql_
       resultField: item.successCheck.resultField ?? 'results',
       expectStatus: Number.isInteger(attack.status) ? attack.status : null,
       resultCountMin: Number.isInteger(attack.resultCountMin) ? attack.resultCountMin : null,
+      containsFields: Array.isArray(attack.containsFields) ? attack.containsFields : null,
     };
   });
   return {
@@ -207,9 +208,16 @@ export async function run({ origin, catalogPath = DEFAULT_CATALOG, vulnType = 's
     const response = await request(shot.stage, { signal });
     const status = Number.isInteger(response?.status) ? response.status : null;
     const resultCount = countField(response, shot.resultField);
-    const statusHit = shot.resultCountMin !== null
-      ? (resultCount !== null && resultCount >= shot.resultCountMin)
-      : (shot.expectStatus !== null && status === shot.expectStatus);
+    const body = response?.bodyJson;
+    let statusHit;
+    if (shot.containsFields) {
+      statusHit = !!body && typeof body === 'object' && !Array.isArray(body)
+        && shot.containsFields.every(field => body[field] !== undefined);
+    } else if (shot.resultCountMin !== null) {
+      statusHit = resultCount !== null && resultCount >= shot.resultCountMin;
+    } else {
+      statusHit = shot.expectStatus !== null && status === shot.expectStatus;
+    }
     const hit = baselineOk && statusHit;
     attempts.push({ payloadId: shot.payloadId, value: shot.value, status, resultCount, hit });
     evidence.push({ check: shot.payloadId, status, resultCount, hit });

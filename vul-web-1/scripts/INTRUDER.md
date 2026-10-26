@@ -22,6 +22,8 @@ CLI로 직접 확인: `INTRUDER_ORIGIN=http://127.0.0.1:4101 npm run intruder --
 1. baseline — 정상 입력으로 한 번 쏴 결과 건수를 기준선으로 잡는다.
 2. shots — 카탈로그의 페이로드를 하나씩 쏜다. 각 응답의 결과 건수(또는 상태)가 기대치를 넘으면 그 페이로드는 적중으로 기록한다.
 
+판정 방식은 케이스가 정한다: `resultCountMin`(결과 건수 증가 — SQLi), `status`(상태 코드), `containsFields`(응답에 민감 필드 존재 — 정보 노출) 중 하나.
+
 모든 요청은 guardrail 룰셋으로 사전 검사되며, 격리 랩(`isolated_local_lab`)에서만, 페이로드 수에 맞춘 요청 예산 안에서만 실행된다. 외부 요청은 금지된다.
 
 ## 결과

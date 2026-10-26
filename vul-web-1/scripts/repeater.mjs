@@ -60,15 +60,20 @@ export function loadPlan(catalogPath = DEFAULT_CATALOG, vulnType = 'idor') {
     tamper: { method: tamper.method, path: tamper.path, expectStatus: expect.attack.status, actor: tamper.query[parameter] ?? null },
   };
   let resourceRemoved = null;
+  let verifyStatus = null;
   if (expect.resourceRemoved && typeof expect.resourceRemoved.check === 'string') {
     const [method, path] = expect.resourceRemoved.check.trim().split(/\s+/u);
     if (!method || !path) throw new Error('resourceRemoved.check must be "METHOD /path".');
     stages.verify = { method, path };
     resourceRemoved = { postId: expect.resourceRemoved.postId };
+  } else if (expect.verify && expect.verify.request && Number.isInteger(expect.verify.status)) {
+    const verifyRequest = normalizeRequest(expect.verify.request);
+    stages.verify = { method: verifyRequest.method, path: verifyRequest.path };
+    verifyStatus = expect.verify.status;
   }
   return {
     vulnType, cwe: response.cwe ?? null, application: response.target?.application ?? 'target',
-    parameter, resourceRemoved, stages,
+    parameter, resourceRemoved, verifyStatus, stages,
   };
 }
 
@@ -173,6 +178,11 @@ function statusOf(response) {
 function findingStatus(plan, evidence) {
   const { control, tamper, verify } = evidence;
   if (control.status !== plan.stages.control.expectStatus) return 'inconclusive';
+  if (plan.verifyStatus !== null && plan.verifyStatus !== undefined) {
+    if (verify?.status === plan.verifyStatus) return 'confirmed';
+    if (Number.isInteger(verify?.status)) return 'not_confirmed';
+    return 'inconclusive';
+  }
   if (tamper.status === plan.stages.tamper.expectStatus) {
     if (!plan.resourceRemoved) return 'confirmed';
     return verify?.removed === true ? 'confirmed' : 'inconclusive';
@@ -196,9 +206,13 @@ export async function run({ origin, catalogPath = DEFAULT_CATALOG, vulnType = 'i
   };
   if (plan.stages.verify) {
     const verifyResponse = await request('verify', { signal });
-    const posts = Array.isArray(verifyResponse?.bodyJson?.posts) ? verifyResponse.bodyJson.posts : null;
-    const removed = posts ? !posts.some(item => item && item.id === plan.resourceRemoved.postId) : null;
-    evidence.verify = { check: 'verify', targetId: plan.resourceRemoved.postId, removed };
+    if (plan.resourceRemoved) {
+      const posts = Array.isArray(verifyResponse?.bodyJson?.posts) ? verifyResponse.bodyJson.posts : null;
+      const removed = posts ? !posts.some(item => item && item.id === plan.resourceRemoved.postId) : null;
+      evidence.verify = { check: 'verify', targetId: plan.resourceRemoved.postId, removed };
+    } else {
+      evidence.verify = { check: 'verify', status: statusOf(verifyResponse), expectedStatus: plan.verifyStatus };
+    }
   }
 
   return {
