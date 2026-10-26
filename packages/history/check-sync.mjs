@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join, relative, resolve } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -8,26 +9,38 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const program = String.raw`
 import json, sys
 from pathlib import Path
-from casper_db.repository import CaseStore, ConflictError
+from casper_db.repository import CaseStore
 request=json.load(sys.stdin)
 store=CaseStore(Path(request['database']), evidence_root=Path(request['evidenceRoot']))
-saved=[]
-for row in request['checks']:
-    try:
-        value=store.add_check(row)
-    except ConflictError:
-        value=store.get_check(row['check_id'])
-        for field in ('run_id','case_id','case_revision','result','evidence_refs'):
-            if getattr(value,field)!=row[field]:
-                raise ValueError('Conflicting history sync')
-    saved.append(value.model_dump())
+saved=[value.model_dump() for value in store.add_checks(request['checks'], allow_unchanged=True)]
 json.dump({'status':'synced','checks':saved},sys.stdout)
 `;
+
+const resultProgram = String.raw`
+import json,sys
+from pathlib import Path
+from casper_db.repository import CaseStore
+from casper_db.evidence import inspect_evidence
+from casper_db.retest import import_retest_results
+r=json.load(sys.stdin)
+root=Path(r['evidenceRoot'])
+if inspect_evidence(root,[r['artifactReference']])[0].sha256 != r['artifactSha256']:
+    raise ValueError('run artifact changed before import')
+store=CaseStore(Path(r['database']),evidence_root=root)
+json.dump(import_retest_results(store,r['results'],apply=True),sys.stdout,ensure_ascii=False)
+`;
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
+  return value;
+}
 
 function pythonJson(code, input, { python = process.env.CASPER_DB_PYTHON ?? 'python', signal } = {}) {
   return new Promise((resolveResult, reject) => {
     const child = spawn(python, ['-c', code], { cwd: root, shell: false, signal,
-      env: { ...process.env, PYTHONPATH: join(root, 'casper-db/src'), PYTHONIOENCODING: 'utf-8' }, stdio: ['pipe', 'pipe', 'pipe'] });
+      env: { ...process.env, PYTHONPATH: join(root, 'casper-db/src'),
+        PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }, stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '', bytes = 0;
     child.stdout.on('data', chunk => { bytes += chunk.length; if (bytes > 1024 * 1024) child.kill(); else output += chunk; });
     child.stderr.resume();
@@ -42,11 +55,30 @@ function pythonJson(code, input, { python = process.env.CASPER_DB_PYTHON ?? 'pyt
 
 export async function syncRunChecks(run, { artifact, storePath, databasePath, python } = {}) {
   if (!run || run.simulated || !run.report || !artifact?.path) return { status: 'not-applicable', checks: [] };
-  const history = (run.events ?? []).find(event => event.module === 'casper' && Array.isArray(event.response?.payload?.assessments));
-  if (!history) return { status: 'not-applicable', checks: [] };
   const evidenceRoot = resolve(process.env.CASPER_EVIDENCE_ROOT ?? join(dirname(resolve(storePath ?? '.runtime/runs.sqlite')), 'artifacts'));
   const reference = relative(evidenceRoot, resolve(artifact.path)).split('\\').join('/');
   if (reference.startsWith('../') || reference.startsWith('/') || reference.includes(':')) throw new Error('Case evidence must stay inside the artifact root.');
+  const database = resolve(databasePath ?? process.env.CASPER_DB_PATH ?? join(root, 'casper-db/data/cases.sqlite3'));
+  if (run.report.caseChecks !== undefined) {
+    const results = run.report.caseChecks;
+    if (results?.schema_version !== 'casper-check-results-1' || results.run_id !== run.id || !Array.isArray(results.results)) {
+      throw new Error('Run caseChecks must identify this run and a supported result contract.');
+    }
+    if ((await stat(artifact.path)).size > 5_000_000) throw new Error('Run artifact exceeds 5 MB.');
+    const bytes = await readFile(artifact.path);
+    const saved = JSON.parse(bytes.toString('utf8'));
+    const report = saved.report ?? saved;
+    if (report.runId !== run.id || JSON.stringify(canonical(report.caseChecks)) !== JSON.stringify(canonical(results))) {
+      throw new Error('Case results do not match the stored run artifact.');
+    }
+    const bound = { ...results, results: results.results.map(item => ({ ...item,
+      evidence_refs: [...new Set([...(item.evidence_refs ?? []), reference])],
+    })) };
+    return pythonJson(resultProgram, { database, evidenceRoot, results: bound,
+      artifactReference: reference, artifactSha256: createHash('sha256').update(bytes).digest('hex') }, { python });
+  }
+  const history = (run.events ?? []).find(event => event.module === 'casper' && Array.isArray(event.response?.payload?.assessments));
+  if (!history) return { status: 'not-applicable', checks: [], reason: 'no-history-or-explicit-results' };
   const rows = [];
   for (const assessment of history.response.payload.assessments) {
     const observed = assessment.observation;
@@ -65,7 +97,7 @@ export async function syncRunChecks(run, { artifact, storePath, databasePath, py
     }
   }
   if (!rows.length) return { status: 'not-applicable', checks: [] };
-  return pythonJson(program, { database: resolve(databasePath ?? process.env.CASPER_DB_PATH ?? join(root, 'casper-db/data/cases.sqlite3')),
+  return pythonJson(program, { database,
     evidenceRoot, checks: rows }, { python });
 }
 

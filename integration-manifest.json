@@ -30,7 +30,7 @@
       "path": "attack-module",
       "layer": "adapter",
       "status": "active",
-      "dependencies": []
+      "dependencies": ["contracts"]
     },
     {
       "id": "guardrail",
@@ -62,7 +62,10 @@
       "layer": "fixture",
       "status": "active",
       "sourceBranch": "typemnm/vul-web",
-      "dependencies": []
+      "dependencies": [
+        "attack-module",
+        "guardrail"
+      ]
     },
     {
       "id": "vul-web2",
@@ -71,6 +74,7 @@
       "status": "active",
       "sourceBranch": "typemnm/vul-web2",
       "dependencies": [
+        "contracts",
         "attack-module",
         "guardrail"
       ]
@@ -88,6 +92,7 @@
         "casper-db",
         "pentest-db",
         "vul-web-1",
+        "vul-web2",
         "contracts",
         "run-store",
         "evaluation",
@@ -177,6 +182,7 @@
       "layer": "application",
       "status": "active",
       "dependencies": [
+        "vul-web2",
         "contracts",
         "run-store",
         "evaluation",

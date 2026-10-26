@@ -300,9 +300,14 @@ export function createLocalRuntime({
     return getState();
   }
 
-  async function startLab() {
+  async function startLab(options = {}) {
     if (closed) throw fail(503, 'Local runtime is closed.');
     if (task || setupTask || ACTIVE.has(run.status)) throw fail(409, 'A local core run is already active.');
+    if (!options || typeof options !== 'object' || Array.isArray(options)
+      || Object.keys(options).some(key => !['modelId', 'fixtureId'].includes(key))
+      || (Object.hasOwn(options, 'fixtureId') && options.fixtureId !== 'vul-web-1')) {
+      throw fail(400, 'This runtime supports only the owned vul-web-1 board without a target URL.');
+    }
     if (!lab.available) throw fail(503, lab.error);
     cancellation = new AbortController();
     run = { ...emptyRun(), id: runIdFactory(), mode: labMode,
