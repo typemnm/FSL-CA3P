@@ -1,4 +1,4 @@
-"""Public advisory collection, normalization and a separate, explicit SQLite store.
+"""Public advisory collection, normalization and provider-namespaced SQLite storage.
 
 Public product/version claims are never converted into a confirmed site vulnerability.
 """
@@ -8,17 +8,17 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import time
+from contextlib import closing, contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
-from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from pydantic import Field
 
 from .import_workflow import WorkflowModel, digest
+from .public_http import PublicCollectionError, RequestPolicy, current_policy, read_public_json
 
 ENDPOINTS = {
     "nvd": "https://services.nvd.nist.gov/rest/json/cves/2.0",
@@ -28,6 +28,8 @@ PARAMETERS = {
     "nvd": {
         "cveId",
         "keywordSearch",
+        "cpeName",
+        "virtualMatchString",
         "lastModStartDate",
         "lastModEndDate",
         "startIndex",
@@ -37,6 +39,7 @@ PARAMETERS = {
         "cve_id",
         "ghsa_id",
         "ecosystem",
+        "affects",
         "updated",
         "modified",
         "after",
@@ -47,6 +50,16 @@ PARAMETERS = {
     },
 }
 MAX_RESPONSE_BYTES = 16_000_000
+EXTERNAL_TABLES = {
+    "external_metadata",
+    "external_sources",
+    "external_revisions",
+    "external_records",
+    "external_provenance",
+    "external_assessments",
+    "external_active_inventory",
+    "external_sync_runs",
+}
 
 
 class ExternalRecord(WorkflowModel):
@@ -261,9 +274,8 @@ def collect_external(
             raise ValueError("invalid GitHub page size")
     opener = build_opener(NoRedirect())
     bundles = []
-    for page in range(max_pages):
-        if page:
-            time.sleep(6.1 if source == "nvd" else 1)
+    policy = current_policy() or RequestPolicy(max_requests=min(64, max_pages * 3))
+    for _page in range(max_pages):
         url = ENDPOINTS[source] + "?" + urlencode(query)
         headers = {"Accept": "application/json", "User-Agent": "CASPER-local-vuln-db/0.2"}
         if source == "github":
@@ -271,15 +283,19 @@ def collect_external(
                 {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10"}
             )
         try:
-            with opener.open(Request(url, headers=headers), timeout=30) as response:
-                content = response.read(MAX_RESPONSE_BYTES + 1)
-                if len(content) > MAX_RESPONSE_BYTES:
-                    raise ValueError("public response exceeds the 16 MB limit")
-                bundle = normalize_external(source, json.loads(content), source_url=url)
-                bundles.append(bundle)
-                link = response.headers.get("Link", "")
-        except (HTTPError, URLError, OSError) as exc:
-            raise ValueError(f"public collection failed; no DB was written: {exc}") from exc
+            raw, response_headers = read_public_json(
+                opener,
+                Request(url, headers=headers),
+                source,
+                max_bytes=MAX_RESPONSE_BYTES,
+                policy=policy,
+            )
+        except PublicCollectionError as exc:
+            exc.partial_bundles = bundles
+            raise
+        bundle = normalize_external(source, raw, source_url=url)
+        bundles.append(bundle)
+        link = response_headers.get("Link", "")
         if source == "nvd":
             next_index = int(query["startIndex"]) + len(bundle.raw["vulnerabilities"])
             if next_index >= int(bundle.raw.get("totalResults", 0)) or not bundle.records:
@@ -305,7 +321,48 @@ def collect_external(
     return bundles
 
 
-def store_external(path: Path, bundles: list[ExternalBundle]) -> dict[str, int]:
+def _validate_destination(connection: sqlite3.Connection) -> None:
+    names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+    if "cases" in names:
+        from .attack_catalog import ATTACK_TABLES
+        from .repository import SCHEMA_VERSION
+
+        if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+            raise ValueError("initialize the supported Case schema before adding advisories")
+        if not {"case_versions", "checks"}.issubset(names):
+            raise ValueError("incomplete Case database schema")
+        connection.execute("SELECT case_id, revision FROM cases LIMIT 0")
+        connection.execute("SELECT case_id, revision, snapshot FROM case_versions LIMIT 0")
+        connection.execute("SELECT check_id, case_id, case_revision FROM checks LIMIT 0")
+        if names - EXTERNAL_TABLES - ATTACK_TABLES - {"cases", "case_versions", "checks"}:
+            raise ValueError("refusing external import into unrelated database tables")
+    elif names and ("external_metadata" not in names or names - EXTERNAL_TABLES):
+        raise ValueError("external import requires an owned Case or advisory database")
+
+
+@contextmanager
+def external_connection(path: Path):
+    """Validate the advisory namespace without creating or changing a database."""
+    with closing(
+        sqlite3.connect(path.resolve(strict=True).as_uri() + "?mode=ro", uri=True)
+    ) as conn:
+        marker = conn.execute("SELECT value FROM external_metadata WHERE key='schema'").fetchone()
+        if marker is None or marker[0] != "external-vuln-1":
+            raise ValueError("unsupported external database schema")
+        yield conn
+
+
+def store_external(
+    path: Path,
+    bundles: list[ExternalBundle],
+    *,
+    _connection: sqlite3.Connection | None = None,
+) -> dict[str, int]:
     """Explicit storage only. Keep provider claims separate and all content revisions."""
     if not bundles or any(bundle.rejected_items for bundle in bundles):
         raise ValueError("external bundle has rejected entries; review before storing")
@@ -318,20 +375,18 @@ def store_external(path: Path, bundles: list[ExternalBundle]) -> dict[str, int]:
     if path.exists():
         readonly = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
         try:
-            names = {
-                row[0]
-                for row in readonly.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            }
-            if "cases" in names or (names and "external_metadata" not in names):
-                raise ValueError("external records require a separate external database")
+            _validate_destination(readonly)
         finally:
             readonly.close()
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
+    owns_connection = _connection is None
+    connection = sqlite3.connect(path) if owns_connection else _connection
     result = {"created": 0, "updated": 0, "unchanged": 0, "historical_only": 0}
     try:
-        with connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with connection if owns_connection else nullcontext(connection):
+            if owns_connection:
+                connection.execute("BEGIN IMMEDIATE")
+            _validate_destination(connection)
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS external_metadata "
                 "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -341,8 +396,6 @@ def store_external(path: Path, bundles: list[ExternalBundle]) -> dict[str, int]:
             ).fetchone()
             if marker is not None and marker[0] != "external-vuln-1":
                 raise ValueError("unsupported external database schema")
-            if connection.execute("SELECT 1 FROM sqlite_master WHERE name='cases'").fetchone():
-                raise ValueError("external records require a separate external database")
             connection.execute(
                 "INSERT OR IGNORE INTO external_metadata VALUES ('schema','external-vuln-1')"
             )
@@ -408,7 +461,8 @@ def store_external(path: Path, bundles: list[ExternalBundle]) -> dict[str, int]:
                     )
                     result["updated" if old else "created"] += 1
     finally:
-        connection.close()
+        if owns_connection:
+            connection.close()
     return result
 
 
