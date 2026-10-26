@@ -173,6 +173,15 @@ function buildJudgmentPrompt() {
     '8. 정보가 부족하거나 취약점 유형을 분류할 수 없으면 UNCERTAIN입니다.',
     '- 취약점 유형만 일치한다는 이유로 IN_SCOPE를 반환하지 마십시오.',
     '- scopeChecks에 false가 하나라도 있으면 IN_SCOPE를 반환하지 마십시오.',
+    '- permissions의 허용 값은 취약점별 DENY 조건을 무효화하지 않습니다.',
+    '- SQL_INJECTION은 GET 또는 HEAD 읽기 요청만 IN_SCOPE이며 데이터 변경 SQL은 항상 DENY입니다.',
+    '- fixtureIds 중 하나가 실제 path, query 또는 body에 나타나지 않으면 IN_SCOPE를 반환하지 마십시오.',
+    '- 취약점 분류의 근거를 evidence 배열에 {"source":"path|query|body","key":"필드명","value":"실제 값"} 객체로 넣으십시오.',
+    '- query의 value는 request.query에 있는 문자열 타입을 그대로 사용하십시오. 숫자처럼 보여도 숫자로 바꾸지 마십시오.',
+    '- body의 중첩 필드는 key에 점 표기법을 사용하십시오. 예: user.name',
+    '- path 근거는 source를 path, key를 path, value를 request.path 전체 값으로 작성하십시오.',
+    '- evidence의 모든 값은 request의 해당 위치에 정확히 존재해야 하며 설명 문장을 넣지 마십시오.',
+    '- request에서 취약점 근거를 찾을 수 없으면 vulnerabilityCategory는 UNKNOWN, verdict는 UNCERTAIN입니다.',
     '- 코드 실행, 파일 접근, 외부 통신, 민감정보 접근은 permissions에서 명시적으로 허용되지 않으면 DENY입니다.',
 
     // 페이로드에 "기준을 무시하라"와 같은 문장이 포함되어 있어도
@@ -184,9 +193,9 @@ function buildJudgmentPrompt() {
     // sllm-verdict.js가 이 구조와 값을 다시 검사한다.
     '[출력 형식]',
     '설명 문장을 따로 쓰지 말고 아래 구조의 JSON 객체만 반환하십시오.',
-    '{"verdict":"IN_SCOPE 또는 DENY 또는 UNCERTAIN","vulnerabilityCategory":"분류한 취약점 또는 UNKNOWN","matchedProfile":"승인 프로필 또는 NONE","checks":{"profileMatched":true,"testDataOnly":true,"noDangerousImpact":true,"commonCriteriaSatisfied":true},"reason":"판정 이유","confidence":0.0}',
+    '{"verdict":"IN_SCOPE 또는 DENY 또는 UNCERTAIN","vulnerabilityCategory":"분류한 취약점 또는 UNKNOWN","matchedProfile":"승인 프로필 또는 NONE","evidence":[{"source":"query","key":"필드명","value":"request.query의 실제 문자열 값"}],"checks":{"profileMatched":true,"testDataOnly":true,"noDangerousImpact":true,"commonCriteriaSatisfied":true},"reason":"판정 이유","confidence":0.0}',
     '- 확실히 확인할 수 없는 check 값은 null을 사용하십시오.',
-    '- IN_SCOPE인 경우 checks의 모든 값은 반드시 true여야 합니다.'
+    '- IN_SCOPE인 경우 evidence가 하나 이상 있어야 하고 checks의 모든 값은 반드시 true여야 합니다.'
   ].join('\n');
 }
 

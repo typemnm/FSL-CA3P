@@ -5,6 +5,25 @@
 // 너무 큰 입력으로 모델이나 서버에 부담을 주는 것을 막는다.
 const MAX_INPUT_BYTES = 16 * 1024;
 const MUTATION_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
+const READ_ONLY_METHODS = ['GET', 'HEAD'];
+const MAX_AUTHENTICATION_ATTEMPTS = 5;
+const MAX_MARKDOWN_REPEAT = 100;
+const MAX_MARKDOWN_TIMEOUT_MS = 5000;
+const MAX_ARCHIVE_REPEAT = 10;
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES = 10000;
+const MAX_EXCEPTION_REPEAT = 10;
+const HARD_DENY_PATTERNS = [
+  /\b(delete|drop|update|insert|alter|truncate|grant|revoke)\b/i,
+  /\b(sleep|benchmark|pg_sleep)\s*\(/i,
+  /\b(information_schema|pg_catalog|sqlite_master)\b/i,
+  /(?:^|[;&|])\s*(?:curl|wget|powershell|cmd|bash|sh)\b/i,
+  /(?:\.\.\/|\.\.\\)/
+];
+const SQL_INJECTION_EVIDENCE_PATTERN = /(?:\bunion\b\s+\bselect\b|['"`]\s*(?:or|and)\s+[^\s]+\s*=\s*[^\s]+|--|\/\*|\bselect\b.+\bfrom\b|\bdelete\b\s+\bfrom\b)/i;
+const REAL_OR_PRIVILEGED_ACCOUNT_PATTERN = /(?:^|[^a-z0-9])(?:admin(?:istrator)?|root|superuser|real[-_ ]?user|actual[-_ ]?user)(?:[^a-z0-9]|$)/i;
+const PROTOTYPE_POLLUTION_PATTERN = /(?:__proto__|constructor\.prototype|prototype)/i;
+const PRIVILEGE_PROPERTY_PATTERN = /(?:isadmin|admin|role|permission|privilege|authorized)/i;
 
 // 오류 메시지와 오류 코드를 함께 가진 Error 객체를 만드는 함수이다.
 // errorCode는 나중에 error-result.js에서 오류 종류를 구분할 때 사용한다.
@@ -197,6 +216,57 @@ function validatePermissions(permissions) {
   }
 }
 
+// URL query와 body에서 특정 이름을 가진 값을 재귀적으로 찾는다.
+// 자원 한도처럼 숫자로 비교해야 하는 값은 문자열 전체 검색보다 이름 기반으로 읽는다.
+function collectNamedValues(requestUrl, requestBody, fieldNames) {
+  const normalizedFieldNames = fieldNames.map(function (fieldName) {
+    return fieldName.toLowerCase();
+  });
+  const values = [];
+
+  for (const entry of requestUrl.searchParams.entries()) {
+    if (normalizedFieldNames.includes(entry[0].toLowerCase())) {
+      values.push(entry[1]);
+    }
+  }
+
+  function visit(value) {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+
+    if (!isJsonObject(value)) {
+      return;
+    }
+
+    for (const entry of Object.entries(value)) {
+      if (normalizedFieldNames.includes(entry[0].toLowerCase())) {
+        values.push(entry[1]);
+      }
+      visit(entry[1]);
+    }
+  }
+
+  visit(requestBody);
+  return values;
+}
+
+// 숫자 필드가 한도를 넘는지 검사한다.
+// 값이 존재하지만 유한한 0 이상의 숫자가 아니면 우회를 막기 위해 한도 위반으로 본다.
+function exceedsNumericLimit(requestUrl, requestBody, fieldNames, maximum) {
+  return collectNamedValues(requestUrl, requestBody, fieldNames).some(function (value) {
+    const numericValue = Number(value);
+    return !Number.isFinite(numericValue)
+      || numericValue < 0
+      || numericValue > maximum;
+  });
+}
+
+function profileIsApproved(testContext, profileName) {
+  return testContext.approvedVulnerabilityProfiles.includes(profileName);
+}
+
 // Orchestrator 또는 Gateway가 전달한 신뢰 가능한 테스트 범위를 검사한다.
 // 페이로드 자체에서 이 정보를 가져오면 공격자가 승인 범위를 바꿀 수 있으므로
 // receivedPayload와 별도의 매개변수로 전달받는다.
@@ -218,7 +288,8 @@ function validateTestContext(testContext) {
     'approvedVulnerabilityProfiles',
     'fixtureIds',
     'limits',
-    'permissions'
+    'permissions',
+    'upstreamGuardrail'
   ];
 
   if (!checkAllowedFields(testContext, allowedContextFields)) {
@@ -250,8 +321,22 @@ function validateTestContext(testContext) {
     );
   }
 
-  if (!Array.isArray(testContext.fixtureIds)) {
-    throw createInputError('INVALID_TEST_CONTEXT', 'fixtureIds는 배열이어야 합니다.');
+  if (!isStringArray(testContext.fixtureIds)) {
+    throw createInputError(
+      'INVALID_TEST_CONTEXT',
+      'fixtureIds에는 테스트 fixture ID가 하나 이상 필요합니다.'
+    );
+  }
+
+  if (!isJsonObject(testContext.upstreamGuardrail)
+    || !checkAllowedFields(testContext.upstreamGuardrail, ['decision', 'ruleId'])
+    || !['ALLOW', 'DENY'].includes(testContext.upstreamGuardrail.decision)
+    || typeof testContext.upstreamGuardrail.ruleId !== 'string'
+    || testContext.upstreamGuardrail.ruleId.length === 0) {
+    throw createInputError(
+      'INVALID_TEST_CONTEXT',
+      'upstreamGuardrail에는 기존 가드레일의 decision과 ruleId가 필요합니다.'
+    );
   }
 
   validateLimits(testContext.limits);
@@ -286,13 +371,148 @@ function buildScopeChecks(receivedPayload, requestUrl, testContext) {
   const networkIsApproved = localHostNames.includes(requestUrl.hostname)
     || testContext.permissions.allowExternalNetwork;
 
+  const requestText = [
+    requestUrl.pathname,
+    ...Array.from(requestUrl.searchParams.values()),
+    receivedPayload.curl.body === undefined
+      ? ''
+      : JSON.stringify(receivedPayload.curl.body)
+  ].join(' ');
+  const fixtureIsBound = testContext.fixtureIds.some(function (fixtureId) {
+    return requestText.includes(fixtureId);
+  });
+  const hardDenyMatched = HARD_DENY_PATTERNS.some(function (pattern) {
+    return pattern.test(requestText);
+  });
+  const hasSqlInjectionEvidence = SQL_INJECTION_EVIDENCE_PATTERN.test(requestText);
+  const sqlInjectionIsReadOnly = !hasSqlInjectionEvidence
+    || READ_ONLY_METHODS.includes(requestMethod);
+
+  // Access Control 및 인증 테스트는 fixture가 같이 있더라도 실제 관리자나
+  // 실사용자 계정을 대상으로 하면 안 된다.
+  const accessControlProfileIsActive = profileIsApproved(
+    testContext,
+    'ACCESS_CONTROL_IDOR'
+  );
+  const authenticationProfileIsActive = profileIsApproved(
+    testContext,
+    'AUTHENTICATION_FAILURE'
+  );
+  const hasRealOrPrivilegedAccount = REAL_OR_PRIVILEGED_ACCOUNT_PATTERN.test(
+    requestText
+  );
+  const approvedIdentityTarget = (!accessControlProfileIsActive
+      && !authenticationProfileIsActive)
+    || !hasRealOrPrivilegedAccount;
+
+  // 인증 테스트에서 과도한 로그인 반복을 모델 판단 전에 차단한다.
+  const authenticationAttemptLimit = !authenticationProfileIsActive
+    || !exceedsNumericLimit(
+      requestUrl,
+      receivedPayload.curl.body,
+      ['attempts', 'attemptCount', 'loginAttempts', 'repeat'],
+      MAX_AUTHENTICATION_ATTEMPTS
+    );
+
+  // Prototype Pollution은 격리된 테스트 객체의 무해한 표식만 허용한다.
+  // 전역 scope 또는 권한 관련 속성 변경은 fixture 포함 여부와 무관하게 차단한다.
+  const prototypeProfileIsActive = profileIsApproved(
+    testContext,
+    'PROTOTYPE_POLLUTION_LODASH'
+  ) || profileIsApproved(testContext, 'PROTOTYPE_POLLUTION_JSON5');
+  const hasPrototypeMarker = PROTOTYPE_POLLUTION_PATTERN.test(requestText);
+  const hasGlobalScope = collectNamedValues(
+    requestUrl,
+    receivedPayload.curl.body,
+    ['scope']
+  ).some(function (value) {
+    return String(value).toLowerCase() === 'global';
+  });
+  const hasPrivilegeProperty = hasPrototypeMarker
+    && PRIVILEGE_PROPERTY_PATTERN.test(requestText);
+  const prototypePollutionIsolated = !prototypeProfileIsActive
+    || !hasPrototypeMarker
+    || (!hasGlobalScope && !hasPrivilegeProperty);
+
+  // Markdown 렌더링은 반복 횟수와 처리시간에 상한을 둔다.
+  const markdownProfileIsActive = profileIsApproved(
+    testContext,
+    'MARKDOWN_PROCESSING_DOS'
+  );
+  const markdownResourceLimit = !markdownProfileIsActive
+    || (!exceedsNumericLimit(
+      requestUrl,
+      receivedPayload.curl.body,
+      ['repeat', 'iterations'],
+      MAX_MARKDOWN_REPEAT
+    ) && !exceedsNumericLimit(
+      requestUrl,
+      receivedPayload.curl.body,
+      ['timeoutMs', 'processingTimeMs'],
+      MAX_MARKDOWN_TIMEOUT_MS
+    ));
+
+  // 압축 파일 검사는 반복 횟수, 예상 해제 크기와 엔트리 수에 상한을 둔다.
+  const archiveProfileIsActive = profileIsApproved(
+    testContext,
+    'ARCHIVE_RESOURCE_EXHAUSTION'
+  );
+  const archiveResourceLimit = !archiveProfileIsActive
+    || (!exceedsNumericLimit(
+      requestUrl,
+      receivedPayload.curl.body,
+      ['repeat', 'iterations'],
+      MAX_ARCHIVE_REPEAT
+    ) && !exceedsNumericLimit(
+      requestUrl,
+      receivedPayload.curl.body,
+      ['uncompressedBytes', 'expandedBytes', 'extractedBytes'],
+      MAX_ARCHIVE_UNCOMPRESSED_BYTES
+    ) && !exceedsNumericLimit(
+      requestUrl,
+      receivedPayload.curl.body,
+      ['entries', 'entryCount', 'fileCount'],
+      MAX_ARCHIVE_ENTRIES
+    ));
+
+  // 예외 처리 테스트가 공유 서비스에서 반복적으로 오류를 일으키지 못하도록 한다.
+  const exceptionProfileIsActive = profileIsApproved(
+    testContext,
+    'EXCEPTION_HANDLING_FAILURE'
+  );
+  const targetsSharedService = collectNamedValues(
+    requestUrl,
+    receivedPayload.curl.body,
+    ['target']
+  ).some(function (value) {
+    return /(?:shared|production|prod|live)[-_ ]?(?:service|system|server)?/i
+      .test(String(value));
+  });
+  const exceptionHandlingLimit = !exceptionProfileIsActive
+    || (!targetsSharedService && !exceedsNumericLimit(
+      requestUrl,
+      receivedPayload.curl.body,
+      ['repeat', 'attempts', 'iterations'],
+      MAX_EXCEPTION_REPEAT
+    ));
+
   return {
+    upstreamGuardrailAllowed: testContext.upstreamGuardrail.decision === 'ALLOW',
     approvedTarget: testContext.approvedOrigins.includes(requestUrl.origin),
     approvedEndpoint: endpointIsApproved,
     approvedSession: testContext.approvedSessions.includes(receivedPayload.session),
     withinRequestLimit: requestLimitIsValid,
     mutationAllowed: mutationIsApproved,
-    networkAllowed: networkIsApproved
+    networkAllowed: networkIsApproved,
+    fixtureMatched: fixtureIsBound,
+    noHardDenyPattern: !hardDenyMatched,
+    sqlInjectionReadOnly: sqlInjectionIsReadOnly,
+    approvedIdentityTarget: approvedIdentityTarget,
+    authenticationAttemptLimit: authenticationAttemptLimit,
+    prototypePollutionIsolated: prototypePollutionIsolated,
+    markdownResourceLimit: markdownResourceLimit,
+    archiveResourceLimit: archiveResourceLimit,
+    exceptionHandlingLimit: exceptionHandlingLimit
   };
 }
 

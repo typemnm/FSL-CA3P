@@ -9,7 +9,11 @@ const {
   buildJudgmentPrompt
 } = require('../src/judgment-criteria');
 const { makeErrorResult } = require('../src/error-result');
-const { checkPayloadWithSllm, parseSllmOutput } = require('../src/sllm-verdict');
+const {
+  checkPayloadWithSllm,
+  evidenceAppearsInRequest,
+  parseSllmOutput
+} = require('../src/sllm-verdict');
 
 function makeSamplePayload() {
   return {
@@ -17,7 +21,7 @@ function makeSamplePayload() {
     session: 'attacker',
     curl: {
       method: 'GET',
-      url: 'http://127.0.0.1:4101/notices?q=test&id=1&id=2'
+      url: "http://127.0.0.1:4101/notices?q=%27%20OR%201%3D1--&id=1&id=2&fixtureId=notice-fixture-1"
     }
   };
 }
@@ -49,6 +53,10 @@ function makeTestContext() {
       allowSensitiveDataAccess: false,
       allowCodeExecution: false,
       allowFileSystemAccess: false
+    },
+    upstreamGuardrail: {
+      decision: 'ALLOW',
+      ruleId: 'PROFILE.SQL_INJECTION.READ_ONLY'
     }
   };
 }
@@ -66,6 +74,13 @@ function makeModelOutput(verdict) {
     verdict: verdict,
     vulnerabilityCategory: 'SQL_INJECTION',
     matchedProfile: 'SQL_INJECTION',
+    evidence: [
+      {
+        source: 'query',
+        key: 'q',
+        value: "' OR 1=1--"
+      }
+    ],
     checks: {
       profileMatched: checkValue,
       testDataOnly: checkValue,
@@ -176,7 +191,7 @@ test('신뢰할 수 있는 테스트 범위가 없으면 ERROR로 차단한다',
   assert.equal(result.allowExecution, false);
 });
 
-test('승인되지 않은 endpoint를 모델이 IN_SCOPE로 판정해도 차단한다', async function () {
+test('승인되지 않은 endpoint는 모델 호출 전에 DENY한다', async function () {
   const testContext = makeTestContext();
   testContext.approvedEndpoints = [
     {
@@ -191,12 +206,12 @@ test('승인되지 않은 endpoint를 모델이 IN_SCOPE로 판정해도 차단�
     fetchFunction: makeFakeFetch(makeModelOutput('IN_SCOPE'))
   });
 
-  assert.equal(result.verdict, 'ERROR');
-  assert.equal(result.reasonCode, 'INVALID_SLLM_OUTPUT');
+  assert.equal(result.verdict, 'DENY');
+  assert.equal(result.reasonCode, 'DETERMINISTIC_SCOPE_DENY');
   assert.equal(result.allowExecution, false);
 });
 
-test('승인되지 않은 취약점 프로필을 모델이 선택하면 차단한다', async function () {
+test('승인되지 않은 취약점 프로필을 모델이 선택하면 UNCERTAIN으로 차단한다', async function () {
   const modelOutput = makeModelOutput('IN_SCOPE');
   modelOutput.vulnerabilityCategory = 'ACCESS_CONTROL_IDOR';
   modelOutput.matchedProfile = 'ACCESS_CONTROL_IDOR';
@@ -211,7 +226,7 @@ test('승인되지 않은 취약점 프로필을 모델이 선택하면 차단�
     }
   );
 
-  assert.equal(result.verdict, 'ERROR');
+  assert.equal(result.verdict, 'UNCERTAIN');
   assert.equal(result.allowExecution, false);
 });
 
@@ -226,6 +241,57 @@ test('고정 출력 JSON에 없는 verdict는 오류로 처리한다', function 
       }
     });
   }, /알 수 없는 verdict/);
+});
+
+test('구조화된 query evidence가 실제 요청 값과 일치하면 검증한다', function () {
+  assert.equal(evidenceAppearsInRequest({
+    evidence: [{ source: 'query', key: 'attempts', value: '1' }]
+  }, {
+    path: '/auth/login',
+    query: { attempts: '1' }
+  }), true);
+});
+
+test('구조화된 body evidence는 점 표기법으로 중첩 값을 검증한다', function () {
+  assert.equal(evidenceAppearsInRequest({
+    evidence: [{ source: 'body', key: 'user.name', value: 'cert-user' }]
+  }, {
+    path: '/users/check',
+    query: {},
+    body: { user: { name: 'cert-user' } }
+  }), true);
+});
+
+test('존재하지 않거나 값이 다른 evidence는 검증하지 않는다', function () {
+  assert.equal(evidenceAppearsInRequest({
+    evidence: [{ source: 'query', key: 'attempts', value: '1000' }]
+  }, {
+    path: '/auth/login',
+    query: { attempts: '1' }
+  }), false);
+});
+
+test('evidence 중 하나라도 요청과 다르면 전체 evidence를 거부한다', function () {
+  assert.equal(evidenceAppearsInRequest({
+    evidence: [
+      { source: 'query', key: 'attempts', value: '1' },
+      { source: 'query', key: 'username', value: 'admin' }
+    ]
+  }, {
+    path: '/auth/login',
+    query: { attempts: '1', username: 'cert-test-account' }
+  }), false);
+});
+
+test('자유 문자열 evidence는 잘못된 모델 출력으로 처리한다', function () {
+  const invalidOutput = makeModelOutput('IN_SCOPE');
+  invalidOutput.evidence = ['q=test'];
+
+  assert.throws(function () {
+    parseSllmOutput({
+      message: { content: JSON.stringify(invalidOutput) }
+    });
+  }, /evidence/);
 });
 
 test('4. 모델 출력 JSON이 잘못되면 ERROR로 차단한다', async function () {

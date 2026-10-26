@@ -203,6 +203,7 @@ function validateSllmOutput(modelOutput) {
     'verdict',
     'vulnerabilityCategory',
     'matchedProfile',
+    'evidence',
     'checks',
     'reason',
     'confidence'
@@ -243,6 +244,54 @@ function validateSllmOutput(modelOutput) {
   if (typeof modelOutput.matchedProfile !== 'string'
     || modelOutput.matchedProfile.length === 0) {
     throw createSllmError('INVALID_SLLM_OUTPUT', 'matchedProfile이 필요합니다.');
+  }
+
+  const allowedEvidenceSources = ['path', 'query', 'body'];
+  const requiredEvidenceFields = ['source', 'key', 'value'];
+
+  if (!Array.isArray(modelOutput.evidence)) {
+    throw createSllmError('INVALID_SLLM_OUTPUT', 'evidence는 객체 배열이어야 합니다.');
+  }
+
+  for (const evidenceItem of modelOutput.evidence) {
+    if (!isJsonObject(evidenceItem)
+      || Object.keys(evidenceItem).length !== requiredEvidenceFields.length
+      || requiredEvidenceFields.some(function (fieldName) {
+        return !Object.prototype.hasOwnProperty.call(evidenceItem, fieldName);
+      })) {
+      throw createSllmError(
+        'INVALID_SLLM_OUTPUT',
+        'evidence 항목에는 source, key, value만 필요합니다.'
+      );
+    }
+
+    if (!allowedEvidenceSources.includes(evidenceItem.source)) {
+      throw createSllmError('INVALID_SLLM_OUTPUT', 'evidence source가 올바르지 않습니다.');
+    }
+
+    if (typeof evidenceItem.key !== 'string' || evidenceItem.key.length === 0) {
+      throw createSllmError('INVALID_SLLM_OUTPUT', 'evidence key가 필요합니다.');
+    }
+
+    const evidenceValueType = typeof evidenceItem.value;
+    const valueIsScalar = evidenceItem.value === null
+      || evidenceValueType === 'string'
+      || evidenceValueType === 'boolean'
+      || (evidenceValueType === 'number' && Number.isFinite(evidenceItem.value));
+
+    if (!valueIsScalar) {
+      throw createSllmError(
+        'INVALID_SLLM_OUTPUT',
+        'evidence value는 JSON scalar 값이어야 합니다.'
+      );
+    }
+
+    if (evidenceItem.source === 'path' && evidenceItem.key !== 'path') {
+      throw createSllmError(
+        'INVALID_SLLM_OUTPUT',
+        'path evidence의 key는 path여야 합니다.'
+      );
+    }
   }
 
   // 모델이 의미를 분석한 결과를 네 가지 check로 나눠 반환하게 한다.
@@ -301,6 +350,10 @@ function validateSllmOutput(modelOutput) {
       );
     }
 
+    if (modelOutput.evidence.length === 0) {
+      throw createSllmError('INVALID_SLLM_OUTPUT', 'IN_SCOPE에는 요청 근거 evidence가 필요합니다.');
+    }
+
     for (const checkName of requiredCheckNames) {
       if (modelOutput.checks[checkName] !== true) {
         throw createSllmError(
@@ -310,6 +363,109 @@ function validateSllmOutput(modelOutput) {
       }
     }
   }
+}
+
+function requestText(request) {
+  return JSON.stringify({
+    rawUrl: request.rawUrl,
+    path: request.path,
+    query: request.query,
+    body: request.body === undefined ? null : request.body
+  }).toLowerCase();
+}
+
+function valuesMatch(actualValue, evidenceValue) {
+  if (Array.isArray(actualValue)) {
+    return actualValue.some(function (item) {
+      return Object.is(item, evidenceValue);
+    });
+  }
+  return Object.is(actualValue, evidenceValue);
+}
+
+function readBodyValue(body, key) {
+  if (body === null || body === undefined) {
+    return { found: false };
+  }
+
+  if (isJsonObject(body) && Object.prototype.hasOwnProperty.call(body, key)) {
+    return { found: true, value: body[key] };
+  }
+
+  const pathParts = key.split('.');
+  let currentValue = body;
+
+  for (const pathPart of pathParts) {
+    if ((isJsonObject(currentValue) || Array.isArray(currentValue))
+      && Object.prototype.hasOwnProperty.call(currentValue, pathPart)) {
+      currentValue = currentValue[pathPart];
+    } else {
+      return { found: false };
+    }
+  }
+
+  return { found: true, value: currentValue };
+}
+
+function evidenceAppearsInRequest(modelOutput, request) {
+  return modelOutput.evidence.length > 0
+    && modelOutput.evidence.every(function (item) {
+      if (item.source === 'path') {
+        return item.key === 'path' && valuesMatch(request.path, item.value);
+      }
+
+      if (item.source === 'query') {
+        return isJsonObject(request.query)
+          && Object.prototype.hasOwnProperty.call(request.query, item.key)
+          && valuesMatch(request.query[item.key], item.value);
+      }
+
+      if (item.source === 'body') {
+        const bodyValue = readBodyValue(request.body, item.key);
+        return bodyValue.found && valuesMatch(bodyValue.value, item.value);
+      }
+
+      return false;
+    });
+}
+
+function categoryHasRequestEvidence(category, request) {
+  const normalizedRequest = requestText(request);
+  const patterns = {
+    SQL_INJECTION: /(?:\bunion\b\s+\bselect\b|['"`]\s*(?:or|and)\s+[^\s]+\s*=\s*[^\s]+|--|\/\*|\bselect\b.+\bfrom\b|\bdelete\b\s+\bfrom\b)/i,
+    PROTOTYPE_POLLUTION_LODASH: /(?:__proto__|constructor\.prototype|prototype)/i,
+    PROTOTYPE_POLLUTION_JSON5: /(?:__proto__|constructor\.prototype|prototype)/i,
+    UNSAFE_YAML_DESERIALIZATION: /(?:!![a-z]|yaml|\.ya?ml)/i,
+    ARCHIVE_RESOURCE_EXHAUSTION: /(?:\.zip|\.tar|archive|compressed)/i,
+    MARKDOWN_PROCESSING_DOS: /(?:markdown|\.md|commonmark)/i,
+    AUTHENTICATION_FAILURE: /(?:login|session|auth|token|password)/i,
+    ACCESS_CONTROL_IDOR: /(?:user|account|owner|resource|\/\d+)/i,
+    SECURITY_MISCONFIGURATION: /(?:debug|config|environment|health)/i,
+    CRYPTOGRAPHIC_FAILURE: /(?:password|hash|crypto|encrypt|decrypt)/i,
+    SOFTWARE_DATA_INTEGRITY_FAILURE: /(?:package|dependency|update|webhook|integrity)/i,
+    EXCEPTION_HANDLING_FAILURE: /(?:error|exception|throw|500)/i,
+    LOGGING_MONITORING_FAILURE: /(?:log|audit|monitor)/i,
+    COMMONS_TEXT_INJECTION: /(?:\$\{|interpolat|substitut|template)/i
+  };
+  return Boolean(patterns[category] && patterns[category].test(normalizedRequest));
+}
+
+function makeDeterministicDenyResult(sllmInput) {
+  const failedScopeChecks = Object.entries(sllmInput.scopeChecks)
+    .filter(function (entry) { return entry[1] !== true; })
+    .map(function (entry) { return entry[0]; });
+  return {
+    verdict: 'DENY',
+    reasonCode: 'DETERMINISTIC_SCOPE_DENY',
+    vulnerabilityCategory: 'UNKNOWN',
+    matchedProfile: 'NONE',
+    evidence: [],
+    scopeChecks: sllmInput.scopeChecks,
+    checks: null,
+    reason: '코드 기반 선행 검사에 실패했습니다: ' + failedScopeChecks.join(', '),
+    confidence: 1,
+    allowExecution: false
+  };
 }
 
 // 정상 판정 결과에 실제 실행 허용 여부를 추가한다.
@@ -333,24 +489,40 @@ function makeDecisionResult(modelOutput, sllmInput) {
   // 현재 프로필 이름은 취약점 category를 사용하므로 두 값도 일치해야 한다.
   const categoryMatchesProfile = modelOutput.vulnerabilityCategory
     === modelOutput.matchedProfile;
+  const evidenceIsPresent = evidenceAppearsInRequest(modelOutput, sllmInput.request);
+  const categoryEvidenceIsPresent = categoryHasRequestEvidence(
+    modelOutput.vulnerabilityCategory,
+    sllmInput.request
+  );
 
   const executionIsSafe = allScopeChecksPassed
     && allModelChecksPassed
     && profileIsApproved
-    && categoryMatchesProfile;
+    && categoryMatchesProfile
+    && evidenceIsPresent
+    && categoryEvidenceIsPresent;
 
   // 모델이 IN_SCOPE라고 했지만 코드 검사 결과가 다르면 모델 출력을 신뢰하지 않는다.
   if (modelOutput.verdict === 'IN_SCOPE' && !executionIsSafe) {
-    throw createSllmError(
-      'INVALID_SLLM_OUTPUT',
-      'IN_SCOPE 판정이 승인된 테스트 범위와 일치하지 않습니다.'
-    );
+    return {
+      verdict: 'UNCERTAIN',
+      reasonCode: 'UNVERIFIED_MODEL_ALLOW',
+      vulnerabilityCategory: modelOutput.vulnerabilityCategory,
+      matchedProfile: modelOutput.matchedProfile,
+      evidence: modelOutput.evidence,
+      scopeChecks: sllmInput.scopeChecks,
+      checks: modelOutput.checks,
+      reason: '모델의 IN_SCOPE 판정을 실제 요청 근거와 코드 검사로 확인할 수 없습니다.',
+      confidence: 0,
+      allowExecution: false
+    };
   }
 
   return {
     verdict: modelOutput.verdict,
     vulnerabilityCategory: modelOutput.vulnerabilityCategory,
     matchedProfile: modelOutput.matchedProfile,
+    evidence: modelOutput.evidence,
     scopeChecks: sllmInput.scopeChecks,
     checks: modelOutput.checks,
     reason: modelOutput.reason,
@@ -366,6 +538,12 @@ async function checkPayloadWithSllm(receivedPayload, testContext, settings) {
   try {
     // 1. 수신된 페이로드를 sLLM 판정용 JSON으로 구성한다.
     const sllmInput = buildSllmInput(receivedPayload, testContext);
+
+    if (Object.values(sllmInput.scopeChecks).some(function (value) {
+      return value !== true;
+    })) {
+      return makeDeterministicDenyResult(sllmInput);
+    }
 
     // 2. 판정용 JSON과 판단 기준을 로컬 sLLM에 전달한다.
     const sllmResponse = await sendToSllm(sllmInput, settings);
@@ -385,6 +563,7 @@ async function checkPayloadWithSllm(receivedPayload, testContext, settings) {
 module.exports = {
   buildSllmRequestBody,
   checkPayloadWithSllm,
+  evidenceAppearsInRequest,
   makeDecisionResult,
   parseSllmOutput,
   sendToSllm,
