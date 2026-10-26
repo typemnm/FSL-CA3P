@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync, renameSync, lstatSync } from 'n
 import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { assertIdentifier, redact, digest, TERMINAL_STATUSES } from '../contracts/index.mjs';
+import { assertIdentifier, redact, digest, TERMINAL_STATUSES, ACTIVE_STATUSES } from '../contracts/index.mjs';
 
 export const DEFAULT_STORE_PATH = resolve(process.env.CA3P_STORE_PATH ?? fileURLToPath(new URL('../../.runtime/runs.sqlite', import.meta.url)));
 const now = () => new Date().toISOString();
@@ -46,6 +46,10 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
     CREATE TABLE IF NOT EXISTS review_audit (
       id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), check_id TEXT NOT NULL,
       review_json TEXT NOT NULL, recorded_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS experiment_control (
+      id INTEGER PRIMARY KEY CHECK(id=1), status TEXT NOT NULL, owner TEXT,
+      epoch INTEGER NOT NULL DEFAULT 0, last_reset_at TEXT, summary_json TEXT, error TEXT);
+    INSERT OR IGNORE INTO experiment_control(id,status) VALUES (1,'ready');
     PRAGMA user_version=1;`);
   let closed = false;
   function transaction(fn) {
@@ -64,6 +68,24 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
       modelCalls: db.prepare('SELECT metadata_json FROM model_calls WHERE run_id=? ORDER BY sequence').all(id).map(item => parse(item.metadata_json)),
       artifacts: db.prepare('SELECT * FROM artifacts WHERE run_id=? ORDER BY id').all(id)
         .map(item => ({ id: item.id, runId: item.run_id, kind: item.kind, path: item.path, sha256: item.sha256, size: item.size, ...parse(item.metadata_json) })) };
+  }
+  function experimentState() {
+    const row = db.prepare('SELECT * FROM experiment_control WHERE id=1').get();
+    return { status: row.status, epoch: row.epoch, lastResetAt: row.last_reset_at,
+      summary: parse(row.summary_json), error: row.error };
+  }
+  function assertExperimentReady() {
+    if (experimentState().status !== 'ready') {
+      throw fault('EXPERIMENT_RESET_REQUIRED', '실험 초기화 또는 검토가 진행 중이거나 이전 초기화에 실패했습니다. 초기화를 완료한 뒤 다시 실행하세요.');
+    }
+  }
+  function assertResetOwner(owner) {
+    const row = db.prepare('SELECT status,owner FROM experiment_control WHERE id=1').get();
+    if (row.status !== 'resetting' || row.owner !== owner) throw fault('RESET_LOCK_LOST', 'Experiment reset lock no longer belongs to this request.');
+  }
+  function activeRunCount() {
+    return db.prepare(`SELECT count(*) AS count FROM runs WHERE status IN (${ACTIVE_STATUSES.map(() => '?').join(',')})`).get(...ACTIVE_STATUSES).count
+      + db.prepare("SELECT count(*) AS count FROM jobs WHERE status IN ('queued','leased')").get().count;
   }
   function assertLease(lease, { allowCancelled = false } = {}) {
     const job = db.prepare('SELECT * FROM jobs WHERE run_id=?').get(lease.runId);
@@ -91,10 +113,81 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
   }
   const api = {
     path: storePath,
+    experimentState,
+    activeRunCount,
+    recoverAbandonedExperimentOperation() {
+      return transaction(() => {
+        const row = db.prepare('SELECT status,owner FROM experiment_control WHERE id=1').get();
+        const pid = /^api-(\d+)-(?:reset|mutation)-/.exec(row.owner ?? '')?.[1];
+        if (!['resetting', 'reviewing'].includes(row.status) || !pid) return false;
+        try { process.kill(Number(pid), 0); return false; }
+        catch (failure) { if (failure.code !== 'ESRCH') return false; }
+        db.prepare("UPDATE experiment_control SET status='failed',owner=NULL,error=? WHERE id=1")
+          .run('이전 초기화 또는 검토 프로세스가 중단되었습니다. 전체 초기화를 다시 수행하세요.');
+        return true;
+      });
+    },
+    beginExperimentReset(owner) {
+      assertIdentifier(owner, 'reset owner');
+      return transaction(() => {
+        const state = experimentState();
+        if (!['ready', 'failed'].includes(state.status)) throw fault('EXPERIMENT_BUSY', '다른 초기화 또는 검토 작업이 진행 중입니다.');
+        if (activeRunCount()) throw fault('RUN_ACTIVE', '실행과 보고서 생성을 중지하고 완료를 기다린 뒤 초기화하세요.');
+        db.prepare("UPDATE experiment_control SET status='resetting',owner=?,error=NULL WHERE id=1").run(owner);
+        return experimentState();
+      });
+    },
+    failExperimentReset(owner) {
+      return transaction(() => {
+        assertResetOwner(owner);
+        db.prepare("UPDATE experiment_control SET status='failed',owner=NULL,error=? WHERE id=1")
+          .run('초기화를 완료하지 못했습니다. 새 실행을 시작하기 전에 초기화를 다시 시도하세요.');
+        return experimentState();
+      });
+    },
+    completeExperimentReset(owner, summary = {}) {
+      // Remove freed SQLite content as well as query-visible rows. External copies,
+      // filesystem snapshots and provider records are outside this application's control.
+      db.exec('PRAGMA secure_delete=ON');
+      const result = transaction(() => {
+        assertResetOwner(owner);
+        if (activeRunCount()) throw fault('RUN_ACTIVE', 'A worker is still active.');
+        const counts = {};
+        for (const table of ['review_audit', 'artifacts', 'model_calls', 'action_intents', 'run_events', 'jobs', 'runs']) {
+          counts[table] = db.prepare(`SELECT count(*) AS count FROM ${table}`).get().count;
+          db.exec(`DELETE FROM ${table}`);
+        }
+        return { ...summary, deleted: counts };
+      });
+      db.exec('VACUUM');
+      const checkpoint = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+      if (checkpoint.busy) throw fault('RESET_CHECKPOINT_BUSY', 'SQLite cleanup is waiting for another reader. Retry the reset.');
+      transaction(() => {
+        assertResetOwner(owner);
+        db.prepare("UPDATE experiment_control SET status='ready',owner=NULL,epoch=epoch+1,last_reset_at=?,summary_json=?,error=NULL WHERE id=1")
+          .run(now(), json(result));
+      });
+      return { ...result, epoch: experimentState().epoch, completedAt: experimentState().lastResetAt };
+    },
+    beginExperimentMutation(owner) {
+      assertIdentifier(owner, 'mutation owner');
+      return transaction(() => {
+        assertExperimentReady();
+        db.prepare("UPDATE experiment_control SET status='reviewing',owner=? WHERE id=1").run(owner);
+      });
+    },
+    endExperimentMutation(owner) {
+      return transaction(() => {
+        const row = db.prepare('SELECT status,owner FROM experiment_control WHERE id=1').get();
+        if (row.status !== 'reviewing' || row.owner !== owner) throw fault('MUTATION_LOCK_LOST', 'Experiment mutation lock no longer belongs to this request.');
+        db.prepare("UPDATE experiment_control SET status='ready',owner=NULL WHERE id=1").run();
+      });
+    },
     createRun({ id, mode, modelId, manifest, state, options = {} }) {
       assertIdentifier(id, 'runId');
       if (manifest?.runId !== id || state?.id !== id) throw fault('RUN_ID_MISMATCH', 'Manifest and state must share runId.', 400);
       return transaction(() => {
+        assertExperimentReady();
         db.prepare('INSERT INTO runs VALUES (?,?,?,?,?,?,?,?)').run(id, 'queued', mode, modelId, json(manifest), json({ ...state, status: 'queued' }), now(), now());
         db.prepare('INSERT INTO jobs(id,run_id,status,options_json,created_at) VALUES (?,?,?,?,?)').run(randomUUID(), id, 'queued', json(options), now());
         return getRun(id);
@@ -118,6 +211,7 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
       assertIdentifier(owner, 'lease owner');
       recoverExpired();
       return transaction(() => {
+        if (experimentState().status !== 'ready') return null;
         const job = db.prepare("SELECT * FROM jobs WHERE status='queued' AND cancel_requested=0 ORDER BY created_at,id LIMIT 1").get();
         if (!job) return null;
         const epoch = job.lease_epoch + 1;
@@ -180,6 +274,7 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
     listActions(id) { return db.prepare('SELECT * FROM action_intents WHERE run_id=? ORDER BY created_at').all(id); },
     recordReview(id, review) {
       return transaction(() => {
+        if (!['ready', 'reviewing'].includes(experimentState().status)) assertExperimentReady();
         const state = getRun(id);
         if (!state) throw fault('RUN_NOT_FOUND', 'Run not found.', 404);
         const checks = state.historyWrite?.checks ?? [];
@@ -304,6 +399,7 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
         source: { commitSha: null }, model: null, data: null, policy: null,
         missingValuesMean: 'unavailable', legacyUiRunId: record.legacyUiRunId ?? null };
       transaction(() => {
+        if (!['ready', 'reviewing'].includes(experimentState().status)) assertExperimentReady();
         db.prepare('INSERT INTO runs VALUES (?,?,?,?,?,?,?,?)').run(id, state.status, state.mode, 'unavailable', json(manifest), json(state), state.startedAt, now());
         for (const [index, item] of (record.events ?? []).entries()) {
           const event = item.event ?? item;

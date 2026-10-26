@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../packages/run-store/index.mjs';
 import { createLocalRuntime } from '../application/local-runtime.mjs';
@@ -61,7 +61,8 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         labTestProfile: lease.options.testProfile,
         labConfigProvider: () => ({ provider: lease.modelId === 'rule-baseline' ? 'rules' : 'deepseek', model: lease.modelId }),
         labReasoningFactory: () => engine,
-        labFactory: options => startLocalLab({ ...options, casperDatabasePath: lease.options.caseSnapshot?.path }),
+        labFactory: options => startLocalLab({ ...options, casperDatabasePath: lease.options.caseSnapshot?.path,
+          cleanupRegistryPath: join(dirname(store.path), 'lab-sessions') }),
         async beforeExchange(request) {
           store.assertLease(lease, { allowCancelled: request.receiver === 'pentest-db' && request.payload.operation === 'finalize' });
           if (request.receiver === 'attack-module' && ['POST', 'DELETE'].includes(request.payload.curl?.method)) {

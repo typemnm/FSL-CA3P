@@ -94,15 +94,18 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
         if (pathname === '/api/deployment' && req.method === 'GET') return json(res, 200, await deploymentStatusProvider());
         const review = /^\/api\/runs\/([a-zA-Z0-9_-]+)\/reviews\/([a-zA-Z0-9._-]+)$/.exec(pathname);
         if (review && req.method === 'POST') {
-          const run = await runtime.getRun?.(review[1]);
-          if (!run?.historyWrite?.checks?.some(check => check.check_id === review[2])) throw error(404, 'Run check not found.');
           const body = await readJson(req);
           if (!body || Object.keys(body).some(key => key !== 'note')) throw error(400, 'Provide a review note.');
-          const check = await reviewRunCheck(review[2], { reviewer: currentUser.user.name, note: body.note,
-            databasePath: run.manifest?.data?.caseDatabaseSourcePath,
-            evidenceRoot: runtime.store?.path ? resolve(runtime.store.path, '..', 'artifacts') : undefined });
-          runtime.store?.recordReview(run.id, check);
-          return json(res, 200, { check });
+          const performReview = async () => {
+            const run = await runtime.getRun?.(review[1]);
+            if (!run?.historyWrite?.checks?.some(check => check.check_id === review[2])) throw error(404, 'Run check not found.');
+            const check = await reviewRunCheck(review[2], { reviewer: currentUser.user.name, note: body.note,
+              databasePath: run.manifest?.data?.caseDatabaseSourcePath,
+              evidenceRoot: runtime.store?.path ? resolve(runtime.store.path, '..', 'artifacts') : undefined });
+            runtime.store?.recordReview(run.id, check);
+            return { check };
+          };
+          return json(res, 200, await (runtime.withMutationLock ? runtime.withMutationLock(performReview) : performReview()));
         }
         const artifactMatch = /^\/api\/artifacts\/([a-f0-9]{64})$/.exec(pathname);
         if (artifactMatch && req.method === 'GET') {
@@ -142,6 +145,18 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
         if (pathname === '/api/ci-results' && req.method === 'GET') return json(res, 200,
           ciResults?.getSnapshot?.() ?? { source: 'none', status: 'unavailable', updatedAt: null, lastAttemptAt: null, runs: [] });
         if (pathname === '/api/models' && req.method === 'GET') return json(res, 200, { models: await runtime.listModels?.() ?? [] });
+        if (pathname === '/api/experiment-reset') {
+          if (req.method === 'GET') {
+            if (!runtime.experimentResetPreview) throw error(503, 'Experiment reset is unavailable for this runtime.');
+            return json(res, 200, await runtime.experimentResetPreview());
+          }
+          if (req.method !== 'POST') return json(res, 405, { error: 'Use GET or POST.' }, { Allow: 'GET, POST' });
+          const body = await readJson(req);
+          if (!body || typeof body !== 'object' || Array.isArray(body) || body.confirmed !== true
+            || Object.keys(body).some(key => key !== 'confirmed')) throw error(400, 'Confirm complete experiment deletion with confirmed: true.');
+          if (!runtime.resetExperiment) throw error(503, 'Experiment reset is unavailable for this runtime.');
+          return json(res, 200, await runtime.resetExperiment(body));
+        }
         if (pathname === '/api/comparisons' && req.method === 'GET') {
           const params = new URL(req.url, expectedOrigin).searchParams;
           if (!params.get('baseline') || !params.get('candidate')) throw error(400, 'Select baseline and candidate runs.');

@@ -90,3 +90,48 @@ test('initial temporary API failure retries connection and recovers polling', as
   await client.connect(); await pause(35);
   assert.equal(errors[0], 'Temporarily unavailable'); assert.ok(states.length > 0); assert.ok(stateCalls >= 3);
 });
+
+test('experiment reset posts explicit confirmation with CSRF and discards a stale in-flight poll', async t => {
+  const calls = []; const states = []; let stateCalls = 0; let releaseOldPoll;
+  const cleared = { ...envelope, instanceId: 'server-b', run: { ...envelope.run, id: null }, experimentReset: { status: 'completed' } };
+  const client = createRuntimeClient({ hostname: 'remote.example', pollIntervalMs: 100,
+    onState: value => states.push(value), onConnection() {}, onError: assert.fail,
+    fetchImpl: async (path, options) => {
+      calls.push({ path, options });
+      if (path === '/api/auth/session') return response(session);
+      if (path === '/api/experiment-reset') return response(cleared);
+      stateCalls += 1;
+      if (stateCalls === 2) return new Promise(resolve => { releaseOldPoll = () => resolve(response(envelope)); });
+      return response(stateCalls > 2 ? cleared : envelope);
+    },
+  });
+  t.after(() => client.close());
+  await client.connect();
+  while (!releaseOldPoll) await pause(1);
+  await client.resetExperiment();
+  const reset = calls.find(call => call.path === '/api/experiment-reset');
+  assert.deepEqual(JSON.parse(reset.options.body), { confirmed: true });
+  assert.equal(reset.options.headers['X-CSRF-Token'], 'csrf-a');
+  const firstCleared = states.findIndex(value => value.instanceId === 'server-b');
+  releaseOldPoll(); await pause(15);
+  assert.ok(firstCleared > 0);
+  assert.ok(states.slice(firstCleared).every(value => value.instanceId === 'server-b'));
+});
+
+test('incomplete or rejected experiment reset does not accept a cleared state', async t => {
+  const states = []; let rejectReset = false;
+  const client = createRuntimeClient({ hostname: 'remote.example', pollIntervalMs: 100,
+    onState: value => states.push(value), onConnection() {}, onError: assert.fail,
+    fetchImpl: async path => {
+      if (path === '/api/auth/session') return response(session);
+      if (path === '/api/experiment-reset') return rejectReset ? response({ error: 'Active worker' }, 409) : response(envelope);
+      return response(envelope);
+    },
+  });
+  t.after(() => client.close());
+  await client.connect();
+  await assert.rejects(client.resetExperiment(), /전체 실험 초기화 완료/);
+  rejectReset = true;
+  await assert.rejects(client.resetExperiment(), /Active worker/);
+  assert.ok(states.every(value => value.run.id === 'run-a'));
+});
