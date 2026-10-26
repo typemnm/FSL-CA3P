@@ -5,12 +5,11 @@ import { validateUniversityOrigin } from '../../packages/contracts/university-ta
 import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
 import { probeSite } from '../../vul-web2/scripts/idor-probe.mjs';
-import attackModule from '../../attack-module/index.js';
+import { executeUniversityRead } from '../../packages/adapters/university-read.mjs';
 import { readPentestCatalog } from '../../packages/adapters/integrations/pentest-db.mjs';
 
 const { runGeneralAssessment } = generalCore;
 const { createGeneralModelPlannerFromEnv } = generalPlanner;
-const { executeUniversityRead } = attackModule;
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 const MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
 const LIMITS = Object.freeze({ maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 });
