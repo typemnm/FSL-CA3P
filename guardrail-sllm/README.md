@@ -16,6 +16,24 @@
 | `test/` | Ollama 없이 실행 가능한 단위·모의 연동 테스트입니다. |
 | `integration/` | 실제 Ollama 연동 및 취약점 매트릭스입니다. |
 
+## 코드 읽기 가이드
+
+처음 코드를 확인할 때는 다음 순서로 읽는 것이 좋습니다.
+
+1. `src/payload-input.js`: 어떤 입력을 받고 어떤 요청을 모델 호출 전에 차단하는지 확인
+2. `src/judgment-criteria.js`: 모델에 전달하는 공통 기준과 취약점별 정책 확인
+3. `src/sllm-verdict.js`: Ollama 호출, 출력 검증, evidence 대조 및 최종 허용 조건 확인
+4. `src/error-result.js`: 오류가 어떤 JSON으로 변환되는지 확인
+5. `test/`: 코드 기반 정책의 정상·위험 예제 확인
+6. `integration/`: 실제 모델에서 기대 결과를 어떻게 측정하는지 확인
+
+주석은 코드가 하는 일을 반복하기보다 다음 내용을 설명합니다.
+
+- 해당 검사가 모델보다 먼저 실행되어야 하는 이유
+- 입력과 출력 데이터가 어떤 신뢰 경계를 가지는지
+- `DENY`, `UNCERTAIN`, `ERROR`가 실행 허용값으로 어떻게 연결되는지
+- 테스트의 `exactVerdict`와 `safeOutcome`이 각각 무엇을 뜻하는지
+
 ## 실행 흐름
 
 ```text
@@ -155,6 +173,18 @@ npm run test:ollama
 ```
 
 통합 테스트는 판정만 수행하며 실제 대상 서버에 공격 요청을 보내지 않습니다.
+
+### package.json script 설명
+
+`package.json`은 JSON 표준상 주석을 지원하지 않으므로 script 설명은 여기에 둡니다.
+
+| 명령 | 설명 | Ollama 필요 여부 |
+|---|---|---|
+| `npm test` | 전체 단위·mock 테스트 자동 탐색 및 실행 | 필요 없음 |
+| `npm run test:mock` | 지정된 두 테스트 파일만 실행 | 필요 없음 |
+| `npm run ollama:check` | 승인된 SQLi 요청 한 건으로 실제 연동 확인 | 필요 |
+| `npm run test:ollama:core` | 핵심 verdict 및 오류 6개 시나리오 실행 | 필요 |
+| `npm run test:ollama` | 취약점별 SAFE/DANGEROUS 매트릭스 실행 | 필요 |
 
 ## 현재 추가된 결정론적 제한
 

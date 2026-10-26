@@ -1,5 +1,18 @@
 'use strict';
 
+/**
+ * sLLM 가드레일의 오케스트레이션 모듈이다.
+ *
+ * 처리 순서:
+ * 1. payload-input.js에서 입력을 검증하고 scopeChecks를 만든다.
+ * 2. 결정론적 검사 실패 시 모델 호출 없이 DENY한다.
+ * 3. 통과한 요청만 로컬 Ollama에 전달한다.
+ * 4. 모델 JSON 스키마와 구조화 evidence를 다시 검증한다.
+ * 5. 검증된 IN_SCOPE에만 allowExecution=true를 부여한다.
+ *
+ * 어느 단계에서든 예외가 발생하면 error-result.js를 통해 fail-closed한다.
+ */
+
 // 다른 파일에서 필요한 기능을 가져온다.
 // buildSllmInput: 수신 페이로드를 sLLM 판정용 JSON으로 구성한다.
 const { buildSllmInput } = require('./payload-input');
@@ -374,6 +387,8 @@ function requestText(request) {
   }).toLowerCase();
 }
 
+// 모델 evidence의 scalar 값과 실제 요청 값을 타입까지 포함해 비교한다.
+// 동일 query key가 여러 번 나온 경우 실제 값이 배열이므로 원소 중 하나와 비교한다.
 function valuesMatch(actualValue, evidenceValue) {
   if (Array.isArray(actualValue)) {
     return actualValue.some(function (item) {
@@ -383,6 +398,9 @@ function valuesMatch(actualValue, evidenceValue) {
   return Object.is(actualValue, evidenceValue);
 }
 
+// body evidence의 key를 읽는다.
+// 먼저 실제 top-level key의 정확 일치를 확인하고, 없으면 user.name 같은
+// 점 표기법으로 중첩 객체/배열을 순회한다.
 function readBodyValue(body, key) {
   if (body === null || body === undefined) {
     return { found: false };
@@ -407,6 +425,8 @@ function readBodyValue(body, key) {
   return { found: true, value: currentValue };
 }
 
+// 모델이 제시한 모든 evidence가 실제 path/query/body에 존재하는지 확인한다.
+// 일부만 맞는 근거는 허용하지 않으며 하나라도 다르면 false를 반환한다.
 function evidenceAppearsInRequest(modelOutput, request) {
   return modelOutput.evidence.length > 0
     && modelOutput.evidence.every(function (item) {
@@ -429,6 +449,8 @@ function evidenceAppearsInRequest(modelOutput, request) {
     });
 }
 
+// 구조화 evidence의 값이 실제로 존재하는 것과 별개로,
+// 요청에 해당 취약점 유형을 뒷받침하는 최소 패턴이 있는지 재확인한다.
 function categoryHasRequestEvidence(category, request) {
   const normalizedRequest = requestText(request);
   const patterns = {
@@ -450,6 +472,7 @@ function categoryHasRequestEvidence(category, request) {
   return Boolean(patterns[category] && patterns[category].test(normalizedRequest));
 }
 
+// scopeChecks 실패 결과를 사람이 확인할 수 있도록 실패한 검사 이름과 함께 반환한다.
 function makeDeterministicDenyResult(sllmInput) {
   const failedScopeChecks = Object.entries(sllmInput.scopeChecks)
     .filter(function (entry) { return entry[1] !== true; })

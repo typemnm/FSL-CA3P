@@ -1,5 +1,14 @@
 'use strict';
 
+/**
+ * 원본 execute_curl 페이로드와 신뢰 가능한 testContext를 검증하고,
+ * 로컬 sLLM에 전달할 정규화된 입력 JSON을 만드는 모듈이다.
+ *
+ * 이 파일에서 계산하는 scopeChecks는 문자열 의미를 추론하지 않아도 되는
+ * 결정론적 검사다. 하나라도 false이면 sllm-verdict.js가 모델을 호출하지 않고
+ * 즉시 DENY한다.
+ */
+
 // sLLM에 전달할 입력 JSON의 최대 크기이다.
 // 16 * 1024는 16 KiB를 byte 단위로 나타낸 값이다.
 // 너무 큰 입력으로 모델이나 서버에 부담을 주는 것을 막는다.
@@ -13,6 +22,9 @@ const MAX_ARCHIVE_REPEAT = 10;
 const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 10000;
 const MAX_EXCEPTION_REPEAT = 10;
+
+// 모델 판단보다 우선 적용하는 공통 금지 패턴이다.
+// 요청 path, query value, body를 하나의 문자열로 합친 뒤 각 정규식을 검사한다.
 const HARD_DENY_PATTERNS = [
   /\b(delete|drop|update|insert|alter|truncate|grant|revoke)\b/i,
   /\b(sleep|benchmark|pg_sleep)\s*\(/i,

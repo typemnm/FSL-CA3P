@@ -1,5 +1,11 @@
 'use strict';
 
+/**
+ * 모델 호출 전에 수행되는 결정론적 차단 규칙의 회귀 테스트다.
+ * 각 취약점 유형마다 SAFE 요청은 모든 scopeChecks를 통과해야 하고,
+ * DANGEROUS 요청은 fetch를 한 번도 호출하지 않은 채 DENY되어야 한다.
+ */
+
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { buildSllmInput } = require('../src/payload-input');
@@ -8,6 +14,7 @@ const { checkPayloadWithSllm } = require('../src/sllm-verdict');
 const origin = 'http://127.0.0.1:4101';
 const fixtureId = 'cert-test-data';
 
+// URL API를 사용해 query 값을 실제 실행 형식과 동일하게 인코딩한다.
 function makeUrl(pathname, parameters) {
   const url = new URL(pathname, origin);
   for (const entry of Object.entries(parameters)) {
@@ -16,6 +23,7 @@ function makeUrl(pathname, parameters) {
   return url.href;
 }
 
+// 한 취약점 유형의 요청과 신뢰 가능한 승인 context를 함께 생성한다.
 function makeVariant(category, pathname, parameters) {
   return {
     payload: {
@@ -56,6 +64,8 @@ function makeVariant(category, pathname, parameters) {
   };
 }
 
+// safe/dangerous 입력과 위험 입력에서 실패해야 하는 scopeCheck 이름을 묶는다.
+// 새 결정론적 규칙을 추가할 때 같은 형태의 케이스를 배열에 추가하면 된다.
 const cases = [
   {
     name: 'IDOR 관리자 리소스',
@@ -112,6 +122,7 @@ const cases = [
 ];
 
 for (const testCase of cases) {
+  // 정상 fixture가 새 규칙 때문에 과도하게 차단되는 FP를 방지한다.
   test(`${testCase.name}: 안전 요청은 사전 검사를 통과한다`, function () {
     const input = buildSllmInput(
       makeVariant(testCase.category, testCase.pathname, testCase.safe).payload,
@@ -122,6 +133,7 @@ for (const testCase of cases) {
     }));
   });
 
+  // 위험 요청이 모델의 비결정적 판단에 도달하기 전에 차단되는지 검증한다.
   test(`${testCase.name}: 위험 요청은 모델 호출 전에 DENY한다`, async function () {
     const variant = makeVariant(
       testCase.category,

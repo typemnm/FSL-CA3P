@@ -1,5 +1,11 @@
 'use strict';
 
+/**
+ * sLLM 모듈의 단위 테스트와 mock 통합 테스트다.
+ * 실제 Ollama를 호출하지 않고 입력 정규화, prompt 구성, 모델 출력 검증,
+ * 구조화 evidence 비교, fail-closed 동작을 빠르고 결정적으로 확인한다.
+ */
+
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { buildSllmInput } = require('../src/payload-input');
@@ -26,6 +32,8 @@ function makeSamplePayload() {
   };
 }
 
+// 모든 코드 기반 범위 검사를 통과하는 기본 승인 context를 만든다.
+// 개별 테스트는 복사한 객체의 필요한 값만 바꿔 실패 조건을 만든다.
 function makeTestContext() {
   return {
     targetSite: '대한대학교',
@@ -61,6 +69,7 @@ function makeTestContext() {
   };
 }
 
+// 실제 모델이 반환해야 하는 고정 출력 스키마를 테스트용으로 생성한다.
 function makeModelOutput(verdict) {
   let checkValue = true;
 
@@ -92,6 +101,7 @@ function makeModelOutput(verdict) {
   };
 }
 
+// fetch 의존성을 주입할 수 있는 설계를 이용해 Ollama 응답을 메모리에서 재현한다.
 function makeFakeFetch(modelOutput) {
   return async function () {
     return {
@@ -124,6 +134,8 @@ test('1. 수신 페이로드를 sLLM 입력 JSON으로 구성한다', function (
   assert.equal(sllmInput.scopeChecks.networkAllowed, true);
 });
 
+// 아래 테스트들은 모델 자체의 품질이 아니라 애플리케이션 경계에서의
+// 입력·출력 계약과 최종 allowExecution 계산을 검증한다.
 test('2. 사용자가 정한 일곱 가지 판단 기준을 prompt에 넣는다', function () {
   const prompt = buildJudgmentPrompt();
 

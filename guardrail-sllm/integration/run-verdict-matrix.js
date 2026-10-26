@@ -1,5 +1,11 @@
 'use strict';
 
+/**
+ * 로컬 Ollama를 대상으로 핵심 판정 흐름을 검증하는 소규모 통합 테스트다.
+ * IN_SCOPE, 결정론적 DENY, UNCERTAIN, fixture 불일치, 기존 가드레일 DENY,
+ * 연결 오류를 순서대로 확인한다. 실제 대상 서버로 요청을 실행하지 않는다.
+ */
+
 const path = require('node:path');
 
 const DEFAULT_MODULE_DIRECTORY = path.resolve(__dirname, '..', 'src');
@@ -10,6 +16,7 @@ const model = process.env.SLLM_MODEL || 'gemma4:e2b';
 const endpoint = process.env.SLLM_ENDPOINT || 'http://127.0.0.1:11434';
 const timeoutMs = Number(process.env.SLLM_TIMEOUT_MS || 120000);
 
+// 공통 승인 범위를 만든 뒤 케이스별 overrides로 필요한 항목만 바꾼다.
 function makeContext(overrides = {}) {
   return {
     targetSite: 'vul-web-1',
@@ -136,6 +143,7 @@ const cases = [
   },
 ];
 
+// 한 케이스를 모델에 전달하고 기대 verdict와 실행 허용값을 함께 비교한다.
 async function runCase(testCase) {
   const startedAt = Date.now();
   const result = await checkPayloadWithSllm(testCase.payload, testCase.context, {
@@ -161,6 +169,7 @@ async function runCase(testCase) {
 
 async function main() {
   const results = [];
+  // 로컬 소형 모델의 메모리 경합을 줄이고 결과를 읽기 쉽게 하기 위해 순차 실행한다.
   for (const testCase of cases) {
     process.stdout.write(`\n[RUN] ${testCase.name}\n`);
     const result = await runCase(testCase);
@@ -168,6 +177,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   }
 
+  // 사용하지 않는 로컬 포트로 연결하여 연결 실패가 fail-closed되는지 확인한다.
   const errorResult = await checkPayloadWithSllm(cases[0].payload, cases[0].context, {
     endpoint: 'http://127.0.0.1:1',
     model,
@@ -181,6 +191,7 @@ async function main() {
     passed: errorPassed,
   });
 
+  // 하나라도 기대 결과와 다르면 CI/터미널에서 실패를 식별할 수 있게 exitCode를 1로 둔다.
   const passedCount = results.filter(result => result.passed).length;
   process.stdout.write(`\n[SUMMARY] ${passedCount}/${results.length} passed\n`);
   process.exitCode = passedCount === results.length ? 0 : 1;
