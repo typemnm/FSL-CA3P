@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const UPDATER_LABEL = 'kr.or.casper.ca3p.device-deploy';
-const CONTROLLER_FILES = ['device-deploy.mjs', 'device-deploy-verification.mjs', 'device-db.py', 'device-fixtures.mjs'];
+const CONTROLLER_FILES = ['device-deploy.mjs', 'device-deploy-verification.mjs', 'device-deploy-events.mjs', 'device-db.py', 'device-fixtures.mjs'];
 const PATH_KEYS = ['repoDir', 'deployRoot', 'runtimeDir', 'caseDbPath', 'legacyReportsDir',
   'nodePath', 'pythonPath', 'npmCli', 'servicePlistPath', 'credentialFile'];
 

@@ -47,6 +47,7 @@ hydrateIcons();
 const STORAGE = 'ca3p.loop.core.sessions.v1';
 const SETTINGS = 'ca3p.loop.settings.v1';
 const EXPERIMENT_EPOCH = 'ca3p.loop.experiment.epoch.v1';
+const OPERATIONS_READ = 'ca3p.operations.read.v1';
 function readJSON(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
 function isObject(value) { return value && typeof value === 'object' && !Array.isArray(value); }
 const EVENT_CHANNELS = {
@@ -124,6 +125,16 @@ let platform = null;
 let ciResults = null;
 let ciError = '';
 let ciRefreshPending = false;
+let operations = null;
+let operationsError = '';
+let operationsGeneration = 0;
+let operationsTimer = null;
+let operationsPending = null;
+let operationsController = null;
+let operationsInitialized = false;
+const savedOperationsRead = readJSON(OPERATIONS_READ, []);
+const operationReadIds = new Set((Array.isArray(savedOperationsRead) ? savedOperationsRead : []).filter(value => typeof value === 'string').slice(-200));
+let knownOperationIds = new Set();
 let comparison = null;
 let comparisonPending = false;
 let platformError = '';
@@ -201,6 +212,7 @@ const viewMeta = {
   compare: ['실행 비교', 'Inspect the <span>difference.</span>', '코드·모델·입력 조건과 결과 차이를 함께 확인하세요.'],
   ci: ['통합 테스트', 'Verify the <span>merge.</span>', 'develop 전체 모듈 테스트와 이전 병합 결과를 비교하세요.'],
   platform: ['통합 상태', 'Build. Verify. <span>Integrate.</span>', '모듈 버전과 검증 상태, 실행 계층을 확인하세요.'],
+  operations: ['배포 알림', 'Merge. Verify. <span>Deliver.</span>', 'develop CI와 Mac mini 최신 버전 적용 상태를 확인하세요.'],
   modules: ['모듈 탐색', 'Inside the <span>loop.</span>', '각 모듈이 주고받는 데이터와 상태를 확인하세요.'],
   reports: ['리포트', 'From signals to <span>insight.</span>', '코어 실행 리포트와 모드별 검토 항목을 확인하세요.'],
 };
@@ -290,6 +302,7 @@ function navigate(view) {
   $('page-subtitle').textContent = viewMeta[view][2];
   $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded', 'false');
   if (location.hash !== `#${view}`) historyReplace(view);
+  if (view === 'operations') { markOperationsRead(); void refreshOperations(); }
   render();
 }
 function historyReplace(view) { window.history.replaceState(null, '', `#${view}`); }
@@ -489,7 +502,135 @@ function renderReports() {
   if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
 }
 function renderNotifications() {
+  renderOperationNotifications();
   $('notification-list').innerHTML = currentRun().events.slice(-3).reverse().map((event) => `<div class="notification-event">${escape(event.title)}<small>${escape(moduleById(event.module).name)} · ${escape(timeLabel(event.time))}</small></div>`).join('') || '<div class="notification-event">아직 이벤트가 없습니다.</div>';
+}
+const deploymentLabels = { checking: 'develop 변경 확인 중', 'waiting-ci': 'CI 검증 완료 대기', verified: 'CI 검증 완료',
+  preparing: '장치 적용 준비 중', prepared: '장치 적용 준비 완료', deferred: '적용 보류 · 재시도 대기', superseded: '더 최신 develop 대기',
+  deploying: '장치에 적용 중', deployed: '최신 버전 적용 완료', 'up-to-date': '최신 검증 버전 실행 중', blocked: '운영자 확인 필요',
+  failed: '배포 실패 · 이전 버전 유지', 'recovery-required': '복구 필요 · 쓰기 차단', unavailable: '장치 상태 조회 불가', unknown: '장치 상태 미확인' };
+const operationCiLabels = { passed: '전체 CI 성공', failed: 'CI 실패', running: 'CI 진행 중', incomplete: 'CI 결과 확인 필요' };
+const phaseLabels = { 'ci-verification': 'CI 검증', dependencies: '의존성 준비', 'isolated-smoke': '격리 기동 검증', fixtures: '실습 이미지 준비', 'backup-and-migrate': '백업과 DB 이전' };
+const operationDate = value => value && Number.isFinite(Date.parse(value)) ? dateLabel(value) : '미확인';
+const operationSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/i.test(value) ? value : null;
+const operationCount = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : '—';
+function operationLink(value) {
+  return typeof value === 'string' && /^https:\/\/github\.com\/typemnm\/FSL-CA3P\/actions\/runs\/[1-9]\d*$/.test(value) ? value : null;
+}
+function operationEvents() {
+  return (Array.isArray(operations?.events) ? operations.events : []).filter(event => event && typeof event.id === 'string'
+    && event.id.length <= 200 && ['deployment', 'ci'].includes(event.kind)).slice(0, 100);
+}
+function unreadOperations() { return operationEvents().filter(event => !operationReadIds.has(event.id)); }
+function renderOperationsBadge() {
+  const count = unreadOperations().length;
+  $('operations-count').textContent = String(count);
+  $('operations-bell-count').textContent = String(count);
+  $('operations-bell-count').hidden = count === 0;
+  $('operations-unread-dot').hidden = count === 0;
+  $('notifications-button').setAttribute('aria-label', count ? `읽지 않은 배포 알림 ${count}개와 최근 이벤트 보기` : '배포 알림과 최근 이벤트 보기');
+}
+function markOperationsRead() {
+  for (const event of operationEvents()) operationReadIds.add(event.id);
+  const recent = [...operationReadIds].slice(-200);
+  operationReadIds.clear(); recent.forEach(id => operationReadIds.add(id));
+  try { localStorage.setItem(OPERATIONS_READ, JSON.stringify(recent)); } catch { /* Reading remains available without browser persistence. */ }
+  renderOperationsBadge();
+}
+function operationEventMarkup(event, compact = false) {
+  const severity = ['info', 'success', 'warning', 'error'].includes(event.severity) ? event.severity : 'info';
+  const link = operationLink(event.runUrl);
+  const sha = operationSha(event.targetSha);
+  return `<article class="operation-event operation-${severity}${compact ? ' operation-compact' : ''}"><span class="operation-indicator" aria-hidden="true"></span><div><div class="operation-event-meta"><span>${event.kind === 'ci' ? 'GITHUB CI' : 'MAC MINI'}</span><time>${escape(operationDate(event.at))}</time></div><strong>${escape(event.title || deploymentLabels[event.status] || operationCiLabels[event.status] || '상태 변경')}</strong>${event.message ? `<p>${escape(event.message)}</p>` : ''}<div class="operation-event-footer">${sha ? `<span class="mono" title="${escape(sha)}">${escape(sha.slice(0, 12))}</span>` : ''}${phaseLabels[event.phase] ? `<span>${escape(phaseLabels[event.phase])}</span>` : ''}${event.retryAt ? `<span>재시도 ${escape(operationDate(event.retryAt))}</span>` : ''}${link ? `<a href="${escape(link)}" target="_blank" rel="noopener noreferrer">Actions에서 보기 ↗</a>` : ''}</div></div></article>`;
+}
+function renderOperationNotifications() {
+  const events = operationEvents();
+  $('operation-notification-list').innerHTML = events.slice(0, 3).map(event => operationEventMarkup(event, true)).join('')
+    || `<p class="operation-empty">${operationsError ? '배포 상태를 다시 확인해 주세요.' : operations ? '기록된 배포 알림이 없습니다.' : '배포 상태를 확인하고 있습니다.'}</p>`;
+  renderOperationsBadge();
+}
+function renderOperations() {
+  renderOperationNotifications();
+  const source = $('operations-source');
+  const content = $('operations-content');
+  if (!operations) {
+    source.textContent = operationsError || '배포 상태 조회 중';
+    content.innerHTML = `<section class="panel empty-state"><h3>${operationsError ? '배포 상태를 조회할 수 없습니다.' : '배포 상태 조회 중'}</h3><p>${operationsError ? '연결이 복구되면 자동으로 다시 조회합니다. 새로고침으로 바로 확인할 수도 있습니다.' : 'Mac mini 상태와 GitHub CI 결과를 기다리고 있습니다.'}</p></section>`;
+    return;
+  }
+  const device = operations.deployment ?? {};
+  const ci = operations.ci ?? {};
+  const freshness = operations.freshness ?? {};
+  const runningSha = operationSha(operations.source?.runningSha);
+  const targetSha = operationSha(operations.source?.targetSha);
+  const matched = ci.matched && operationSha(ci.matched.commitSha) === targetSha ? ci.matched : null;
+  const stale = !!operationsError || ['stale', 'unknown'].includes(freshness.device) && device.enabled !== false || ['stale', 'unknown'].includes(freshness.ci);
+  source.textContent = `${operationsError ? '연결 오류 · 마지막 수신 상태 표시' : stale ? '일부 상태가 오래되었습니다.' : '20초마다 자동 확인'} · 수신 ${operationDate(operations.generatedAt)} · 장치 확인 ${operationDate(device.checkedAt)} · CI 수집 ${operationDate(ci.updatedAt)}`;
+  source.classList.toggle('operations-stale', stale);
+  const applied = operations.source?.applied === true;
+  const deviceTarget = operationSha(device.targetSha);
+  const awaitingDeviceTarget = device.enabled !== false && !!targetSha && deviceTarget !== targetSha;
+  const previousCompleted = !applied && ['deployed', 'up-to-date'].includes(device.status);
+  const awaitingApplication = awaitingDeviceTarget || previousCompleted;
+  const problem = !awaitingDeviceTarget && ['failed', 'blocked', 'recovery-required'].includes(device.status);
+  const currentHeading = device.enabled === false ? 'Mac mini 자동 배포 미설정'
+    : awaitingApplication ? '새 develop 검증·적용 대기' : problem ? deploymentLabels[device.status] : deploymentLabels[device.status] || '장치 상태 미확인';
+  const heading = stale && device.enabled !== false ? `마지막 기록 · ${currentHeading}` : currentHeading;
+  const ciLabel = matched ? operationCiLabels[matched.status] || 'CI 결과 확인 필요' : targetSha ? '대상 SHA의 CI 결과 대기' : '대상 develop SHA 미확인';
+  const ciLink = operationLink(matched?.runUrl);
+  const events = operationEvents();
+  content.innerHTML = `<section class="panel operations-overview"><div class="operations-current"><div><div class="eyebrow">CURRENT DELIVERY STATE</div><h2>${escape(heading)}</h2><p>${device.enabled === false ? '이 서버에는 updater 상태 파일이 연결되지 않았습니다. CI 결과와 장치 적용 여부는 별도로 확인해야 합니다.' : device.status === 'unavailable' ? '상태 파일을 읽을 수 없습니다. Mac mini updater와 설정을 확인하세요.' : 'CI 검증과 실제 실행 버전을 각각 확인하세요.'}</p></div><span class="operation-state ${problem ? 'operation-error' : applied && !stale ? 'operation-success' : 'operation-info'}">${escape(applied ? stale ? '마지막 확인 버전 일치' : '실행 버전 일치' : runningSha && targetSha ? '적용 대기 / 버전 다름' : '버전 확인 필요')}</span></div><div class="operations-revisions"><div><small>현재 실행 SHA</small><code>${escape(runningSha || '미기록')}</code></div><div><small>develop 대상 SHA${operations.source?.targetSource === 'ci' ? ' · CI 기준' : ''}</small><code>${escape(targetSha || '미확인')}</code></div></div><div class="operations-progress"><article><span>01 · GitHub CI</span><strong>${escape(ciLabel)}</strong>${matched ? `<small>${operationCount(matched.tests)}개 테스트 · 실패 ${operationCount(matched.failed)} · skip ${operationCount(matched.skipped)}</small>` : '<small>다른 SHA의 과거 성공을 현재 대상의 성공으로 표시하지 않습니다.</small>'}${ciLink ? `<a href="${escape(ciLink)}" target="_blank" rel="noopener noreferrer">대상 Actions 실행 ↗</a>` : ''}</article><article><span>02 · Mac mini 적용</span><strong>${escape(awaitingApplication ? '새 대상은 장치 확인 대기' : phaseLabels[device.phase] || deploymentLabels[device.status] || '상태 확인 필요')}${awaitingApplication ? `<small>이전 대상 상태 · ${escape(deploymentLabels[device.status] || '미확인')}${deviceTarget ? ` · ${escape(deviceTarget.slice(0, 12))}` : ''}</small>` : ''}</strong><small>최근 적용 ${escape(operationDate(device.deployedAt))}</small>${device.retryAt ? `<small>다음 재시도 ${escape(operationDate(device.retryAt))}</small>` : ''}</article></div>${stale ? '<p class="operations-warning" role="status">오래되거나 확인되지 않은 상태가 포함돼 있어 현재 완료 여부를 확정할 수 없습니다. 장치 및 CI의 마지막 확인 시각을 확인하세요.</p>' : ''}${device.enabled && (device.historyAvailable === false || device.historyAvailable === undefined && !device.events?.length) ? '<p class="operations-history-note">이전 updater는 현재 상태만 제공합니다. 새 controller를 설치하면 상태 변경 이력이 누적됩니다.</p>' : ''}</section><section class="panel operations-timeline"><div class="operations-timeline-heading"><div><h2>최근 배포 알림</h2><p>장치와 CI가 기록한 변화만 표시합니다. 실험 초기화로 지워지지 않습니다.</p></div><span>${events.length}개 기록</span></div>${events.map(event => operationEventMarkup(event)).join('') || '<p class="operation-empty">아직 기록된 변화가 없습니다. updater가 다음 상태를 기록하면 여기에 표시됩니다.</p>'}</section>`;
+}
+function operationsAuthorized() { return authSession && (!authSession.authRequired || authSession.authenticated); }
+function stopOperations(clear = false) {
+  operationsGeneration += 1;
+  operationsController?.abort(); operationsController = null;
+  clearTimeout(operationsTimer); operationsTimer = null; operationsPending = null;
+  if (clear) {
+    operations = null; operationsError = ''; operationsInitialized = false; knownOperationIds = new Set();
+    clearTimeout(toastTimer); $('toast').textContent = ''; $('toast').hidden = true;
+    $('operation-notification-list').textContent = ''; $('operations-content').textContent = '';
+    $('operations-source').textContent = '로그인 필요'; renderOperationsBadge();
+  }
+}
+function startOperations() {
+  stopOperations();
+  if (operationsAuthorized() && !document.hidden) void refreshOperations();
+}
+async function refreshOperations() {
+  if (!operationsAuthorized() || document.hidden || operationsPending !== null) return;
+  clearTimeout(operationsTimer);
+  const cycle = operationsGeneration;
+  const controller = new AbortController(); operationsController = controller;
+  const deadline = setTimeout(() => controller.abort(), 12_000);
+  operationsPending = cycle;
+  $('refresh-operations').disabled = true;
+  try {
+    const payload = await runtime.getOperations({ signal: controller.signal });
+    if (cycle !== operationsGeneration || !operationsAuthorized() || document.hidden) return;
+    if (!payload || payload.schemaVersion !== '1.0' || !Array.isArray(payload.events)) throw new Error('배포 상태 응답 형식을 확인할 수 없습니다.');
+    operations = payload; operationsError = '';
+    const events = operationEvents();
+    const newest = events.find(event => !knownOperationIds.has(event.id) && ['success', 'error', 'warning'].includes(event.severity));
+    if (operationsInitialized && newest && activeView !== 'operations') notify(`배포 알림 · ${newest.title || '상태가 변경되었습니다.'}`);
+    for (const event of events) knownOperationIds.add(event.id);
+    knownOperationIds = new Set([...knownOperationIds].slice(-200)); operationsInitialized = true;
+    if (activeView === 'operations') markOperationsRead();
+    renderOperationNotifications();
+    if (activeView === 'operations') renderOperations();
+  } catch (error) {
+    if (cycle !== operationsGeneration || !operationsAuthorized()) return;
+    operationsError = error.message;
+    if (activeView === 'operations') renderOperations();
+    if (!$('notification-popover').hidden) renderOperationNotifications();
+  } finally {
+    clearTimeout(deadline);
+    if (cycle === operationsGeneration) {
+      operationsController = null;
+      operationsPending = null; $('refresh-operations').disabled = false;
+      if (operationsAuthorized() && !document.hidden) operationsTimer = setTimeout(() => void refreshOperations(), 20_000);
+    }
+  }
 }
 function render() {
   $('history-count').textContent = history.length;
@@ -501,6 +642,7 @@ function render() {
   if (activeView === 'compare') renderComparison();
   if (activeView === 'ci') renderCiResults();
   if (activeView === 'platform') renderPlatform();
+  if (activeView === 'operations') renderOperations();
   if (!$('notification-popover').hidden) renderNotifications();
   updateStars();
 }
@@ -644,6 +786,19 @@ $('scroll-setting').addEventListener('change', (event) => setAutoScroll(event.ta
 $('speed-setting').addEventListener('change', (event) => { settings.speed = Number(event.target.value); persistSettings(); });
 $('settings-dialog').addEventListener('click', (event) => { if (event.target === $('settings-dialog')) { const rect = $('settings-dialog').getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) $('settings-dialog').close(); } });
 $('notifications-button').addEventListener('click', () => { $('notification-popover').hidden = !$('notification-popover').hidden; $('notifications-button').setAttribute('aria-expanded', String(!$('notification-popover').hidden)); renderNotifications(); });
+$('open-operations').addEventListener('click', () => {
+  $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded', 'false'); navigate('operations');
+});
+$('refresh-operations').addEventListener('click', () => void refreshOperations());
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopOperations(); else startOperations(); });
+window.addEventListener('storage', event => {
+  if (event.key !== OPERATIONS_READ) return;
+  let ids;
+  try { ids = JSON.parse(event.newValue); } catch { return; }
+  if (!Array.isArray(ids)) return;
+  operationReadIds.clear(); ids.filter(id => typeof id === 'string').slice(-200).forEach(id => operationReadIds.add(id));
+  renderOperationsBadge();
+});
 $('menu-button').addEventListener('click', () => { $('sidebar').classList.toggle('open'); $('menu-button').setAttribute('aria-expanded', String($('sidebar').classList.contains('open'))); });
 document.addEventListener('click', (event) => { if (!event.target.closest('#notification-popover') && !event.target.closest('#notifications-button')) { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); } if (innerWidth <= 760 && !event.target.closest('#sidebar') && !event.target.closest('#menu-button')) { $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
 document.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); navigate('dashboard'); $('target-url').focus(); $('target-url').select(); } if (event.key === 'Escape') { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
@@ -675,6 +830,7 @@ function renderHistoryChecks() {
   panel.innerHTML = historyCheckMarkup(item); panel.hidden = !item.historyWrite;
 }
 function requireLogin() {
+  stopOperations(true);
   workspaceGeneration += 1;
   pendingModelChange = null; acceptedModelId = '';
   $('model-reset-dialog').close();
@@ -704,6 +860,7 @@ function acceptSession(value) {
   if (value.authRequired && !value.authenticated) { requireLogin(); return; }
   $('login-dialog').close(); $('login-error').hidden = true;
   void loadWorkspace();
+  startOperations();
 }
 async function loadWorkspace() {
   const generation = workspaceGeneration;
@@ -1020,7 +1177,7 @@ $('login-form').addEventListener('submit', async event => {
   finally { $('login-submit').disabled = false; }
 });
 $('logout-button').addEventListener('click', async () => { try { await runtime.logout(); } catch (error) { showRuntimeError(error.message); } });
-window.addEventListener('beforeunload', () => { saveRun(); runtime.close(); });
+window.addEventListener('beforeunload', () => { stopOperations(); saveRun(); runtime.close(); });
 $('target-url').value = '';
 $('autoscroll-button').setAttribute('aria-pressed', String(settings.autoScroll));
 navigate(location.hash.slice(1) || 'dashboard');

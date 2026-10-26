@@ -70,7 +70,7 @@ test('no-start stages controller and plists without restarting dashboard and kee
   for (const path of [old, scripts, agents]) await mkdir(path);
   await writeFile(join(old, 'start.mjs'), '');
   await writeFile(join(directory, 'npm-cli.js'), ''); await writeFile(join(directory, 'credential.json'), '{}');
-  for (const filename of ['device-deploy.mjs', 'device-deploy-verification.mjs', 'device-db.py', 'device-fixtures.mjs']) await writeFile(join(scripts, filename), filename);
+  for (const filename of ['device-deploy.mjs', 'device-deploy-verification.mjs', 'device-deploy-events.mjs', 'device-db.py', 'device-fixtures.mjs']) await writeFile(join(scripts, filename), filename);
   const fixtureConfig = { ...config, deployRoot: join(directory, 'deployment'), runtimeDir: join(directory, 'runtime'),
     nodePath: process.execPath, pythonPath: '/usr/bin/python3', servicePlistPath: join(agents, 'dashboard.plist'),
     npmCli: join(directory, 'npm-cli.js'), credentialFile: join(directory, 'credential.json') };
@@ -85,6 +85,7 @@ test('no-start stages controller and plists without restarting dashboard and kee
   assert.equal((await stat(configPath)).mode & 0o777, 0o600);
   assert.equal((await stat(join(fixtureConfig.deployRoot, 'controller'))).mode & 0o777, 0o700);
   assert.equal(await readFile(join(fixtureConfig.deployRoot, 'controller/device-deploy.mjs'), 'utf8'), 'device-deploy.mjs');
+  assert.equal(await readFile(join(fixtureConfig.deployRoot, 'controller/device-deploy-events.mjs'), 'utf8'), 'device-deploy-events.mjs');
   const installedPlist = JSON.parse(execFileSync(fixtureConfig.pythonPath, ['-c', 'import json,plistlib,sys;json.dump(plistlib.load(open(sys.argv[1],"rb")),sys.stdout)', fixtureConfig.servicePlistPath], { encoding: 'utf8' }));
   assert.equal(installedPlist.EnvironmentVariables.DASHBOARD_AUTH_FILE, '/keep/auth.json');
   assert.equal(installedPlist.KeepAlive, true);

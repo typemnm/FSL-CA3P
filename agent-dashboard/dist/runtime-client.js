@@ -25,7 +25,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     clearTimeout(timer); timer = null;
   }
 
-  async function request(path, body) {
+  async function request(path, body, { signal } = {}) {
     const headers = { Accept: 'application/json' };
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -35,6 +35,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       method: body === undefined ? 'GET' : 'POST', headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       credentials: 'same-origin', cache: 'no-store',
+      ...(signal ? { signal } : {}),
     });
     let payload;
     try { payload = await response.json(); }
@@ -162,6 +163,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     getModels() { return request('/api/models'); },
     getPlatform() { return request('/api/platform'); },
     getCiResults() { return request('/api/ci-results'); },
+    getOperations({ signal } = {}) { return request('/api/operations', undefined, { signal }); },
     reviewCheck(runId, checkId, note) { return request(`/api/runs/${encodeURIComponent(runId)}/reviews/${encodeURIComponent(checkId)}`, { note }); },
     compare(baseline, candidate, kind = 'code') { return request(`/api/comparisons?${new URLSearchParams({ baseline, candidate, kind })}`); },
     close() { closed = true; disconnect(); },

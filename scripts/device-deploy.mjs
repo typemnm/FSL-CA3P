@@ -7,6 +7,7 @@ import { isIP } from 'node:net';
 import { request as httpRequest } from 'node:http';
 import { selectVerifiedRelease, verifyWorkflowRun } from './device-deploy-verification.mjs';
 import { prepareFixtures, stopFixtures, backupFixtures, activateFixtures, restoreFixtures, rollbackFixtures } from './device-fixtures.mjs';
+import { appendDeploymentEvent } from './device-deploy-events.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const stamp = () => new Date().toISOString();
@@ -112,6 +113,8 @@ export async function deploymentTransaction({ stop, backup, migrate, activate, s
         await rollback();
         await start();
         await verifyRollback();
+        // Observability must never replace a deployment failure or change recovery.
+        try { error.rollbackComplete = true; } catch { /* Frozen errors keep their original identity. */ }
       } catch (recovery) {
         const failed = new Error(`Deployment failed; automatic recovery also failed: ${recovery.message}`);
         failed.recoveryFailed = true; failed.cause = error; throw failed;
@@ -204,7 +207,7 @@ async function recoverTransaction(config, journal, update) {
     await replaceLink(join(config.deployRoot, 'current'), journal.previous);
     await control.start();
     await checkApplication(`http://${config.host}:${config.port}`, await readCredentials(config), journal.previousSha);
-    await update('failed', { deployedSha: journal.previousSha, failedSha: journal.targetSha, phase: null,
+    await update('failed', { deployedSha: journal.previousSha, failedSha: journal.targetSha, phase: null, reasonCode: 'rollback-complete',
       message: 'An interrupted deployment was rolled back before accepting writes.' });
     await rm(join(config.deployRoot, 'transaction.json'), { force: true });
     await rm(join(config.deployRoot, 'maintenance.json'), { force: true });
@@ -401,7 +404,11 @@ export async function deploy(config, { retry = false, checkOnly = false, prepare
   const statusPath = join(config.deployRoot, 'status.json');
   const previousState = await readJson(statusPath, {});
   let state = { ...previousState, checkedAt: stamp() };
-  const update = async (status, extra = {}) => { state = { ...state, status, ...extra, updatedAt: stamp() }; await atomicJson(statusPath, state); };
+  const update = async (status, extra = {}) => {
+    const next = { ...state, status, reasonCode: null, ...extra, updatedAt: stamp() };
+    next.events = appendDeploymentEvent(state, next);
+    state = next; await atomicJson(statusPath, state);
+  };
   let maintenance = false; let cuttingOver = false;
   try {
     const journalPath = join(config.deployRoot, 'transaction.json');
@@ -421,17 +428,18 @@ export async function deploy(config, { retry = false, checkOnly = false, prepare
     const selection = selectVerifiedRelease({ headSha, index, repository: config.repository });
     const current = await readlink(join(config.deployRoot, 'current'));
     const currentSha = await execute('/usr/bin/git', ['rev-parse', 'HEAD'], { cwd: current });
-    await update('checking', { deployedSha: currentSha, targetSha: headSha, phase: 'ci-verification' });
-    if (selection.status !== 'verified') { await update('waiting-ci', { message: selection.reason }); return state; }
+    await update('checking', { deployedSha: currentSha, targetSha: headSha, phase: 'ci-verification',
+      runId: selection.status === 'verified' ? selection.candidate.runId : null });
+    if (selection.status !== 'verified') { await update('waiting-ci', { reasonCode: 'ci-summary-pending', message: selection.reason }); return state; }
     if (currentSha === selection.candidate.sha && !checkOnly) {
       await update('up-to-date', { phase: null, error: null, failedSha: null, lastFailedTargetSha: null, failedAt: null, retryAt: null,
         message: 'Verified develop is already deployed.' }); return state;
     }
     if (Number.isFinite(Date.parse(state.retryAt)) && Date.parse(state.retryAt) > Date.now()) {
-      await update('waiting-ci', { phase: 'ci-verification', error: null, message: 'Waiting for the GitHub API rate limit to reset before verifying CI.' }); return state;
+      await update('waiting-ci', { phase: 'ci-verification', error: null, reasonCode: 'github-rate-limit', message: 'Waiting for the GitHub API rate limit to reset before verifying CI.' }); return state;
     }
     if (!retry && previousState.lastFailedTargetSha === headSha && Date.now() - Date.parse(previousState.failedAt) < 600_000) {
-      await update('deferred', { phase: null, message: 'Deployment retry is backing off after a device error.' }); return state;
+      await update('deferred', { phase: null, reasonCode: 'retry-backoff', message: 'Deployment retry is backing off after a device error.' }); return state;
     }
     const candidate = await verifyWorkflowRun(selection.candidate, { repository: config.repository });
     state.retryAt = null;
@@ -501,12 +509,15 @@ export async function deploy(config, { retry = false, checkOnly = false, prepare
   } catch (error) {
     if (!cuttingOver && ['CI_PENDING', 'GITHUB_RATE_LIMITED'].includes(error.code)) {
       await update('waiting-ci', { phase: 'ci-verification', error: null, lastFailedTargetSha: null, failedAt: null,
+        reasonCode: error.code === 'GITHUB_RATE_LIMITED' ? 'github-rate-limit' : 'ci-running',
+        ...(error.code === 'CI_PENDING' ? { runId: error.runId } : {}),
         retryAt: error.code === 'GITHUB_RATE_LIMITED' ? error.retryAt : null,
         message: error.code === 'CI_PENDING' ? 'The current develop workflow is still running; deployment will wait.' : 'GitHub API rate limit reached; deployment will retry after its reset.' });
       return state;
     }
     if (!error.recoveryFailed && cuttingOver) await rm(join(config.deployRoot, 'transaction.json'), { force: true });
     await update(error.recoveryFailed ? 'recovery-required' : 'failed', { phase: null,
+      reasonCode: error.recoveryFailed ? 'recovery-required' : error.rollbackComplete ? 'rollback-complete' : 'deployment-failed',
       ...(cuttingOver ? { failedSha: state.targetSha } : {}), error: error.message,
       lastFailedTargetSha: state.targetSha, failedAt: stamp(),
       message: error.recoveryFailed ? 'Automatic recovery needs operator attention; writes remain paused.' : 'Deployment stopped; the previous release remains active.' });

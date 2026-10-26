@@ -27,7 +27,7 @@ test('deployment status exposes only verified public metadata and constructs its
   assert.deepEqual(output, { enabled: true, status: 'deployed', deployedSha: value.deployedSha,
     targetSha: value.targetSha, previousSha: value.previousSha, checkedAt: value.checkedAt,
     deployedAt: value.deployedAt, updatedAt: value.updatedAt, retryAt: value.retryAt, phase: value.phase,
-    runUrl: 'https://github.com/typemnm/FSL-CA3P/actions/runs/40209727623' });
+    runUrl: 'https://github.com/typemnm/FSL-CA3P/actions/runs/40209727623', reasonCode: null, historyAvailable: false, events: [] });
   assert.doesNotMatch(JSON.stringify(output), /secret|\/private|untrusted\.example/);
   await writeFile(path, JSON.stringify({ ...value, status: 'prepared' }));
   assert.equal((await deploymentStatus(path)).status, 'prepared');
@@ -46,7 +46,29 @@ test('deployment status sanitizes invalid metadata and handles missing or malfor
     checkedAt: '/private/secret', deployedAt: 'invalid-date', updatedAt: {}, runId: '1?token=secret',
     runUrl: 'https://untrusted.example/secret' }));
   assert.deepEqual(await deploymentStatus(path), { enabled: true, status: 'unknown', deployedSha: null,
-    targetSha: null, previousSha: null, checkedAt: null, deployedAt: null, updatedAt: null, retryAt: null, phase: null, runUrl: null });
+    targetSha: null, previousSha: null, checkedAt: null, deployedAt: null, updatedAt: null, retryAt: null, phase: null, runUrl: null,
+    reasonCode: null, historyAvailable: false, events: [] });
+});
+
+test('deployment timeline is bounded, deduplicated and contains no private failure data', async t => {
+  const directory = await temporary(t), path = join(directory, 'status.json');
+  const event = { id: 'event-one', at: '2026-10-26T10:00:00Z', status: 'failed', phase: 'fixtures',
+    targetSha: 'a'.repeat(40), runId: '123', reasonCode: 'rollback-complete',
+    error: '/private/key.secret', message: 'secret', runUrl: 'https://untrusted.example/' };
+  await writeFile(path, JSON.stringify({ status: 'failed', reasonCode: 'rollback-complete',
+    events: [event, event, { ...event, id: '<script>' }, { ...event, id: 'bad-status', status: 'private-error' }] }));
+  const result = await deploymentStatus(path);
+  assert.equal(result.historyAvailable, true); assert.equal(result.events.length, 1);
+  assert.equal(result.events[0].runUrl, 'https://github.com/typemnm/FSL-CA3P/actions/runs/123');
+  assert.equal(result.events[0].reasonCode, 'rollback-complete');
+  assert.doesNotMatch(JSON.stringify(result), /secret|untrusted|private|script/);
+  await writeFile(path, JSON.stringify({ status: 'deployed', checkedAt: 'Mon Oct 26 2026 12:00:00 GMT (private-secret)',
+    events: [{ ...event, at: 'Mon Oct 26 2026 12:00:00 GMT (private-secret)' }] }));
+  const invalidDate = await deploymentStatus(path);
+  assert.equal(invalidDate.checkedAt, null); assert.deepEqual(invalidDate.events, []);
+  assert.doesNotMatch(JSON.stringify(invalidDate), /private-secret/);
+  await writeFile(path, JSON.stringify({ status: 'deployed', events: Array.from({ length: 150 }, (_, i) => ({ ...event, id: `e-${i}` })) }));
+  assert.equal((await deploymentStatus(path)).events.length, 100);
 });
 
 test('maintenance detection treats an existing marker as paused and fails closed on lookup errors', async t => {
