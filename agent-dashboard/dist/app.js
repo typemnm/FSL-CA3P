@@ -815,6 +815,14 @@ function renderPlatform() {
   const source = platform.source || {};
   const modules = Array.isArray(platform.modules) ? platform.modules : Object.entries(platform.modules || {}).map(([name, value]) => ({ name, ...value }));
   $('platform-content').innerHTML = `<section class="panel platform-source"><div class="eyebrow">INTEGRATION PLATFORM</div><h2>${escape(source.branch || source.ref || '현재 통합 소스')}</h2><p class="mono">${escape(source.commitSha || source.commit || source.sha || 'SHA 미기록')}</p><p>${escape(source.dirty ? '작업 디렉터리에 변경 사항이 있습니다.' : '서버가 보고한 소스 버전과 모듈 정보를 표시합니다.')}</p><p>이 화면의 검증 파일은 서버 체크아웃에서 생성된 값입니다. develop 병합 커밋의 전체 모듈 검증은 ‘통합 테스트’에서 확인하세요.</p></section><div class="module-grid platform-modules">${modules.map(item => `<article class="panel module-card"><span class="local-chip">${escape(item.status || item.layer || 'MODULE')}</span><h2>${escape(item.name || item.id || 'module')}</h2><p>${escape(item.description || item.role || item.path || '')}</p><small>${escape(item.layer || '')}${item.sourceBranch ? ` · ${escape(item.sourceBranch)}` : ''}</small><p class="mono">${escape(item.version || item.packageVersion || item.hash || item.contentDigest || item.sha || '버전 미기록')}</p>${item.changed !== undefined ? `<small>${item.changed ? '기준 대비 변경됨' : '기준과 동일'}</small>` : ''}</article>`).join('')}</div>${jsonSection('현재 서버 체크아웃의 로컬 검증 파일', platform.tests || platform.validation || {})}${jsonSection('계층 및 모듈 연결', platform.architecture || {})}${jsonSection('소스 및 변경 모듈 상세', source)}`;
+  const deployment = platform.deployment;
+  if (deployment?.enabled) {
+    const labels = { checking: '새 버전 확인 중', verified: 'develop CI 검증 완료', 'waiting-ci': '전체 CI 검증 대기', 'up-to-date': '최신 검증 버전 실행 중',
+      preparing: '새 버전 준비 중', prepared: '배포 전 검증 완료', deferred: '배포 재시도 대기', superseded: '더 최신 버전 확인 중', deploying: '배포 적용 중',
+      deployed: '자동 배포 완료', blocked: '배포 재시도에 운영자 확인 필요', failed: '배포 실패 · 이전 버전 유지',
+      'recovery-required': '서비스 복구에 운영자 확인 필요', unavailable: '자동 배포 상태 확인 불가' };
+    $('platform-content').insertAdjacentHTML('afterbegin', `<section class="panel platform-source"><div class="eyebrow">DEVICE DEPLOYMENT</div><h2>${escape(labels[deployment.status] || '자동 배포 상태 확인 중')}</h2><p>실행 SHA <span class="mono">${escape(deployment.deployedSha || source.commitSha || '미기록')}</span></p><p>develop SHA <span class="mono">${escape(deployment.targetSha || '확인 중')}</span></p><small>최근 확인 ${escape(dateLabel(deployment.checkedAt))} · 최근 배포 ${escape(dateLabel(deployment.deployedAt))}</small>${deployment.runUrl ? `<p><a href="${escape(deployment.runUrl)}" target="_blank" rel="noopener noreferrer">배포 대상의 전체 CI 결과</a></p>` : ''}</section>`);
+  }
 }
 $('model-select').addEventListener('change', renderStats);
 document.addEventListener('input', event => { if (event.target.dataset.reviewNote) reviewDrafts.set(event.target.dataset.reviewNote, event.target.value); });
