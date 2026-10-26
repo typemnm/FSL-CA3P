@@ -73,7 +73,8 @@ test('describes pages and visible components in one small JSON structure', async
   });
   try {
     const report = await scan(url + '/?entry=secret-value', { maxPages: 2, waitMs: 120 });
-    assert.deepEqual(Object.keys(report), ['schemaVersion', 'startUrl', 'pages', 'summary']);
+    assert.deepEqual(Object.keys(report), ['schemaVersion', 'startUrl', 'pages', 'summary', 'moduleId', 'dependencies']);
+    assert.equal(report.moduleId, 'web-parser');
     assert.equal(report.schemaVersion, '3.4');
     assert.equal(report.summary.scope, 'visited-client-pages');
     assert.equal(report.summary.pages, 2);
@@ -257,7 +258,8 @@ test('maps the real vul-web-1 as page areas, forms, buttons, links, and outputs'
     const { stdout } = await promisify(execFile)(process.execPath,
       ['cli.mjs', '--url', url, '--max-pages', '1', '--hide-body'], { cwd: new URL('..', import.meta.url) });
     const hidden = JSON.parse(stdout);
-    assert.deepEqual(Object.keys(hidden), ['schemaVersion', 'startUrl', 'pages', 'summary']);
+    assert.deepEqual(Object.keys(hidden), ['schemaVersion', 'startUrl', 'pages', 'summary', 'moduleId', 'dependencies']);
+    assert.equal(hidden.moduleId, 'web-parser');
     assert.ok(hidden.pages[0].posts.every(post => post.body.preview === null));
     assert.deepEqual(hidden.pages[0].posts.map(post => post.id), ['3', '2', '1']);
   } finally {
