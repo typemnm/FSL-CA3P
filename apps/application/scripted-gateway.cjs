@@ -95,7 +95,7 @@ function createScriptedGateway({ failOn = null, beforePosts, afterPosts, history
       }
       return parserResponse(request);
     }
-    if (request.receiver === 'casper-db') {
+    if (request.receiver === 'casper-db' && request.type === 'module.request') {
       if (failOn === 'history_module_error') {
         return respond(request, 'casper-db', 'module.error', {
           error: { code: 'EXTERNAL_FAILURE', message: 'scripted history failure' },
@@ -107,24 +107,24 @@ function createScriptedGateway({ failOn = null, beforePosts, afterPosts, history
         evidenceId: evidenceId(),
       });
     }
-    if (request.receiver === 'pentest-db') {
+    if (request.type === 'storage.request' && ['casper-db', 'pentest-db'].includes(request.receiver)) {
       const { operation } = request.payload;
       if (operation === 'get_attack_info') {
-        return respond(request, 'pentest-db', 'storage.attack_info', {
+        return respond(request, request.receiver, 'storage.attack_info', {
           operation, attackInfo: { vulnType: 'stored_xss', cwe: 'CWE-79' },
           evidenceId: evidenceId(),
         });
       }
       if (operation === 'append') {
         events.push(request.payload.event);
-        return respond(request, 'pentest-db', 'storage.appended', {
+        return respond(request, request.receiver, 'storage.appended', {
           ok: true, eventType: request.payload.event.stage,
         });
       }
       if (operation === 'finalize') {
         if (failOn === 'finalize_transport') throw new Error('scripted finalize transport failure');
         finalReport = request.payload.report;
-        return respond(request, 'pentest-db', 'storage.finalized', {
+        return respond(request, request.receiver, 'storage.finalized', {
           ok: true, artifactRef: `memory://reports/${request.runId}`,
         });
       }

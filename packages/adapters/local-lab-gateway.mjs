@@ -9,9 +9,9 @@ import xssCanary from '../../agent/src/xss-canary.js';
 import attackModule from '../../attack-module/index.js';
 import { observeStoredXssExecution, parseLocalSite } from './integrations/xss-parser.mjs';
 import { createLocalGuardrail, GuardrailDeniedError } from './integrations/guardrail.mjs';
-import { matchCasperHistory } from './integrations/casper-db.mjs';
-import { createPentestDb } from './integrations/pentest-db.mjs';
+import { prepareParserKnowledge } from './integrations/casper-db.mjs';
 import { registerLabSession } from './lab-session-registry.mjs';
+import { createKnowledgeDb } from './integrations/knowledge-db.mjs';
 
 const { parseEnvelope, replyTo } = protocol;
 const { storedXssCanaryContent } = xssCanary;
@@ -165,8 +165,8 @@ function sessionCookie(raw) {
   return pair;
 }
 
-function createBolaGateway(origin, isClosed, { casperDatabasePath } = {}) {
-  const pentestDb = createPentestDb();
+function createBolaGateway(origin, isClosed, { casperDatabasePath, casperSourceDatabasePath, advisorySync } = {}) {
+  const knowledgeDb = createKnowledgeDb({ databasePath: casperDatabasePath });
   const cookies = { attacker: null, fixture: null };
   let step = 0;
   let canaryId = null;
@@ -194,12 +194,12 @@ function createBolaGateway(origin, isClosed, { casperDatabasePath } = {}) {
       }
       if (request.runId !== runId) throw new Error('The local lab gateway accepts one run only.');
 
-      if (request.receiver === 'pentest-db') {
+      if (request.type === 'storage.request' && ['casper-db', 'pentest-db'].includes(request.receiver)) {
         if (request.payload.operation === 'get_attack_info') {
           if (!historyRead || catalogRead) throw new Error('Pentest catalog lookup is outside the fixed sequence.');
           catalogRead = true;
         }
-        return pentestDb.exchange(serializedRequest, { signal });
+        return knowledgeDb.exchange(serializedRequest, { signal });
       }
 
       if (request.receiver === 'casper-db') {
@@ -209,7 +209,8 @@ function createBolaGateway(origin, isClosed, { casperDatabasePath } = {}) {
           || JSON.stringify(request.payload.parserReport) !== JSON.stringify(beforeReport)) {
           throw new Error('casper-db accepts only the observed parser report in this run.');
         }
-        const history = await matchCasperHistory({ report: beforeReport, origin, signal, databasePath: casperDatabasePath });
+        const history = await prepareParserKnowledge({ report: beforeReport, origin, signal,
+          databasePath: casperDatabasePath, sourceDatabasePath: casperSourceDatabasePath, sync: advisorySync });
         historyRead = true;
         return JSON.stringify(replyTo(request, 'casper-db', 'history.result', {
           operation: 'assess_xss_history',
@@ -218,6 +219,7 @@ function createBolaGateway(origin, isClosed, { casperDatabasePath } = {}) {
           assessments: history.assessments,
           targetId: history.targetId,
           referenceContext: history.referenceContext,
+          knowledgeContext: history.knowledgeContext,
           evidenceId: `casper-evidence-${randomUUID()}`,
         }));
       }
@@ -342,8 +344,8 @@ function assertXssAttackRequest(request, position, origin, runId) {
   return { ...expected, url, command, marker };
 }
 
-function createXssGateway(origin, isClosed, { casperDatabasePath } = {}) {
-  const pentestDb = createPentestDb();
+function createXssGateway(origin, isClosed, { casperDatabasePath, casperSourceDatabasePath, advisorySync } = {}) {
+  const knowledgeDb = createKnowledgeDb({ databasePath: casperDatabasePath });
   let runId = null;
   let guardrail = null;
   let attackerCookie = null;
@@ -371,7 +373,7 @@ function createXssGateway(origin, isClosed, { casperDatabasePath } = {}) {
     }
     if (request.runId !== runId) throw new Error('The local lab gateway accepts one run only.');
 
-    if (request.receiver === 'pentest-db') {
+    if (request.type === 'storage.request' && ['casper-db', 'pentest-db'].includes(request.receiver)) {
       if (request.payload.operation === 'get_attack_info') {
         if (step !== 2 || !historyRead || catalogRead
           || request.type !== 'storage.request'
@@ -386,7 +388,7 @@ function createXssGateway(origin, isClosed, { casperDatabasePath } = {}) {
       } else if (!['append', 'finalize'].includes(request.payload.operation)) {
         throw new Error('Unsupported XSS storage operation.');
       }
-      return pentestDb.exchange(serializedRequest, { signal });
+      return knowledgeDb.exchange(serializedRequest, { signal });
     }
 
     if (request.receiver === 'casper-db') {
@@ -397,7 +399,8 @@ function createXssGateway(origin, isClosed, { casperDatabasePath } = {}) {
         || JSON.stringify(request.payload.parserReport) !== JSON.stringify(beforeReport)) {
         throw new Error('casper-db accepts only the observed XSS parser report in this run.');
       }
-      const history = await matchCasperHistory({ report: beforeReport, origin, signal, databasePath: casperDatabasePath });
+      const history = await prepareParserKnowledge({ report: beforeReport, origin, signal,
+        databasePath: casperDatabasePath, sourceDatabasePath: casperSourceDatabasePath, sync: advisorySync });
       historyRead = true;
       return JSON.stringify(replyTo(request, 'casper-db', 'history.result', {
         operation: 'assess_xss_history',
@@ -406,6 +409,7 @@ function createXssGateway(origin, isClosed, { casperDatabasePath } = {}) {
         assessments: history.assessments,
         targetId: history.targetId,
         referenceContext: history.referenceContext,
+        knowledgeContext: history.knowledgeContext,
         evidenceId: `casper-evidence-${randomUUID()}`,
       }));
     }
@@ -522,7 +526,8 @@ function createXssGateway(origin, isClosed, { casperDatabasePath } = {}) {
   };
 }
 
-export async function startLocalLab({ profile = XSS_PROFILE, casperDatabasePath, safeMode = false, cleanupRegistryPath } = {}) {
+export async function startLocalLab({ profile = XSS_PROFILE, casperDatabasePath, casperSourceDatabasePath,
+  advisorySync, safeMode = false, cleanupRegistryPath } = {}) {
   if (profile !== XSS_PROFILE && profile !== BOLA_PROFILE) {
     throw new Error('Unsupported local lab profile.');
   }
@@ -556,8 +561,8 @@ export async function startLocalLab({ profile = XSS_PROFILE, casperDatabasePath,
       directory, pid: child.pid });
     let isClosed = false;
     const gateway = profile === XSS_PROFILE
-      ? createXssGateway(origin, () => isClosed, { casperDatabasePath })
-      : createBolaGateway(origin, () => isClosed, { casperDatabasePath });
+      ? createXssGateway(origin, () => isClosed, { casperDatabasePath, casperSourceDatabasePath, advisorySync })
+      : createBolaGateway(origin, () => isClosed, { casperDatabasePath, casperSourceDatabasePath, advisorySync });
     const close = () => {
       if (!closeTask) {
         isClosed = true;

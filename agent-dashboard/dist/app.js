@@ -156,7 +156,7 @@ const labModuleDescriptions = {
   casper: 'casper-db가 파서 관찰값을 과거 XSS 사례와 대조해 참고 정보를 반환합니다.',
   attack: 'attack-module이 허용된 curl JSON으로 무해한 XSS 시험 게시글 한 건을 전송하고 HTTP 결과를 반환합니다.',
   guardrail: 'guardrail이 로컬 대상, 고정 시험 본문과 요청 횟수를 전송 전에 검사합니다.',
-  pentest: 'pentest-db가 초안 공격 정보를 제공하고 이번 실행의 요청·응답·판정을 저장합니다.',
+  pentest: '통합 취약점 DB가 공격 정보를 제공하고 실행 기록 저장기가 요청·응답·판정을 보존합니다.',
   agent: 'RunOnce가 관찰 근거로 후보를 만들고 DeepSeek의 제한된 POST 선택과 브라우저 실행 증거를 plan / reflect로 기록합니다.',
   webpage: '서버가 만든 격리된 127.0.0.1 게시판입니다. 입력 URL은 사용하지 않습니다.',
 };
@@ -165,7 +165,7 @@ const legacyLabModuleDescriptions = {
   casper: 'casper-db가 과거 XSS 사례를 참고 정보로 조회합니다.',
   attack: 'attack-module이 구조화된 curl JSON으로 제한된 게시글 삭제 요청을 전송합니다.',
   guardrail: 'guardrail이 교차 사용자 삭제 canary의 범위와 요청 예산을 검사합니다.',
-  pentest: 'pentest-db가 요청·응답·판정을 저장합니다.',
+  pentest: '실행 기록 저장기가 요청·응답·판정을 보존합니다.',
   agent: 'RunOnce가 삭제 권한 가설의 plan과 전후 관찰에 근거한 reflect를 기록합니다.',
   webpage: labModuleDescriptions.webpage,
 };

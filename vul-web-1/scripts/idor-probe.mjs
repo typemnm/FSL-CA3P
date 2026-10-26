@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import attackModule from '../../attack-module/index.js';
+import { lookupAttackInfoSync } from '../../casper-db/client.mjs';
 import guardrailPackage from '../../guardrail/src/index.js';
 
 const { executeCurl } = attackModule;
@@ -10,7 +11,6 @@ const { GuardrailEvaluator } = guardrailPackage;
 
 const PROFILE_ID = 'client_controlled_delete_idor';
 const DEFAULT_ORIGIN = 'http://127.0.0.1:3000';
-const DEFAULT_CATALOG = fileURLToPath(new URL('../../pentest-db/cases.multi.draft.json', import.meta.url));
 
 function exactLoopbackOrigin(value) {
   let url;
@@ -42,9 +42,12 @@ function normalizeRequest(request) {
   return { method: request.method, path, query };
 }
 
-export function loadIdorPlan(catalogPath = DEFAULT_CATALOG) {
-  const catalog = JSON.parse(readFileSync(catalogPath, 'utf8'));
-  const response = selectIdorResponse(catalog);
+export function loadIdorPlan(catalogPath) {
+  // Explicit JSON input is retained for old fixture callers; live defaults use the unified DB.
+  const response = catalogPath === undefined
+    ? lookupAttackInfoSync({ vulnType: 'idor', target: { application: 'vul-web-1',
+      endpoint: 'DELETE /api/posts/:id', parameter: 'authorId' } })
+    : selectIdorResponse(JSON.parse(readFileSync(catalogPath, 'utf8')));
   const payload = response?.payloads?.[0];
   const expect = payload?.successCheck?.expect;
   if (!response || !payload || !expect || expect.observe !== 'httpResponse'
@@ -57,6 +60,8 @@ export function loadIdorPlan(catalogPath = DEFAULT_CATALOG) {
   const [verifyMethod, verifyPath] = String(expect.resourceRemoved.check).trim().split(/\s+/u);
   if (!verifyMethod || !verifyPath) throw new Error('resourceRemoved.check must be "METHOD /path".');
   return {
+    patternId: response.patternId ?? null,
+    patternRevision: response.patternRevision ?? null,
     cwe: response.cwe ?? 'CWE-639',
     parameter,
     targetPostId: expect.resourceRemoved.postId,
@@ -166,7 +171,7 @@ function findingStatus(plan, { control, tamper, verify }) {
   return 'inconclusive';
 }
 
-export async function probe({ origin, catalogPath = DEFAULT_CATALOG, curlImpl = executeCurl, signal } = {}) {
+export async function probe({ origin, catalogPath, curlImpl = executeCurl, signal } = {}) {
   const allowedOrigin = exactLoopbackOrigin(origin ?? DEFAULT_ORIGIN);
   const plan = loadIdorPlan(catalogPath);
   const runId = `idor-delete-${randomUUID()}`;
@@ -195,7 +200,8 @@ export async function probe({ origin, catalogPath = DEFAULT_CATALOG, curlImpl = 
     provenance: {
       policy: 'vul-web-1-client-controlled-delete-idor',
       guardrail: 'guardrail/GuardrailEvaluator', attack: 'attack-module/executeCurl',
-      catalog: 'pentest-db/cases.multi.draft.json (idor:author-id-tamper)',
+      catalog: catalogPath ?? 'casper-db.attack_catalog',
+      patternId: plan.patternId, patternRevision: plan.patternRevision,
     },
   };
 }

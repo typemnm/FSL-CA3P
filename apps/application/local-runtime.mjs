@@ -28,7 +28,7 @@ const LAB_STAGES = {
   'setup.canary_post': 'curl로 로컬 canary 생성',
   'loop.observe': 'xss-parser로 게시판 관찰',
   'loop.history': 'casper-db 과거 XSS 사례 비교',
-  'loop.catalog': 'pentest-db 공격 정보 조회',
+  'loop.catalog': '통합 취약점 DB 공격 정보 조회',
   'loop.think': 'DeepSeek XSS 검사 후보 선택',
   'loop.act': 'curl로 무해한 XSS canary 게시',
   'loop.verify': '브라우저에서 canary 실행 확인',
@@ -45,7 +45,7 @@ const LEGACY_BOLA_STAGES = {
 const MODULE_IDS = { 'xss-parser': 'parser', 'attack-module': 'attack',
   'casper-db': 'casper', 'pentest-db': 'pentest' };
 const LAB_SOURCES = { parser: 'xss-parser/browser', attack: 'attack-module/curl',
-  casper: 'casper-db/sqlite', pentest: 'pentest-db/local-json' };
+  casper: 'casper-db/sqlite', pentest: 'casper-db/catalog-and-evidence' };
 
 function fail(status, message) {
   const error = new Error(message);
@@ -148,8 +148,9 @@ export function createLocalRuntime({
     const gateway = {
       async exchange(serializedRequest, { signal } = {}) {
         const request = JSON.parse(serializedRequest);
-        const module = MODULE_IDS[request.receiver];
-        const finalizing = request.receiver === 'pentest-db' && request.payload.operation === 'finalize';
+        const storageRequest = request.type === 'storage.request' && ['casper-db', 'pentest-db'].includes(request.receiver);
+        const module = storageRequest ? 'pentest' : MODULE_IDS[request.receiver];
+        const finalizing = storageRequest && request.payload.operation === 'finalize';
         const started = performance.now();
         run.coreRunId = request.runId;
         let rawResponse;
@@ -185,7 +186,7 @@ export function createLocalRuntime({
         if (run.mode !== 'core-fixture' && request.receiver === 'xss-parser') run.targetContacted = true;
         if (run.mode !== 'core-fixture' && request.receiver === 'attack-module'
           && Number.isInteger(response.payload?.response?.status)) run.targetContacted = true;
-        const storedEvent = request.receiver === 'pentest-db' && request.payload.operation === 'append'
+        const storedEvent = storageRequest && request.payload.operation === 'append'
           ? request.payload.event : null;
         if (storedEvent?.stage === 'loop.think' || storedEvent?.stage === 'loop.reflect') {
           appendEvent({
@@ -225,7 +226,7 @@ export function createLocalRuntime({
               : run.mode !== 'core-fixture' && module === 'casper'
                 ? 'SQLite 과거 사례와 파서 관찰 결과의 비교'
                 : run.mode !== 'core-fixture' && module === 'pentest'
-                  ? 'pentest-db의 참고 정보 또는 영속 실행 기록'
+                  ? '통합 DB의 공격 정보 또는 영속 실행 기록'
                   : '실제 JSON 계약 교환 · 이 모듈은 인메모리 테스트 대역',
           iteration: request.iteration, correlationId: request.correlationId,
           latency: Math.round((performance.now() - started) * 100) / 100,
@@ -248,7 +249,7 @@ export function createLocalRuntime({
       run.report = { ...result.report, simulated: !labRun, targetContacted: run.targetContacted,
         source: labRun ? 'isolated-local-board' : 'scripted-contract-fixture',
         ...(labRun ? { externalModules: { xssParser: 'playwright-browser', attackModule: 'local-curl',
-          guardrail: 'ruleset-evaluator', casperDb: 'sqlite-history', pentestDb: 'local-json' } } : {}) };
+          guardrail: 'ruleset-evaluator', casperDb: 'sqlite-history', attackCatalog: 'casper-db-sqlite', runEvidence: 'local-json' } } : {}) };
       run.artifacts = result.artifacts;
       const finding = result.report.finding;
       if (finding) {
@@ -316,7 +317,7 @@ export function createLocalRuntime({
       totalSteps: labTestProfile === 'stored_xss_canary' ? 19 : 25,
       externalModules: {
         xssParser: 'playwright-browser', attackModule: 'local-curl', guardrail: 'ruleset-evaluator',
-        casperDb: 'sqlite-history', pentestDb: 'local-json',
+        casperDb: 'sqlite-history', attackCatalog: 'casper-db-sqlite', runEvidence: 'local-json',
       } };
     publish();
     setupTask = Promise.resolve().then(async () => {
