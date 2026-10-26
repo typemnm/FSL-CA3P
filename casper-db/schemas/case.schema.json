@@ -123,10 +123,18 @@
       "title": "Prior Evidence"
     },
     "parameter": {
-      "maxLength": 4000,
-      "minLength": 1,
-      "title": "Parameter",
-      "type": "string"
+      "anyOf": [
+        {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parameter"
     },
     "parameter_location": {
       "default": "unknown",
@@ -218,6 +226,46 @@
       ],
       "title": "Source",
       "type": "string"
+    },
+    "not_applicable_fields": {
+      "description": "Explicitly reviewed input fields that do not apply to this case",
+      "items": {
+        "enum": [
+          "parameter",
+          "payload"
+        ],
+        "type": "string"
+      },
+      "maxItems": 2,
+      "title": "Not Applicable Fields",
+      "type": "array"
+    },
+    "applicability_reason": {
+      "anyOf": [
+        {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Applicability Reason"
+    },
+    "route_template": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Route Template"
     }
   },
   "required": [
@@ -227,7 +275,6 @@
     "case_id",
     "title",
     "vulnerability_type",
-    "parameter",
     "preconditions",
     "procedure",
     "success_condition",

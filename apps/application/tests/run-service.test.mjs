@@ -46,6 +46,59 @@ test('queued cancellation never reaches a worker; arbitrary lab targets are reje
   assert.equal(service.store.claimNext('test-worker'), null); assert.equal(service.reset().run.status, 'idle');
 });
 
+test('university fixtures queue their known-record IDOR check without a case database', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: '', CASPER_DB_PYTHON: 'unavailable-python-for-idor' } });
+  for (const [fixtureId, target] of [['vul-web2-daehan', 'http://127.0.0.1:4101'], ['vul-web2-wonchang', 'http://127.0.0.1:4102']]) {
+    const state = await service.startLab({ fixtureId });
+    assert.equal(state.run.status, 'queued');
+    assert.equal(state.run.mode, 'local-lab-rule');
+    assert.equal(state.run.modelId, 'rule-baseline');
+    assert.equal(state.run.fixtureId, fixtureId);
+    assert.equal(state.run.target, target);
+    assert.equal(state.run.testProfile, 'known_record_idor_read');
+    assert.equal(state.run.manifest.target.fixtureId, fixtureId);
+    const lease = service.store.claimNext('idor-options-test');
+    assert.equal(lease.options.fixtureId, fixtureId);
+    assert.equal(lease.options.target, target);
+    assert.equal(lease.options.testProfile, 'known_record_idor_read');
+    assert.equal(lease.options.caseSnapshot, undefined);
+    service.store.finish(lease, 'completed');
+  }
+});
+
+test('university fixture selections forward approved private Docker target origins', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false });
+  for (const target of ['http://192.168.0.20:4101', 'http://10.0.0.8:4102', 'http://host.docker.internal:4101', 'http://daehan:3000', 'http://wonchang:8080']) {
+    const state = await service.startLab({ fixtureId: 'vul-web2-daehan', target });
+    assert.equal(state.run.target, target);
+    assert.equal(state.run.manifest.target.origin, target);
+    const lease = service.store.claimNext('idor-target-test');
+    assert.equal(lease.options.target, target);
+    service.store.finish(lease, 'completed');
+  }
+});
+
+test('university fixtures reject public or malformed targets, AI modes and incompatible profiles before queuing', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false });
+  for (const options of [
+    { fixtureId: 'not-registered' },
+    { fixtureId: { toString: 'invalid' } },
+    { fixtureId: 'vul-web2-daehan', target: 'http://8.8.8.8:4101' },
+    { fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.20:4101/api' },
+    { fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.20:4101/?probe=1' },
+    { fixtureId: 'vul-web2-daehan', target: 'http://alice:password@192.168.0.20:4101' },
+    { fixtureId: 'vul-web2-wonchang', target: 'https://remote.invalid' },
+    { fixtureId: 'vul-web2-daehan', mode: 'local-lab-deepseek', modelId: 'deepseek-flash' },
+    { fixtureId: 'vul-web2-daehan', mode: 'local-lab-rule', modelId: 'deepseek-flash' },
+    { fixtureId: 'vul-web2-daehan', mode: 'core-fixture' },
+    { fixtureId: 'vul-web2-daehan', testProfile: 'stored_xss_canary' },
+    { fixtureId: 'vul-web-1', testProfile: 'known_record_idor_read' },
+  ]) await assert.rejects(service.start(options), { status: 400 });
+  await assert.rejects(service.startLab({ fixtureId: 'vul-web2-wonchang', modelId: 'deepseek-flash' }), { status: 400 });
+  assert.equal(service.listRuns().total, 0);
+});
+
 test('legacy imports remain in history without replacing the current interactive run', async t => {
   const { service, reopen } = setup(t, { autoStartWorker: false, importLegacy: false });
   const live = await service.start({ mode: 'core-fixture' });

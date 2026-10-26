@@ -161,15 +161,32 @@ const legacyLabModuleDescriptions = {
   agent: 'RunOnce가 삭제 권한 가설의 plan과 전후 관찰에 근거한 reflect를 기록합니다.',
   webpage: labModuleDescriptions.webpage,
 };
+const IDOR_FIXTURES = {
+  'vul-web2-daehan': { name: '대한대학교', port: 4101 },
+  'vul-web2-wonchang': { name: '원창대학교', port: 4102 },
+};
+const idorModuleDescriptions = {
+  parser: '이 IDOR 실습은 xss-parser와 브라우저를 사용하지 않습니다.',
+  casper: '이 IDOR 실습은 과거 XSS 사례 DB를 조회하지 않습니다.',
+  attack: 'attack-module이 알려진 가상 레코드만 읽고, 본인·다른 담당자·학생 세션의 HTTP 결과를 비교합니다.',
+  guardrail: 'guardrail이 고정된 로컬 원점, 레코드와 GET 요청 예산을 검사합니다.',
+  pentest: '요청 결과와 최종 판정은 중앙 실행 이력에 저장합니다. XSS 카탈로그는 사용하지 않습니다.',
+  agent: '정해진 IDOR 검증 절차와 대조군으로 접근 권한을 판정합니다. AI 모델을 호출하지 않습니다.',
+  webpage: '서버 에이전트에서 접근하는 등록된 vul-web2 실습 원점입니다.',
+};
 function isLab(item) { return ['local-lab-rule', 'local-lab-deepseek'].includes(item?.mode); }
 function isAiLab(item) { return item?.mode === 'local-lab-deepseek'; }
 function canOperate() { return authSession && (!authSession.authRequired || authSession.authenticated) && authSession.user?.role !== 'viewer'; }
-function selectedModel() { return models.find(item => item.id === $('model-select').value); }
+function selectedFixture() { return $('fixture-select').value || 'vul-web-1'; }
+function selectedIdorFixture() { return IDOR_FIXTURES[selectedFixture()]; }
+function selectedModel() { return models.find(item => item.id === (selectedIdorFixture() ? 'rule-baseline' : $('model-select').value)); }
 function isXssLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile) === 'stored_xss_canary'; }
-function describeModule(id, item = currentRun()) { const text = (isXssLab(item) ? labModuleDescriptions
+function isIdorLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile ?? item.manifest?.target?.testProfile) === 'known_record_idor_read'; }
+function idorFixture(item) { return IDOR_FIXTURES[item.fixtureId ?? item.manifest?.target?.fixtureId ?? item.report?.fixtureId]; }
+function describeModule(id, item = currentRun()) { const text = (isIdorLab(item) ? idorModuleDescriptions : isXssLab(item) ? labModuleDescriptions
   : isLab(item) ? legacyLabModuleDescriptions : moduleDescriptions)[id] || '이전 실행의 코어 이벤트입니다.';
   return isLab(item) && !isAiLab(item) ? text.replace('DeepSeek의 제한된 POST 선택', '규칙 엔진의 제한된 POST 선택') : text; }
-function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
+function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
 const viewMeta = {
   dashboard: ['대시보드', 'Observe. Decide. <span>Iterate.</span>', '에이전트의 모든 판단과 흐름을, 한눈에.'],
   sessions: ['실행 이력', 'Every run. <span>Remembered.</span>', '중앙에 저장된 실행과 모듈별 증거를 다시 살펴보세요.'],
@@ -264,9 +281,9 @@ function renderStats() {
   $('history-banner').hidden = !inspectedRun;
   $('run-status').textContent = inspectedRun ? '기록 보기' : statusNames[item.status];
   $('status-orb').className = `status-orb ${running && connected ? '' : 'stopped'}`;
-  $('run-context').textContent = inspectedRun ? `${modeLabel(item)} · 저장한 실행` : !connected ? '마지막 수신 상태 · 진행 상태 갱신 대기' : lab ? `실제 격리 게시판 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'} 판단` : '실제 코어 · 외부 모듈 fixture';
-  $('execution-label').textContent = lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
-  $('dashboard-mode').textContent = lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
+  $('run-context').textContent = inspectedRun ? `${modeLabel(item)} · 저장한 실행` : !connected ? '마지막 수신 상태 · 진행 상태 갱신 대기' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 격리 게시판 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'} 판단` : '실제 코어 · 외부 모듈 fixture';
+  $('execution-label').textContent = isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
+  $('dashboard-mode').textContent = isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
   $('elapsed-source').textContent = lab ? '로컬 실습 실행' : 'fixture 실행';
   $('iteration-value').textContent = '01';
   $('step-label').textContent = item.status === 'completed' ? '코어 실행 완료' : stage ? `최근 수신 · ${stage.role}` : '첫 이벤트 대기';
@@ -287,18 +304,32 @@ function renderStats() {
   $('pause-button').setAttribute('aria-label', '일시정지 및 재개 미지원');
   $('stop-button').disabled = !canOperate() || !!inspectedRun || !connected || controlPending || !['queued','preparing','running'].includes(run.status);
   $('run-button').disabled = !canOperate() || !connected || controlPending || active;
+  const idor = selectedIdorFixture();
+  if (idor) $('model-select').value = 'rule-baseline';
+  for (const option of $('model-select').options) {
+    const entry = models.find(item => item.id === option.value);
+    option.disabled = !entry?.available || (!!idor && entry.id !== 'rule-baseline');
+    if (entry) option.textContent = idor && entry.id === 'rule-baseline' ? '규칙 기반 · 알려진 레코드 IDOR 검증' : `${entry.name || entry.id}${entry.available ? '' : ' · 사용 불가'}`;
+  }
   const model = selectedModel();
   $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || !model?.available;
-  $('model-select').disabled = controlPending || active || !canOperate();
-  $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : model?.available ? `${model.name || model.id} · 실행 준비됨` : '선택한 엔진을 사용할 수 없습니다. 서버 실행 환경과 모델 설정을 확인하세요.';
-  $('model-scope').textContent = model?.mode === 'local-lab-deepseek' ? 'AI는 허용된 단일 후보를 선택하며 최종 판정은 브라우저 증거와 규칙 엔진이 수행합니다. 검사와 완료 후 보고서 생성의 모델 API 호출은 과금될 수 있습니다.' : '규칙 엔진 검사는 모델 API를 호출하지 않습니다. 완료 후 자동 보고서는 설정된 보고서 모델을 호출하며 과금될 수 있습니다.';
+  $('fixture-select').disabled = controlPending || active || !canOperate();
+  $('lab-target-origin').disabled = controlPending || active || !canOperate();
+  $('lab-target-control').hidden = !idor;
+  $('model-select').disabled = !!idor || controlPending || active || !canOperate();
+  $('lab-title').textContent = idor ? `vul-web2 · ${idor.name} IDOR 검증` : '실제 격리 실습 · 저장형 XSS 검증';
+  $('lab-description').textContent = idor ? `${idor.name}의 실습 IP와 포트를 아래에 입력하세요. vul-web2 Compose를 먼저 시작해야 하며 기본 포트는 ${idor.port}입니다. 에이전트가 알려진 가상 레코드의 조회 권한만 비교합니다. 위 DISPLAY URL은 사용하지 않습니다.` : '서버가 격리된 로컬 게시판을 열어 시험 글 한 건을 게시하고 브라우저 실행 여부를 확인합니다. 위 입력 URL은 사용하지 않습니다.';
+  $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : model?.available ? `${idor ? '규칙 기반 IDOR' : model.name || model.id} · 실행 준비됨` : '선택한 엔진을 사용할 수 없습니다. 서버 실행 환경과 모델 설정을 확인하세요.';
+  $('model-scope').textContent = idor ? '이 실습은 정해진 IDOR 검증 절차를 사용하며 AI 모델과 보고서 모델을 호출하지 않습니다. 결과와 근거는 실행 이력 및 JSON 내보내기에서 확인할 수 있습니다.' : model?.mode === 'local-lab-deepseek' ? 'AI는 허용된 단일 후보를 선택하며 최종 판정은 브라우저 증거와 규칙 엔진이 수행합니다. 검사와 완료 후 보고서 생성의 모델 API 호출은 과금될 수 있습니다.' : '규칙 엔진 검사는 모델 API를 호출하지 않습니다. 완료 후 자동 보고서는 설정된 보고서 모델을 호출하며 과금될 수 있습니다.';
   $('new-session-button').disabled = !canOperate() || !connected || controlPending || active;
   $('export-button').disabled = item.events.length === 0;
   $('target-url').disabled = controlPending;
   $('loop-graph').classList.toggle('is-paused', !running || !connected);
-  $('webpage-caption').textContent = lab ? '격리된 로컬 게시판' : '표시용 URL';
+  $('webpage-caption').textContent = isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} · IDOR` : lab ? '격리된 로컬 게시판' : '표시용 URL';
+  $('agent-core').querySelector('strong').textContent = isIdorLab(item) ? 'IDOR 검증' : 'Agent / RunOnce';
   document.querySelector('.graph-webpage').classList.toggle('contacted', item.targetContacted);
-  const graphSources = lab
+  const graphSources = isIdorLab(item)
+    ? { parser: '미사용', casper: '미사용', attack: '로컬 레코드 GET', guardrail: '조회 범위 검사', pentest: '중앙 실행 이력' } : lab
     ? { parser: '응답 분석', casper: '이전 DB 조회', attack: '로컬 curl 쓰기', guardrail: '실행 전 검사', pentest: '실습 기록' }
     : { parser: 'Fixture 분석', casper: 'Fixture 조회', attack: '쓰기 Fixture', guardrail: 'Fixture 검사', pentest: 'Fixture 기록' };
   document.querySelectorAll('.graph-node').forEach((node) => {
@@ -334,6 +365,9 @@ function traceData() {
   const item = currentRun();
   const lab = isLab(item);
   if (activeTab === 'agent') {
+    if (isIdorLab(item)) return { source: 'known-record-idor', mode: item.mode,
+      input: { fixtureId: item.fixtureId ?? item.manifest?.target?.fixtureId, target: item.target, testProfile: 'known_record_idor_read' },
+      output: item.report ?? { status: 'waiting', message: '정해진 IDOR 조회와 대조군의 결과를 기다리고 있습니다.' } };
     const reasoning = getAgentEvent();
     return reasoning ? { source: isAiLab(item) && reasoning.stage === 'loop.think' ? 'DeepSeek + RuleReasoningEngine' : 'RuleReasoningEngine', mode: item.mode, fixtureInputs: !lab, correlationId: reasoning.correlationId, input: reasoning.agentInput, output: reasoning.agentOutput } : { status: 'waiting', mode: item.mode, message: isAiLab(item) ? 'DeepSeek curl 요청과 코어 plan / reflect 입출력을 기다리고 있습니다.' : 'RuleReasoningEngine의 plan / reflect 입출력을 기다리고 있습니다.' };
   }
@@ -353,10 +387,10 @@ function renderInspector() {
   const snapshot = getSnapshot();
   const contextEvent = activeTab === 'agent' ? getAgentEvent() : snapshot;
   $('selected-module-name').textContent = module.name;
-  $('context-module').textContent = activeTab === 'agent' && isAiLab(currentRun()) ? 'Agent / RunOnce + DeepSeek' : activeTab === 'agent' ? 'Agent / RunOnce' : module.name;
+  $('context-module').textContent = activeTab === 'agent' && isIdorLab(currentRun()) ? 'IDOR 검증' : activeTab === 'agent' && isAiLab(currentRun()) ? 'Agent / RunOnce + DeepSeek' : activeTab === 'agent' ? 'Agent / RunOnce' : module.name;
   $('context-role').textContent = describeModule(activeTab === 'agent' ? 'agent' : selectedModule);
   $('correlation-value').textContent = contextEvent?.correlationId || '—';
-  $('trace-source').textContent = activeTab === 'agent' ? isAiLab(currentRun()) ? 'DeepSeek · Agent / RunOnce' : lab ? '규칙 엔진 · 실제 격리 실습' : 'Agent / RunOnce · fixture 입력'
+  $('trace-source').textContent = activeTab === 'agent' ? isIdorLab(currentRun()) ? '정해진 IDOR 조회 권한 검증' : isAiLab(currentRun()) ? 'DeepSeek · Agent / RunOnce' : lab ? '규칙 엔진 · 실제 격리 실습' : 'Agent / RunOnce · fixture 입력'
     : contextEvent?.source === 'local-curl-board' ? 'local-curl-board · curl 실행'
       : contextEvent?.source === 'local-loopback-board' ? '격리된 로컬 게시판'
         : contextEvent?.source === 'core-internal-event' ? 'Agent / RunOnce'
@@ -394,7 +428,8 @@ function renderModules() {
 }
 function reportDocumentMarkup(item) {
   const document = item.reportDocument;
-  const status = document?.status ?? (item.simulated || item.mode === 'core-fixture' ? 'skipped'
+  const idor = isIdorLab(item);
+  const status = document?.status ?? (idor || item.simulated || item.mode === 'core-fixture' ? 'skipped'
     : ['completed', 'failed', 'stopped', 'cancelled', 'interrupted'].includes(item.status) ? 'missing' : 'waiting');
   const labels = { generating: '보고서 생성 중', ready: 'HWPX 보고서 준비됨', failed: '보고서 생성 실패', unavailable: '보고서 모델 설정 필요', skipped: '보고서 생성 생략', waiting: '실행 완료 후 보고서 생성', missing: '저장된 HWPX 보고서 없음' };
   const descriptions = {
@@ -402,21 +437,23 @@ function reportDocumentMarkup(item) {
     ready: '저장된 HWPX 문서를 다운로드할 수 있습니다.',
     failed: '검사 결과는 보존되어 있습니다. 보고서 생성 중 오류가 발생했습니다.',
     unavailable: '보고서 모델 설정을 확인하세요. 검사 결과 JSON은 계속 확인할 수 있습니다.',
-    skipped: '모의 fixture, 중지되었거나 최종 검사 결과가 없는 실행은 보고서를 생성하지 않습니다. 저장된 실행 기록은 JSON으로 내보낼 수 있습니다.',
+    skipped: idor ? 'IDOR 실습의 HWPX 보고서는 아직 지원하지 않습니다. 판정과 요청 근거는 아래에서 확인하고 JSON으로 내보낼 수 있습니다.' : '모의 fixture, 중지되었거나 최종 검사 결과가 없는 실행은 보고서를 생성하지 않습니다. 저장된 실행 기록은 JSON으로 내보낼 수 있습니다.',
     waiting: '실제 격리 실습이 완료되면 설정된 모델로 보고서를 자동 생성합니다.',
     missing: '이 실행에는 생성된 HWPX 보고서 기록이 없습니다. 검사 결과 JSON을 확인하세요.',
   };
   const ready = status === 'ready' && typeof document?.artifactId === 'string' && !!item.id;
-  return `<section class="panel report-document" aria-labelledby="report-document-title"><div><h2 id="report-document-title">HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(labels[status] || labels.waiting)}</p><small>${escape(descriptions[status] || descriptions.waiting)}</small>${document?.message ? `<p class="report-document-message">${escape(document.message)}</p>` : ''}<small class="report-cost-note">실제 실습의 자동 보고서는 모델 API를 호출하며 과금될 수 있습니다.</small></div>${ready ? `<a class="button primary" id="report-download-button" href="${escape(runtime.reportDownloadUrl(item.id))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</a>` : `<button class="button secondary" id="report-download-button" disabled aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</button>`}</section>`;
+  return `<section class="panel report-document" aria-labelledby="report-document-title"><div><h2 id="report-document-title">HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(labels[status] || labels.waiting)}</p><small>${escape(descriptions[status] || descriptions.waiting)}</small>${document?.message ? `<p class="report-document-message">${escape(document.message)}</p>` : ''}<small class="report-cost-note">${idor ? '이 IDOR 실습은 AI 및 보고서 모델을 호출하지 않습니다.' : '실제 실습의 자동 보고서는 모델 API를 호출하며 과금될 수 있습니다.'}</small></div>${ready ? `<a class="button primary" id="report-download-button" href="${escape(runtime.reportDownloadUrl(item.id))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</a>` : `<button class="button secondary" id="report-download-button" disabled aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</button>`}</section>`;
 }
 function renderReports() {
   const item = currentRun();
   const lab = isLab(item);
-  const note = isXssLab(item)
+  const note = isIdorLab(item)
+    ? `${escape(idorFixture(item)?.name || 'vul-web2')}의 등록된 실습 원점(${escape(item.target || '준비 중')})에서 알려진 가상 레코드의 IDOR를 검사합니다. 본인·다른 담당자·학생 세션의 조회 결과를 대조합니다. ${item.targetContacted ? '실습 사이트의 HTTP 응답을 수신했습니다.' : '아직 실습 사이트의 HTTP 응답을 수신하지 못했습니다.'} 정해진 검증 범위의 결과이며, 사이트 전체의 취약점 탐지나 자율 CERT 조사 결과를 뜻하지 않습니다. AI 모델과 브라우저를 사용하지 않습니다.`
+    : isXssLab(item)
     ? `서버가 생성한 격리된 로컬 게시판(${escape(item.target || '준비 중')})에서 XSS 가설 한 건을 검사합니다. ${item.targetContacted ? '실습 사이트에 HTTP 요청을 보냈습니다.' : '아직 실습 사이트로 보낸 HTTP 요청은 없습니다.'} ${isAiLab(item) ? 'DeepSeek가 선택한' : '규칙 엔진이 만든'} 구조화된 curl 요청은 정책 검사를 거쳐 전송하며, finding은 동일 시험 게시글의 브라우저 실행 증거로 판정합니다. 입력 URL은 사용하지 않습니다.`
     : lab ? `서버가 생성한 격리된 로컬 게시판(${escape(item.target || '준비 중')})에서 삭제 권한 가설 한 건을 검사했습니다. 입력 URL은 사용하지 않았습니다.`
     : 'RunOnce와 RuleReasoningEngine의 실제 코어 실행 결과입니다. 외부 모듈의 응답은 scripted fixture이며, 입력 URL은 표시용 메타데이터입니다. 실제 대상에 접속하거나 취약점을 확인하지 않았습니다.';
-  $('report-content').innerHTML = `<section class="panel report-top"><div><div class="eyebrow">${lab ? 'ISOLATED LOCAL LAB REPORT' : 'CORE FIXTURE REPORT'}</div><h2>${lab ? '로컬 실습 게시판 실행 결과' : '코어 실행 결과와 fixture 검토 항목'}</h2><p>${escape(item.target || '실행 전')}</p><small>${escape(statusNames[item.status])} · ${item.step} / ${item.totalSteps} 이벤트 · ${escape(formatElapsed(item.elapsedMs))}</small></div><div class="report-count"><strong>${String(item.reviewItems.length).padStart(2,'0')}</strong><span>${lab ? '로컬 실습 검토 항목' : 'fixture 검토 항목'}</span></div></section><div class="report-items">${item.reviewItems.length ? item.reviewItems.map((review) => `<article class="panel report-item"><span class="review-tag"><span class="tiny-dot"></span>${lab ? review.vulnerabilityConfirmed ? 'LOCAL LAB · CONFIRMED' : 'LOCAL LAB · REVIEW' : 'FIXTURE · UNCONFIRMED'}</span><h2>${escape(review.title)}</h2><p>${escape(review.description)}</p><div class="evidence-box"><strong>${lab ? 'LOCAL LAB' : 'FIXTURE'} EVIDENCE / ${escape(review.evidenceId)}</strong>${escape(review.evidence)}</div></article>`).join('') : `<section class="panel empty-state"><span data-icon="file"></span><h3>최종 ${lab ? '실습' : 'fixture'} 결과 대기</h3><p>코어 실행 완료 후 검토 항목이 표시됩니다.</p></section>`}</div><div class="report-note">${note}</div>${item.report ? `<section class="panel core-report"><h2>${icon('file')}RunOnce 최종 리포트</h2><p>코어가 반환한 결과 · 내부 실행 ID ${escape(item.coreRunId || '—')} · 코어 origin ${escape(item.coreTargetOrigin || (lab ? '—' : 'http://127.0.0.1:3000'))}</p><pre tabindex="0" aria-label="RunOnce 최종 리포트 JSON">${highlightJSON(item.report)}</pre></section>` : ''}`;
+  $('report-content').innerHTML = `<section class="panel report-top"><div><div class="eyebrow">${lab ? 'ISOLATED LOCAL LAB REPORT' : 'CORE FIXTURE REPORT'}</div><h2>${isIdorLab(item) ? `${escape(idorFixture(item)?.name || 'vul-web2')} IDOR 실행 결과` : lab ? '로컬 실습 게시판 실행 결과' : '코어 실행 결과와 fixture 검토 항목'}</h2><p>${escape(item.target || '실행 전')}</p><small>${escape(statusNames[item.status])} · ${item.step} / ${item.totalSteps} 이벤트 · ${escape(formatElapsed(item.elapsedMs))}</small></div><div class="report-count"><strong>${String(item.reviewItems.length).padStart(2,'0')}</strong><span>${lab ? '로컬 실습 검토 항목' : 'fixture 검토 항목'}</span></div></section><div class="report-items">${item.reviewItems.length ? item.reviewItems.map((review) => `<article class="panel report-item"><span class="review-tag"><span class="tiny-dot"></span>${lab ? review.vulnerabilityConfirmed ? 'LOCAL LAB · CONFIRMED' : 'LOCAL LAB · REVIEW' : 'FIXTURE · UNCONFIRMED'}</span><h2>${escape(review.title)}</h2><p>${escape(review.description)}</p><div class="evidence-box"><strong>${lab ? 'LOCAL LAB' : 'FIXTURE'} EVIDENCE / ${escape(review.evidenceId)}</strong>${escape(review.evidence)}</div></article>`).join('') : `<section class="panel empty-state"><span data-icon="file"></span><h3>최종 ${lab ? '실습' : 'fixture'} 결과 대기</h3><p>코어 실행 완료 후 검토 항목이 표시됩니다.</p></section>`}</div><div class="report-note">${note}</div>${item.report ? `<section class="panel core-report"><h2>${icon('file')}${isIdorLab(item) ? 'IDOR 최종 리포트' : 'RunOnce 최종 리포트'}</h2><p>${isIdorLab(item) ? '정해진 조회 권한 검증 결과' : '코어가 반환한 결과'} · 내부 실행 ID ${escape(item.coreRunId || '—')} · 코어 origin ${escape(item.coreTargetOrigin || (lab ? '—' : 'http://127.0.0.1:3000'))}</p><pre tabindex="0" aria-label="${isIdorLab(item) ? 'IDOR' : 'RunOnce'} 최종 리포트 JSON">${highlightJSON(item.report)}</pre></section>` : ''}`;
   $('report-content').insertAdjacentHTML('afterbegin', reportDocumentMarkup(item));
   hydrateIcons($('report-content'));
   if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
@@ -468,12 +505,33 @@ $('target-form').addEventListener('submit', async (event) => {
 $('lab-run-button').addEventListener('click', async () => {
   const model = selectedModel();
   if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available) return;
+  let target;
+  if (selectedIdorFixture()) {
+    try {
+      const input = $('lab-target-origin').value.trim();
+      const url = new URL(input.includes('://') ? input : `http://${input}`);
+      if (url.protocol !== 'http:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error();
+      target = url.origin;
+      $('lab-target-origin').value = target;
+      $('lab-target-origin').removeAttribute('aria-invalid');
+    } catch {
+      $('lab-target-origin').setAttribute('aria-invalid', 'true');
+      showRuntimeError('실습 대상의 HTTP 원점(IP와 포트)만 입력하세요. 경로, 쿼리와 로그인 정보는 포함할 수 없습니다.');
+      $('lab-target-origin').focus(); return;
+    }
+  }
   await submitControl(async () => {
-    await runtime.startLab(model.id, model.mode);
+    await runtime.startLab(model.id, model.mode, selectedFixture(), target);
     inspectedRun = null;
     selectedEventId = null;
-    notify(`${model.name || model.id}로 실제 격리 실습을 시작했습니다.`);
+    notify(selectedIdorFixture() ? `${selectedIdorFixture().name} IDOR 실습을 시작했습니다.` : `${model.name || model.id}로 실제 격리 실습을 시작했습니다.`);
   });
+});
+$('fixture-select').addEventListener('change', () => {
+  const fixture = selectedIdorFixture();
+  if (fixture) $('lab-target-origin').value = `http://127.0.0.1:${fixture.port}`;
+  $('lab-target-origin').removeAttribute('aria-invalid');
+  renderStats();
 });
 $('target-url').addEventListener('input', () => { $('url-error').hidden = true; $('target-url').removeAttribute('aria-invalid'); });
 $('stop-button').addEventListener('click', async () => {
@@ -757,6 +815,14 @@ function renderPlatform() {
   const source = platform.source || {};
   const modules = Array.isArray(platform.modules) ? platform.modules : Object.entries(platform.modules || {}).map(([name, value]) => ({ name, ...value }));
   $('platform-content').innerHTML = `<section class="panel platform-source"><div class="eyebrow">INTEGRATION PLATFORM</div><h2>${escape(source.branch || source.ref || '현재 통합 소스')}</h2><p class="mono">${escape(source.commitSha || source.commit || source.sha || 'SHA 미기록')}</p><p>${escape(source.dirty ? '작업 디렉터리에 변경 사항이 있습니다.' : '서버가 보고한 소스 버전과 모듈 정보를 표시합니다.')}</p><p>이 화면의 검증 파일은 서버 체크아웃에서 생성된 값입니다. develop 병합 커밋의 전체 모듈 검증은 ‘통합 테스트’에서 확인하세요.</p></section><div class="module-grid platform-modules">${modules.map(item => `<article class="panel module-card"><span class="local-chip">${escape(item.status || item.layer || 'MODULE')}</span><h2>${escape(item.name || item.id || 'module')}</h2><p>${escape(item.description || item.role || item.path || '')}</p><small>${escape(item.layer || '')}${item.sourceBranch ? ` · ${escape(item.sourceBranch)}` : ''}</small><p class="mono">${escape(item.version || item.packageVersion || item.hash || item.contentDigest || item.sha || '버전 미기록')}</p>${item.changed !== undefined ? `<small>${item.changed ? '기준 대비 변경됨' : '기준과 동일'}</small>` : ''}</article>`).join('')}</div>${jsonSection('현재 서버 체크아웃의 로컬 검증 파일', platform.tests || platform.validation || {})}${jsonSection('계층 및 모듈 연결', platform.architecture || {})}${jsonSection('소스 및 변경 모듈 상세', source)}`;
+  const deployment = platform.deployment;
+  if (deployment?.enabled) {
+    const labels = { checking: '새 버전 확인 중', verified: 'develop CI 검증 완료', 'waiting-ci': '전체 CI 검증 대기', 'up-to-date': '최신 검증 버전 실행 중',
+      preparing: '새 버전 준비 중', prepared: '배포 전 검증 완료', deferred: '배포 재시도 대기', superseded: '더 최신 버전 확인 중', deploying: '배포 적용 중',
+      deployed: '자동 배포 완료', blocked: '배포 재시도에 운영자 확인 필요', failed: '배포 실패 · 이전 버전 유지',
+      'recovery-required': '서비스 복구에 운영자 확인 필요', unavailable: '자동 배포 상태 확인 불가' };
+    $('platform-content').insertAdjacentHTML('afterbegin', `<section class="panel platform-source"><div class="eyebrow">DEVICE DEPLOYMENT</div><h2>${escape(labels[deployment.status] || '자동 배포 상태 확인 중')}</h2><p>실행 SHA <span class="mono">${escape(deployment.deployedSha || source.commitSha || '미기록')}</span></p><p>develop SHA <span class="mono">${escape(deployment.targetSha || '확인 중')}</span></p><small>최근 확인 ${escape(dateLabel(deployment.checkedAt))} · 최근 배포 ${escape(dateLabel(deployment.deployedAt))}</small>${deployment.runUrl ? `<p><a href="${escape(deployment.runUrl)}" target="_blank" rel="noopener noreferrer">배포 대상의 전체 CI 결과</a></p>` : ''}</section>`);
+  }
 }
 $('model-select').addEventListener('change', renderStats);
 document.addEventListener('input', event => { if (event.target.dataset.reviewNote) reviewDrafts.set(event.target.dataset.reviewNote, event.target.value); });

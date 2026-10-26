@@ -11,6 +11,7 @@ bound actions. Content accuracy rests on the prompt and human review.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -65,7 +66,7 @@ class ReportTools:
         self.finished: FinishResult | None = None
 
     # -- read_bundle -------------------------------------------------------------------
-    def read_bundle(self, path: str) -> str:
+    def _read_bundle_bytes(self, path: str) -> bytes:
         if not isinstance(path, str) or not path:
             raise ToolError("path must be a non-empty string")
         target = (self._bundle / path).resolve()
@@ -76,6 +77,10 @@ class ReportTools:
         data = target.read_bytes()
         if len(data) > MAX_READ_BYTES:
             raise ToolError("file too large to read")
+        return data
+
+    def read_bundle(self, path: str) -> str:
+        data = self._read_bundle_bytes(path)
         text = data.decode("utf-8", errors="replace")
         try:
             value = json.loads(text)
@@ -144,6 +149,30 @@ class ReportTools:
             or "report"
         )
         safe_model = redact(model)
+        # Source review state is carried deterministically, independent of prose
+        # generation. A writer cannot omit it or replace it with invented approval.
+        safe_model.pop("referenceContext", None)
+        history_path = self._bundle / "history" / "casper.json"
+        if history_path.is_file():
+            history_bytes = self._read_bundle_bytes("history/casper.json")
+            history = json.loads(history_bytes)
+            if "referenceContext" in history:
+                manifest = json.loads(self._read_bundle_bytes("manifest.json"))
+                entry = next(
+                    (item for item in manifest["files"] if item["path"] == "history/casper.json"),
+                    None,
+                )
+                expected = "sha256:" + hashlib.sha256(history_bytes).hexdigest()
+                if entry is None or entry["sha256"] != expected:
+                    raise ToolError("reference context does not match the sealed manifest")
+                context = history["referenceContext"]
+                if (
+                    not isinstance(context, dict)
+                    or context.get("schema_version") != "casper-reference-1"
+                    or context.get("automatic_execution_allowed") is not False
+                ):
+                    raise ToolError("unsupported reference context")
+                safe_model["referenceContext"] = redact(context)
         self._out.mkdir(parents=True, exist_ok=True)
         name = normalize_filename(filename, run_id)
         hwpx_path = self._out / name

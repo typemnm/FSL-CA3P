@@ -23,6 +23,8 @@ cd packages/report/py && .venv/bin/python -m ca3p_report run --trigger trigger.j
 
 LLM 접속 정보는 agent core와 공유하는 `DEEPSEEK_BASE_URL`·`DEEPSEEK_API_KEY`·`DEEPSEEK_MODEL`에서 읽습니다. 직접 CLI를 실행할 때는 세 값을 환경변수로 모두 제공하며, worker 연결부는 기존 Agent 설정과 기본값을 적용해 전달합니다. 보고서는 **초안**이며 사람이 최종 검토합니다(PLAN §1.4.1). LLM 실패 시 종료 코드 8(`LLM_FAILED`), 템플릿 대체는 없습니다. 봉인된 입력 번들은 보존하고 LLM에 전달하는 파일 뷰에는 자격 증명 마스킹을 적용합니다.
 
+casper-db의 실행 응답에 `referenceContext`(`casper-reference-1`)가 있으면 수집기는 검토 대기 자료·외부 권고·입력 위치 확인 필요 사항을 `history/casper.json`에 함께 보존합니다. 작성 완료 도구는 봉인된 파일의 해시를 확인하고 해당 검토 정보를 보고서 모델에 직접 반영합니다. 작성자가 생략하거나 다른 승인 상태로 바꾼 값은 사용하지 않습니다. HWPX·Markdown·JSON에 원문 위치, 후보와 보완값, 누락·미확정 필드, 외부 권고의 대상 적용 여부가 포함됩니다. 자료의 등록 상태는 현재 실행의 재현 판정과 별개입니다.
+
 ## 수집 단계
 
 트리거(`ReportTrigger`) 하나를 받아 결과 원천을 **읽기 전용으로** 읽고, 봉인된 ReportInput 번들을 만듭니다.

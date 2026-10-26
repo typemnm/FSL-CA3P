@@ -215,6 +215,8 @@ function createBolaGateway(origin, isClosed, { casperDatabasePath } = {}) {
           readyCaseCount: history.readyCaseCount,
           observations: history.observations,
           assessments: history.assessments,
+          targetId: history.targetId,
+          referenceContext: history.referenceContext,
           evidenceId: `casper-evidence-${randomUUID()}`,
         }));
       }
@@ -401,6 +403,8 @@ function createXssGateway(origin, isClosed, { casperDatabasePath } = {}) {
         readyCaseCount: history.readyCaseCount,
         observations: history.observations,
         assessments: history.assessments,
+        targetId: history.targetId,
+        referenceContext: history.referenceContext,
         evidenceId: `casper-evidence-${randomUUID()}`,
       }));
     }

@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from .model import StoredEvent
+from .model import CollectError, StoredEvent
 
 DRIVER = "casper-db"
 
@@ -40,6 +40,29 @@ def history_refs(events: list[StoredEvent]) -> list[tuple[str, int]]:
 
 def unavailable(reason: str) -> dict:
     return {"status": "unavailable", "reason": reason, "cases": []}
+
+
+def reference_context(events: list[StoredEvent]) -> dict | None:
+    """Keep the latest history handoff, including pending material and lookup gaps."""
+    for event in reversed(events):
+        if event.stage != "loop.history":
+            continue
+        payload = event.response.get("payload")
+        if not isinstance(payload, dict) or "referenceContext" not in payload:
+            continue
+        context = payload["referenceContext"]
+        if (
+            not isinstance(context, dict)
+            or context.get("schema_version") != "casper-reference-1"
+            or context.get("automatic_execution_allowed") is not False
+            or context.get("target_id") != payload.get("targetId")
+            or not isinstance(context.get("findings"), list)
+            or not isinstance(context.get("intake"), dict)
+            or not isinstance(context.get("external"), dict)
+        ):
+            raise CollectError("invalid CASPER reference context")
+        return context
+    return None
 
 
 def read_history(db_path: Path, refs: list[tuple[str, int]]) -> dict:
