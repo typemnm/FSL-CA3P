@@ -68,7 +68,18 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
     ] });
     if (path === '/api/comparisons') return json({ comparable: false, kind: 'code', baselineRunId: 'baseline', candidateRunId: 'candidate', conditions: [{ name: 'logicalInput', before: 'digest-a', after: 'digest-b', equal: false, available: true }], metrics: { baseline: { elapsedMs: 100, events: 1, modelCalls: 0, promptTokens: 0, tokenUsageAvailable: false }, candidate: { elapsedMs: 120, events: 2, modelCalls: 0, promptTokens: 0, tokenUsageAvailable: false } }, findingTransition: { before: 'not_reproduced', after: '<img src=x onerror=alert(1)>' }, moduleDiffs: [{ module: 'agent', changes: [{ path: '/value', before: 1, after: 2 }] }] });
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs });
-    if (path === '/api/runs' && request.method() === 'POST') { mutations.push({ body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] }); state = snapshot('new-rule', request.postDataJSON().mode); runs.unshift(state); return json(wrap(state)); }
+    if (path === '/api/runs' && request.method() === 'POST') {
+      const body = request.postDataJSON();
+      mutations.push({ body, csrf: request.headers()['x-csrf-token'] }); state = snapshot('new-rule', body.mode);
+      if (body.fixtureId?.startsWith('vul-web2-')) {
+        state = { ...state, fixtureId: body.fixtureId, testProfile: 'known_record_idor_read',
+          target: body.target || `http://127.0.0.1:${body.fixtureId === 'vul-web2-daehan' ? 4101 : 4102}`,
+          report: { fixtureId: body.fixtureId, testProfile: 'known_record_idor_read', finding: { category: 'CWE-639', status: 'not_confirmed' }, evidence: [{ check: 'cross-owner', status: 403 }] },
+          reportDocument: { status: 'skipped', errorCode: 'IDOR_DOCUMENT_UNSUPPORTED' },
+          reviewItems: [{ id: 'idor-review', title: 'IDOR · 접근 차단 확인', description: '다른 담당자의 레코드 조회가 차단되었습니다.', evidenceId: 'idor-evidence', evidence: 'cross-owner: 403', vulnerabilityConfirmed: false }] };
+      }
+      runs.unshift(state); return json(wrap(state));
+    }
     if (/^\/api\/runs\/[^/]+\/report\.hwpx$/.test(path)) return route.continue();
     const review = /^\/api\/runs\/([^/]+)\/reviews\/([^/]+)$/.exec(path);
     if (review && request.method() === 'POST') {
@@ -162,6 +173,60 @@ test('authenticated workspace loads central runs, starts a selected rule lab, an
   assert.deepEqual(errors, []);
 });
 
+test('vul-web2 site selection forwards its private origin to the rule IDOR lab and reopens evidence without XSS report claims', async t => {
+  const { page, mutations, errors } = await setup(t);
+  await page.locator('#fixture-select').selectOption('vul-web2-daehan');
+  assert.match(await page.locator('#lab-title').textContent(), /대한대학교 IDOR/);
+  assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://127.0.0.1:4101');
+  assert.match(await page.locator('#lab-description').textContent(), /Compose/);
+  assert.equal(await page.locator('#model-select').isDisabled(), true);
+  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
+  assert.match(await page.locator('#model-scope').textContent(), /모델을 호출하지 않습니다/);
+  await page.locator('#fixture-select').selectOption('vul-web2-wonchang');
+  assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://127.0.0.1:4102');
+  await page.locator('#lab-target-origin').fill('192.168.0.84:4102');
+  if (process.env.CA3P_UI_SCREENSHOT_PATH) {
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.screenshot({ path: process.env.CA3P_UI_SCREENSHOT_PATH });
+  }
+  await page.locator('#lab-run-button').click();
+  await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'REAL LAB / IDOR');
+  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-rule', modelId: 'rule-baseline', fixtureId: 'vul-web2-wonchang', target: 'http://192.168.0.84:4102' }, csrf: 'csrf-live' });
+  assert.match(await page.locator('#run-context').textContent(), /원창대학교 IDOR/);
+  await page.locator('[data-view=sessions]').click();
+  assert.match(await page.locator('#session-list').textContent(), /원창대학교 IDOR 실습/);
+  await page.locator('[data-session=new-rule]').click();
+  await page.locator('#history-banner').waitFor({ state: 'visible' });
+  await page.locator('[data-view=reports]').click();
+  assert.match(await page.locator('#report-content').textContent(), /원창대학교 IDOR 실행 결과/);
+  assert.match(await page.locator('#report-content').textContent(), /cross-owner: 403/);
+  assert.match(await page.locator('.report-note').textContent(), /자율 CERT 조사 결과를 뜻하지 않습니다/);
+  assert.doesNotMatch(await page.locator('.report-note').textContent(), /삭제 권한|XSS/);
+  assert.match(await page.locator('.report-document').textContent(), /HWPX 보고서는 아직 지원하지 않습니다/);
+  assert.doesNotMatch(await page.locator('.report-document').textContent(), /과금/);
+  assert.equal(await page.locator('#report-download-button').isDisabled(), true);
+  assert.equal(await page.locator('#export-button').isEnabled(), true);
+  await page.locator('[data-view=dashboard]').click();
+  await page.locator('#fixture-select').selectOption('vul-web-1');
+  assert.equal(await page.locator('#model-select').isEnabled(), true);
+  assert.match(await page.locator('#lab-title').textContent(), /저장형 XSS/);
+  assert.equal(await page.locator('#lab-target-control').isHidden(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('IDOR launch rejects paths and credentials before submitting a run', async t => {
+  const { page, mutations, errors } = await setup(t);
+  await page.locator('#fixture-select').selectOption('vul-web2-daehan');
+  for (const origin of ['http://127.0.0.1:4101/private', 'http://user:password@127.0.0.1:4101', 'https://127.0.0.1:4101']) {
+    await page.locator('#lab-target-origin').fill(origin);
+    await page.locator('#lab-run-button').click();
+    assert.equal(await page.locator('#lab-target-origin').getAttribute('aria-invalid'), 'true');
+    assert.match(await page.locator('#runtime-error').textContent(), /HTTP 원점/);
+  }
+  assert.equal(mutations.length, 0);
+  assert.deepEqual(errors, []);
+});
+
 test('develop CI view shows merged-suite failure, changed modules, and previous-run deltas without rendering report HTML', async t => {
   const { page, errors } = await setup(t, 'viewer');
   await page.locator('[data-view=ci]').click();
@@ -232,7 +297,7 @@ test('CI view distinguishes missing test totals from an actual zero-test result'
 test('viewer session can inspect evidence while all mutation controls remain disabled', async t => {
   const { page, errors } = await setup(t, 'viewer');
   await page.waitForFunction(() => document.querySelector('#model-select').options.length > 1);
-  for (const id of ['run-button', 'lab-run-button', 'new-session-button', 'stop-button', 'model-select']) assert.equal(await page.locator(`#${id}`).isDisabled(), true, id);
+  for (const id of ['run-button', 'lab-run-button', 'new-session-button', 'stop-button', 'model-select', 'fixture-select']) assert.equal(await page.locator(`#${id}`).isDisabled(), true, id);
   await page.locator('[data-view=sessions]').click(); await page.locator('[data-session=candidate]').click();
   await page.waitForFunction(() => !document.querySelector('#history-banner').hidden);
   assert.match(await page.locator('#user-role').textContent(), /조회 전용/);

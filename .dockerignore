@@ -15,4 +15,5 @@ reports/*
 reports/ci/*
 !reports/ci/latest.json
 xss-fuzzer
-vul-web2
+vul-web2/data
+vul-web2/wonchang/data

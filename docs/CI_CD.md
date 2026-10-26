@@ -20,7 +20,7 @@ CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run verify
 
 `scripts/ci.mjs`는 integration-manifest에 등록된 활성 모듈의 test/tests를 자동 탐색한다. 새 파일을 package.json에 매번 열거하지 않는다. 독립 테스트 디렉터리가 없는 활성 모듈은 manifest의 `ci.suiteAssignments`에서 실제 통합 테스트 파일의 소유 suite를 지정한다. `pentest-db`는 카탈로그 조회·저장 영속성·잘못된 입력 거부, `adapters`는 casper-db·guardrail·xss-parser·gateway 경계, `worker`는 별도 프로세스의 큐 실행·기록 재개·취소를 검증한다. 배정한 파일이 사라지거나 활성 모듈의 suite가 비면 CI는 실패하고 `completeSuite=false`를 기록한다. Node skip/todo/cancelled, pytest skip/error는 게이트 실패다. Chromium 실제 실행, curl, Python 의존성을 먼저 확인한다.
 
-`vul-web2`는 독립 fixture 모듈로 등록한다. Node suite는 사이트별 IDOR 검증기의 경계와 정책을 검사한다. `container-smoke`는 두 대학 사이트의 임시 기능 smoke, 별도 Compose의 health check, 지속 DB를 변경하지 않는 배포 검사 및 기존 `guardrail`·`attack-module`을 사용한 제한된 IDOR 조회를 실행한다. 기존 대시보드 이미지는 `.dockerignore`에서 두 대학 사이트를 제외한다.
+`vul-web2`는 독립 fixture 모듈로 등록한다. Node suite는 사이트별 IDOR 검증기의 경계와 정책 및 대시보드 worker의 결과 영속화를 검사한다. `container-smoke`는 두 대학 사이트의 임시 기능 smoke, 별도 Compose의 health check, 지속 DB를 변경하지 않는 배포 검사 및 기존 `guardrail`·`attack-module`을 사용한 제한된 IDOR 조회를 실행한다. 대시보드 이미지는 대학 검증기 소스를 포함하며 대학 사이트는 별도 이미지로 실행한다. 대시보드도 Docker이면 `docker-compose.vul-web2.yml` overlay로 대학 네트워크에 연결한다. 대학 DB와 의존성 캐시는 대시보드 이미지에 포함하지 않는다.
 
 `report`는 Node 연결부·capture sandbox suite와 Python JUnit suite 두 개를 실행한다. 두 suite가 모두 실행돼야 해당 활성 모듈을 포함한 전체 검증으로 인정한다. worker 수명주기·실패·취소, 바이너리 artifact 보존, 로그인한 HWPX 다운로드와 UI 상태도 검사한다. Python renderer와 Playwright를 Docker·CI에 함께 설치하며 실제 모델은 가짜 클라이언트로 대체한다. 검사 완료 뒤 생성되는 HWPX는 `.runtime` 볼륨의 artifact로 보존하고, 생성 실패는 검사 finding과 분리한다.
 

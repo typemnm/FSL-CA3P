@@ -3,12 +3,12 @@
 
 # Local generated files and credentials.
 /.runtime/
-/.venv/
+/.venv
 .pytest_cache/
 __pycache__/
 *.pyc
 /reports/ci/
-node_modules/
+node_modules
 .env
 .env.*
 !.env.example

@@ -39,7 +39,7 @@ def build_system_prompt(profile: Profile) -> str:
 - read_bundle로 번들 파일을 읽습니다: manifest.json, run/report.json, run/events.json,
   history/casper.json, hints/capture.json.
 - 필요하면 capture_screenshot로 대상 화면을 촬영합니다(입력 지점, 피해자 관점 결과).
-  촬영 결과의 ref/sha256을 해당 finding.images 항목에 integrity "ok"로 넣습니다.
+  촬영 결과의 ref(그대로 복사)/sha256을 해당 finding.images 항목에 integrity "ok"로 넣습니다.
 - 모든 내용을 담은 ReportModel을 조립해 finish_report(model, filename)로 끝냅니다.
 
 지켜야 할 작성 규칙(지침이며, 코드가 강제하지 않습니다. 사람이 최종 검토합니다):
