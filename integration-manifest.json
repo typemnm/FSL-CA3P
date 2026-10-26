@@ -30,7 +30,9 @@
       "path": "attack-module",
       "layer": "adapter",
       "status": "active",
-      "dependencies": ["contracts"]
+      "dependencies": [
+        "contracts"
+      ]
     },
     {
       "id": "guardrail",
@@ -45,16 +47,20 @@
       "path": "casper-db",
       "layer": "knowledge",
       "status": "active",
-      "sourceBranch": "gyun/previous_db",
+      "sourceBranch": "gyun/vulnability_db",
       "dependencies": []
     },
     {
       "id": "pentest-db",
       "path": "pentest-db",
       "layer": "knowledge",
-      "status": "active",
+      "status": "replaced",
       "sourceBranch": "nahyun06/pentest-db",
-      "dependencies": []
+      "dependencies": [],
+      "replacement": [
+        "casper-db"
+      ],
+      "reason": "Catalog, payload and verifier data migrated into the unified vulnerability DB; legacy wire/import aliases carry no independent store."
     },
     {
       "id": "vul-web-1",
@@ -64,7 +70,8 @@
       "sourceBranch": "typemnm/vul-web",
       "dependencies": [
         "attack-module",
-        "guardrail"
+        "guardrail",
+        "casper-db"
       ]
     },
     {
@@ -90,7 +97,6 @@
         "attack-module",
         "guardrail",
         "casper-db",
-        "pentest-db",
         "vul-web-1",
         "vul-web2",
         "contracts",
@@ -138,7 +144,6 @@
         "attack-module",
         "guardrail",
         "casper-db",
-        "pentest-db",
         "vul-web-1"
       ]
     },
@@ -161,8 +166,7 @@
         "agent",
         "contracts",
         "run-store",
-        "casper-db",
-        "pentest-db"
+        "casper-db"
       ]
     },
     {
@@ -272,7 +276,6 @@
         "attack-module",
         "guardrail",
         "casper-db",
-        "pentest-db",
         "vul-web-1"
       ]
     }
@@ -298,6 +301,7 @@
     }
   },
   "migration": {
-    "legacyComposition": "Compatibility wrappers remain in agent-dashboard; execution adapters and lab gateway live in packages/adapters."
+    "legacyComposition": "Compatibility wrappers remain in agent-dashboard; execution adapters and lab gateway live in packages/adapters.",
+    "pentestDb": "Replaced by casper-db attack_catalog namespace. Existing JSON run artifacts and legacy protocol aliases are retained for historical compatibility only."
   }
 }

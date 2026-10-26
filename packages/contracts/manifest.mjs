@@ -3,10 +3,11 @@ import { readFileSync, readdirSync, lstatSync, readlinkSync, existsSync } from '
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
 import { digest, CONTRACT_VERSIONS } from './index.mjs';
 
 export const PROJECT_ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const EXCLUDED = new Set(['node_modules', '.git', '.runtime', 'data', '__pycache__', '.pytest_cache', '.venv', 'reports', '.env']);
+const EXCLUDED = new Set(['node_modules', '.git', '.runtime', 'data', '__pycache__', '.pytest_cache', '.ruff_cache', '.venv', 'reports', '.env']);
 export function treeDigest(path) {
   if (!existsSync(path)) return null;
   const entries = [];
@@ -28,6 +29,20 @@ function runtimeVersion(command, args) {
   try { return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 }).trim(); }
   catch { return null; }
 }
+function attackCatalogSnapshot(path) {
+  if (!existsSync(path)) return null;
+  let database;
+  try {
+    database = new DatabaseSync(path, { readOnly: true });
+    const marker = database.prepare("SELECT value FROM attack_catalog_metadata WHERE key='schema'").get();
+    if (marker?.value !== 'casper-attack-catalog-1') return null;
+    return digest({
+      patterns: database.prepare('SELECT pattern_id,revision,content_sha256 FROM attack_patterns ORDER BY pattern_id,revision').all(),
+      templates: database.prepare('SELECT template_id,version,content_sha256 FROM attack_templates ORDER BY template_id,version').all(),
+    });
+  } catch { return null; }
+  finally { database?.close(); }
+}
 export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
   const fixtureId = options.fixtureId ?? 'vul-web-1';
   const universityOrigins = { 'vul-web2-daehan': 'http://127.0.0.1:4101', 'vul-web2-wonchang': 'http://127.0.0.1:4102' };
@@ -37,7 +52,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
     : mode === 'core-fixture' ? 'agent_cross_user_delete_canary' : 'stored_xss_canary');
   const moduleNames = universityLab
     ? ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker']
-    : ['agent', 'xss-parser', 'attack-module', 'guardrail', 'casper-db', 'pentest-db',
+    : ['agent', 'xss-parser', 'attack-module', 'guardrail', 'casper-db',
       'packages/adapters', 'packages/history', 'packages/evaluation', 'packages/report', 'apps/application', 'apps/worker'];
   const modules = Object.fromEntries(moduleNames
     .map(name => [name, { contentDigest: treeDigest(join(PROJECT_ROOT, name)),
@@ -60,7 +75,10 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
     data: { logicalInputDigest: digest({ mode, fixtureId, testProfile, ...(universityLab ? { origin: universityOrigin } : {}) }),
       datasetDigest: treeDigest(join(PROJECT_ROOT, universityLab ? 'vul-web2'
         : mode === 'core-fixture' ? 'apps/application/scripted-gateway.cjs' : 'vul-web-1')),
-      catalogDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'pentest-db/cases.json')),
+      catalogDigest: universityLab ? null : mode === 'core-fixture'
+        ? treeDigest(join(PROJECT_ROOT, 'apps/application/scripted-gateway.cjs'))
+        : attackCatalogSnapshot(options.caseSnapshot?.path ?? env.CASPER_DB_PATH ?? join(PROJECT_ROOT, 'casper-db/data/cases.sqlite3')),
+      catalogSeedDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')),
       caseSnapshotDigest: universityLab ? null : mode === 'core-fixture' ? treeDigest(join(PROJECT_ROOT, 'apps/application/scripted-gateway.cjs'))
         : treeDigest(process.env.CASPER_DB_PATH ?? join(PROJECT_ROOT, 'casper-db/data/cases.sqlite3')),
       caseRevisions: [] },
@@ -72,7 +90,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
     policy: { rulesetDigest: treeDigest(join(PROJECT_ROOT, 'guardrail/rules')),
       mutationRetry: 'never', recovery: 'interrupted-new-run-required', maxIterations: 1 },
     environment: { nodeVersion: process.version,
-      pythonVersion: mode === 'core-fixture' || universityLab ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? 'python', ['--version']),
+      pythonVersion: mode === 'core-fixture' || universityLab ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'), ['--version']),
       browserVersion: mode === 'core-fixture' || universityLab ? 'not-applicable' : (() => {
         try {
           const require = createRequire(new URL('../../xss-parser/package.json', import.meta.url));

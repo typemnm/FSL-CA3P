@@ -1,7 +1,7 @@
 import { digest } from '../contracts/index.mjs';
 
 export const NORMALIZATION_VERSION = '1.0';
-export const CONTRACT_DEPENDENCIES = Object.freeze({ agent: ['xss-parser', 'attack-module', 'guardrail', 'casper-db', 'pentest-db'],
+export const CONTRACT_DEPENDENCIES = Object.freeze({ agent: ['xss-parser', 'attack-module', 'guardrail', 'casper-db'],
   'casper-db': ['xss-parser'], 'attack-module': ['guardrail'] });
 export function affectedModules(changed) {
   const affected = new Set(changed); let expanded = true;
@@ -59,6 +59,11 @@ export function compareRunRecords(base, candidate, { kind = 'code' } = {}) {
   inspect('dataset', base.manifest?.data?.datasetDigest, candidate.manifest?.data?.datasetDigest);
   inspect('catalog', base.manifest?.data?.catalogDigest, candidate.manifest?.data?.catalogDigest);
   inspect('caseSnapshot', base.manifest?.data?.caseSnapshotDigest, candidate.manifest?.data?.caseSnapshotDigest);
+  if (base.manifest?.data?.knowledgeSnapshotDigest || candidate.manifest?.data?.knowledgeSnapshotDigest) {
+    inspect('knowledgeSnapshot', base.manifest?.data?.knowledgeSnapshotDigest, candidate.manifest?.data?.knowledgeSnapshotDigest);
+  }
+  const knowledgeDigest = run => run.report?.referenceContext?.casperDb?.knowledgeContext?.contentDigest;
+  if (knowledgeDigest(base) || knowledgeDigest(candidate)) inspect('parserKnowledge', knowledgeDigest(base), knowledgeDigest(candidate));
   inspect('initialState', base.manifest?.target?.initialStateDigest, candidate.manifest?.target?.initialStateDigest);
   if (base.manifest?.experiment || candidate.manifest?.experiment) {
     const clean = run => run.mode === 'core-fixture'
