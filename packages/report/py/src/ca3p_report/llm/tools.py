@@ -138,6 +138,11 @@ class ReportTools:
             result = json.loads(proc.stdout.splitlines()[-1]) if proc.stdout.strip() else {}
         except (ValueError, IndexError):
             raise ToolError("capture returned no JSON") from None
+        # The writer resolves images[].ref against the bundle root; hand the LLM that exact
+        # value so it copies it instead of guessing from the absolute path.
+        for record in result.get("captures") or []:
+            if isinstance(record, dict) and isinstance(record.get("path"), str):
+                record["ref"] = f"evidence/images/{Path(record['path']).name}"
         return result
 
     # -- finish_report -----------------------------------------------------------------
@@ -149,6 +154,11 @@ class ReportTools:
             or "report"
         )
         safe_model = redact(model)
+        for finding in safe_model.get("findings") or []:
+            for image in (finding.get("images") or []) if isinstance(finding, dict) else []:
+                ref = image.get("ref") if isinstance(image, dict) else None
+                if isinstance(ref, str) and ref and "/" not in ref:
+                    image["ref"] = f"evidence/images/{ref}"  # bare file name from the LLM
         # Source review state is carried deterministically, independent of prose
         # generation. A writer cannot omit it or replace it with invented approval.
         safe_model.pop("referenceContext", None)
@@ -178,7 +188,7 @@ class ReportTools:
         hwpx_path = self._out / name
         model_path = self._out / "report-model.json"
         md_path = self._out / "report.md"
-        write_hwpx(safe_model, hwpx_path, image_root=self._evidence)
+        write_hwpx(safe_model, hwpx_path, image_root=self._bundle)
         write_markdown(safe_model, md_path)
         model_path.write_text(json.dumps(safe_model, ensure_ascii=False, indent=2), "utf-8")
         files = [_file_entry(p) for p in (hwpx_path, model_path, md_path)]
