@@ -22,6 +22,46 @@ const timestamp = value => value === null || typeof value === 'string'
 const moduleId = value => typeof value === 'string' && /^[a-z0-9-]{1,64}$/.test(value);
 const pending = reason => ({ status: 'pending', reason });
 const runUrl = (repository, id) => `https://github.com/${repository}/actions/runs/${id}`;
+const PENDING_WORKFLOW_STATES = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
+
+export class WorkflowPendingError extends Error {
+  constructor(candidate) {
+    super('The current GitHub workflow is still running; its complete gate has not finished.');
+    this.name = 'WorkflowPendingError';
+    this.code = 'CI_PENDING';
+    this.sha = candidate.sha;
+    this.runId = candidate.runId;
+    this.runAttempt = candidate.runAttempt;
+  }
+}
+
+export class GitHubRateLimitError extends Error {
+  constructor(retryAt) {
+    super(`GitHub workflow API rate limit reached; retry after ${retryAt}.`);
+    this.name = 'GitHubRateLimitError';
+    this.code = 'GITHUB_RATE_LIMITED';
+    this.retryAt = retryAt;
+  }
+}
+
+function rateLimitRetryAt(headers) {
+  const now = Date.now();
+  const retryTimes = [now + 120_000];
+  const reset = headers?.get('x-ratelimit-reset');
+  if (typeof reset === 'string' && /^\d{1,13}$/.test(reset)) {
+    const resetMs = Number(reset) * 1000;
+    if (Number.isSafeInteger(resetMs)) retryTimes.push(resetMs);
+  }
+  const retryAfter = headers?.get('retry-after');
+  if (typeof retryAfter === 'string' && /^\d{1,10}$/.test(retryAfter)) {
+    retryTimes.push(now + Number(retryAfter) * 1000);
+  } else if (typeof retryAfter === 'string'
+    && /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(retryAfter)) {
+    const retryMs = Date.parse(retryAfter);
+    if (Number.isFinite(retryMs) && new Date(retryMs).toUTCString() === retryAfter) retryTimes.push(retryMs);
+  }
+  return new Date(Math.min(now + 7_200_000, Math.max(...retryTimes))).toISOString();
+}
 
 function validFeedRun(run, repository) {
   if (!onlyKeys(run, RUN_KEYS) || !identifier(run.runId) || !attempt(run.runAttempt) || !sha(run.commitSha)
@@ -83,7 +123,13 @@ async function readJson(fetchImpl, url, signal, maxBytes) {
   const response = await fetchImpl(url, { method: 'GET', redirect: 'error', credentials: 'omit',
     cache: 'no-store', signal, headers: { Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'CA3P-device-release-verifier' } });
-  if (response.status !== 200 || response.redirected || response.url && response.url !== url) {
+  if (response.redirected || response.url && response.url !== url) {
+    throw new Error(`Workflow verification returned unexpected HTTP ${response.status} or redirect.`);
+  }
+  if (response.status === 429 || response.status === 403 && response.headers?.get('x-ratelimit-remaining') === '0') {
+    throw new GitHubRateLimitError(rateLimitRetryAt(response.headers));
+  }
+  if (response.status !== 200) {
     throw new Error(`Workflow verification returned unexpected HTTP ${response.status} or redirect.`);
   }
   const declared = response.headers?.get('content-length');
@@ -115,16 +161,25 @@ async function readJson(fetchImpl, url, signal, maxBytes) {
   }
 }
 
+function matchesRunIdentity(run, candidate, repository) {
+  return apiIdentifier(run.id) === candidate.runId && run.run_attempt === candidate.runAttempt
+    && run.repository?.full_name === repository && run.head_repository?.full_name === repository
+    && run.event === 'push' && run.head_branch === 'develop' && run.head_sha === candidate.sha
+    && run.path === '.github/workflows/ci.yml' && run.html_url === candidate.runUrl;
+}
+
 function assertRun(run, candidate, repository) {
-  if (apiIdentifier(run.id) !== candidate.runId || run.run_attempt !== candidate.runAttempt
-    || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository
-    || run.event !== 'push' || run.head_branch !== 'develop' || run.head_sha !== candidate.sha
-    || run.path !== '.github/workflows/ci.yml' || run.html_url !== candidate.runUrl
-    || run.status !== 'completed' || run.conclusion !== 'success') {
+  if (!matchesRunIdentity(run, candidate, repository)) {
+    throw new Error('GitHub workflow identity, current attempt, or successful develop gate does not match.');
+  }
+  if (PENDING_WORKFLOW_STATES.has(run.status) && run.conclusion === null) throw new WorkflowPendingError(candidate);
+  if (run.status !== 'completed' || run.conclusion !== 'success') {
     throw new Error('GitHub workflow identity, current attempt, or successful develop gate does not match.');
   }
 }
 
+/* The listing can omit repository details, but a pending classification requires
+ * the complete current-run identity rather than treating stale evidence as a wait. */
 function assertLatestRun(listing, candidate, repository) {
   if (!Number.isSafeInteger(listing.total_count) || listing.total_count < 1 || !Array.isArray(listing.workflow_runs)
     || listing.workflow_runs.length < 1 || listing.workflow_runs.length > 10
@@ -141,6 +196,8 @@ function assertLatestRun(listing, candidate, repository) {
     ids.add(id);
   }
   const newest = listing.workflow_runs.reduce((latest, run) => BigInt(run.id) > BigInt(latest.id) ? run : latest);
+  if (matchesRunIdentity(newest, candidate, repository)
+    && PENDING_WORKFLOW_STATES.has(newest.status) && newest.conclusion === null) throw new WorkflowPendingError(candidate);
   if (String(newest.id) !== candidate.runId || newest.run_attempt !== candidate.runAttempt
     || newest.status !== 'completed' || newest.conclusion !== 'success') {
     throw new Error('A newer or unsuccessful GitHub workflow run supersedes this CI summary.');

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -8,11 +9,37 @@ const SERVICES = ['daehan', 'wonchang'];
 const PROJECT = 'ca3p-universities';
 const INSPECT = '{"name":{{json .Name}},"imageId":{{json .Image}},"image":{{json .Config.Image}},"running":{{json .State.Running}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}}}';
 const json = value => JSON.stringify(value, null, 2) + '\n';
-const defaultExecute = async (command, args, { timeoutMs = 600_000, cwd } = {}) =>
-  (await execFileAsync(command, args, { timeout: timeoutMs, cwd, maxBuffer: 8_000_000 })).stdout.trim();
+async function privateLog(path, result) {
+  await writeFile(path, `${result.stdout ?? ''}${result.stderr ? `\n${result.stderr}` : ''}`, { mode: 0o600 });
+  await chmod(path, 0o600);
+}
+const defaultExecute = async (command, args, { timeoutMs = 600_000, cwd, logFile } = {}) => {
+  let result;
+  try { result = await execFileAsync(command, args, { timeout: timeoutMs, cwd, maxBuffer: 8_000_000 }); }
+  catch (error) { if (logFile) await privateLog(logFile, error); throw error; }
+  if (logFile) await privateLog(logFile, result);
+  return result.stdout.trim();
+};
 const text = result => typeof result === 'string' ? result : result.stdout ?? result.output ?? '';
-const command = async (state, args, options = {}) => text(await (options.execute ?? defaultExecute)(state.dockerPath, args,
-  { timeoutMs: options.timeoutMs ?? 180_000 }));
+function operationName(args) {
+  if (args[0] === 'compose') {
+    return `compose-${args.find(arg => ['config', 'build', 'stop', 'up', 'create', 'logs'].includes(arg)) ?? 'command'}`;
+  }
+  if (args[0] === 'run') {
+    const operation = args.at(-3);
+    return ['backup', 'restore'].includes(operation) ? operation : 'run';
+  }
+  return ({ info: 'info', volume: 'volume-list', container: 'container-list', inspect: 'inspect', image: 'image-tag' })[args[0]] ?? 'command';
+}
+const command = async (state, args, options = {}) => {
+  // Old crash journals predate logDirectory; retain private diagnostics during their recovery too.
+  const directory = state.logDirectory ?? join(dirname(state.overridePath), '..', 'logs', basename(state.overridePath, '.json'), 'fixtures');
+  if (!isAbsolute(directory)) throw new Error('Fixture command logs require an absolute private directory.');
+  await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
+  const logFile = join(directory, `${operationName(args)}-${randomUUID()}.log`);
+  return text(await (options.execute ?? defaultExecute)(state.dockerPath, args,
+    { timeoutMs: options.timeoutMs ?? 180_000, logFile, stdoutOnly: true }));
+};
 const compose = (state, files = [state.composePath, state.overridePath]) => ['compose', '-p', state.project, ...files.flatMap(path => ['-f', path])];
 async function privateJson(path, value) { await writeFile(path, json(value), { mode: 0o600 }); await chmod(path, 0o600); }
 
@@ -115,6 +142,7 @@ export async function prepareFixtures(config, release, sha, options = {}) {
     || !isAbsolute(config.deployRoot ?? '') || !isAbsolute(release ?? '') || !/^[a-f0-9]{40}$/.test(sha)) throw new Error('Invalid university fixture deployment configuration.');
   const directory = join(config.deployRoot, 'fixtures'); await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
   const state = { enabled: true, dockerPath: config.fixtures.dockerPath, project: PROJECT,
+    logDirectory: join(config.deployRoot, 'logs', sha, 'fixtures'),
     composePath: join(release, 'vul-web2/compose.yaml'), overridePath: join(directory, `${sha}.json`),
     rollbackComposePath: join(directory, `${sha}.previous-compose.json`), rollbackOverridePath: join(directory, `${sha}.previous-images.json`),
     images: Object.fromEntries(SERVICES.map(service => [service, `ca3p-${service}:${sha}`])), original: [], volumes: [] };
@@ -190,7 +218,13 @@ export async function backupFixtures(snapshotDir, state, options = {}) {
 
 export async function activateFixtures(state, options = {}) {
   if (!state?.enabled) return;
-  await command(state, [...compose(state), 'up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '120', ...SERVICES], options);
+  try {
+    await command(state, [...compose(state), 'up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '120', ...SERVICES], options);
+  } catch (error) {
+    // Capture the failed candidate before rollback replaces its containers. Diagnostics cannot replace the original failure.
+    await command(state, [...compose(state), 'logs', '--no-color', '--tail', '150', ...SERVICES], options).catch(() => {});
+    throw error;
+  }
 }
 
 export async function restoreFixtures(snapshotDir, state, options = {}) {

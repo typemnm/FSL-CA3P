@@ -17,7 +17,7 @@ async function temporary(t) {
 test('deployment status exposes only verified public metadata and constructs its own GitHub URL', async t => {
   const directory = await temporary(t), path = join(directory, 'status.json');
   const value = { status: 'deployed', deployedSha: 'a'.repeat(40), targetSha: 'b'.repeat(40), previousSha: 'c'.repeat(40),
-    checkedAt: '2026-10-26T10:00:00.000Z', deployedAt: '2026-10-26T10:01:00.000Z', updatedAt: '2026-10-26T10:01:01.000Z',
+    checkedAt: '2026-10-26T10:00:00.000Z', deployedAt: '2026-10-26T10:01:00.000Z', updatedAt: '2026-10-26T10:01:01.000Z', retryAt: '2026-10-26T10:03:00.000Z',
     phase: 'backup-and-migrate', runId: '40209727623', runUrl: 'https://untrusted.example/secret',
     error: 'private error with secret', message: 'private message with secret',
     backup: '/private/deployment/backup', previous: '/private/releases/old', target: '/private/releases/new',
@@ -26,7 +26,7 @@ test('deployment status exposes only verified public metadata and constructs its
   const output = await deploymentStatus(path);
   assert.deepEqual(output, { enabled: true, status: 'deployed', deployedSha: value.deployedSha,
     targetSha: value.targetSha, previousSha: value.previousSha, checkedAt: value.checkedAt,
-    deployedAt: value.deployedAt, updatedAt: value.updatedAt, phase: value.phase,
+    deployedAt: value.deployedAt, updatedAt: value.updatedAt, retryAt: value.retryAt, phase: value.phase,
     runUrl: 'https://github.com/typemnm/FSL-CA3P/actions/runs/40209727623' });
   assert.doesNotMatch(JSON.stringify(output), /secret|\/private|untrusted\.example/);
   await writeFile(path, JSON.stringify({ ...value, status: 'prepared' }));
@@ -46,7 +46,7 @@ test('deployment status sanitizes invalid metadata and handles missing or malfor
     checkedAt: '/private/secret', deployedAt: 'invalid-date', updatedAt: {}, runId: '1?token=secret',
     runUrl: 'https://untrusted.example/secret' }));
   assert.deepEqual(await deploymentStatus(path), { enabled: true, status: 'unknown', deployedSha: null,
-    targetSha: null, previousSha: null, checkedAt: null, deployedAt: null, updatedAt: null, phase: null, runUrl: null });
+    targetSha: null, previousSha: null, checkedAt: null, deployedAt: null, updatedAt: null, retryAt: null, phase: null, runUrl: null });
 });
 
 test('maintenance detection treats an existing marker as paused and fails closed on lookup errors', async t => {

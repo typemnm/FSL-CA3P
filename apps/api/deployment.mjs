@@ -15,7 +15,7 @@ export async function deploymentStatus(path = process.env.DASHBOARD_DEPLOYMENT_S
     const states = ['checking', 'waiting-ci', 'up-to-date', 'verified', 'preparing', 'prepared', 'deferred', 'superseded', 'deploying', 'deployed', 'blocked', 'failed', 'recovery-required'];
     return { enabled: true, status: states.includes(value.status) ? value.status : 'unknown',
       deployedSha: sha('deployedSha'), targetSha: sha('targetSha'), previousSha: sha('previousSha'),
-      checkedAt: date('checkedAt'), deployedAt: date('deployedAt'), updatedAt: date('updatedAt'),
+      checkedAt: date('checkedAt'), deployedAt: date('deployedAt'), updatedAt: date('updatedAt'), retryAt: date('retryAt'),
       phase: ['ci-verification', 'dependencies', 'isolated-smoke', 'fixtures', 'backup-and-migrate'].includes(value.phase) ? value.phase : null,
       runUrl: /^\d+$/.test(String(value.runId ?? '')) ? `https://github.com/typemnm/FSL-CA3P/actions/runs/${value.runId}` : null };
   } catch { return { enabled: true, status: 'unavailable' }; }

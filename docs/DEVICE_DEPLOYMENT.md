@@ -77,7 +77,9 @@ cat "$CA3P_DEPLOY_ROOT/status.json"
 tail -n 100 /Users/casper/dev/CA3P/FSL-CA3P/.runtime/device-deploy.err.log
 ```
 
-상태가 `waiting-ci`이면 CI/요약 게시 완료를 기다리고, `deferred`이면 기존 검사 종료 또는 오류 재시도 대기를 확인한다. `failed`/`blocked`이면 private `status.json`, `.runtime/device-deploy.*.log`, `deployRoot/logs/<SHA>/`를 확인한다. 전환 실패 SHA는 원인을 해결하기 전 자동 반복 배포하지 않는다. 네트워크·의존성 준비 오류에는 재시도 대기가 적용된다. 문제를 해결한 뒤 명시적으로 재시도한다.
+상태가 `waiting-ci`이면 CI/요약 게시 완료를 기다린다. 전체 테스트가 끝나도 같은 workflow의 이미지 게시·배포 작업이 진행 중이면 완료까지 기다린다. GitHub 비인증 API 한도(같은 공인 IP에서 공유)를 소진하면 `retryAt`까지 검증을 미루며 배포 실패로 처리하지 않는다. `deferred`이면 기존 검사 종료 또는 오류 재시도 대기를 확인한다. `failed`/`blocked`이면 private `status.json`, `.runtime/device-deploy.*.log`, `deployRoot/logs/<SHA>/`를 확인한다. Docker 작업별 출력과 실패한 후보 컨테이너 로그는 `logs/<SHA>/fixtures/`에 비공개로 기록한다. 전환 실패 SHA는 원인을 해결하기 전 자동 반복 배포하지 않는다. 네트워크·의존성 준비 오류에는 재시도 대기가 적용된다. 문제를 해결한 뒤 명시적으로 재시도한다.
+
+LaunchAgent의 `Umask=077`은 유지한다. 이 설정으로 checkout된 Git 추적 소스 파일만 Git 모드에 따라 `0644`/`0755`로 정상화한다. 추적하지 않는 `.env`·인증·DB·설정과 심볼릭 링크 대상은 변경하지 않는다. 대한대 컨테이너는 root 소유 package manifest를 일반 사용자도 읽도록 `COPY --chmod=0644`를 명시한다.
 
 ```sh
 "$CA3P_NODE" "$CA3P_DEPLOY_ROOT/controller/device-deploy.mjs" --config "$CA3P_DEPLOY_CONFIG" --retry

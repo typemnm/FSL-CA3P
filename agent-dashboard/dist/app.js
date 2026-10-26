@@ -822,6 +822,7 @@ function renderPlatform() {
       deployed: '자동 배포 완료', blocked: '배포 재시도에 운영자 확인 필요', failed: '배포 실패 · 이전 버전 유지',
       'recovery-required': '서비스 복구에 운영자 확인 필요', unavailable: '자동 배포 상태 확인 불가' };
     $('platform-content').insertAdjacentHTML('afterbegin', `<section class="panel platform-source"><div class="eyebrow">DEVICE DEPLOYMENT</div><h2>${escape(labels[deployment.status] || '자동 배포 상태 확인 중')}</h2><p>실행 SHA <span class="mono">${escape(deployment.deployedSha || source.commitSha || '미기록')}</span></p><p>develop SHA <span class="mono">${escape(deployment.targetSha || '확인 중')}</span></p><small>최근 확인 ${escape(dateLabel(deployment.checkedAt))} · 최근 배포 ${escape(dateLabel(deployment.deployedAt))}</small>${deployment.runUrl ? `<p><a href="${escape(deployment.runUrl)}" target="_blank" rel="noopener noreferrer">배포 대상의 전체 CI 결과</a></p>` : ''}</section>`);
+    if (deployment.retryAt) $('platform-content').firstElementChild?.insertAdjacentHTML('beforeend', `<p>GitHub 검증 재시도 ${escape(dateLabel(deployment.retryAt))}</p>`);
   }
 }
 $('model-select').addEventListener('change', renderStats);
