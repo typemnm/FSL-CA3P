@@ -60,6 +60,12 @@ export function compareRunRecords(base, candidate, { kind = 'code' } = {}) {
   inspect('catalog', base.manifest?.data?.catalogDigest, candidate.manifest?.data?.catalogDigest);
   inspect('caseSnapshot', base.manifest?.data?.caseSnapshotDigest, candidate.manifest?.data?.caseSnapshotDigest);
   inspect('initialState', base.manifest?.target?.initialStateDigest, candidate.manifest?.target?.initialStateDigest);
+  if (base.manifest?.experiment || candidate.manifest?.experiment) {
+    const clean = run => run.mode === 'core-fixture'
+      || run.manifest?.experiment?.previousRunCount === 0 && !!run.manifest?.experiment?.lastResetAt;
+    conditions.push({ name: 'experimentIsolation', before: clean(base), after: clean(candidate),
+      equal: clean(base) && clean(candidate), available: !!base.manifest?.experiment && !!candidate.manifest?.experiment });
+  }
   inspect('policy', base.manifest?.policy?.rulesetDigest, candidate.manifest?.policy?.rulesetDigest);
   inspect('contracts', base.manifest?.shared?.contractDigest, candidate.manifest?.shared?.contractDigest);
   if (kind !== 'environment') {

@@ -170,9 +170,15 @@ async function login(origin, account, password, { fetchImpl, signal, onContact }
     body: new URLSearchParams({ username: account, password }),
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
-  signal?.throwIfAborted();
   if (!signal?.aborted) onContact?.();
   return sessionCookie(response);
+}
+
+async function logout(origin, cookie, fetchImpl) {
+  // Cleanup has its own short deadline so cancelling a probe still revokes every
+  // session whose login response was received. It must not follow redirects.
+  await fetchImpl(`${origin}/logout`, { method: 'GET', redirect: 'manual',
+    headers: { Cookie: cookie }, signal: AbortSignal.timeout(2000) });
 }
 
 function observation(stage, response, ownerField) {
@@ -220,11 +226,15 @@ export async function probeSite({ siteKey, origin, fetchImpl = fetch, curlImpl =
   const contacted = () => { try { onContact?.(); } catch { /* Diagnostics cannot interrupt the probe. */ } };
   const startedAt = new Date().toISOString();
   boundedSignal.throwIfAborted();
-  const cookies = {
-    'first-owner': await login(allowedOrigin, profile.firstAccount, profile.password, { fetchImpl, signal: boundedSignal, onContact: contacted }),
-    'second-owner': await login(allowedOrigin, profile.secondAccount, profile.password, { fetchImpl, signal: boundedSignal, onContact: contacted }),
-    student: await login(allowedOrigin, 'student1', 'Welcome2026', { fetchImpl, signal: boundedSignal, onContact: contacted }),
-  };
+  const cookies = {};
+  try {
+    for (const [session, account, password] of [
+      ['first-owner', profile.firstAccount, profile.password],
+      ['second-owner', profile.secondAccount, profile.password], ['student', 'student1', 'Welcome2026'],
+    ]) {
+      cookies[session] = await login(allowedOrigin, account, password, { fetchImpl, signal: boundedSignal, onContact: contacted });
+      boundedSignal.throwIfAborted();
+    }
   const get = createGuardedGet({ siteKey, origin: allowedOrigin, runId, curlImpl });
   const evidence = [];
   for (const [stage, spec] of Object.entries(STAGES)) {
@@ -253,6 +263,9 @@ export async function probeSite({ siteKey, origin, fetchImpl = fetch, curlImpl =
     provenance: { policy: `vul-web2-${siteKey}-known-record-idor`,
       guardrail: 'guardrail/GuardrailEvaluator', attack: 'attack-module/executeUniversityRead' },
   };
+  } finally {
+    await Promise.allSettled(Object.values(cookies).map(cookie => logout(allowedOrigin, cookie, fetchImpl)));
+  }
 }
 
 export async function runConfiguredSites({ args = [], probe = probeSite } = {}) {

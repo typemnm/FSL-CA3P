@@ -66,6 +66,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       receive(value); onConnection('connected', 'polling');
     }
     catch (error) {
+      if (closed || cycle !== generation) return;
       unauthorized = error.status === 401;
       onConnection('disconnected', 'polling');
       if (!unauthorized) onError(error.message);
@@ -79,15 +80,18 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
 
   function connectStream() {
     if (closed) return;
+    const cycle = generation;
     if (remote || !EventSourceImpl) { transport = 'polling'; void poll(); return; }
     transport = 'sse';
     stream = new EventSourceImpl('/api/events');
-    stream.onopen = () => onConnection('connecting', transport);
+    stream.onopen = () => { if (!closed && cycle === generation) onConnection('connecting', transport); };
     stream.addEventListener('state', event => {
+      if (closed || cycle !== generation) return;
       try { receive(JSON.parse(event.data)); onConnection('connected', transport); }
       catch (error) { onConnection('disconnected', transport); onError(error.message); }
     });
     stream.onerror = () => {
+      if (closed || cycle !== generation) return;
       // Some proxies do not forward streaming responses. Fall back permanently.
       stream?.close(); stream = null; transport = 'polling';
       onConnection('connecting', transport); void poll();
@@ -136,6 +140,17 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     },
     async stop(id) { const value = await request(`/api/runs/${encodeURIComponent(id)}/stop`, {}); receive(value); return value; },
     async reset() { const value = await request('/api/reset', {}); receive(value); return value; },
+    async resetExperiment() {
+      // Ignore queued telemetry and in-flight polls from the previous experiment.
+      disconnect();
+      try {
+        const value = await request('/api/experiment-reset', { confirmed: true });
+        if (value.experimentReset?.status !== 'completed') throw new Error('전체 실험 초기화 완료를 확인할 수 없습니다.');
+        receive(value);
+        onConnection('connected', transport);
+        return value;
+      } finally { if (!closed) connectStream(); }
+    },
     listRuns({ limit, offset } = {}) {
       const query = new URLSearchParams();
       if (limit !== undefined) query.set('limit', String(limit));

@@ -17,6 +17,7 @@ const sites = {
 async function mockUniversity(siteKey, { denyCross = false } = {}) {
   const site = sites[siteKey];
   const requests = [];
+  const sessions = new Set();
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     if (req.method === 'POST' && url.pathname === '/login') {
@@ -32,8 +33,13 @@ async function mockUniversity(siteKey, { denyCross = false } = {}) {
       res.writeHead(302, {
         Location: '/mypage', 'Set-Cookie': `${siteKey}_sid=${username}token; HttpOnly; Path=/`,
       });
+      sessions.add(`${siteKey}_sid=${username}token`);
       res.end();
       return;
+    }
+    if (req.method === 'GET' && url.pathname === '/logout') {
+      sessions.delete(req.headers.cookie);
+      res.writeHead(302, { Location: '/' }); res.end(); return;
     }
     const match = new RegExp(`^${site.endpoint}/(1|3)$`).exec(url.pathname);
     if (req.method !== 'GET' || !match || url.search) {
@@ -57,7 +63,7 @@ async function mockUniversity(siteKey, { denyCross = false } = {}) {
       applicant_name: 'private fixture field', contact: 'private@example.invalid' }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { origin: `http://127.0.0.1:${server.address().port}`, requests,
+  return { origin: `http://127.0.0.1:${server.address().port}`, requests, sessions,
     close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())) };
 }
 
@@ -77,6 +83,7 @@ test('both university probes use real guardrail and curl, and report only bounde
         ['studentRole', 3, 403, null],
       ]);
       assert.equal(target.requests.length, 4);
+      assert.equal(target.sessions.size, 0);
       assert.ok(target.requests.every(item => item.method === 'GET'
         && [1, 3].some(id => item.path === `${sites[siteKey].endpoint}/${id}`)));
       const json = JSON.stringify(report);
@@ -87,6 +94,27 @@ test('both university probes use real guardrail and curl, and report only bounde
     } finally {
       await target.close();
     }
+  }
+});
+
+test('probe failures and cancellation revoke every session already created', async () => {
+  for (const cancel of [true, false]) {
+    const controller = new AbortController(); const loggedOut = []; let logins = 0;
+    await assert.rejects(probeSite({ siteKey: 'daehan', signal: controller.signal,
+      fetchImpl: async (url, options) => {
+        if (url.endsWith('/logout')) {
+          loggedOut.push(options.headers.Cookie);
+          assert.equal(options.signal.aborted, false);
+          return new Response(null, { status: 302 });
+        }
+        logins += 1;
+        if (cancel) controller.abort();
+        else if (logins === 2) return new Response(null, { status: 401 });
+        return new Response(null, { status: 302, headers: {
+          location: '/mypage', 'set-cookie': `daehan_sid=fixturetoken${logins}; Path=/`,
+        } });
+      }, curlImpl: () => assert.fail('partially logged-in probe must issue no reads') }));
+    assert.deepEqual(loggedOut, ['daehan_sid=fixturetoken1']);
   }
 });
 

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRunRepository, readArtifactBytes } from '../index.mjs';
+import { spawnSync } from 'node:child_process';
 
 function setup(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-store-test-'));
@@ -78,4 +79,61 @@ test('review records update only linked checks and preserve a durable audit', t 
   const next = store.recordReview('run-test', review);
   assert.equal(next.historyWrite.checks[0].review_status, 'reviewed'); assert.equal(next.reviewAudit.length, 1);
   assert.throws(() => store.recordReview('run-test', { ...review, check_id: 'CHECK-other' }), { code: 'CHECK_NOT_LINKED' });
+});
+
+test('experiment reset fences every connection and removes complete run records and SQLite remnants', t => {
+  const { store, reopen, path } = setup(t); enqueue(store);
+  const lease = store.claimNext('worker-a');
+  store.reserveAction(lease, { actionId: 'action-a', request: { marker: 'old-experiment-evidence-marker' } });
+  store.completeAction(lease, 'action-a', { marker: 'old-experiment-evidence-marker' });
+  store.recordModelCall(lease, { prompt: 'old-experiment-evidence-marker' });
+  store.writeArtifact('run-test', 'report', { marker: 'old-experiment-evidence-marker' });
+  store.saveState(lease, { id: 'run-test', status: 'completed', events: [{ id: 'old-event', marker: 'old-experiment-evidence-marker' }],
+    historyWrite: { checks: [{ check_id: 'check-a', run_id: 'run-test' }] } });
+  // A terminal public state is insufficient while the worker still owns its lease.
+  assert.throws(() => store.beginExperimentReset('reset-a'), { code: 'RUN_ACTIVE' });
+  store.finish(lease, 'completed');
+  store.recordReview('run-test', { check_id: 'check-a', run_id: 'run-test', review_status: 'reviewed' });
+  const second = reopen();
+  store.beginExperimentReset('reset-a');
+  assert.throws(() => enqueue(second, 'racing-run'), { code: 'EXPERIMENT_RESET_REQUIRED' });
+  assert.equal(second.claimNext('worker-b'), null);
+  assert.throws(() => second.beginExperimentReset('reset-b'), { code: 'EXPERIMENT_BUSY' });
+  const result = store.completeExperimentReset('reset-a', { files: 1 });
+  assert.equal(result.deleted.runs, 1); assert.equal(result.deleted.run_events, 1);
+  assert.equal(result.deleted.action_intents, 1); assert.equal(result.deleted.model_calls, 1);
+  assert.equal(result.deleted.review_audit, 1); assert.equal(result.deleted.artifacts, 1);
+  assert.equal(second.getRun('run-test'), null); assert.equal(second.listRuns().total, 0);
+  assert.equal(second.experimentState().status, 'ready'); assert.equal(second.experimentState().epoch, 1);
+  assert.equal(readFileSync(path).includes(Buffer.from('old-experiment-evidence-marker')), false);
+  enqueue(second, 'fresh-run');
+});
+
+test('failed reset remains fenced across reopen and permits an explicit retry', t => {
+  const { store, reopen } = setup(t);
+  store.beginExperimentReset('reset-a'); store.failExperimentReset('reset-a');
+  const second = reopen();
+  assert.equal(second.experimentState().status, 'failed');
+  assert.throws(() => enqueue(second), { code: 'EXPERIMENT_RESET_REQUIRED' });
+  second.beginExperimentReset('reset-b'); second.completeExperimentReset('reset-b');
+  assert.equal(store.experimentState().epoch, 1); enqueue(store);
+});
+
+test('review mutation lock excludes reset until the external write finishes', t => {
+  const { store, reopen } = setup(t); const second = reopen();
+  store.beginExperimentMutation('review-a');
+  assert.throws(() => second.beginExperimentReset('reset-a'), { code: 'EXPERIMENT_BUSY' });
+  assert.throws(() => second.beginExperimentMutation('review-b'), { code: 'EXPERIMENT_RESET_REQUIRED' });
+  store.endExperimentMutation('review-a');
+  second.beginExperimentReset('reset-a'); second.completeExperimentReset('reset-a');
+});
+
+test('an abandoned process operation requires a fresh reset instead of silently resuming', t => {
+  const { store } = setup(t);
+  const exited = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' });
+  assert.equal(exited.status, 0);
+  store.beginExperimentReset(`api-${exited.stdout}-reset-test`);
+  assert.equal(store.recoverAbandonedExperimentOperation(), true);
+  assert.equal(store.experimentState().status, 'failed');
+  assert.throws(() => enqueue(store), { code: 'EXPERIMENT_RESET_REQUIRED' });
 });
