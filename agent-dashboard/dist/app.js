@@ -46,6 +46,7 @@ hydrateIcons();
 // Keep earlier browser-only demo records intact under their original key.
 const STORAGE = 'ca3p.loop.core.sessions.v1';
 const SETTINGS = 'ca3p.loop.settings.v1';
+const EXPERIMENT_EPOCH = 'ca3p.loop.experiment.epoch.v1';
 function readJSON(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
 function isObject(value) { return value && typeof value === 'object' && !Array.isArray(value); }
 const EVENT_CHANNELS = {
@@ -101,7 +102,7 @@ function isLegacyRun(value) {
 const saved = readJSON(STORAGE, []);
 let history = Array.isArray(saved) ? saved.filter(isRun).slice(0, 12) : [];
 const storedSettings = readJSON(SETTINGS, {});
-const settings = { motion: storedSettings?.motion !== false, autoScroll: storedSettings?.autoScroll !== false, speed: [900,1800,3000].includes(Number(storedSettings?.speed)) ? Number(storedSettings.speed) : 1800 };
+const settings = { motion: storedSettings?.motion !== false, autoScroll: storedSettings?.autoScroll !== false, confirmModelReset: storedSettings?.confirmModelReset !== false, speed: [900,1800,3000].includes(Number(storedSettings?.speed)) ? Number(storedSettings.speed) : 1800 };
 // Browser history is read-only context. Only the server can advance the current run.
 let run = { id: '', target: '', status: 'idle', startedAt: null, elapsedMs: 0, step: 0, totalSteps: 19, iterations: 1, events: [], snapshots: {}, reviewItems: [], mode: 'core-fixture', simulated: true, targetContacted: false };
 let instanceId = null;
@@ -112,6 +113,13 @@ let authSession = null;
 let centralHistoryLoaded = false;
 let historyRefreshPending = false;
 let models = [];
+let acceptedModelId = '';
+let acceptedFixtureId = 'vul-web-1';
+let pendingModelChange = null;
+let modelChangeUnreset = storedSettings?.modelChangeUnreset === true;
+let experimentEpoch = readJSON(EXPERIMENT_EPOCH, null);
+let experimentStatus = 'ready';
+let browserResetError = '';
 let platform = null;
 let ciResults = null;
 let ciError = '';
@@ -211,9 +219,22 @@ function showRuntimeError(message) {
   $('runtime-error').hidden = !message;
 }
 function acceptState(envelope) {
+  let resetViews = false;
   const next = redactTelemetry(envelope.run);
   if (next.status !== 'idle' && !isRun(next)) throw new Error('코어 실행 상태의 데이터 형식이 올바르지 않습니다.');
   if (next.status === 'idle' && (!isObject(next.snapshots) || !Array.isArray(next.reviewItems) || next.step !== 0 || !Number.isInteger(next.totalSteps) || next.totalSteps < 1 || next.totalSteps > 128 || next.events.length !== 0)) throw new Error('코어 대기 상태의 데이터 형식이 올바르지 않습니다.');
+  const nextEpoch = envelope.experiment?.epoch;
+  if (Number.isSafeInteger(nextEpoch) && nextEpoch >= 0) {
+    if (instanceId !== null && Number.isSafeInteger(experimentEpoch) && nextEpoch < experimentEpoch) return;
+    if (nextEpoch !== experimentEpoch && (experimentEpoch !== null || nextEpoch > 0)) {
+      clearExperimentView(); modelChangeUnreset = false;
+      resetViews = true;
+      settings.modelChangeUnreset = false; persistSettings();
+    }
+    experimentEpoch = nextEpoch;
+    try { localStorage.setItem(EXPERIMENT_EPOCH, JSON.stringify(nextEpoch)); } catch { /* The state marker remains in memory. */ }
+  }
+  experimentStatus = envelope.experiment?.status ?? 'ready';
   const sameInstance = instanceId === envelope.instanceId;
   const rank = { idle: 0, queued: 1, preparing: 1, running: 2, stopping: 3, stopped: 4, interrupted: 4, cancelled: 4, completed: 4, failed: 4 };
   // A POST response can arrive after a newer SSE event. Keep the newer server state.
@@ -227,12 +248,15 @@ function acceptState(envelope) {
     ? { available: envelope.lab.available, model: envelope.lab.model, possibleRetries: envelope.lab.possibleRetries }
     : { available: false };
   run = structuredClone(next);
+  if (resetViews) renderAllExperimentViews();
   saveRun();
   if (next.id !== previousId || next.status !== previousStatus) void refreshHistory();
   if (!inspectedRun && !isLab(run) && (!sameInstance || previousId !== run.id) && document.activeElement !== $('target-url')) $('target-url').value = run.target || '';
   if (selectedEventId && !currentRun().events.some((event) => event.id === selectedEventId)) selectedEventId = null;
-  showRuntimeError(run.status === 'failed' ? run.error || '코어 실행에 실패했습니다.' : '');
+  showRuntimeError(browserResetError || (experimentStatus === 'failed' ? '이전 실험 초기화가 완료되지 않았습니다. 모델 변경 확인 창에서 초기화를 다시 시도하세요.'
+    : run.status === 'failed' ? run.error || '코어 실행에 실패했습니다.' : ''));
   render();
+  if (resetViews) void loadWorkspace();
   if (run.id === previousId && run.status !== previousStatus) {
     if (run.status === 'completed') notify('코어 실행이 완료되었습니다. 리포트를 확인하세요.');
     if (run.status === 'stopped') notify('코어 실행을 중지하고 수신한 기록을 저장했습니다.');
@@ -274,6 +298,7 @@ function renderStats() {
   const item = currentRun();
   const running = !inspectedRun && run.status === 'running';
   const active = ['queued', 'preparing', 'running', 'stopping'].includes(run.status);
+  const experimentBlocked = !!browserResetError || ['failed', 'resetting'].includes(experimentStatus);
   const lab = isLab(item);
   const stage = item.events.length ? moduleById(item.events.at(-1).module) : null;
   const connected = connection === 'connected';
@@ -303,20 +328,24 @@ function renderStats() {
   $('pause-button').disabled = true;
   $('pause-button').setAttribute('aria-label', '일시정지 및 재개 미지원');
   $('stop-button').disabled = !canOperate() || !!inspectedRun || !connected || controlPending || !['queued','preparing','running'].includes(run.status);
-  $('run-button').disabled = !canOperate() || !connected || controlPending || active;
+  $('run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked;
   const idor = selectedIdorFixture();
-  if (idor) $('model-select').value = 'rule-baseline';
+  if (idor) { $('model-select').value = 'rule-baseline'; acceptedModelId = 'rule-baseline'; }
   for (const option of $('model-select').options) {
     const entry = models.find(item => item.id === option.value);
     option.disabled = !entry?.available || (!!idor && entry.id !== 'rule-baseline');
     if (entry) option.textContent = idor && entry.id === 'rule-baseline' ? '규칙 기반 · 알려진 레코드 IDOR 검증' : `${entry.name || entry.id}${entry.available ? '' : ' · 사용 불가'}`;
   }
   const model = selectedModel();
-  $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || !model?.available;
+  $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !model?.available;
   $('fixture-select').disabled = controlPending || active || !canOperate();
   $('lab-target-origin').disabled = controlPending || active || !canOperate();
   $('lab-target-control').hidden = !idor;
   $('model-select').disabled = !!idor || controlPending || active || !canOperate();
+  $('model-reset-toggle').checked = settings.confirmModelReset;
+  $('model-reset-toggle').disabled = controlPending || !!pendingModelChange;
+  $('experiment-reset-button').disabled = !canOperate() || !connected || controlPending || active || !!pendingModelChange;
+  $('model-reset-warning').hidden = !modelChangeUnreset;
   $('lab-title').textContent = idor ? `vul-web2 · ${idor.name} IDOR 검증` : '실제 격리 실습 · 저장형 XSS 검증';
   $('lab-description').textContent = idor ? `${idor.name}의 실습 IP와 포트를 아래에 입력하세요. vul-web2 Compose를 먼저 시작해야 하며 기본 포트는 ${idor.port}입니다. 에이전트가 알려진 가상 레코드의 조회 권한만 비교합니다. 위 DISPLAY URL은 사용하지 않습니다.` : '서버가 격리된 로컬 게시판을 열어 시험 글 한 건을 게시하고 브라우저 실행 여부를 확인합니다. 위 입력 URL은 사용하지 않습니다.';
   $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : model?.available ? `${idor ? '규칙 기반 IDOR' : model.name || model.id} · 실행 준비됨` : '선택한 엔진을 사용할 수 없습니다. 서버 실행 환경과 모델 설정을 확인하세요.';
@@ -489,6 +518,7 @@ async function submitControl(action) {
 }
 $('target-form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (browserResetError || ['failed', 'resetting'].includes(experimentStatus) || pendingModelChange) return;
   if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected') return;
   const validated = validateTarget($('target-url').value);
   $('url-error').hidden = validated.ok;
@@ -503,6 +533,7 @@ $('target-form').addEventListener('submit', async (event) => {
   });
 });
 $('lab-run-button').addEventListener('click', async () => {
+  if (browserResetError || ['failed', 'resetting'].includes(experimentStatus) || pendingModelChange) return;
   const model = selectedModel();
   if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available) return;
   let target;
@@ -527,11 +558,32 @@ $('lab-run-button').addEventListener('click', async () => {
     notify(selectedIdorFixture() ? `${selectedIdorFixture().name} IDOR 실습을 시작했습니다.` : `${model.name || model.id}로 실제 격리 실습을 시작했습니다.`);
   });
 });
-$('fixture-select').addEventListener('change', () => {
+function commitFixture(id) {
+  $('fixture-select').value = id;
+  acceptedFixtureId = id;
   const fixture = selectedIdorFixture();
   if (fixture) $('lab-target-origin').value = `http://127.0.0.1:${fixture.port}`;
   $('lab-target-origin').removeAttribute('aria-invalid');
   renderStats();
+}
+$('fixture-select').addEventListener('change', () => {
+  const targetFixtureId = $('fixture-select').value;
+  if (pendingModelChange || controlPending || !canOperate()
+    || ['queued','preparing','running','stopping'].includes(run.status)) {
+    $('fixture-select').value = acceptedFixtureId; return;
+  }
+  if (IDOR_FIXTURES[targetFixtureId] && acceptedModelId && acceptedModelId !== 'rule-baseline') {
+    $('fixture-select').value = acceptedFixtureId;
+    if (settings.confirmModelReset) {
+      openModelReset('rule-baseline');
+      pendingModelChange.fixtureId = targetFixtureId;
+      $('model-reset-description').textContent = `${IDOR_FIXTURES[targetFixtureId].name} IDOR 실습은 규칙 기반 엔진을 사용합니다. 엔진과 실습 대상을 바꾸기 전에 이전 실험의 상태를 초기화할까요?`;
+    } else {
+      completeModelChange('rule-baseline'); commitFixture(targetFixtureId);
+    }
+    return;
+  }
+  commitFixture(targetFixtureId);
 });
 $('target-url').addEventListener('input', () => { $('url-error').hidden = true; $('target-url').removeAttribute('aria-invalid'); });
 $('stop-button').addEventListener('click', async () => {
@@ -624,6 +676,8 @@ function renderHistoryChecks() {
 }
 function requireLogin() {
   workspaceGeneration += 1;
+  pendingModelChange = null; acceptedModelId = '';
+  $('model-reset-dialog').close();
   authSession = { ...authSession, authenticated: false, authRequired: true, user: null };
   history = []; centralHistoryLoaded = false; inspectedRun = null; legacyDetail = null; comparison = null; platform = null; ciResults = null; ciError = ''; models = [];
   reviewDrafts.clear(); pendingReviews.clear(); historyReviewSignature = '';
@@ -660,6 +714,7 @@ async function loadWorkspace() {
     models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string' && ['local-lab-rule', 'local-lab-deepseek'].includes(item.mode)) : [];
     $('model-select').innerHTML = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
     $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
+    acceptedModelId = $('model-select').value;
     renderStats();
   })().catch(error => showRuntimeError(error.message)), (async () => {
     const payload = await runtime.getPlatform();
@@ -825,7 +880,98 @@ function renderPlatform() {
     if (deployment.retryAt) $('platform-content').firstElementChild?.insertAdjacentHTML('beforeend', `<p>GitHub 검증 재시도 ${escape(dateLabel(deployment.retryAt))}</p>`);
   }
 }
-$('model-select').addEventListener('change', renderStats);
+function completeModelChange(id, resetPerformed = false) {
+  const fixtureId = pendingModelChange?.fixtureId;
+  acceptedModelId = id;
+  $('model-select').value = id;
+  modelChangeUnreset = !resetPerformed;
+  settings.modelChangeUnreset = modelChangeUnreset; persistSettings();
+  pendingModelChange = null;
+  if (fixtureId) commitFixture(fixtureId);
+  $('model-reset-dialog').close();
+  renderStats();
+}
+function clearExperimentView() {
+  workspaceGeneration += 1;
+  history = []; centralHistoryLoaded = false; inspectedRun = null; legacyDetail = null; comparison = null;
+  reviewDrafts.clear(); pendingReviews.clear(); historyReviewSignature = '';
+  selectedEventId = null; selectedModule = 'parser'; activeTab = 'request';
+  $('event-search').value = '';
+  $('comparison-content').textContent = '';
+  $('legacy-detail').textContent = '';
+  $('notification-list').textContent = '';
+  $('target-url').value = ''; $('url-error').hidden = true; $('target-url').removeAttribute('aria-invalid');
+  try { localStorage.removeItem(STORAGE); browserResetError = ''; }
+  catch { browserResetError = '브라우저의 실행 캐시를 지울 수 없습니다. 이 브라우저의 사이트 데이터를 지우고 다시 초기화하세요.'; }
+  updateComparisonSelectors();
+  return !browserResetError;
+}
+function renderAllExperimentViews() {
+  renderActivity(); renderInspector(); renderHistoryChecks(); renderSessions(); renderModules(); renderReports(); renderComparison();
+}
+$('model-reset-toggle').addEventListener('change', event => {
+  settings.confirmModelReset = event.target.checked; persistSettings();
+});
+function openModelReset(targetId, manual = false) {
+  const previousId = acceptedModelId;
+  pendingModelChange = { previousId, targetId, manual };
+  const target = models.find(item => item.id === targetId);
+  $('model-reset-description').textContent = manual ? '현재 모델을 유지하며 이전 실험의 상태를 초기화할까요?'
+    : `${target.name || target.id}로 변경하기 전에 이전 실험의 상태를 초기화할까요?`;
+  $('model-reset-scope').textContent = '실행 이력, JSON·HWPX 보고서와 실험 체크를 삭제하고 관리되는 실습 상태를 초기화합니다. 비교할 이전 결과는 먼저 내보내세요. 인증, API 키, 모델 설정과 기준 지식 DB는 유지합니다. 관리되지 않는 사이트와 외부 AI 제공자의 기록은 여기서 삭제할 수 없습니다.';
+  $('model-reset-error').hidden = true;
+  $('model-reset-dialog').showModal(); renderStats();
+}
+$('model-select').addEventListener('change', () => {
+  const targetId = $('model-select').value;
+  const previousId = acceptedModelId;
+  if (!previousId || targetId === previousId) { acceptedModelId = targetId; renderStats(); return; }
+  $('model-select').value = previousId;
+  if (pendingModelChange || controlPending || !canOperate() || connection !== 'connected'
+    || ['queued','preparing','running','stopping'].includes(run.status)) return;
+  if (!models.some(item => item.id === targetId && item.available)) return;
+  if (!settings.confirmModelReset) { completeModelChange(targetId); return; }
+  openModelReset(targetId);
+});
+$('experiment-reset-button').addEventListener('click', () => {
+  if (pendingModelChange || controlPending || !canOperate() || connection !== 'connected'
+    || ['queued','preparing','running','stopping'].includes(run.status)) return;
+  openModelReset(acceptedModelId, true);
+});
+$('model-reset-no').addEventListener('click', () => {
+  if (!pendingModelChange || controlPending) return;
+  if (pendingModelChange.manual) { pendingModelChange = null; $('model-reset-dialog').close(); renderStats(); return; }
+  completeModelChange(pendingModelChange.targetId);
+  notify('실험 흔적을 유지하고 모델만 변경했습니다.');
+});
+$('model-reset-yes').addEventListener('click', async () => {
+  if (!pendingModelChange || controlPending) return;
+  const change = pendingModelChange;
+  controlPending = true;
+  $('model-reset-yes').disabled = true; $('model-reset-no').disabled = true;
+  $('model-reset-yes').textContent = '초기화 중…'; $('model-reset-error').hidden = true;
+  renderStats();
+  try {
+    await runtime.resetExperiment();
+    if (!clearExperimentView()) throw new Error(browserResetError);
+    renderAllExperimentViews();
+    completeModelChange(change.targetId, true);
+    await refreshHistory();
+    notify(change.manual ? '모델을 유지하고 실험 흔적을 초기화했습니다.' : '실험 흔적을 초기화한 뒤 모델을 변경했습니다.');
+  } catch (error) {
+    $('model-select').value = change.previousId;
+    $('model-reset-error').textContent = `${error.message} 모델은 변경하지 않았습니다.`;
+    $('model-reset-error').hidden = false;
+  } finally {
+    controlPending = false;
+    $('model-reset-yes').disabled = false; $('model-reset-no').disabled = false;
+    $('model-reset-yes').textContent = '예'; render();
+  }
+});
+$('model-reset-dialog').addEventListener('cancel', event => {
+  if (controlPending) { event.preventDefault(); return; }
+  pendingModelChange = null; renderStats();
+});
 document.addEventListener('input', event => { if (event.target.dataset.reviewNote) reviewDrafts.set(event.target.dataset.reviewNote, event.target.value); });
 document.addEventListener('submit', async event => {
   const form = event.target.closest('[data-review-form]'); if (!form) return;
@@ -856,9 +1002,14 @@ $('compare-form').addEventListener('submit', async event => {
   const baseline = $('baseline-select').value; const candidate = $('candidate-select').value;
   if (!baseline || !candidate || comparisonPending) return;
   if (baseline === candidate) { notify('서로 다른 두 실행을 선택하세요.'); return; }
+  const generation = workspaceGeneration;
   comparisonPending = true; $('compare-button').disabled = true;
-  try { comparison = redactTelemetry(await runtime.compare(baseline, candidate, $('comparison-kind').value)); renderComparison(); }
-  catch (error) { showRuntimeError(error.message); }
+  try {
+    const value = await runtime.compare(baseline, candidate, $('comparison-kind').value);
+    if (generation !== workspaceGeneration) return;
+    comparison = redactTelemetry(value); renderComparison();
+  }
+  catch (error) { if (generation === workspaceGeneration) showRuntimeError(error.message); }
   finally { comparisonPending = false; $('compare-button').disabled = history.length < 2; }
 });
 $('login-dialog').addEventListener('cancel', event => event.preventDefault());

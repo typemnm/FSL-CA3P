@@ -16,6 +16,16 @@ test('unknown legacy conditions prevent an asserted controlled comparison', () =
   assert.equal(comparison.findingTransition.after, 'not_reproduced');
   assert.equal(comparison.causalAttribution, 'not-established');
 });
+
+test('matching retained traces do not qualify as a clean experimental comparison', () => {
+  const run = (id, previousRunCount, lastResetAt = '2026-10-26T09:00:00Z') => ({ id,
+    manifest: { experiment: { epoch: 1, lastResetAt, previousRunCount } } });
+  const condition = (a, b) => compareRunRecords(a, b, { kind: 'model' }).conditions.find(row => row.name === 'experimentIsolation');
+  assert.equal(condition(run('a', 2), run('b', 2)).equal, false);
+  assert.equal(condition(run('a', 0), run('b', 0)).equal, true);
+  assert.equal(condition(run('a', 0, null), run('b', 0)).equal, false);
+  assert.equal(condition(run('a', 0), { id: 'legacy', manifest: {} }).available, false);
+});
 test('end-to-end recall includes inconclusive positive cases rather than inflating recall', () => {
   const result = evaluateCases([{ vulnerable: true, result: 'confirmed' }, { vulnerable: true, result: 'inconclusive' },
     { vulnerable: false, result: 'not_reproduced' }]);

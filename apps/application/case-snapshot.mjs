@@ -14,8 +14,10 @@ if not source.exists():
     initialize_database(source)
 with sqlite3.connect(source) as origin, sqlite3.connect(destination) as snapshot:
     origin.backup(snapshot)
-cases = CaseStore(destination).list_for_target('vul-web-1')
-json.dump({'schemaVersion': SCHEMA_VERSION, 'cases': [item.model_dump() for item in cases]}, sys.stdout)
+store = CaseStore(destination)
+cases = store.list_for_target('vul-web-1')
+checks = [check.model_dump() for item in cases for check in store.list_checks(item.case_id)]
+json.dump({'schemaVersion': SCHEMA_VERSION, 'cases': [item.model_dump() for item in cases], 'checks': checks}, sys.stdout)
 `;
 
 /** SQLite backup includes a consistent view of WAL data and freezes lookup input. */

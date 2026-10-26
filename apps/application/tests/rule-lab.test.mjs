@@ -45,7 +45,8 @@ test('credential-free rule lab confirms actual browser execution and freezes mat
     const second = await execute(); assert.equal(second.status, 'completed', second.error);
     assert.equal(first.manifest.data.caseSnapshotDigest, second.manifest.data.caseSnapshotDigest);
     const comparison = service.compareRuns(first.id, second.id);
-    assert.equal(comparison.comparable, true, JSON.stringify(comparison.conditions.filter(item => !item.equal)));
+    assert.equal(comparison.comparable, false, 'retained experimental traces must not be presented as a reset experiment');
+    assert.deepEqual(comparison.conditions.filter(item => !item.equal).map(item => item.name), ['experimentIsolation']);
     assert.equal(comparison.findingTransition.after, 'confirmed');
     assert.ok(first.manifest.environment.browserVersion);
   });
