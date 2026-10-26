@@ -44,7 +44,7 @@ console.log(MODULE_ID, result.moduleId); // web-parser web-parser
 별도 feature 브랜치에서 맞춰야 한다. 출력의 moduleId 변경은 외부 메시지 sender 변경과 다르다.
 폴더 이동은 외부 경로 변경과 함께 진행한다. XSS 취약점·canary 기능 이름은 바꾸지 않는다.
 
-작업 브랜치는 `feature/web-parser/url-observation`, 통합 대상은 develop이다.
+통합 대상은 `develop`이다.
 기존 닉네임 장기 브랜치는 참고용으로 남긴다. integration-gate와 담당자 리뷰 후 병합한다.
 
 ## 구조용 출력 읽기
