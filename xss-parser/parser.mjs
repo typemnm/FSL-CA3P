@@ -308,6 +308,7 @@ export async function scan(inputUrl, options = {}) {
         webInventory.references(id, await awaitWithSignal(page.evaluate(readResourceReferences), signal));
         const scripts = await awaitWithSignal(page.evaluate(() => [...document.scripts].map((script, index) => ({
           url: script.src || location.href + '#inline-' + (index + 1),
+          baseURI: script.baseURI,
           source: script.src ? null : (script.textContent || '').slice(0, 1_000_001),
           external: !!script.src,
           type: script.type
@@ -316,7 +317,8 @@ export async function scan(inputUrl, options = {}) {
         const behaviors = [];
         for (const script of scripts) {
           if (script.type && !['module', 'text/javascript', 'application/javascript'].includes(script.type)) continue;
-          if (!script.external) webInventory.inline(id, page.url(), scripts.indexOf(script) + 1, script.source, script.type);
+          if (!script.external) webInventory.inline(id, page.url(), scripts.indexOf(script) + 1,
+            script.source, script.type, script.baseURI);
           if (script.external ? ++externalCount > 30 : ++inlineCount > 20) {
             scriptListsTruncated = true;
             continue;

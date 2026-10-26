@@ -91,10 +91,10 @@ export function createWebInventory(origin, displayUrl) {
     if (item) { filenameIndicators(item); relation(from, item.id, relationKind, source); }
     return item;
   };
-  const importReference = (item, specifier, kind) => {
+  const importReference = (item, specifier, kind, baseUrl = item._raw) => {
     if (typeof specifier !== 'string' || specifier.length > 2048) return;
     let resolved;
-    try { resolved = new URL(specifier, item._raw).href; }
+    try { resolved = new URL(specifier, baseUrl).href; }
     catch { addReason('unsupported-resource-url'); return; }
     if (/^(?:\.{1,2}\/|\/|https?:\/\/)/i.test(specifier)) {
       reference(item.id, resolved,
@@ -114,7 +114,7 @@ export function createWebInventory(origin, displayUrl) {
       relation(item.id, modules.get(key).id, kind, 'static-source');
     }
   };
-  const source = (item, text, declaredKind = item?.kind) => {
+  const source = (item, text, declaredKind = item?.kind, baseUrl = item?._raw) => {
     if (!item || typeof text !== 'string') return;
     const key = item.id + ':' + digest(text);
     if (analysed.has(key)) return;
@@ -154,7 +154,7 @@ export function createWebInventory(origin, displayUrl) {
         }
       }
       if (pending.length) addReason('ast-node-limit');
-      imports.slice(0, 100).forEach(value => importReference(item, value, 'js-import'));
+      imports.slice(0, 100).forEach(value => importReference(item, value, 'js-import', baseUrl));
       if (imports.length > 100) addReason('import-limit');
     } else if (declaredKind === 'stylesheet') {
       // Tokenize comments/strings first, so @import inside either is not a dependency.
@@ -191,11 +191,11 @@ export function createWebInventory(origin, displayUrl) {
         else addReason('resource-body-not-inspected');
       }
     },
-    inline(pageId, pageUrl, index, body, type) {
+    inline(pageId, pageUrl, index, body, type, baseUrl = pageUrl) {
       if (type && !['module', 'text/javascript', 'application/javascript'].includes(type)) return;
       const url = new URL(pageUrl); url.hash = 'inline-' + index;
       const item = asset(url.href, 'script', true);
-      if (item) { relation(pageId, item.id, 'inline-script', 'dom'); source(item, body); }
+      if (item) { relation(pageId, item.id, 'inline-script', 'dom'); source(item, body, 'script', baseUrl); }
     },
     headers(pageId, headers) {
       const rules = [ ['x-powered-by', /^Express$/i, 'Express'],

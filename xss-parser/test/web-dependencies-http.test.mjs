@@ -58,6 +58,41 @@ test('real Chromium: URL-only structured scan keeps isolation, IDs and libraries
   } finally { await site.close();await outside.close(); }
 });
 
+test('inline module imports resolve against the document base URI', async () => {
+  let expectedRequests = 0;
+  let wrongRequests = 0;
+  const site = await server((req, res) => {
+    if (req.url === '/') {
+      res.setHeader('Content-Type', 'text/html');
+      res.end('<base href="/static/"><script type="module">import "./child.js";</script>');
+    } else if (req.url === '/static/child.js') {
+      expectedRequests++;
+      res.setHeader('Content-Type', 'application/javascript');
+      res.end('export const loaded = true;');
+    } else if (req.url === '/child.js') {
+      wrongRequests++;
+      res.statusCode = 404;
+      res.end('wrong path');
+    } else {
+      res.statusCode = 404;
+      res.end('not found');
+    }
+  });
+  try {
+    const result = await scan(site.url, { maxPages: 1, waitMs: 100 });
+    const { assets, relations } = result.dependencies;
+    const inline = assets.find(asset => asset.state === 'inline');
+    const child = assets.find(asset => asset.url === `${site.url}/static/child.js`);
+    assert.equal(expectedRequests, 1);
+    assert.equal(wrongRequests, 0);
+    assert.ok(inline);
+    assert.ok(inline.url.startsWith(`${site.url}/#`));
+    assert.ok(child);
+    assert.ok(relations.some(edge => edge.from === inline.id && edge.to === child.id && edge.kind === 'js-import'));
+    assert.equal(assets.some(asset => asset.url === `${site.url}/child.js`), false);
+  } finally { await site.close(); }
+});
+
 test('CLI accepts URL alone, keeps optional inventory separate and never auto-reads local files', async () => {
   const site=await server((_req,res)=>{res.setHeader('Content-Type','text/html');res.end('<title>Plain</title><p>hello</p>');});
   const dir=await mkdtemp(join(tmpdir(),'web-parser-test-'));
