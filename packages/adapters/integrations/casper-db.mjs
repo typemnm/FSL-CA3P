@@ -22,6 +22,9 @@ db = Path(request['database'])
 # during lookup, including concurrent first-use requests.
 if db.exists():
     with sqlite3.connect(db.resolve().as_uri() + '?mode=ro', uri=True) as connection:
+        # Both checks must see one snapshot: a concurrent initializer may commit
+        # between statements, otherwise version 0 can be paired with new tables.
+        connection.execute('BEGIN')
         version=connection.execute('PRAGMA user_version').fetchone()[0]
         empty=not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table'").fetchone()
     if version == 0 and empty:

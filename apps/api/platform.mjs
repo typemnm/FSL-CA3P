@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { treeDigest } from '../../packages/contracts/manifest.mjs';
+import { deploymentStatus } from './deployment.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 async function readJson(path, fallback = null) { try { return JSON.parse(await readFile(path, 'utf8')); } catch { return fallback; } }
 function git(...args) { try { return execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return null; } }
@@ -23,7 +24,7 @@ export async function getPlatform() {
   }));
   return { source: { commitSha: process.env.CA3P_COMMIT_SHA ?? git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'),
     dirty: Boolean(git('status', '--porcelain', '--untracked-files=no')), baselineSha: manifest.baselineSha ?? '0e850e0' },
-    modules, tests, integration: manifest,
+    modules, tests, integration: manifest, deployment: await deploymentStatus(),
     architecture: ['dashboard', 'api', 'application', 'worker', 'module-ports', 'sqlite-run-repository'],
     scope: '팀 내부 공유 · 격리된 실습 대상', modelEvaluation: '제한된 행동 계획과 증거 기반 판정' };
 }

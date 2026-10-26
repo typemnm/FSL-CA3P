@@ -8,6 +8,7 @@ import { createAuthentication } from './auth.mjs';
 import { getPlatform } from './platform.mjs';
 import { reviewRunCheck } from '../../packages/history/check-sync.mjs';
 import { redact } from '../../packages/contracts/index.mjs';
+import { deploymentPaused, deploymentStatus } from './deployment.mjs';
 
 const root = fileURLToPath(new URL('../../agent-dashboard/dist/', import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
@@ -58,7 +59,8 @@ function readJson(req) {
   });
 }
 
-export function createDashboardServer({ runtime = createLocalRuntime(), auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform, ciResults = null } = {}) {
+export function createDashboardServer({ runtime = createLocalRuntime(), auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform, ciResults = null,
+  maintenanceCheck = deploymentPaused, deploymentStatusProvider = deploymentStatus } = {}) {
   const configured = publicOrigins.map(value => new URL(value));
   if (configured.some(url => url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/')) throw new Error('Public origins must be plain HTTPS origins.');
   if (configured.length && !auth.enabled) throw new Error('External dashboard access requires authentication.');
@@ -81,6 +83,15 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
         }
         if (pathname === '/api/auth/logout' && req.method === 'POST') return json(res, 200, { authenticated: false }, { 'Set-Cookie': auth.logout(req) });
         const currentUser = auth.requireUser(req, { mutate: !['GET', 'HEAD'].includes(req.method) });
+        if (!['GET', 'HEAD'].includes(req.method)) {
+          let paused;
+          try { paused = await maintenanceCheck(); }
+          catch {
+            return json(res, 503, { error: '배포 상태를 확인할 수 없습니다. 잠시 후 다시 실행하세요.' }, { 'Retry-After': '30' });
+          }
+          if (paused) return json(res, 503, { error: '배포를 적용하고 있습니다. 잠시 후 다시 실행하세요.' }, { 'Retry-After': '30' });
+        }
+        if (pathname === '/api/deployment' && req.method === 'GET') return json(res, 200, await deploymentStatusProvider());
         const review = /^\/api\/runs\/([a-zA-Z0-9_-]+)\/reviews\/([a-zA-Z0-9._-]+)$/.exec(pathname);
         if (review && req.method === 'POST') {
           const run = await runtime.getRun?.(review[1]);
