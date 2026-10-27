@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../packages/run-store/index.mjs';
 import { createLocalRuntime } from '../application/local-runtime.mjs';
+import { createIdorRuntime } from '../application/idor-runtime.mjs';
 import { createModelReasoning } from '../../packages/models/registry.mjs';
 import { digest } from '../../packages/contracts/index.mjs';
 import { startLocalLab } from '../../packages/adapters/local-lab-gateway.mjs';
@@ -13,7 +14,8 @@ import { generateReportDocument } from '../../packages/report/index.mjs';
 
 export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
   pollMs = 150, leaseMs = 15_000, heartbeatMs = 1000, envFile, env = process.env,
-  reportGenerator = generateReportDocument, runtimeFactory = createLocalRuntime } = {}) {
+  reportGenerator = generateReportDocument, runtimeFactory = createLocalRuntime,
+  idorRuntimeFactory = createIdorRuntime } = {}) {
   const store = createRunRepository({ path: storePath });
   let stopping = false; let runtime = null; let activeLease = null; let activeController = null; let busy = false; let timer; let shutdownTask;
   const notify = () => { if (process.connected) process.send({ type: 'state' }); };
@@ -45,18 +47,22 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       }
       const controller = new AbortController();
       activeController = controller;
-      const engine = await createModelReasoning(lease.modelId, { signal: controller.signal,
+      const idorLab = lease.options.testProfile === 'known_record_idor_read';
+      const engine = idorLab ? null : await createModelReasoning(lease.modelId, { signal: controller.signal,
         env,
         ...(envFile ? { envFile } : {}), onModelCall(metadata) {
           store.recordModelCall(lease, metadata); notify();
         } });
       let persistenceError = null;
-      runtime = runtimeFactory({ defaultDelayMs: lease.options.delayMs,
+      runtime = (idorLab ? idorRuntimeFactory : runtimeFactory)({ defaultDelayMs: lease.options.delayMs,
+        fixtureId: lease.options.fixtureId,
+        targetOrigin: lease.options.target,
         runIdFactory: () => lease.runId, labMode: lease.mode,
         labTestProfile: lease.options.testProfile,
         labConfigProvider: () => ({ provider: lease.modelId === 'rule-baseline' ? 'rules' : 'deepseek', model: lease.modelId }),
         labReasoningFactory: () => engine,
-        labFactory: options => startLocalLab({ ...options, casperDatabasePath: lease.options.caseSnapshot?.path }),
+        labFactory: options => startLocalLab({ ...options, casperDatabasePath: lease.options.caseSnapshot?.path,
+          cleanupRegistryPath: join(dirname(store.path), 'lab-sessions') }),
         async beforeExchange(request) {
           store.assertLease(lease, { allowCancelled: request.receiver === 'pentest-db' && request.payload.operation === 'finalize' });
           if (request.receiver === 'attack-module' && ['POST', 'DELETE'].includes(request.payload.curl?.method)) {
@@ -105,8 +111,10 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         if (final.report) {
           const artifact = store.writeArtifact(lease.runId, 'run-report', final.report, { contentType: 'application/json', provenance: 'verified-run-report' });
           let historyWrite;
-          try { historyWrite = await syncRunChecks(final, { artifact, storePath: store.path,
-            databasePath: lease.options.caseSnapshot?.sourcePath }); }
+          try { historyWrite = idorLab
+            ? { status: 'skipped', checks: [], message: 'IDOR 결과는 실행 이력과 JSON에 저장됩니다. XSS 과거 사례 DB에는 기록하지 않습니다.' }
+            : await syncRunChecks(final, { artifact, storePath: store.path,
+              databasePath: lease.options.caseSnapshot?.sourcePath }); }
           catch (error) { historyWrite = { status: 'failed', checks: [], error: error.message }; }
           finalState = { ...finalState, historyWrite };
         }
@@ -117,7 +125,8 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         store.saveState(lease, { ...finalState, status: 'running' }); notify();
         let document;
         try {
-          if (lease.mode === 'core-fixture') document = { status: 'skipped', errorCode: 'FIXTURE_SKIPPED', message: '코어 fixture는 HWPX 보고서를 생성하지 않습니다.' };
+          if (idorLab) document = { status: 'skipped', errorCode: 'IDOR_DOCUMENT_UNSUPPORTED', message: 'IDOR 실습은 실행 이력과 JSON 보고서를 제공합니다. HWPX 생성과 모델 API 호출은 수행하지 않습니다.' };
+          else if (lease.mode === 'core-fixture') document = { status: 'skipped', errorCode: 'FIXTURE_SKIPPED', message: '코어 fixture는 HWPX 보고서를 생성하지 않습니다.' };
           else if (status === 'cancelled' || !final.report) document = { status: 'skipped', errorCode: 'RUN_STOPPED', message: '중지했거나 최종 보고서가 없어 문서를 생성하지 않습니다.' };
           else document = await reportGenerator({ run: finalState, storePath: store.path,
             historyPath: lease.options.caseSnapshot?.sourcePath, envFile, env, signal: controller.signal });

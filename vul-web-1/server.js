@@ -12,6 +12,10 @@ const COOKIE_SECRET = process.env.BOARD_COOKIE_SECRET || crypto.randomBytes(32).
 const SAFE_MODE = process.env.BOARD_SAFE_MODE === '1';
 const COOKIE_NAME = 'board_user';
 
+// A private lab must not survive an abruptly terminated worker. Standalone
+// website execution has no IPC channel and keeps its usual server lifecycle.
+if (process.connected) process.once('disconnect', () => process.exit(0));
+
 const USERS = Object.freeze({
   alice: Object.freeze({ id: 'alice', name: '앨리스', role: 'member' }),
   bob: Object.freeze({ id: 'bob', name: '밥', role: 'member' }),

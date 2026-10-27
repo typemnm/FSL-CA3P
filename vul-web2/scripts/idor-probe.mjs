@@ -3,8 +3,9 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import attackModule from '../../attack-module/index.js';
 import guardrailPackage from '../../guardrail/src/index.js';
+import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 
-const { executeCurl } = attackModule;
+const { executeUniversityRead } = attackModule;
 const { GuardrailEvaluator } = guardrailPackage;
 
 const PROFILES = Object.freeze({
@@ -41,16 +42,8 @@ function profileFor(siteKey) {
   return PROFILES[siteKey];
 }
 
-function exactLoopbackOrigin(value) {
-  let url;
-  try { url = new URL(value); }
-  catch { throw new TypeError('An exact loopback HTTP origin is required.'); }
-  if (typeof value !== 'string' || value !== url.origin || url.protocol !== 'http:'
-    || url.hostname !== '127.0.0.1' || !url.port || url.username || url.password
-    || url.pathname !== '/' || url.search || url.hash) {
-    throw new TypeError('An exact 127.0.0.1 HTTP origin with a port is required.');
-  }
-  return value;
+function exactTargetOrigin(value) {
+  return validateUniversityOrigin(value);
 }
 
 function pathFor(profile, recordId) {
@@ -59,7 +52,7 @@ function pathFor(profile, recordId) {
 
 export function createIdorRuleset({ siteKey, origin }) {
   const profile = profileFor(siteKey);
-  const allowedOrigin = exactLoopbackOrigin(origin);
+  const allowedOrigin = exactTargetOrigin(origin);
   const firstPath = pathFor(profile, FIRST_RECORD_ID);
   const secondPath = pathFor(profile, SECOND_RECORD_ID);
   return {
@@ -120,9 +113,9 @@ export class ProbeDeniedError extends Error {
 }
 
 /** Authorize before curl. Each fixed stage can be sent once, even if curl fails. */
-export function createGuardedGet({ siteKey, origin, runId, curlImpl = executeCurl }) {
+export function createGuardedGet({ siteKey, origin, runId, curlImpl = executeUniversityRead }) {
   const profile = profileFor(siteKey);
-  const allowedOrigin = exactLoopbackOrigin(origin);
+  const allowedOrigin = exactTargetOrigin(origin);
   if (typeof runId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(runId)) {
     throw new TypeError('A safe runId is required.');
   }
@@ -152,7 +145,7 @@ export function createGuardedGet({ siteKey, origin, runId, curlImpl = executeCur
     usedStages.add(stage);
     budget.requestCount += 1;
     return curlImpl({ method: 'GET', url: `${allowedOrigin}${action.path}` }, {
-      allowedOrigin, cookie, signal,
+      allowedOrigin, cookie, signal, siteKey,
     });
   };
 }
@@ -168,7 +161,8 @@ function sessionCookie(response) {
   return cookie;
 }
 
-async function login(origin, account, password, { fetchImpl, signal }) {
+async function login(origin, account, password, { fetchImpl, signal, onContact }) {
+  signal?.throwIfAborted();
   const timeout = AbortSignal.timeout(5000);
   const response = await fetchImpl(`${origin}/login`, {
     method: 'POST', redirect: 'manual',
@@ -176,7 +170,15 @@ async function login(origin, account, password, { fetchImpl, signal }) {
     body: new URLSearchParams({ username: account, password }),
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
+  if (!signal?.aborted) onContact?.();
   return sessionCookie(response);
+}
+
+async function logout(origin, cookie, fetchImpl) {
+  // Cleanup has its own short deadline so cancelling a probe still revokes every
+  // session whose login response was received. It must not follow redirects.
+  await fetchImpl(`${origin}/logout`, { method: 'GET', redirect: 'manual',
+    headers: { Cookie: cookie }, signal: AbortSignal.timeout(2000) });
 }
 
 function observation(stage, response, ownerField) {
@@ -204,22 +206,53 @@ function findingStatus(evidence) {
   return 'inconclusive';
 }
 
-/** The origin override is for local mock tests; the CLI uses only PROFILES origins. */
-export async function probeSite({ siteKey, origin, fetchImpl = fetch, curlImpl = executeCurl, signal } = {}) {
+/** Dashboard targets are validated private HTTP origins; the CLI keeps its fixed origins. */
+export async function probeSite({ siteKey, origin, fetchImpl = fetch, curlImpl = executeUniversityRead,
+  signal, onObservation, onContact, runId = `idor-${randomUUID()}`, timeoutMs = 60_000 } = {}) {
   const profile = profileFor(siteKey);
-  const allowedOrigin = exactLoopbackOrigin(origin ?? profile.origin);
-  const runId = `idor-${randomUUID()}`;
+  const allowedOrigin = exactTargetOrigin(origin ?? profile.origin);
+  if (typeof runId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(runId)) {
+    throw new TypeError('A safe runId is required.');
+  }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
+    throw new TypeError('The probe timeout must be between 1 and 60000 milliseconds.');
+  }
+  if (onObservation !== undefined && typeof onObservation !== 'function') {
+    throw new TypeError('onObservation must be a function.');
+  }
+  if (onContact !== undefined && typeof onContact !== 'function') throw new TypeError('onContact must be a function.');
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const boundedSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const contacted = () => { try { onContact?.(); } catch { /* Diagnostics cannot interrupt the probe. */ } };
   const startedAt = new Date().toISOString();
-  const cookies = {
-    'first-owner': await login(allowedOrigin, profile.firstAccount, profile.password, { fetchImpl, signal }),
-    'second-owner': await login(allowedOrigin, profile.secondAccount, profile.password, { fetchImpl, signal }),
-    student: await login(allowedOrigin, 'student1', 'Welcome2026', { fetchImpl, signal }),
-  };
+  boundedSignal.throwIfAborted();
+  const cookies = {};
+  try {
+    for (const [session, account, password] of [
+      ['first-owner', profile.firstAccount, profile.password],
+      ['second-owner', profile.secondAccount, profile.password], ['student', 'student1', 'Welcome2026'],
+    ]) {
+      cookies[session] = await login(allowedOrigin, account, password, { fetchImpl, signal: boundedSignal, onContact: contacted });
+      boundedSignal.throwIfAborted();
+    }
   const get = createGuardedGet({ siteKey, origin: allowedOrigin, runId, curlImpl });
   const evidence = [];
   for (const [stage, spec] of Object.entries(STAGES)) {
-    const response = await get(stage, { cookie: cookies[spec.session], signal });
-    evidence.push(observation(stage, response, profile.ownerField));
+    boundedSignal.throwIfAborted();
+    const response = await get(stage, { cookie: cookies[spec.session], signal: boundedSignal });
+    boundedSignal.throwIfAborted();
+    // A 403/404 is a completed access-control observation, even though curl's
+    // adapter marks non-2xx HTTP responses as unsuccessful.
+    if (!Number.isInteger(response?.status)) {
+      throw Object.assign(new Error('The fixed IDOR request could not complete.'), { code: 'IDOR_REQUEST_FAILED' });
+    }
+    contacted();
+    const entry = observation(stage, response, profile.ownerField);
+    evidence.push(entry);
+    // Subscribers see only the same bounded summary as the final report. Never
+    // pass the HTTP body, session cookie, login request, or credentials onward.
+    const safe = { check: entry.check, recordId: entry.recordId, status: entry.status, ownerId: entry.ownerId };
+    try { onObservation?.(safe); } catch { /* Observers cannot interrupt the fixed probe. */ }
   }
   return {
     schemaVersion: '1.0', runId, fixtureId: profile.fixtureId,
@@ -228,8 +261,11 @@ export async function probeSite({ siteKey, origin, fetchImpl = fetch, curlImpl =
     finding: { category: 'CWE-639', status: findingStatus(evidence) },
     evidence: evidence.map(({ check, recordId, status, ownerId }) => ({ check, recordId, status, ownerId })),
     provenance: { policy: `vul-web2-${siteKey}-known-record-idor`,
-      guardrail: 'guardrail/GuardrailEvaluator', attack: 'attack-module/executeCurl' },
+      guardrail: 'guardrail/GuardrailEvaluator', attack: 'attack-module/executeUniversityRead' },
   };
+  } finally {
+    await Promise.allSettled(Object.values(cookies).map(cookie => logout(allowedOrigin, cookie, fetchImpl)));
+  }
 }
 
 export async function runConfiguredSites({ args = [], probe = probeSite } = {}) {

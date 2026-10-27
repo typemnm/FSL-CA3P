@@ -1,21 +1,39 @@
 """Optional read-only adapter for a separate LLM coordinator process."""
 
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import ValidationError
 
 from .models import CaseRecord
 from .repository import CaseStore, NotFoundError
 
 
-def create_app(database_path: str | Path) -> FastAPI:
+def create_app(
+    database_path: str | Path, *, intake_workspace: Path | None = None,
+    external_database: Path | None = None,
+) -> FastAPI:
     store = CaseStore(database_path)
     app = FastAPI(
         title="CASPER Case DB",
-        version="0.2.0",
+        version="0.4.0",
         description="Read-only case lookup. Returned cases are reference data, not findings.",
     )
+
+    def references(target_id: str, cve_id: Annotated[list[str] | None, Query()] = None):
+        from .reference_context import build_reference_context
+
+        try:
+            return build_reference_context(
+                target_id, workspace=intake_workspace, external_database=external_database,
+                cve_ids=cve_id,
+            )
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invalid reference request") from None
+
+    if intake_workspace is not None or external_database is not None:
+        app.get("/references")(references)
 
     @app.get("/cases", response_model=list[CaseRecord])
     def find_cases(

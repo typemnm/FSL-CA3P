@@ -29,6 +29,10 @@ test('remote deployment defaults to polling, forwards CSRF, and requests a selec
   const start = calls.find(call => call.path === '/api/runs');
   assert.deepEqual(JSON.parse(start.options.body), { mode: 'local-lab-rule', modelId: 'rule-baseline' });
   assert.equal(start.options.headers['X-CSRF-Token'], 'csrf-a');
+  await client.startLab('rule-baseline', 'local-lab-rule', 'vul-web2-daehan', 'http://192.168.0.84:4101');
+  const idor = calls.filter(call => call.path === '/api/runs').at(-1);
+  assert.deepEqual(JSON.parse(idor.options.body), { mode: 'local-lab-rule', modelId: 'rule-baseline', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.84:4101' });
+  assert.equal(idor.options.headers['X-CSRF-Token'], 'csrf-a');
   await client.compare('baseline /?', 'candidate #');
   assert.equal(client.reportDownloadUrl('run /?#'), '/api/runs/run%20%2F%3F%23/report.hwpx');
   const comparison = calls.find(call => call.path.startsWith('/api/comparisons'));
@@ -85,4 +89,49 @@ test('initial temporary API failure retries connection and recovers polling', as
   t.after(() => client.close());
   await client.connect(); await pause(35);
   assert.equal(errors[0], 'Temporarily unavailable'); assert.ok(states.length > 0); assert.ok(stateCalls >= 3);
+});
+
+test('experiment reset posts explicit confirmation with CSRF and discards a stale in-flight poll', async t => {
+  const calls = []; const states = []; let stateCalls = 0; let releaseOldPoll;
+  const cleared = { ...envelope, instanceId: 'server-b', run: { ...envelope.run, id: null }, experimentReset: { status: 'completed' } };
+  const client = createRuntimeClient({ hostname: 'remote.example', pollIntervalMs: 100,
+    onState: value => states.push(value), onConnection() {}, onError: assert.fail,
+    fetchImpl: async (path, options) => {
+      calls.push({ path, options });
+      if (path === '/api/auth/session') return response(session);
+      if (path === '/api/experiment-reset') return response(cleared);
+      stateCalls += 1;
+      if (stateCalls === 2) return new Promise(resolve => { releaseOldPoll = () => resolve(response(envelope)); });
+      return response(stateCalls > 2 ? cleared : envelope);
+    },
+  });
+  t.after(() => client.close());
+  await client.connect();
+  while (!releaseOldPoll) await pause(1);
+  await client.resetExperiment();
+  const reset = calls.find(call => call.path === '/api/experiment-reset');
+  assert.deepEqual(JSON.parse(reset.options.body), { confirmed: true });
+  assert.equal(reset.options.headers['X-CSRF-Token'], 'csrf-a');
+  const firstCleared = states.findIndex(value => value.instanceId === 'server-b');
+  releaseOldPoll(); await pause(15);
+  assert.ok(firstCleared > 0);
+  assert.ok(states.slice(firstCleared).every(value => value.instanceId === 'server-b'));
+});
+
+test('incomplete or rejected experiment reset does not accept a cleared state', async t => {
+  const states = []; let rejectReset = false;
+  const client = createRuntimeClient({ hostname: 'remote.example', pollIntervalMs: 100,
+    onState: value => states.push(value), onConnection() {}, onError: assert.fail,
+    fetchImpl: async path => {
+      if (path === '/api/auth/session') return response(session);
+      if (path === '/api/experiment-reset') return rejectReset ? response({ error: 'Active worker' }, 409) : response(envelope);
+      return response(envelope);
+    },
+  });
+  t.after(() => client.close());
+  await client.connect();
+  await assert.rejects(client.resetExperiment(), /전체 실험 초기화 완료/);
+  rejectReset = true;
+  await assert.rejects(client.resetExperiment(), /Active worker/);
+  assert.ok(states.every(value => value.run.id === 'run-a'));
 });

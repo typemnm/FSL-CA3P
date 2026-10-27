@@ -8,7 +8,7 @@ Future Security Lab 지원사업으로 진행하는 CA3P 프로젝트에 대한
 
 ## 별도 대학 사이트 실습
 
-[`vul-web2`](vul-web2/README.md)의 대한대학교와 원창대학교는 기존 `vul-web-1` 게시판과 별도 이미지·컨테이너·네트워크·SQLite 볼륨에서 실행합니다. 각 사이트는 호스트의 `127.0.0.1:4101`과 `127.0.0.1:4102`에만 공개됩니다. 기존 대시보드 이미지는 두 실습 사이트를 포함하지 않습니다.
+[`vul-web2`](vul-web2/README.md)의 대한대학교와 원창대학교는 기존 `vul-web-1` 게시판과 별도 이미지·컨테이너·네트워크·SQLite 볼륨에서 실행합니다. 각 사이트는 호스트의 `127.0.0.1:4101`과 `127.0.0.1:4102`에만 공개됩니다. 대시보드의 **실습 대상**에서 대학을 선택하고 에이전트가 접속할 IP·포트를 입력하면, 기존 IDOR 검증을 worker에서 실행하고 이벤트·판정·JSON 보고서를 중앙 실행 이력에 저장합니다. 실행 권한이 있는 관리자 계정이 필요하며 조회 계정은 저장된 결과만 볼 수 있습니다.
 
 ```sh
 npm ci --prefix vul-web2
@@ -18,7 +18,16 @@ npm --prefix vul-web2 run probe:idor
 docker compose -f vul-web2/compose.yaml down
 ```
 
-`probe:idor`는 기존 `guardrail`의 정책 평가기와 `attack-module`의 제한된 curl 실행기를 사용해 두 사이트의 알려진 가상 레코드만 읽습니다. 담당자 본인·다른 담당자·학생 세션의 응답을 비교하며 로그인 정보와 레코드 본문은 결과에 남기지 않습니다. 더 넓은 사이트 기능 검증은 `npm --prefix vul-web2 run smoke`로 실행하며 임시 DB와 컨테이너를 사용합니다. 이 독립 실습은 대시보드의 `vul-web-1` XSS 실행과 별도로 CLI에서 시작합니다.
+`probe:idor`는 기존 `guardrail`의 정책 평가기와 `attack-module`의 제한된 curl 실행기를 사용해 두 사이트의 알려진 가상 레코드만 읽습니다. 담당자 본인·다른 담당자·학생 세션의 응답을 비교하며 로그인 정보와 레코드 본문은 결과에 남기지 않습니다. CLI는 두 고정 루프백 주소를 사용합니다. 대시보드에서는 대학 프로필과 내부 HTTP 원점만 선택할 수 있고, 본문·경로·임의 명령은 입력하지 않습니다. 알려진 조회번호 1·3에 대한 GET 네 건을 허용하며, 규칙 기반 판정으로 모델 API를 호출하지 않습니다. IDOR는 JSON 보고서를 제공하고 XSS용 과거 사례 DB 기록과 HWPX 생성은 건너뜁니다. 이 검사는 범용 CERT 자동 탐색을 수행하지 않습니다. 더 넓은 사이트 기능 검증은 `npm --prefix vul-web2 run smoke`로 실행하며 임시 DB와 컨테이너를 사용합니다.
+
+Mac의 대시보드가 직접 실행 중이면 대한대는 `127.0.0.1:4101`, 원창대는 `127.0.0.1:4102`를 입력합니다. 주소는 사용자 브라우저가 아닌 **에이전트 서버 기준**입니다. 내부 IPv4(10/8, 172.16/12, 192.168/16)·루프백과 `localhost`, `host.docker.internal`, `daehan`, `wonchang`만 허용합니다. 사이트를 외부에 공개할 필요는 없습니다.
+
+대시보드도 Docker로 실행하면 별도 대학 네트워크에 연결하는 overlay를 사용합니다. 대학 Compose를 먼저 시작하고 다음 명령으로 대시보드를 올린 뒤, 주소에 각각 `daehan:4101`, `wonchang:4102`를 입력합니다.
+
+```sh
+docker compose -f vul-web2/compose.yaml up --build -d
+docker compose -f docker-compose.yml -f docker-compose.vul-web2.yml up --build -d
+```
 
 # CI/CD 및 대시보드 테스트 가이드
 
@@ -45,7 +54,9 @@ CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run verify
 
 병합 후 `develop`의 실제 커밋에 대해 같은 전체 검증을 다시 실행합니다. `publish-ci-summary`는 그 실행의 테스트 건수·통과/실패/건너뜀, 이전 통합 실행 이후 변경된 모듈 ID 및 세 CI job 결론만 공개 `ci-results` 브랜치에 기록합니다. 장치 서버는 시작할 때와 이후 5분마다 이 요약을 가져와 `.runtime/ci-results/index.json`에 보관합니다. 인증 후 **통합 테스트** 화면에서 `develop` 실행 이력과 모듈별 변화를 확인합니다. 공개 피드에는 입력값·취약점 증거·모듈 로그가 없으며, 상세 원인은 Actions artifact에서 확인합니다. 피드가 아직 없을 때는 Actions 단계별 결론만 표시되고 모듈별 수치는 `자료 없음`으로 표시됩니다. 이 CI 결과는 대시보드에서 직접 실행한 격리 실습 run의 finding·모델 결과와 별개입니다.
 
-PR 실행은 병합 전 후보 검증으로 Actions에서 확인합니다. 결과 수집과 장치의 코드 배포는 별개입니다. `develop`/`main`의 성공한 push는 GHCR 이미지 게시까지 수행하지만, 이 PC의 실행 코드는 자동으로 교체되지 않습니다. Staging 자동 배포는 `ca3p-deploy` self-hosted runner와 `CA3P_AUTO_DEPLOY=true`가 설정된 경우에만 실행됩니다. 세부 보호 규칙과 배포 절차는 [CI/CD 안내](docs/CI_CD.md)에 있습니다.
+PR 실행은 병합 전 후보 검증으로 Actions에서 확인합니다. 담당자의 리뷰와 저장소 보호 규칙에 따라 사람이 병합하며, 장치 updater는 PR을 승인하거나 병합하지 않습니다. `develop`/`main`의 성공한 push는 GHCR 이미지 게시까지 수행합니다. 별도의 Linux staging 자동 배포는 `ca3p-deploy` self-hosted runner와 `CA3P_AUTO_DEPLOY=true`가 설정된 경우에만 실행됩니다.
+
+이 Mac에는 [장치 updater](docs/DEVICE_DEPLOYMENT.md#검증된-develop-자동-배포)를 설치할 수 있습니다. 설치하면 **120초마다 현재 `develop` HEAD와 정확히 같은 병합 후 push CI**의 전체 성공을 확인한 뒤 대시보드·활성 모듈과 대학 실습 이미지를 배포합니다. PR 브랜치·이전 SHA의 성공 결과는 배포 근거로 사용하지 않습니다. 검사가 진행 중이면 종료할 때까지 미루고, 후보별 Python 환경·복제 DB 이전·격리 smoke 검증을 통과한 후 서비스와 DB를 전환합니다. 계정·모델 키·HTTPS 프록시·저장 데이터는 유지하며, 전환 실패 시 백업과 이전 릴리스로 자동 복구합니다. 구성 예시는 [`docs/device-deploy.example.json`](docs/device-deploy.example.json)에 있습니다. CI 요약 수집만 사용하는 장치에는 자동 배포가 적용되지 않습니다.
 
 ## 3. 대시보드 기능 테스트
 
@@ -70,7 +81,7 @@ curl -fsS https://macmini.casper.or.kr/api/health
 curl -sS -o /dev/null -w '%{http_code}\n' https://macmini.casper.or.kr/api/runs
 ```
 
-첫 명령은 `{"status":"ok"}`, 두 번째는 미로그인 상태에서 `401`이어야 합니다. Mac의 서비스는 로그인 시 자동 시작되며, 상태는 `launchctl print gui/$(id -u)/kr.or.casper.ca3p.macmini-dashboard`로 확인합니다. `develop` 병합 후 CI 보고서 수집과 이 장치의 코드 배포는 별개입니다. 새 코드는 장치의 실행 체크아웃을 갱신하고 서비스를 재시작해야 적용됩니다. 임시 Cloudflare 주소와 장애 진단은 [장치 배포 안내](docs/DEVICE_DEPLOYMENT.md)를 참고하세요.
+첫 명령은 `{"status":"ok"}`, 두 번째는 미로그인 상태에서 `401`이어야 합니다. Mac의 서비스와 updater는 사용자 로그인 후 자동 시작됩니다. 서비스 상태는 `launchctl print gui/$(id -u)/kr.or.casper.ca3p.macmini-dashboard`, 배포 감시는 `launchctl print gui/$(id -u)/kr.or.casper.ca3p.device-deploy`로 확인합니다. **통합 상태**의 실행 소스 SHA와 장치 배포 상태를 함께 확인하세요. **통합 테스트**의 최신 CI 성공만으로 배포 완료를 판단하지 않습니다. 자동 배포 설치·중지·재개·실패 진단과 임시 Cloudflare 주소는 [장치 배포 안내](docs/DEVICE_DEPLOYMENT.md)를 참고하세요.
 
 # Docker Compose 실행
 
@@ -181,6 +192,8 @@ npm start
 ```
 
 보고서 작성은 기본 180초와 출력 크기 제한을 적용합니다. 완성된 HWPX는 실행 registry 옆 `artifacts/`에 해시로 보관하며 다운로드 때 실행 연결과 파일 무결성을 확인합니다. Docker에서는 기존 `.runtime` 볼륨에 보존됩니다. 보고서는 초안이므로 공유 전에 내용을 검토하세요. 상세 CLI와 출력 규약은 [보고서 모듈](packages/report/README.md)에 있습니다.
+
+모델을 바꿔 비교할 때는 모델 선택 아래 **모델 변경 시 초기화 확인**을 사용할 수 있습니다. **예**를 선택하면 실행 이력·보고서·실험 체크를 삭제한 뒤 모델을 변경합니다. 비교 자료는 먼저 내보내세요. 수동 **실험 초기화**도 지원하며, 관리 훅이 없는 지속형 대학 대상은 전체 초기화를 완료할 수 없습니다. 조사 범위·기능 설계·관리 훅·연구상 한계는 [실험 초기화](docs/EXPERIMENT_RESET.md)를 확인하세요.
 
 # PR 규칙
 ## 브랜치

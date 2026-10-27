@@ -17,10 +17,12 @@ async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBy
   const bytes = Buffer.from(artifactBytes ?? '{"runId":"run-a","evidence":"fixture"}');
   const artifactPath = join(directory, 'evidence.json'); await writeFile(artifactPath, bytes);
   const artifact = { id: sha256('artifact-id'), path: artifactPath, sha256: sha256(bytes), size: bytes.length };
-  const listeners = new Set(); const calls = { start: 0, stop: 0 };
+  const listeners = new Set(); const calls = { start: 0, stop: 0, lab: [], experimentReset: [] };
   const runtime = { getState: () => runtimeState, getRun: id => id === 'run-a' ? runtimeState.run : null,
     listRuns: () => [state.run], listModels: () => [], start: async () => { calls.start += 1; return state; },
-    startLab: async () => state, stop: async () => { calls.stop += 1; return state; }, reset: () => state,
+    startLab: async body => { calls.lab.push(body); return state; }, stop: async () => { calls.stop += 1; return state; }, reset: () => state,
+    experimentResetPreview: () => ({ status: 'ready', runCount: 1, canReset: true }),
+    resetExperiment: async body => { calls.experimentReset.push(body); return { ...state, experimentReset: { status: 'completed', epoch: 1 } }; },
     close: async () => {}, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     store: { getArtifact: id => id === artifact.id ? artifact : null },
   };
@@ -86,6 +88,44 @@ test('configured public Host requires HTTPS origin, secure cookies and still rej
   assert.equal((await api(base, '/api/state', { headers: { ...administrator.headers, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
   assert.equal((await api(base, '/api/state', { headers: { Host: 'unconfigured.example' } })).status, 403);
   assert.equal((await api(base, '/api/state', { headers: { ...administrator.headers, Origin: 'http://dashboard.example' } })).status, 403);
+});
+
+test('complete experiment reset requires operator permission, CSRF and exact explicit confirmation', async t => {
+  const { base, calls } = await fixture(t);
+  assert.equal((await api(base, '/api/experiment-reset')).status, 401);
+  const viewer = await login(base, 'viewer');
+  assert.equal((await api(base, '/api/experiment-reset', { headers: viewer.headers })).body.runCount, 1);
+  assert.equal((await api(base, '/api/experiment-reset', { method: 'POST', headers: viewer.headers, body: { confirmed: true } })).status, 403);
+  const operator = await login(base, 'operator');
+  assert.equal((await api(base, '/api/experiment-reset', { method: 'POST', headers: { Cookie: operator.headers.Cookie }, body: { confirmed: true } })).status, 403);
+  for (const body of [{}, null, [], { confirmed: false }, { confirmed: 'true' }, { confirmed: true, path: '/tmp' }]) {
+    assert.equal((await api(base, '/api/experiment-reset', { method: 'POST', headers: operator.headers, body })).status, 400);
+  }
+  assert.equal(calls.experimentReset.length, 0);
+  const result = await api(base, '/api/experiment-reset', { method: 'POST', headers: operator.headers, body: { confirmed: true } });
+  assert.equal(result.status, 200); assert.equal(result.body.experimentReset.status, 'completed');
+  assert.deepEqual(calls.experimentReset, [{ confirmed: true }]);
+  assert.equal((await api(base, '/api/experiment-reset', { method: 'DELETE', headers: operator.headers })).status, 405);
+  assert.equal((await api(base, '/api/experiment-reset', { method: 'POST', headers: { ...operator.headers, Origin: 'http://foreign.invalid' }, body: { confirmed: true } })).status, 403);
+});
+
+test('lab API forwards the university fixture and target selection but rejects extra run controls', async t => {
+  const { base, calls } = await fixture(t);
+  const operator = await login(base, 'operator');
+  const selection = { modelId: 'rule-baseline', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.20:4101' };
+  assert.equal((await api(base, '/api/lab-runs', { method: 'POST', headers: operator.headers, body: selection })).status, 202);
+  assert.deepEqual(calls.lab, [selection]);
+  for (const extra of [{ mode: 'core-fixture' }, { testProfile: 'stored_xss_canary' }]) {
+    assert.equal((await api(base, '/api/lab-runs', { method: 'POST', headers: operator.headers, body: { ...selection, ...extra } })).status, 400);
+  }
+  for (const body of [
+    { target: selection.target },
+    { fixtureId: 'vul-web-1', target: selection.target },
+    { fixtureId: 'unknown', target: selection.target },
+  ]) {
+    assert.equal((await api(base, '/api/lab-runs', { method: 'POST', headers: operator.headers, body })).status, 400);
+  }
+  assert.equal(calls.lab.length, 1);
 });
 
 test('artifact retrieval requires a session and rejects altered original evidence', async t => {

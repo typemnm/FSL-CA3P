@@ -4,6 +4,9 @@ export function readDom(options = {}) {
   const FIELD_SELECTOR = 'input:not([type=submit]):not([type=button]):not([type=reset]):not([type=image]), textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox], [role=searchbox], [role=combobox]';
   const BUTTON_SELECTOR = 'button, input[type=submit], input[type=button], input[type=reset], input[type=image], [role=button]';
   const OUTPUT_SELECTOR = 'article, table, output, [role=list], [role=grid], [role=status], [role=alert], [aria-live], [data-results]';
+  const BODY_SELECTOR = '[itemprop="articleBody"], .post-content, .entry-content, .article-content, .post-body, .article-body';
+  const POST_LINK_SELECTOR = 'a.board-row[href], a.news-card[href], a.featured-notice[href], .notice-list > a[href]';
+  const EVENT_SELECTOR = 'article.schedule-item, [itemtype~="https://schema.org/Event"], [itemtype~="http://schema.org/Event"]';
   const text = value => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 100);
   const escaped = value => CSS.escape(String(value));
   const selector = element => {
@@ -106,11 +109,37 @@ export function readDom(options = {}) {
     if (existing) existing.count++;
     else area.outputs.push({ kind, selector: group, count: 1 });
   }
-  const posts = [...document.querySelectorAll('article')].slice(0, 50).map(article => {
+  // An <article> can be an event or a generic card; require post evidence.
+  // These link selectors cover the two university list templates without clicking them.
+  const isEvent = element => !!element.closest(EVENT_SELECTOR);
+  const isPostArticle = element => !isEvent(element) && (
+    element.matches('[data-post-id], [data-id], .post-card, .post-detail, .post, .entry') ||
+    /^post[-_]?[\w-]+$/i.test(element.id) ||
+    !!element.querySelector(BODY_SELECTOR + ', [itemprop="headline"], .post-title, .entry-title, .post-number, .post-id, [data-post-number]')
+  );
+  const postArticles = new Set([...document.querySelectorAll('article')].filter(isPostArticle));
+  const postNodes = [...document.querySelectorAll('article, ' + POST_LINK_SELECTOR)].filter(element => {
+    if (isEvent(element)) return false;
+    const parent = element.parentElement?.closest('article');
+    if (parent && postArticles.has(parent)) return false;
+    if (element.tagName === 'ARTICLE') return postArticles.has(element);
+    try {
+      const url = new URL(element.href);
+      return ['http:', 'https:'].includes(url.protocol) && url.origin === location.origin;
+    } catch { return false; }
+  });
+  const posts = postNodes.slice(0, 50).map(article => {
     const first = selectors => article.querySelector(selectors);
-    const title = first('[itemprop="headline"], .post-title, .entry-title, h1, h2, h3, h4, h5, h6');
-    const author = first('.post-author-name, [itemprop="author"], [rel="author"], .author-name, .byline, .author');
-    const body = first('[itemprop="articleBody"], .post-content, .entry-content, .article-content, .post-body, .article-body');
+    const title = first('[itemprop="headline"], .post-title, .entry-title, .board-title, .notice-text, h1, h2, h3, h4, h5, h6');
+    const author = first('.post-author-name, [itemprop="author"], [rel="author"], .author-name, .byline, .author, .article-meta > span:first-child');
+    const body = first(BODY_SELECTOR) || (article.matches(POST_LINK_SELECTOR) ? first('.board-title > small, .news-card-body > p, p') : null);
+    // Board titles contain a nested <small> preview; it must not become part of the title.
+    const titleCopy = title?.cloneNode(true);
+    titleCopy?.querySelectorAll('small').forEach(element => element.remove());
+    let postUrl = article.matches('a[href]') ? article.href : null;
+    // Only a single article with a real body is eligible for the current detail URL.
+    if (!postUrl && postArticles.size === 1 && body &&
+      /^\/(?:notices|news)\/\d+\/?$/.test(location.pathname)) postUrl = location.href;
     let id = article.getAttribute('data-post-id') || article.getAttribute('data-id');
     let idSource = id ? 'dom-attribute' : null;
     if (!id) {
@@ -122,14 +151,19 @@ export function readDom(options = {}) {
       id = article.id.replace(/^post[-_]?/i, '');
       idSource = 'dom-id';
     }
+    if (!id && postUrl) {
+      const match = /^\/(?:notices|news)\/(\d+)\/?$/.exec(new URL(postUrl).pathname);
+      if (match) { id = match[1]; idSource = 'url-path'; }
+    }
     const fullBody = body ? String(body.innerText || '').replace(/\s+/g, ' ').trim() : '';
     return {
       selector: selector(article),
       id: id || null,
       idSource,
+      ...(postUrl ? { url: postUrl } : {}),
       author: text(author?.matches('.post-author-name, .author-name') ?
         (author.querySelector('span')?.innerText || author.innerText) : author?.innerText) || null,
-      title: text(title?.innerText) || null,
+      title: text(titleCopy?.textContent) || null,
       body: body ? {
         selector: selector(body),
         preview: options.includeBodyPreview ? fullBody.slice(0, 160) : null,
@@ -143,6 +177,16 @@ export function readDom(options = {}) {
           label: label(button) || text(button.innerText || button.value) || null }))
     };
   });
+  const eventNodes = [...document.querySelectorAll(EVENT_SELECTOR)].filter(element =>
+    !element.parentElement?.closest(EVENT_SELECTOR));
+  const events = eventNodes.slice(0, 50).map(element => ({
+    selector: selector(element),
+    kind: 'event',
+    evidence: 'dom',
+    title: text(element.querySelector('[itemprop="name"], h1, h2, h3, h4, h5, h6')?.innerText) || null,
+    date: text(element.querySelector('[itemprop="startDate"], time, .schedule-date')?.textContent) || null,
+    location: text(element.querySelector('[itemprop="location"], .schedule-location, .schedule-detail > p')?.textContent) || null
+  }));
   if (other.forms.length || other.fields.length || other.buttons.length || other.links.length || other.outputs.length) {
     areas.push(other);
   }
@@ -150,6 +194,7 @@ export function readDom(options = {}) {
     title: text(document.title),
     areas,
     posts,
+    events,
     counts: {
       areas: document.querySelectorAll(AREA_SELECTOR).length,
       forms: document.forms.length,
@@ -157,7 +202,8 @@ export function readDom(options = {}) {
       buttons: document.querySelectorAll(BUTTON_SELECTOR).length,
       links: document.querySelectorAll('a[href]').length,
       outputs: document.querySelectorAll(OUTPUT_SELECTOR).length,
-      posts: document.querySelectorAll('article').length
+      posts: postNodes.length,
+      events: eventNodes.length
     }
   };
 }

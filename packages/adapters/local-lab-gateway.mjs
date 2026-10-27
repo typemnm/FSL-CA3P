@@ -11,6 +11,7 @@ import { observeStoredXssExecution, parseLocalSite } from './integrations/xss-pa
 import { createLocalGuardrail, GuardrailDeniedError } from './integrations/guardrail.mjs';
 import { matchCasperHistory } from './integrations/casper-db.mjs';
 import { createPentestDb } from './integrations/pentest-db.mjs';
+import { registerLabSession } from './lab-session-registry.mjs';
 
 const { parseEnvelope, replyTo } = protocol;
 const { storedXssCanaryContent } = xssCanary;
@@ -215,6 +216,8 @@ function createBolaGateway(origin, isClosed, { casperDatabasePath } = {}) {
           readyCaseCount: history.readyCaseCount,
           observations: history.observations,
           assessments: history.assessments,
+          targetId: history.targetId,
+          referenceContext: history.referenceContext,
           evidenceId: `casper-evidence-${randomUUID()}`,
         }));
       }
@@ -401,6 +404,8 @@ function createXssGateway(origin, isClosed, { casperDatabasePath } = {}) {
         readyCaseCount: history.readyCaseCount,
         observations: history.observations,
         assessments: history.assessments,
+        targetId: history.targetId,
+        referenceContext: history.referenceContext,
         evidenceId: `casper-evidence-${randomUUID()}`,
       }));
     }
@@ -517,7 +522,7 @@ function createXssGateway(origin, isClosed, { casperDatabasePath } = {}) {
   };
 }
 
-export async function startLocalLab({ profile = XSS_PROFILE, casperDatabasePath, safeMode = false } = {}) {
+export async function startLocalLab({ profile = XSS_PROFILE, casperDatabasePath, safeMode = false, cleanupRegistryPath } = {}) {
   if (profile !== XSS_PROFILE && profile !== BOLA_PROFILE) {
     throw new Error('Unsupported local lab profile.');
   }
@@ -528,6 +533,7 @@ export async function startLocalLab({ profile = XSS_PROFILE, casperDatabasePath,
   let child;
   let closed;
   let closeTask;
+  let registration;
   try {
     child = spawn(process.execPath, [BOARD_SERVER], {
       env: {
@@ -538,7 +544,7 @@ export async function startLocalLab({ profile = XSS_PROFILE, casperDatabasePath,
         BOARD_COOKIE_SECRET: randomBytes(32).toString('hex'),
         BOARD_SAFE_MODE: safeMode ? '1' : '0',
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       windowsHide: true,
     });
     // Keep an error listener after startup so a later child-process error cannot
@@ -546,6 +552,8 @@ export async function startLocalLab({ profile = XSS_PROFILE, casperDatabasePath,
     child.on('error', () => {});
     closed = closedProcess(child);
     const origin = await awaitBoardOrigin(child);
+    if (cleanupRegistryPath) registration = await registerLabSession({ registryPath: cleanupRegistryPath,
+      directory, pid: child.pid });
     let isClosed = false;
     const gateway = profile === XSS_PROFILE
       ? createXssGateway(origin, () => isClosed, { casperDatabasePath })
@@ -555,7 +563,7 @@ export async function startLocalLab({ profile = XSS_PROFILE, casperDatabasePath,
         isClosed = true;
         closeTask = (async () => {
           try { await stopProcess(child, closed); }
-          finally { await removePrivateBoardData(directory); }
+          finally { await removePrivateBoardData(directory); await registration?.unregister(); }
         })();
       }
       return closeTask;
@@ -570,6 +578,7 @@ export async function startLocalLab({ profile = XSS_PROFILE, casperDatabasePath,
       if (child) await stopProcess(child, closed);
     } finally {
       await removePrivateBoardData(directory);
+      await registration?.unregister();
     }
     throw error;
   }

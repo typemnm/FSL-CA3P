@@ -2,7 +2,8 @@ FROM node:24-bookworm-slim
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+# Private deployment checkouts use umask 077; the runtime user must still read these root-owned manifests.
+COPY --chmod=0644 package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY --chown=node:node src/ ./src/

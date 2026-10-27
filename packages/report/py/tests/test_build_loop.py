@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import zipfile
+from pathlib import Path
 
 import pytest
 from conftest import needs_node, write_sources
@@ -212,3 +214,50 @@ def test_redact_masks_newer_openai_key_formats():
         "sk-ant-api03-ABCdef1234567890abcd",
     ):
         assert key not in redact(f"token is {key} end")
+
+
+@pytest.mark.parametrize("ref_key", ["ref", "name"])
+def test_captured_ref_is_embedded_in_hwpx(tmp_path, monkeypatch, ref_key):
+    """The ref the capture tool returns must be the one the writer resolves (regression)."""
+    from test_hwpx_writer import png
+
+    import ca3p_report.llm.tools as tools_module
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    run_id = "run-1760918400000-ref00001"
+
+    def fake_capture(args, **_):
+        out = Path(args[args.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        shot = out / "element-1-abcd.png"
+        shot.write_bytes(png())
+        record = {"kind": "element", "path": str(shot), "sha256": "sha256:x", "mime": "image/png"}
+        stdout = json.dumps({"ok": True, "captures": [record]})
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    monkeypatch.setattr(tools_module.subprocess, "run", fake_capture)
+
+    class CopyRefLLM:
+        def complete(self, messages, tools):
+            last = messages[-1]
+            if last["role"] != "tool":
+                return _call("capture_screenshot", {"selector": "form"})
+            record = json.loads(last["content"])["result"]["captures"][0]
+            ref = record["ref"] if ref_key == "ref" else Path(record["path"]).name
+            model = model_for(run_id)
+            model["findings"][0]["images"] = [
+                {"step": 1, "caption": "입력 지점", "ref": ref, "integrity": "ok"}
+            ]
+            return _call("finish_report", {"model": model})
+
+    result = run_build(
+        CopyRefLLM(),
+        bundle=bundle,
+        out_dir=tmp_path / "report",
+        test_profile="stored_xss_canary",
+        origin="http://127.0.0.1:1",
+        session_switch=None,
+    )
+    with zipfile.ZipFile(tmp_path / "report" / result["reportFilename"]) as z:
+        assert sum(n.startswith("BinData/") for n in z.namelist()) == 1
