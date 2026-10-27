@@ -1,7 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createPentestDb } from '../../packages/adapters/integrations/pentest-db.mjs';
+import { createRunEvidenceStore } from '../../packages/adapters/integrations/run-evidence.mjs';
 
 /** Trusted operator import; readRun validates each stored runId before insertion. */
 export async function importLegacyRuns(store, { reportsDir = fileURLToPath(new URL('../../reports/pentest-db-runs/', import.meta.url)) } = {}) {
@@ -9,7 +9,7 @@ export async function importLegacyRuns(store, { reportsDir = fileURLToPath(new U
   let directories;
   try { directories = await readdir(root, { withFileTypes: true }); }
   catch (error) { if (error.code === 'ENOENT') return { imported: 0, errors: [] }; throw error; }
-  const adapter = createPentestDb({ reportsDir: root });
+  const adapter = createRunEvidenceStore({ reportsDir: root });
   const { readFile } = await import('node:fs/promises');
   let imported = 0; const errors = [];
   for (const entry of directories) {

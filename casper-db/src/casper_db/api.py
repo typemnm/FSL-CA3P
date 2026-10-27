@@ -1,11 +1,20 @@
-"""Optional read-only adapter for a separate LLM coordinator process."""
+"""Read-only queries, plus an explicitly enabled advisory ingestion endpoint."""
 
+import sqlite3
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import ValidationError
 
+from .advisory_sync import KnowledgeSync, sync_knowledge
+from .attack_catalog import (
+    AttackInfoQuery,
+    get_attack_template,
+    list_attack_patterns,
+    lookup_attack_info,
+)
+from .knowledge import KnowledgeQuery, query_knowledge
 from .models import CaseRecord
 from .repository import CaseStore, NotFoundError
 
@@ -13,13 +22,56 @@ from .repository import CaseStore, NotFoundError
 def create_app(
     database_path: str | Path, *, intake_workspace: Path | None = None,
     external_database: Path | None = None,
+    enable_advisory_sync: bool = False,
 ) -> FastAPI:
     store = CaseStore(database_path)
     app = FastAPI(
-        title="CASPER Case DB",
+        title="CASPER Knowledge DB",
         version="0.4.0",
-        description="Read-only case lookup. Returned cases are reference data, not findings.",
+        description="CERT case and product advisory queries; no exploit execution.",
     )
+
+    if enable_advisory_sync:
+        if external_database is not None and (
+            external_database.resolve() != Path(database_path).resolve()
+        ):
+            raise ValueError("advisory sync requires one unified database")
+
+        @app.post("/knowledge/sync")
+        def knowledge_sync(request: KnowledgeSync):
+            try:
+                return sync_knowledge(Path(database_path), request, apply=True)
+            except (ValueError, OSError, sqlite3.Error):
+                raise HTTPException(
+                    status_code=409, detail="advisory sync could not commit",
+                ) from None
+
+    @app.post("/knowledge/query")
+    def knowledge_query(request: KnowledgeQuery):
+        return query_knowledge(
+            Path(database_path), request, external_database=external_database,
+        )
+
+    @app.get("/attack-patterns")
+    def attack_patterns():
+        return list_attack_patterns(Path(database_path))
+
+    @app.post("/attack-info/query")
+    def attack_info_query(request: AttackInfoQuery):
+        try:
+            return {"schema_version": "casper-attack-info-1",
+                    "attack_info": lookup_attack_info(Path(database_path), request)}
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="ambiguous or invalid attack query",
+            ) from None
+
+    @app.get("/attack-templates/{template_id}/versions/{version}")
+    def attack_template(template_id: str, version: str):
+        template = get_attack_template(Path(database_path), template_id, version)
+        if template is None:
+            raise HTTPException(status_code=404, detail="attack template not registered")
+        return template
 
     def references(target_id: str, cve_id: Annotated[list[str] | None, Query()] = None):
         from .reference_context import build_reference_context

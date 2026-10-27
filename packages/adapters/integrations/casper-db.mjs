@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { access, mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { inventoryFromParser, knowledgeContextDigest } from './parser-inventory.mjs';
+export { inventoryFromParser } from './parser-inventory.mjs';
 
 const ROOT = fileURLToPath(new URL('../../../casper-db/', import.meta.url));
 const PYTHON_SOURCE = join(ROOT, 'src');
@@ -14,10 +16,15 @@ from pathlib import Path
 from casper_db.repository import CaseStore, initialize_database, SCHEMA_VERSION
 from casper_db.matching import assess_observation
 from casper_db.reference_context import build_reference_context
+from casper_db.knowledge import query_knowledge
 from casper_db.case_policy import same_reviewed_route
 
 request = json.load(sys.stdin)
 db = Path(request['database'])
+if request.get('operation') == 'sync_knowledge':
+    from casper_db.advisory_sync import sync_knowledge
+    json.dump(sync_knowledge(db, request['sync'], apply=True), sys.stdout, ensure_ascii=False)
+    sys.exit(0)
 # Existing data requires explicit migration. Only a new/empty file initializes
 # during lookup, including concurrent first-use requests.
 if db.exists():
@@ -56,8 +63,14 @@ for item in request.get('unresolvedRequests', []):
             related.append({'case_id':case.case_id, 'case_revision':case.revision,
                 'basis':'exact_endpoint' if exact else 'reviewed_route', 'decision':'manual_review'})
     context['unresolved_requests'].append({**item, 'related_cases':related})
-json.dump({'targetId': target_id, 'readyCaseCount': len(cases), 'assessments': assessments,
-    'referenceContext':context}, sys.stdout, ensure_ascii=False)
+result = {'targetId': target_id, 'readyCaseCount': len(cases), 'assessments': assessments,
+    'referenceContext':context}
+if request.get('softwareInventory') is not None:
+    result['knowledgeContext'] = query_knowledge(db, {
+        'target_id':target_id, 'observations':request['observations'],
+        'inventory':request['softwareInventory']},
+        external_database=Path(request['externalDatabase']) if request.get('externalDatabase') else None)
+json.dump(result, sys.stdout, ensure_ascii=False)
 `;
 
 function absoluteDatabasePath(value) {
@@ -93,11 +106,13 @@ export function parserReferenceLocations(report, { targetId = 'vul-web-1', origi
     throw new TypeError('locationHints must be a bounded array of explicit input locations.');
   }
   for (const page of report.pages) {
-    for (const behavior of page.behaviors || []) {
+    for (const entry of page.behaviors || []) {
+      const behavior = typeof entry === 'string' ? report.behaviors?.find(item => item.id === entry) : entry;
+      if (!behavior) continue;
       for (const api of behavior.api || []) {
         if (!api || typeof api.url !== 'string' || typeof api.method !== 'string') continue;
         let url;
-        try { url = new URL(api.url); } catch { continue; }
+        try { url = new URL(api.url, allowed.origin); } catch { continue; }
         if (url.origin !== allowed.origin || /[{}]/u.test(url.pathname)) continue;
         const method = api.method.toUpperCase();
         if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(method)) continue;
@@ -142,8 +157,8 @@ export function observationsFromParser(report, options = {}) {
   return parserReferenceLocations(report, options).observations;
 }
 
-function runPython(input, { python, signal } = {}) {
-  const command = python || process.env.CASPER_DB_PYTHON || 'python';
+function runPython(input, { python, signal, timeoutMs = 30_000 } = {}) {
+  const command = python || process.env.CASPER_DB_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
   return new Promise((resolveOutput, rejectOutput) => {
     const child = spawn(command, ['-c', PYTHON_CODE], {
       cwd: ROOT,
@@ -156,6 +171,8 @@ function runPython(input, { python, signal } = {}) {
     const stdout = [];
     const stderr = [];
     let outputBytes = 0;
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
     child.stdout.on('data', chunk => {
       outputBytes += chunk.length;
       if (outputBytes > MAX_OUTPUT_BYTES) child.kill();
@@ -166,6 +183,8 @@ function runPython(input, { python, signal } = {}) {
     });
     child.on('error', error => rejectOutput(new Error(`casper-db Python process failed: ${error.message}`)));
     child.on('close', code => {
+      clearTimeout(timer);
+      if (timedOut) return rejectOutput(new Error('casper-db operation exceeded its total time limit.'));
       if (outputBytes > MAX_OUTPUT_BYTES) return rejectOutput(new Error('casper-db output exceeded 1 MB.'));
       if (code !== 0) {
         const detail = Buffer.concat(stderr).toString('utf8').slice(-2000);
@@ -174,13 +193,16 @@ function runPython(input, { python, signal } = {}) {
       try { resolveOutput(JSON.parse(Buffer.concat(stdout).toString('utf8'))); }
       catch { rejectOutput(new Error('casper-db returned invalid JSON.')); }
     });
+    child.stdin.on('error', error => { if (error.code !== 'EPIPE') rejectOutput(error); });
     child.stdin.end(JSON.stringify(input));
   });
 }
 
 export async function matchCasperHistory({ report, origin, targetId = 'vul-web-1', databasePath,
   intakeWorkspace = process.env.CASPER_DB_INTAKE_WORKSPACE,
-  externalDatabase = process.env.CASPER_DB_EXTERNAL_PATH, cveIds = [], locationHints = [], python, signal } = {}) {
+  externalDatabase = process.env.CASPER_DB_EXTERNAL_PATH, cveIds = [], locationHints = [],
+  softwareInventory, python, signal } = {}) {
+  softwareInventory ??= inventoryFromParser(report, { targetId }).inventory;
   const { observations, unresolvedRequests } = parserReferenceLocations(report, { targetId, origin, locationHints });
   for (const path of [intakeWorkspace, externalDatabase]) {
     if (path !== undefined && (typeof path !== 'string' || !isAbsolute(path))) {
@@ -191,11 +213,63 @@ export async function matchCasperHistory({ report, origin, targetId = 'vul-web-1
   try { await access(database); }
   catch { await mkdir(dirname(database), { recursive: true }); }
   const result = await runPython({ database, targetId, observations, unresolvedRequests,
-    intakeWorkspace, externalDatabase, cveIds }, { python, signal });
+    intakeWorkspace, externalDatabase, cveIds, softwareInventory }, { python, signal });
   if (!result || result.targetId !== targetId || !Array.isArray(result.assessments)
     || result.assessments.length !== observations.length || !Number.isInteger(result.readyCaseCount)) {
     throw new Error('casper-db response does not match the parser lookup contract.');
   }
   return { source: 'casper-db', targetId, readyCaseCount: result.readyCaseCount, observations,
-    assessments: result.assessments, referenceContext: result.referenceContext };
+    assessments: result.assessments, referenceContext: result.referenceContext,
+    ...(result.knowledgeContext ? { knowledgeContext: result.knowledgeContext } : {}) };
+}
+
+/** Collect into the owned source DB; callers preserve the returned context in run evidence. */
+export async function syncParserAdvisories({ report, origin, targetId = 'vul-web-1', databasePath,
+  softwareInventory, providers = ['github', 'nvd'],
+  maxPages = 2, maxRequests = 20, timeoutSeconds = 180, python, signal } = {}) {
+  const { observations } = parserReferenceLocations(report, { targetId, origin });
+  const converted = inventoryFromParser(report, { targetId });
+  softwareInventory ??= converted.inventory;
+  if (!softwareInventory) throw new TypeError('Observed software inventory is required for advisory sync.');
+  const database = absoluteDatabasePath(databasePath ?? process.env.CASPER_DB_PATH);
+  const result = await runPython({ database, operation: 'sync_knowledge', sync: {
+    query: { target_id: targetId, observations, inventory: softwareInventory },
+    providers, max_pages: maxPages, max_requests: maxRequests, timeout_seconds: timeoutSeconds,
+    input_truncated: converted.coverage.truncated, omitted_components: converted.coverage.omitted,
+  } }, { python, signal, timeoutMs: timeoutSeconds * 1000 + 5000 });
+  if (result?.schema_version !== 'casper-knowledge-sync-1' || result.target_id !== targetId) {
+    throw new Error('Advisory sync returned a different parser target.');
+  }
+  if (converted.coverage.truncated) {
+    result.collection_complete = false;
+    result.status = 'partial';
+  }
+  return { ...result, input_coverage: converted.coverage };
+}
+
+/** Collection writes the source DB; historical lookups keep the queued snapshot.
+ * The returned provider records are frozen in the run's immutable JSON evidence.
+ */
+export async function prepareParserKnowledge({ report, origin, targetId = 'vul-web-1', databasePath,
+  sourceDatabasePath, python, signal, sync = syncParserAdvisories } = {}) {
+  const converted = inventoryFromParser(report, { targetId });
+  let collection = { status: 'not_observed', collection_complete: false, database_written: false };
+  if (converted.inventory) {
+    collection = await sync({ report, origin, targetId, databasePath: sourceDatabasePath ?? databasePath,
+      softwareInventory: converted.inventory, python, signal });
+  }
+  const history = await matchCasperHistory({ report, origin, targetId, databasePath,
+    softwareInventory: converted.inventory, python, signal });
+  const context = history.knowledgeContext ?? { schema_version: 'casper-knowledge-context-1',
+    target_id: targetId, automatic_execution_allowed: false, database_written: false,
+    external: { status: 'not_requested', candidates: [] } };
+  if (collection.knowledge) context.external = collection.knowledge.external;
+  context.input_coverage = converted.coverage;
+  context.collection = { status: collection.status, collection_complete: collection.collection_complete,
+    database_written: collection.database_written, request_count: collection.request_count ?? 0,
+    elapsed_seconds: collection.elapsed_seconds ?? 0, journal_id: collection.journal_id ?? null,
+    coverage: collection.coverage ?? null, jobs: collection.jobs ?? [], errors: collection.errors ?? [] };
+  context.inventory = converted.inventory;
+  context.contentDigest = knowledgeContextDigest(context, converted.inventory, converted.coverage, collection);
+  return { ...history, knowledgeContext: context };
 }

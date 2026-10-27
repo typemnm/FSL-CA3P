@@ -10,6 +10,9 @@
 **/.venv
 **/venv
 casper-db/data
+casper-db/build
+casper-db/dist
+**/*.egg-info
 reports/*
 !reports/ci
 reports/ci/*

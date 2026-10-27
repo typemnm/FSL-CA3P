@@ -35,3 +35,7 @@ flowchart LR
 불변 run manifest에는 소스 revision, 모듈 digest, 계약·ruleset·카탈로그·fixture digest, 모델·prompt 설정이 필요하다. 입력 fixture·환경이 다른 결과는 동등한 조건의 실험과 구분한다. 실제 모델 호출은 고정 입력과 반복 시험으로 별도 평가하고 통합 게이트는 모델 대역과 규칙 baseline으로 코드 회귀를 판단한다.
 
 실제 실습의 코어 결과를 저장한 뒤 worker가 보고서 Agent를 실행한다. 촬영할 게시판과 작업 lease는 작성 완료·실패·취소까지 유지한 후 정리한다. `run.report`는 검사 결과이며 `run.reportDocument`는 별도의 생성 상태다. 문서 실패로 finding을 덮어쓰지 않는다. HWPX는 JSON 마스킹 경로와 분리된 불변 바이너리 artifact로 저장하고, 로그인한 사용자의 전용 다운로드 API에서 run 연결과 크기·해시를 확인한다.
+
+## 통합 취약점 DB
+
+`pentest-db`는 교체된 모듈이며 독립 카탈로그·DB·수명주기를 갖지 않는다. `casper-db`의 한 SQLite 파일이 CERT 사례, 공개 권고, 공격 정보·payload·검증 규칙 및 미래 템플릿 계약을 관리한다. 새 Agent 호출은 `casper-db`를 사용한다. 실행 registry는 `run-store`, 기존 파일 아티팩트는 `run-evidence` 어댑터가 보존한다. 예전 이름은 이력 읽기와 호환 별칭에만 남는다. 공격 툴은 통합 DB의 패턴 revision·검증 규칙·executor 계약을 소비한다.

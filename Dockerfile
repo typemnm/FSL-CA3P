@@ -4,6 +4,7 @@ FROM node:24.19.0-bookworm
 # Browser dependencies are installed from the repository's pinned Playwright.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 python3-venv curl \
+        tesseract-ocr tesseract-ocr-kor \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/ca3p-venv
 
@@ -21,7 +22,7 @@ RUN cd xss-parser && npx playwright install --with-deps chromium
 COPY casper-db/ ./casper-db/
 COPY packages/report/requirements-ci.lock ./packages/report/requirements-ci.lock
 COPY packages/report/py/ ./packages/report/py/
-RUN python -m pip install --no-cache-dir -r ./casper-db/requirements-ci.lock \
+RUN python -m pip install --no-cache-dir -r ./casper-db/requirements-runtime.lock \
     && python -m pip install --no-cache-dir -r ./packages/report/requirements-ci.lock \
     && python -m pip install --no-cache-dir --no-deps ./casper-db ./packages/report/py
 

@@ -23,7 +23,7 @@ def register_commands(command):
             action.add_argument("file", type=Path)
             action.add_argument("--target", required=True)
             action.add_argument(
-                "--ocr", action="store_true", help="Local Windows OCR; review candidates only"
+                "--ocr", action="store_true", help="Offline Tesseract OCR; review candidates only"
             )
             action.add_argument("--ocr-language", default="ko")
             action.add_argument(

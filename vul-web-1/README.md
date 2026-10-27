@@ -4,11 +4,10 @@
 
 ## 실행
 
-Node.js 18 이상이 필요합니다.
+Node.js 24가 필요합니다.
 
 ```powershell
-cd D:\whs\과제\vul-web-1
-npm start
+npm --prefix vul-web-1 start
 ```
 
 브라우저에서 <http://127.0.0.1:3000>에 접속합니다. 기본 실행 주소는 로컬 컴퓨터의 `127.0.0.1:3000`입니다. 테스트는 프로젝트 폴더에서 `npm test`로 실행합니다.

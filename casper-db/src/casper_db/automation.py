@@ -23,6 +23,7 @@ from .hwpx import MAX_FILE_BYTES
 from .hwpx_review import render_hwpx_review
 from .import_workflow import ReportReview, WorkflowModel, digest, prepare_import, review_template
 from .local_ocr import VERSION as OCR_VERSION
+from .local_ocr import ocr_cache_identity
 from .narrative import VERSION as NARRATIVE_VERSION
 from .report_drafts import ReportDraft
 from .repository import CaseStore
@@ -156,6 +157,7 @@ def _extract(item, base, output):
                 "enabled": item.local_ocr,
                 "language": item.ocr_language,
                 "version": OCR_VERSION,
+                "runtime": ocr_cache_identity(item.ocr_language) if item.local_ocr else None,
             },
         }
     )
@@ -187,6 +189,7 @@ def run_automation(
     apply: bool = False,
     cert_db: Path | None = None,
     external_db: Path | None = None,
+    knowledge_db: Path | None = None,
 ) -> dict:
     """Prepare all inputs before explicit writes; record each store's commit separately."""
     config_path = config_path.resolve(strict=True)
@@ -210,9 +213,11 @@ def run_automation(
     inputs.extend(base / item.file for item in config.external if item.file)
     if any(path.resolve().is_relative_to(output) for path in inputs):
         raise ValueError("keep job inputs outside the automation output directory")
+    if knowledge_db is not None:
+        if cert_db is not None or external_db is not None:
+            raise ValueError("choose --knowledge-db or explicit --cert-db / --external-db")
+        cert_db = external_db = knowledge_db
     databases = [path.resolve() for path in (cert_db, external_db) if path is not None]
-    if len(databases) != len(set(databases)):
-        raise ValueError("CERT and external databases must be separate files")
     if any(
         path in {item.resolve() for item in inputs} or path.is_relative_to(output)
         for path in databases
@@ -330,13 +335,22 @@ def run_automation(
     result["status"] = "failed" if result["errors"] else "needs_review" if pending else "ready"
     if apply and result["status"] == "ready":
         try:
-            if cases:
-                stored = CaseStore(cert_db).add_many(cases)
-                result["commits"]["cert"] = {key: len(rows) for key, rows in stored.items()}
+            shared = cert_db is not None and external_db is not None and (
+                cert_db.resolve() == external_db.resolve()
+            )
+            if shared and (cases or collected):
+                from .knowledge import store_knowledge
+
+                result["commits"] = store_knowledge(cert_db, cases, collected)
                 result["database_written"] = True
-            if collected:
-                result["commits"]["external"] = store_external(external_db, collected)
-                result["database_written"] = True
+            else:
+                if cases:
+                    stored = CaseStore(cert_db).add_many(cases)
+                    result["commits"]["cert"] = {key: len(rows) for key, rows in stored.items()}
+                    result["database_written"] = True
+                if collected:
+                    result["commits"]["external"] = store_external(external_db, collected)
+                    result["database_written"] = True
             result["status"] = "applied"
         except (ValueError, OSError, sqlite3.Error) as exc:
             result["errors"].append({"stage": "apply", "message": str(exc)})

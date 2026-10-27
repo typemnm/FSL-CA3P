@@ -1,0 +1,385 @@
+{
+  "$defs": {
+    "AttackInfoQuery": {
+      "additionalProperties": false,
+      "properties": {
+        "vulnType": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Vulntype",
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/AttackTarget"
+        }
+      },
+      "required": [
+        "vulnType",
+        "target"
+      ],
+      "title": "AttackInfoQuery",
+      "type": "object"
+    },
+    "AttackTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "parameter": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Parameter",
+          "type": "string"
+        },
+        "application": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Application"
+        }
+      },
+      "required": [
+        "endpoint",
+        "parameter"
+      ],
+      "title": "AttackTarget",
+      "type": "object"
+    },
+    "KnowledgeQuery": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "casper-knowledge-query-1",
+          "default": "casper-knowledge-query-1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "target_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "observations": {
+          "items": {
+            "$ref": "#/$defs/ParserObservation"
+          },
+          "maxItems": 48,
+          "title": "Observations",
+          "type": "array"
+        },
+        "inventory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SoftwareInventory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "attack_queries": {
+          "items": {
+            "$ref": "#/$defs/AttackInfoQuery"
+          },
+          "maxItems": 20,
+          "title": "Attack Queries",
+          "type": "array"
+        },
+        "limit": {
+          "default": 100,
+          "maximum": 500,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target_id"
+      ],
+      "title": "KnowledgeQuery",
+      "type": "object"
+    },
+    "ParserObservation": {
+      "additionalProperties": false,
+      "description": "Minimum agreed output from the endpoint parser for one input point.",
+      "properties": {
+        "target_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "endpoint": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD",
+            "OPTIONS"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "parameter": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parameter"
+        },
+        "parameter_location": {
+          "default": "unknown",
+          "enum": [
+            "query",
+            "body",
+            "path",
+            "header",
+            "cookie",
+            "fragment",
+            "unknown"
+          ],
+          "title": "Parameter Location",
+          "type": "string"
+        },
+        "parameter_not_applicable": {
+          "default": false,
+          "title": "Parameter Not Applicable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target_id",
+        "endpoint",
+        "method"
+      ],
+      "title": "ParserObservation",
+      "type": "object"
+    },
+    "SoftwareComponent": {
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Ecosystem",
+          "type": "string"
+        },
+        "package": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Package",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "cpe": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cpe"
+        },
+        "source_refs": {
+          "items": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "call_paths": {
+          "items": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "title": "Call Paths",
+          "type": "array"
+        },
+        "identification": {
+          "default": "observed",
+          "enum": [
+            "observed",
+            "indicator",
+            "declared"
+          ],
+          "title": "Identification",
+          "type": "string"
+        },
+        "version_status": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Status"
+        },
+        "evidence": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "maxItems": 30,
+          "title": "Evidence",
+          "type": "array"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "package",
+        "source_refs"
+      ],
+      "title": "SoftwareComponent",
+      "type": "object"
+    },
+    "SoftwareInventory": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "casper-software-inventory-1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "target_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "observed_at": {
+          "title": "Observed At",
+          "type": "string"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/SoftwareComponent"
+          },
+          "maxItems": 1000,
+          "minItems": 1,
+          "title": "Components",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "target_id",
+        "observed_at",
+        "components"
+      ],
+      "title": "SoftwareInventory",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "query": {
+      "$ref": "#/$defs/KnowledgeQuery"
+    },
+    "providers": {
+      "items": {
+        "enum": [
+          "github",
+          "nvd"
+        ],
+        "type": "string"
+      },
+      "maxItems": 2,
+      "minItems": 1,
+      "title": "Providers",
+      "type": "array"
+    },
+    "max_pages": {
+      "default": 2,
+      "maximum": 20,
+      "minimum": 1,
+      "title": "Max Pages",
+      "type": "integer"
+    },
+    "max_requests": {
+      "default": 20,
+      "maximum": 64,
+      "minimum": 1,
+      "title": "Max Requests",
+      "type": "integer"
+    },
+    "timeout_seconds": {
+      "default": 180,
+      "maximum": 600,
+      "minimum": 1,
+      "title": "Timeout Seconds",
+      "type": "integer"
+    },
+    "input_truncated": {
+      "default": false,
+      "title": "Input Truncated",
+      "type": "boolean"
+    },
+    "omitted_components": {
+      "default": 0,
+      "maximum": 100000,
+      "minimum": 0,
+      "title": "Omitted Components",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "title": "KnowledgeSync",
+  "type": "object"
+}

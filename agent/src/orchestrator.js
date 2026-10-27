@@ -183,7 +183,7 @@ async function runOnce({
       runId,
       iteration,
       sender: 'agent',
-      receiver: 'pentest-db',
+      receiver: 'casper-db',
       type: 'storage.request',
       payload: { operation, ...payload },
       policyContext,
@@ -218,7 +218,9 @@ async function runOnce({
     });
     if (receiver === 'attack-module') metrics.requestCount += 1;
     if (receiver === 'xss-parser') metrics.parserRuns += 1;
-    const timeoutMs = receiver === 'xss-parser' ? 30_000 : receiver === 'casper-db' ? 15_000 : undefined;
+    // Inventory collection has a 180 s budget, followed by a bounded local lookup.
+    const timeoutMs = receiver === 'xss-parser' ? 30_000 : receiver === 'casper-db'
+      ? (payload.operation === 'assess_xss_history' ? 225_000 : 15_000) : undefined;
     const response = await invokeJson(gateway, request, timeoutMs ? { timeoutMs } : {});
     let validated;
     try {
@@ -314,9 +316,10 @@ async function runOnce({
         assessments: history.payload.assessments.length,
         readyCaseCount: history.payload.readyCaseCount,
         evidenceId: history.payload.evidenceId,
+        ...(history.payload.knowledgeContext ? { knowledgeContext: history.payload.knowledgeContext } : {}),
       };
 
-      const catalog = await callExternal('pentest-db', iteration, 'loop.catalog', {
+      const catalog = await callExternal('casper-db', iteration, 'loop.catalog', {
         operation: 'get_attack_info',
         vulnType: 'stored_xss',
         target: { endpoint: 'POST /api/posts', parameter: 'content' },
@@ -438,7 +441,7 @@ async function runOnce({
       finding: reflection.finding,
       metrics,
       guardrail: { decisions: guardrailDecisions },
-      referenceContext: { casperDb: historicalContext, pentestDb: catalogContext },
+      referenceContext: { casperDb: historicalContext, attackCatalog: catalogContext },
       safety: {
         externalJsonOnly: true,
         externalModulesImplementedByAgent: false,

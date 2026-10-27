@@ -1,6 +1,6 @@
 # 외부 모듈 JSON 계약
 
-이 문서는 현재 에이전트가 호출하는 외부 모듈의 JSON 계약을 정의한다. 대시보드 기본 로컬 실습은 `stored_xss_canary`로, 서버가 시작한 소유 loopback 게시판에서 한 번의 XSS canary POST와 독립 브라우저 실행 확인을 수행한다. 로컬 실습에서는 `agent-dashboard/local-lab-gateway.mjs`가 실제 `xss-parser`, `attack-module`, `guardrail`, `casper-db`, `pentest-db`에 연결한다. 기존 `agent_cross_user_delete_canary` BOLA 프로필은 명시적으로 선택할 때 사용한다. 코어 fixture와 `agent` 데모는 같은 계약의 scripted 테스트 대역을 사용한다.
+이 문서는 현재 에이전트가 호출하는 외부 모듈의 JSON 계약을 정의한다. 대시보드 기본 로컬 실습은 `stored_xss_canary`로, 서버가 시작한 소유 loopback 게시판에서 한 번의 XSS canary POST와 독립 브라우저 실행 확인을 수행한다. 로컬 실습에서는 게이트웨이가 실제 `xss-parser`, `attack-module`, `guardrail`, 통합 `casper-db`와 실행 기록 저장기에 연결한다. 독립 `pentest-db` 모듈은 폐기됐다. 기존 `agent_cross_user_delete_canary` BOLA 프로필은 명시적으로 선택할 때 사용한다. 코어 fixture와 `agent` 데모는 같은 계약의 scripted 테스트 대역을 사용한다.
 
 ## 전송 포트
 
@@ -13,7 +13,7 @@ gateway.exchange(serializedRequest: string, { signal }?) -> Promise<serializedRe
 - 요청과 응답은 UTF-8 JSON 문자열이어야 한다.
 - gateway는 envelope의 `receiver`를 보고 실제 외부 모듈로 라우팅한다.
 - HTTP, 메시지 큐, stdio 등 실제 전송 방식은 통합 계층이 결정한다.
-- 에이전트는 기본 10초 timeout에 도달하면 선택적 `AbortSignal`을 중단하고 `TRANSPORT_FAILURE`로 처리한다. `xss-parser`에는 30초, `casper-db`에는 15초를 적용한다.
+- 에이전트는 기본 10초 timeout에 도달하면 선택적 `AbortSignal`을 중단하고 `TRANSPORT_FAILURE`로 처리한다. `xss-parser`에는 30초, `casper-db` 일반 조회에는 15초를 적용한다. 제품 수집을 포함하는 `assess_xss_history`는 수집 180초와 로컬 조회를 포함해 225초로 제한한다. 타임아웃·취소는 하위 Python 프로세스까지 전달한다.
 - 변경 요청의 `messageId`는 외부 모듈에서 idempotency key로 사용할 수 있다.
 - 에이전트는 검사 POST와 레거시 DELETE 같은 변경 요청을 transport 오류 후 자동 재시도하지 않는다.
 
@@ -43,7 +43,7 @@ gateway.exchange(serializedRequest: string, { signal }?) -> Promise<serializedRe
 ```
 
 응답은 `receiver: "agent"`, `sender: <요청 receiver>`, `correlationId: <요청 messageId>`를 사용해야 한다. `runId`와 `iteration`도 요청과 일치해야 한다.
-에이전트는 receiver와 operation별 응답 type 및 필수 payload를 검증한다. `xss-parser`, `attack-module`, `casper-db`, `pentest-db` 카탈로그 조회 응답에는 비어 있지 않은 `evidenceId`가 필요하다.
+에이전트는 receiver와 operation별 응답 type 및 필수 payload를 검증한다. `xss-parser`, `attack-module`, `casper-db` 조회 응답에는 비어 있지 않은 `evidenceId`가 필요하다. 이전 `pentest-db` receiver 별칭도 같은 검증을 적용한다.
 
 ## xss-parser
 
@@ -123,11 +123,13 @@ gateway.exchange(serializedRequest: string, { signal }?) -> Promise<serializedRe
 
 응답 type은 `history.result`이고 payload에는 `operation`, `readyCaseCount`, `observations`, `assessments`, `evidenceId`가 포함된다. 로컬 어댑터는 parser의 명시적인 같은 원점 API 입력 위치만 추출해 실제 `casper-db` SQLite의 준비된 과거 XSS 사례와 비교한다. 각 `assessments[].decision`은 `retest_candidate`, `manual_review`, `no_match` 중 하나다. 이는 과거 사례의 재검토 신호이며 현재 XSS 실행의 증거가 아니다. 기본 DB가 비어 있으면 생성하고, `CASPER_DB_PATH`로 기존 SQLite 파일을 지정할 수 있다.
 
-## 펜테스팅 DB
+최신 web-parser의 `dependencies`에 제품 단서가 있으면 소유한 원본 DB에서 공개 권고를 수집·저장하고 `knowledgeContext`를 함께 반환한다. 이미 고정한 사례·공격 정보 DB는 수정하지 않는다. 새 공개 권고 결과·식별 불확실성·수집 영수증·내용 해시는 실행 JSON에 남긴다. `indicator`와 `declared`는 설치 확정이 아니며 공개 권고의 최종 판정은 `needs_review`를 유지한다. 권고 조회 결과는 공격 실행 허가나 성공 증거가 아니다.
 
-요청 receiver는 `pentest-db`, type은 `storage.request`다.
+## 통합 DB의 공격 정보와 실행 기록
 
-- 초안 공격 정보 조회: `payload.operation = "get_attack_info"`, `vulnType: "stored_xss"`, `target: { "endpoint": "POST /api/posts", "parameter": "content" }`. 응답 type은 `storage.attack_info`이며 `attackInfo` 객체 또는 `null`, `evidenceId`를 반환한다. `pentest-db/cases.json`의 `0.1-draft` 카탈로그는 기본 XSS 후보의 입력 위치와 브라우저 확인 방법에 대한 조언이다. 이 카탈로그 자체는 현재 실행의 XSS 증거가 아니다.
+새 요청 receiver는 `casper-db`, type은 `storage.request`다. `module.request`의 과거 사례 조회와 type으로 구분한다. 예전 `pentest-db` 수신자 이름은 호환 별칭이며 독립 저장소가 아니다.
+
+- 공격 정보 조회: `payload.operation = "get_attack_info"`, `vulnType: "stored_xss"`, `target: { "endpoint": "POST /api/posts", "parameter": "content" }`. 응답 type은 `storage.attack_info`이며 `attackInfo` 객체 또는 `null`, `evidenceId`를 반환한다. 자료는 같은 SQLite DB의 `attack_*` 테이블에서 읽는다. `patternId`·`patternRevision`·검증 규칙 참조·등록된 템플릿 초안을 함께 제공한다. 현재 실행의 성공 증거로 간주하지 않는다.
 - 이벤트 추가: `payload.operation = "append"`, `payload.event` 포함
 - 최종 보고서: `payload.operation = "finalize"`, `payload.report` 포함
 

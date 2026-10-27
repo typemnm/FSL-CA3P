@@ -5,16 +5,22 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_serializer, model_validator
 
-from .external_vulnerabilities import ExternalRecord, lookup_external
+from .external_vulnerabilities import ExternalRecord, external_connection, lookup_external
 from .import_workflow import WorkflowModel, digest
 from .models import Identifier, Text, utc_timestamp
 from .version_ranges import matches_range
+
+
+def _ecosystem(value: str) -> str:
+    normalized = value.strip().lower()
+    return {"pypi": "pip"}.get(normalized, normalized)
 
 
 class SoftwareComponent(WorkflowModel):
@@ -24,6 +30,25 @@ class SoftwareComponent(WorkflowModel):
     cpe: Text | None = None
     source_refs: list[Text] = Field(min_length=1, max_length=30)
     call_paths: list[Text] = Field(default_factory=list, max_length=30)
+    identification: Literal["observed", "indicator", "declared"] = "observed"
+    version_status: Text | None = None
+    evidence: list[dict[str, Any]] = Field(default_factory=list, max_length=30)
+
+    @field_validator("ecosystem")
+    @classmethod
+    def normalize_ecosystem(cls, value):
+        return _ecosystem(value)
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_inventory_identity(self, handler):
+        data = handler(self)
+        if self.identification == "observed":
+            data.pop("identification", None)
+        if self.version_status is None:
+            data.pop("version_status", None)
+        if not self.evidence:
+            data.pop("evidence", None)
+        return data
 
 
 class SoftwareInventory(WorkflowModel):
@@ -70,6 +95,7 @@ def _github(record, inventory):
         if not isinstance(ecosystem, str) or not isinstance(name, str):
             matches.append(None)
             continue
+        ecosystem = _ecosystem(ecosystem)
         found = [
             c
             for c in inventory.components
@@ -94,6 +120,8 @@ def _github(record, inventory):
                     "matches": outcome,
                     "source_refs": component.source_refs,
                     "call_paths": component.call_paths,
+                    "identification": component.identification,
+                    "version_status": component.version_status,
                 }
             )
     return _any(matches) if matches else None, details
@@ -162,6 +190,8 @@ def _nvd(record, inventory):
                     "matches": value,
                     "source_refs": component.source_refs,
                     "call_paths": component.call_paths,
+                    "identification": component.identification,
+                    "version_status": component.version_status,
                 }
             )
         condition = _any(values) if values else None
@@ -199,6 +229,9 @@ def assess_record(record: ExternalRecord, inventory: SoftwareInventory) -> dict:
     decision = {True: "affected_version", False: "outside_affected_scope", None: "needs_review"}[
         outcome
     ]
+    range_decision = decision
+    if details and any(item.get("identification", "observed") != "observed" for item in details):
+        decision = "needs_review"
     if record.withdrawn:
         decision = "withdrawn"
     payload = {
@@ -210,6 +243,7 @@ def assess_record(record: ExternalRecord, inventory: SoftwareInventory) -> dict:
         "inventory_sha256": digest(inventory),
         "inventory_observed_at": inventory.observed_at,
         "decision": decision,
+        "range_decision": range_decision,
         "component_matches": details,
         "reproduction_state": "not_assessed",
         "automatic_execution_allowed": False,
@@ -227,6 +261,141 @@ def assess_record(record: ExternalRecord, inventory: SoftwareInventory) -> dict:
     return {"assessment_id": "APP-" + digest(payload)[:48], **payload}
 
 
+def _product_matches(record: ExternalRecord, inventory: SoftwareInventory) -> list[dict]:
+    """Select exact product identities before evaluating versions or environment."""
+    matches = {}
+    if record.source == "github":
+        for affected in record.affected:
+            package = affected.get("package") if isinstance(affected, dict) else None
+            if not isinstance(package, dict):
+                continue
+            ecosystem, name = package.get("ecosystem"), package.get("name")
+            if not isinstance(ecosystem, str) or not isinstance(name, str):
+                continue
+            ecosystem = _ecosystem(ecosystem)
+            for index, component in enumerate(inventory.components):
+                if component.ecosystem == ecosystem and (
+                    _package_name(component.package, ecosystem) == _package_name(name, ecosystem)
+                ):
+                    matches[index] = {"component_index": index, "basis": "ecosystem_and_package"}
+    else:
+
+        def walk(value):
+            if not isinstance(value, dict):
+                return
+            entries = value.get("cpeMatch", [])
+            for item in entries if isinstance(entries, list) else []:
+                if not isinstance(item, dict) or item.get("vulnerable") is not True:
+                    continue
+                criteria = _cpe_parts(item.get("criteria"))
+                if criteria is None or any(x in {"*", "-"} for x in criteria[2:5]):
+                    continue
+                for index, component in enumerate(inventory.components):
+                    observed = _cpe_parts(component.cpe)
+                    if observed is not None and criteria[2:5] == observed[2:5]:
+                        matches[index] = {"component_index": index, "basis": "cpe_product_identity"}
+            for key in ("nodes", "children"):
+                if isinstance(value.get(key), list):
+                    for child in value[key]:
+                        walk(child)
+
+        for value in record.affected:
+            walk(value)
+    return list(matches.values())
+
+
+def discover_advisories(
+    path: Path,
+    value: dict | SoftwareInventory,
+    *,
+    limit: int = 100,
+) -> dict:
+    """Find locally stored provider records from observed products, without CVE input."""
+    inventory = SoftwareInventory.model_validate(value)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+        raise ValueError("advisory result limit must be between 1 and 500")
+    candidates, truncated = [], False
+    with external_connection(path) as connection:
+        records = [
+            ExternalRecord.model_validate_json(snapshot)
+            for (snapshot,) in connection.execute(
+                "SELECT record_json FROM external_records ORDER BY record_id",
+            )
+        ]
+        aliases = {}
+        for record in records:
+            if record.source == "github" and record.cve_id and not record.withdrawn:
+                for match in _product_matches(record, inventory):
+                    aliases.setdefault(record.cve_id, []).append(
+                        {
+                            "component_index": match["component_index"],
+                            "basis": "cve_alias_from_matching_github_package",
+                            "source_record_id": record.record_id,
+                        }
+                    )
+        for record in records:
+            reasons = _product_matches(record, inventory)
+            if record.source == "nvd" and not reasons:
+                reasons = [
+                    match
+                    for match in aliases.get(record.cve_id, [])
+                    if inventory.components[match["component_index"]].cpe is None
+                ]
+                reasons = reasons or _nvd_name_candidates(record, inventory)
+            if not reasons:
+                continue
+            if len(candidates) == limit:
+                truncated = True
+                break
+            data = record.model_dump(mode="json")
+            data.pop("raw", None)
+            candidates.append(
+                {
+                    "record": data,
+                    "match_reasons": reasons,
+                    "assessment": assess_record(record, inventory),
+                }
+            )
+    return {
+        "schema_version": "casper-advisory-search-1",
+        "target_id": inventory.target_id,
+        "inventory_sha256": digest(inventory),
+        "candidates": candidates,
+        "limit": limit,
+        "truncated": truncated,
+        "database_written": False,
+        "coverage": "stored_advisories_only",
+    }
+
+
+def _nvd_name_candidates(record, inventory):
+    """Name-only links may be reviewed, but never create observed CPE identities."""
+    products = set()
+
+    def walk(value):
+        if not isinstance(value, dict):
+            return
+        entries = value.get("cpeMatch", [])
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict) or entry.get("vulnerable") is not True:
+                continue
+            parts = _cpe_parts(entry.get("criteria"))
+            if parts is not None and parts[4] not in {"*", "-"}:
+                products.add(parts[4].lower().replace("_", "-"))
+        for key in ("nodes", "children"):
+            if isinstance(value.get(key), list):
+                for child in value[key]:
+                    walk(child)
+
+    for value in record.affected:
+        walk(value)
+    return [
+        {"component_index": index, "basis": "unconfirmed_product_name_requires_review"}
+        for index, component in enumerate(inventory.components)
+        if component.cpe is None and component.package.lower().replace("_", "-") in products
+    ]
+
+
 def assess_database(
     path: Path, value: dict | SoftwareInventory, cve_ids: list[str], *, apply=False
 ):
@@ -240,9 +409,12 @@ def assess_database(
             missing.append(cve_id)
         rows.extend(assess_record(record, inventory) for record in records)
     if apply:
-        with sqlite3.connect(
-            path.resolve(strict=True).as_uri() + "?mode=rw", uri=True
-        ) as connection:
+        with (
+            closing(
+                sqlite3.connect(path.resolve(strict=True).as_uri() + "?mode=rw", uri=True)
+            ) as connection,
+            connection,
+        ):
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS external_assessments "
@@ -305,7 +477,9 @@ def assess_database(
 def lookup_assessments(path: Path, target_id: str, cve_id: str) -> list[dict]:
     # Source lookup validates the owned external schema and the exact CVE ID.
     current = {r.record_id: r.source_item_sha256 for r in lookup_external(path, cve_id)}
-    with sqlite3.connect(path.resolve(strict=True).as_uri() + "?mode=ro", uri=True) as connection:
+    with closing(
+        sqlite3.connect(path.resolve(strict=True).as_uri() + "?mode=ro", uri=True)
+    ) as connection:
         exists = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE name='external_assessments'"
         ).fetchone()

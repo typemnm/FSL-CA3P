@@ -62,9 +62,12 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         labConfigProvider: () => ({ provider: lease.modelId === 'rule-baseline' ? 'rules' : 'deepseek', model: lease.modelId }),
         labReasoningFactory: () => engine,
         labFactory: options => startLocalLab({ ...options, casperDatabasePath: lease.options.caseSnapshot?.path,
+          casperSourceDatabasePath: lease.options.caseSnapshot?.sourcePath,
           cleanupRegistryPath: join(dirname(store.path), 'lab-sessions') }),
         async beforeExchange(request) {
-          store.assertLease(lease, { allowCancelled: request.receiver === 'pentest-db' && request.payload.operation === 'finalize' });
+          store.assertLease(lease, { allowCancelled: request.type === 'storage.request'
+            && ['casper-db', 'pentest-db'].includes(request.receiver)
+            && request.payload.operation === 'finalize' });
           if (request.receiver === 'attack-module' && ['POST', 'DELETE'].includes(request.payload.curl?.method)) {
             const command = request.payload.curl;
             const target = new URL(command.url);

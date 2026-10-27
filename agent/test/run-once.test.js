@@ -35,14 +35,15 @@ test('agent completes a bounded canary loop through the real module wire names',
   });
   assert.equal(report.finding.evidenceRefs.length, 6);
   assert.equal(report.referenceContext.casperDb.category, 'historical_xss_only');
-  assert.equal(report.referenceContext.pentestDb.category, 'stored_xss_reference_only');
+  assert.equal(report.referenceContext.attackCatalog.category, 'stored_xss_reference_only');
   assert.equal(report.guardrail.decisions.length, 4);
   assert.ok(report.guardrail.decisions.every(decision => decision.decision === 'ALLOW'));
   assert.equal(gateway.events.length, 10);
   assert.equal(gateway.finalReport.runId, report.runId);
 
-  const receivers = gateway.requests.map(({ envelope }) => envelope.receiver);
-  assert.deepEqual(receivers.filter(receiver => receiver !== 'pentest-db'), [
+  const receivers = gateway.requests.filter(({ envelope }) => envelope.type !== 'storage.request')
+    .map(({ envelope }) => envelope.receiver);
+  assert.deepEqual(receivers, [
     'attack-module', 'attack-module', 'attack-module',
     'xss-parser', 'casper-db', 'attack-module', 'xss-parser',
   ]);
@@ -54,7 +55,7 @@ test('agent completes a bounded canary loop through the real module wire names',
   const phases = gateway.requests.filter(({ envelope }) => envelope.receiver === 'xss-parser')
     .map(({ envelope }) => envelope.payload.phase);
   assert.deepEqual(phases, ['before', 'after']);
-  assert.ok(gateway.requests.some(({ envelope }) => envelope.receiver === 'pentest-db'
+  assert.ok(gateway.requests.some(({ envelope }) => envelope.receiver === 'casper-db'
     && envelope.payload.operation === 'get_attack_info'));
   assert.ok(gateway.requests.every(({ raw, envelope }) => JSON.stringify(envelope) === raw));
   gateway.rawResponses.forEach(raw => JSON.parse(raw));
@@ -83,7 +84,8 @@ test('parser ID and title must both agree with the trusted creation response', a
     /exact canary ID and title/,
   );
   assert.equal(attackCommands(gateway).filter(command => command.method === 'DELETE').length, 0);
-  assert.equal(gateway.requests.some(({ envelope }) => envelope.receiver === 'casper-db'), false);
+  assert.equal(gateway.requests.some(({ envelope }) => envelope.receiver === 'casper-db'
+    && envelope.type === 'module.request'), false);
   assert.equal(gateway.finalReport.progress.actionAttempted, false);
 });
 
