@@ -40,6 +40,9 @@ def test_read_only_api_contract_and_draft_gate(store, case_data):
 
 def test_openapi_includes_the_team_data_contract(store):
     schema = create_app(store.path).openapi()
-    assert set(schema["paths"]) == {"/cases", "/cases/{case_id}"}
+    assert set(schema["paths"]) == {
+        "/cases", "/cases/{case_id}", "/knowledge/query", "/attack-patterns",
+        "/attack-info/query", "/attack-templates/{template_id}/versions/{version}",
+    }
     fields = schema["components"]["schemas"]["CaseRecord"]["properties"]
     assert {"procedure", "payload", "success_condition", "status"}.issubset(fields)

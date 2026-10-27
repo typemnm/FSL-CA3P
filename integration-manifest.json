@@ -286,14 +286,13 @@
     "requiredSkippedTests": 0,
     "liveModelCalls": false,
     "suiteAssignments": {
-      "pentest-db": [
-        "agent-dashboard/tests/pentest-db-integration.test.mjs"
-      ],
       "adapters": [
         "agent-dashboard/tests/casper-db-integration.test.mjs",
         "agent-dashboard/tests/guardrail-integration.test.mjs",
         "agent-dashboard/tests/xss-gateway.test.mjs",
-        "agent-dashboard/tests/xss-parser-integration.test.mjs"
+        "agent-dashboard/tests/xss-parser-integration.test.mjs",
+        "agent-dashboard/tests/pentest-db-integration.test.mjs",
+        "agent-dashboard/tests/pentest-db-multitype.test.mjs"
       ],
       "worker": [
         "apps/application/tests/run-service.test.mjs"

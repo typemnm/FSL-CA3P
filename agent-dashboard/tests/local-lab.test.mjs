@@ -57,7 +57,7 @@ test('the real loopback board and model decision adapter complete one isolated c
   assert.equal(run.events.filter(event => event.source === 'attack-module/curl').length, 4);
   assert.equal(run.events.filter(event => event.source === 'guardrail-ruleset').length, 4);
   assert.equal(run.events.filter(event => event.source === 'casper-db/sqlite').length, 1);
-  assert.equal(run.events.filter(event => event.source === 'pentest-db/local-json').length, 12);
+  assert.equal(run.events.filter(event => event.source === 'casper-db/catalog-and-evidence').length, 12);
   assert.equal(run.events.filter(event => event.source === 'scripted-gateway').length, 0);
   assert.equal(run.events.filter(event => event.source === 'core-internal-event').length, 2);
   assert.equal(run.report.target.origin, run.target);
@@ -66,7 +66,8 @@ test('the real loopback board and model decision adapter complete one isolated c
   assert.equal(run.report.externalModules.attackModule, 'local-curl');
   assert.equal(run.report.externalModules.guardrail, 'ruleset-evaluator');
   assert.equal(run.report.externalModules.casperDb, 'sqlite-history');
-  assert.equal(run.report.externalModules.pentestDb, 'local-json');
+  assert.equal(run.report.externalModules.attackCatalog, 'casper-db-sqlite');
+  assert.equal(run.report.externalModules.runEvidence, 'local-json');
   assert.equal(run.reviewItems[0].vulnerabilityConfirmed, true);
   assert.equal(run.events.find(event => event.stage === 'loop.think').agentOutput.modelMetadata.provider, 'deepseek');
   const action = run.events.find(event => event.module === 'attack' && event.request.payload.curl.method === 'DELETE');
