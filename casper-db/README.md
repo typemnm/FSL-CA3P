@@ -273,6 +273,8 @@ python -m casper_db --db data/knowledge.sqlite3 attack-catalog
 
 ### 이후 공격 툴 연결 계약
 
+현재 Repeater·Intruder는 `casper-db/client.mjs`의 동기 카탈로그 조회로 같은 DB의 정의를 읽는다. 선택한 공격 정보의 ID·revision·내용 해시를 실행 결과에 보존하며, 여러 애플리케이션이 겹치면 명시적인 선택을 요구한다. 실행 방법과 판정 조건은 [Repeater](../vul-web-1/scripts/REPEATER.md), [Intruder](../vul-web-1/scripts/INTRUDER.md)에 있다. 이 CLI 연결은 다음 템플릿 계약을 자동 등록하거나 실행 활성화하지 않는다.
+
 [템플릿 JSON Schema](schemas/attack-template.schema.json)의 `casper-attack-template-1`을 사용한다. 필수 연결은 `pattern_id + pattern_revision`, `executor_id + executor_contract_version`, 입력 JSON Schema, 필요한 기능, `verification_rule_ids`, 출처다. 검증 규칙은 같은 공격 정보 revision에 속해야 한다. ID·version이 같은 템플릿은 변경할 수 없으며 내용 변경에는 새 version이 필요하다.
 
 ```powershell
