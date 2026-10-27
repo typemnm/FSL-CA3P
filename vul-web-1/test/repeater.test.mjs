@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { readAttackCatalogSync } from '../../casper-db/client.mjs';
 import guardrailPackage from '../../guardrail/src/index.js';
 import { RepeaterDeniedError, createGuardedRequest, createRuleset, loadPlan, run } from '../scripts/repeater.mjs';
 
@@ -49,10 +55,62 @@ test('repeater confirms the IDOR case loaded from the catalog', async () => {
     assert.ok(report.provenance.patternId);
     assert.ok(report.provenance.patternRevision >= 1);
     assert.match(report.provenance.definitionSha256, /^[a-f0-9]{64}$/);
-    assert.deepEqual(report.evidence.map(item => [item.check, item.status ?? item.removed]), [
+    assert.deepEqual(report.evidence.map(item => [item.check, item.removed ?? item.status]), [
       ['control', 403], ['tamper', 200], ['verify', true],
     ]);
   } finally { await target.close(); }
+});
+
+test('a denied attack is not confirmed by a later server error', async () => {
+  const statuses = [200, 403, 500];
+  const report = await run({ origin: 'http://127.0.0.1:54321', vulnType: 'broken_access_control',
+    curlImpl: async () => ({ status: statuses.shift(), bodyJson: {} }) });
+  assert.equal(report.finding.status, 'not_confirmed');
+});
+
+test('an unexpected attack error leaves the result inconclusive', async () => {
+  const statuses = [200, 500, 500];
+  const report = await run({ origin: 'http://127.0.0.1:54321', vulnType: 'broken_access_control',
+    curlImpl: async () => ({ status: statuses.shift(), bodyJson: {} }) });
+  assert.equal(report.finding.status, 'inconclusive');
+});
+
+test('a failed resource lookup cannot establish that a deleted resource is absent', async () => {
+  const statuses = [403, 200, 500];
+  const report = await run({ origin: 'http://127.0.0.1:54321', vulnType: 'idor',
+    curlImpl: async () => ({ status: statuses.shift(), bodyJson: { posts: [] } }) });
+  assert.equal(report.finding.status, 'inconclusive');
+  assert.equal(report.evidence[2].status, 500);
+  assert.equal(report.evidence[2].removed, null);
+});
+
+test('a changed database revision is used and ambiguous applications require a selector', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'repeater-db-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const databasePath = join(directory, 'knowledge.sqlite3');
+  const before = loadPlan(undefined, 'idor', { databasePath });
+  const catalog = readAttackCatalogSync({ databasePath });
+  const definition = structuredClone(catalog.patterns.find(item => item.definition.vulnType === 'idor').definition);
+  definition.payloads[0].value += ' revised';
+  const input = join(directory, 'catalog.json');
+  const moduleRoot = fileURLToPath(new URL('../../casper-db/', import.meta.url));
+  const python = process.env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3');
+  const importDefinition = async () => {
+    await writeFile(input, JSON.stringify({ schemaVersion: '0.1-draft', response: definition }));
+    execFileSync(python, ['-m', 'casper_db', '--db', databasePath, 'attack-catalog-import', input,
+      '--source-ref', 'test:repeater-db', '--apply'], { cwd: moduleRoot, windowsHide: true,
+      env: { ...process.env, PYTHONPATH: join(moduleRoot, 'src'), PYTHONUTF8: '1' } });
+  };
+  await importDefinition();
+  const after = loadPlan(undefined, 'idor', { databasePath });
+  assert.equal(after.provenance.patternId, before.provenance.patternId);
+  assert.ok(after.provenance.patternRevision > before.provenance.patternRevision);
+  assert.notEqual(after.provenance.definitionSha256, before.provenance.definitionSha256);
+  definition.target.application = 'other-lab';
+  await importDefinition();
+  assert.throws(() => loadPlan(undefined, 'idor', { databasePath }), /Ambiguous attack definition/);
+  const selected = loadPlan(undefined, 'idor', { databasePath, application: 'vul-web-1' });
+  assert.equal(selected.provenance.patternId, after.provenance.patternId);
 });
 
 test('a server that does not trust the parameter is not confirmed', async () => {

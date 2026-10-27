@@ -40,7 +40,9 @@ function normalizeRequest(request) {
 export function loadPlan(catalogPath, vulnType = 'idor', { databasePath, application } = {}) {
   const source = loadAttackInfo({ catalogPath, vulnType, databasePath, application });
   const response = source?.definition;
-  const payload = response?.payloads?.find(item => item?.successCheck?.expect?.observe === 'httpResponse');
+  const payload = response?.payloads?.find(item => item?.successCheck?.expect?.observe === 'httpResponse'
+    && Number.isInteger(item.successCheck.expect.baseline?.status)
+    && Number.isInteger(item.successCheck.expect.attack?.status));
   const expect = payload?.successCheck?.expect;
   if (!response || !payload || !expect || !expect.baseline || !expect.attack) {
     throw new Error(`catalog has no request-tampering (httpResponse) case for vulnType "${vulnType}".`);
@@ -171,17 +173,16 @@ function statusOf(response) {
 function findingStatus(plan, evidence) {
   const { control, tamper, verify } = evidence;
   if (control.status !== plan.stages.control.expectStatus) return 'inconclusive';
+  if (tamper.status !== plan.stages.tamper.expectStatus) {
+    return [401, 403, 404].includes(tamper.status) ? 'not_confirmed' : 'inconclusive';
+  }
   if (plan.verifyStatus !== null && plan.verifyStatus !== undefined) {
     if (verify?.status === plan.verifyStatus) return 'confirmed';
     if (Number.isInteger(verify?.status)) return 'not_confirmed';
     return 'inconclusive';
   }
-  if (tamper.status === plan.stages.tamper.expectStatus) {
-    if (!plan.resourceRemoved) return 'confirmed';
-    return verify?.removed === true ? 'confirmed' : 'inconclusive';
-  }
-  if ([403, 404].includes(tamper.status)) return 'not_confirmed';
-  return 'inconclusive';
+  if (!plan.resourceRemoved) return 'confirmed';
+  return verify?.removed === true ? 'confirmed' : 'inconclusive';
 }
 
 export async function run({ origin, catalogPath, vulnType = 'idor', databasePath, application,
@@ -201,9 +202,11 @@ export async function run({ origin, catalogPath, vulnType = 'idor', databasePath
   if (plan.stages.verify) {
     const verifyResponse = await request('verify', { signal });
     if (plan.resourceRemoved) {
-      const posts = Array.isArray(verifyResponse?.bodyJson?.posts) ? verifyResponse.bodyJson.posts : null;
+      const status = statusOf(verifyResponse);
+      const posts = status >= 200 && status < 300 && Array.isArray(verifyResponse?.bodyJson?.posts)
+        ? verifyResponse.bodyJson.posts : null;
       const removed = posts ? !posts.some(item => item && item.id === plan.resourceRemoved.postId) : null;
-      evidence.verify = { check: 'verify', targetId: plan.resourceRemoved.postId, removed };
+      evidence.verify = { check: 'verify', status, targetId: plan.resourceRemoved.postId, removed };
     } else {
       evidence.verify = { check: 'verify', status: statusOf(verifyResponse), expectedStatus: plan.verifyStatus };
     }

@@ -28,7 +28,7 @@ const child = spawn(process.execPath, [serverPath], {
 
 try {
   await waitForServer();
-  const report = await run({ origin, vulnType });
+  const report = await run({ origin, vulnType, application: process.env.REPEATER_APPLICATION });
   console.log(JSON.stringify(report, null, 2));
   process.exitCode = report.finding.status === 'confirmed' ? 0 : 1;
 } catch (error) {

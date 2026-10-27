@@ -39,6 +39,23 @@ function buildPath(request) {
   return { method: request.method, path };
 }
 
+function validateExpectations(baseline, attack) {
+  const status = value => Number.isInteger(value) && value >= 100 && value <= 599;
+  const count = value => Number.isInteger(value) && value >= 0;
+  if (baseline.status !== undefined && !status(baseline.status)
+    || baseline.resultCount !== undefined && !count(baseline.resultCount)
+    || baseline.status === undefined && baseline.resultCount === undefined) {
+    throw new Error('Intruder baseline requires a valid status or result count.');
+  }
+  if (attack.status !== undefined && !status(attack.status)
+    || attack.resultCountMin !== undefined && !count(attack.resultCountMin)
+    || attack.containsFields !== undefined && (!Array.isArray(attack.containsFields)
+      || !attack.containsFields.length || !attack.containsFields.every(field => typeof field === 'string' && field.length))
+    || attack.status === undefined && attack.resultCountMin === undefined && attack.containsFields === undefined) {
+    throw new Error('Intruder attack requires supported response criteria.');
+  }
+}
+
 export function loadIntruderPlan(catalogPath, vulnType = 'sql_injection', { databasePath, application } = {}) {
   const source = loadAttackInfo({ catalogPath, vulnType, databasePath, application });
   const response = source?.definition;
@@ -53,6 +70,7 @@ export function loadIntruderPlan(catalogPath, vulnType = 'sql_injection', { data
   const stages = { baseline: { method: baselineRequest.method, path: baselineRequest.path } };
   const shots = fuzzable.map((item, index) => {
     const attack = item.successCheck.expect.attack;
+    validateExpectations(item.successCheck.expect.baseline ?? {}, attack);
     const request = buildPath(attack.request);
     const stage = `shot_${index}`;
     stages[stage] = { method: request.method, path: request.path };
@@ -73,7 +91,8 @@ export function loadIntruderPlan(catalogPath, vulnType = 'sql_injection', { data
     parameter: first.injectionPoint?.parameter ?? null,
     baseline: {
       resultField: first.successCheck.resultField ?? 'results',
-      resultCount: Number.isInteger(baselineSpec.resultCount) ? baselineSpec.resultCount : 0,
+      resultCount: Number.isInteger(baselineSpec.resultCount) ? baselineSpec.resultCount : null,
+      expectStatus: Number.isInteger(baselineSpec.status) ? baselineSpec.status : null,
     },
     shots,
     stages, provenance: source.provenance,
@@ -184,6 +203,10 @@ function countField(response, field) {
   return Array.isArray(value) ? value.length : null;
 }
 
+function statusMatches(status, expected) {
+  return Number.isInteger(expected) ? status === expected : status >= 200 && status < 300;
+}
+
 export async function run({ origin, catalogPath, vulnType = 'sql_injection', databasePath, application,
   curlImpl = executeCurl, signal } = {}) {
   const allowedOrigin = exactLoopbackOrigin(origin ?? DEFAULT_ORIGIN);
@@ -193,9 +216,12 @@ export async function run({ origin, catalogPath, vulnType = 'sql_injection', dat
   const request = createGuardedRequest({ origin: allowedOrigin, runId, plan, curlImpl });
 
   const baselineResponse = await request('baseline', { signal });
+  const baselineStatus = Number.isInteger(baselineResponse?.status) ? baselineResponse.status : null;
   const baselineCount = countField(baselineResponse, plan.baseline.resultField);
-  const baselineOk = baselineCount !== null && baselineCount <= plan.baseline.resultCount;
-  const evidence = [{ check: 'baseline', resultCount: baselineCount }];
+  const baselineOk = statusMatches(baselineStatus, plan.baseline.expectStatus)
+    && (plan.baseline.resultCount === null
+      || baselineCount !== null && baselineCount <= plan.baseline.resultCount);
+  const evidence = [{ check: 'baseline', status: baselineStatus, resultCount: baselineCount, valid: baselineOk }];
 
   const attempts = [];
   for (const shot of plan.shots) {
@@ -203,23 +229,28 @@ export async function run({ origin, catalogPath, vulnType = 'sql_injection', dat
     const status = Number.isInteger(response?.status) ? response.status : null;
     const resultCount = countField(response, shot.resultField);
     const body = response?.bodyJson;
-    let statusHit;
+    const statusOk = statusMatches(status, shot.expectStatus);
+    let contentHit = true;
+    let contentValid = true;
     if (shot.containsFields) {
-      statusHit = !!body && typeof body === 'object' && !Array.isArray(body)
-        && shot.containsFields.every(field => body[field] !== undefined);
-    } else if (shot.resultCountMin !== null) {
-      statusHit = resultCount !== null && resultCount >= shot.resultCountMin;
-    } else {
-      statusHit = shot.expectStatus !== null && status === shot.expectStatus;
+      contentValid = !!body && typeof body === 'object' && !Array.isArray(body);
+      contentHit = contentValid && shot.containsFields.every(field => Object.hasOwn(body, field));
     }
-    const hit = baselineOk && statusHit;
-    attempts.push({ payloadId: shot.payloadId, value: shot.value, status, resultCount, hit });
-    evidence.push({ check: shot.payloadId, status, resultCount, hit });
+    if (shot.resultCountMin !== null) {
+      contentValid = contentValid && resultCount !== null;
+      contentHit = contentHit && resultCount !== null && resultCount >= shot.resultCountMin;
+    }
+    const hit = baselineOk && statusOk && contentHit;
+    const inconclusive = !Number.isInteger(status) || status >= 500 && !statusOk
+      || statusOk && !contentValid || [408, 429].includes(status) && !statusOk;
+    attempts.push({ payloadId: shot.payloadId, value: shot.value, status, resultCount, hit, inconclusive });
+    evidence.push({ check: shot.payloadId, status, resultCount, hit, inconclusive });
   }
 
   const hits = attempts.filter(item => item.hit).map(item => item.payloadId);
   let status = 'inconclusive';
-  if (baselineOk) status = hits.length > 0 ? 'confirmed' : 'not_confirmed';
+  if (baselineOk) status = hits.length > 0 ? 'confirmed'
+    : attempts.some(item => item.inconclusive) ? 'inconclusive' : 'not_confirmed';
 
   return {
     schemaVersion: '1.0', runId, vulnType, fixtureId: plan.application,

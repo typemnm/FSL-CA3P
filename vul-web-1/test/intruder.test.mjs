@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import guardrailPackage from '../../guardrail/src/index.js';
 import { IntruderDeniedError, createGuardedRequest, createRuleset, loadIntruderPlan, run } from '../scripts/intruder.mjs';
@@ -134,4 +137,54 @@ test('an endpoint that does not expose the config is not confirmed', async () =>
     assert.equal(report.finding.status, 'not_confirmed');
     assert.equal(report.finding.hits.length, 0);
   } finally { await target.close(); }
+});
+
+test('a server-error baseline cannot produce confirmed hits', async () => {
+  let calls = 0;
+  const report = await run({ origin: 'http://127.0.0.1:54321', vulnType: 'sql_injection',
+    curlImpl: async () => ({ status: calls++ === 0 ? 500 : 200,
+      bodyJson: { results: calls === 1 ? [] : ROWS } }) });
+  assert.equal(report.finding.status, 'inconclusive');
+  assert.deepEqual(report.finding.hits, []);
+});
+
+test('server-error payload responses cannot be confirmed by result counts', async () => {
+  let calls = 0;
+  const report = await run({ origin: 'http://127.0.0.1:54321', vulnType: 'sql_injection',
+    curlImpl: async () => ({ status: calls++ === 0 ? 200 : 500,
+      bodyJson: { results: calls === 1 ? [] : ROWS } }) });
+  assert.equal(report.finding.status, 'inconclusive');
+  assert.deepEqual(report.finding.hits, []);
+  assert.ok(report.evidence.slice(1).every(item => item.inconclusive));
+});
+
+test('missing response structure leaves payload results inconclusive', async () => {
+  let calls = 0;
+  const report = await run({ origin: 'http://127.0.0.1:54321', vulnType: 'sql_injection',
+    curlImpl: async () => ({ status: 200, bodyJson: calls++ === 0 ? { results: [] } : {} }) });
+  assert.equal(report.finding.status, 'inconclusive');
+  assert.deepEqual(report.finding.hits, []);
+});
+
+test('sensitive fields in a forbidden response do not count as an exposure hit', async () => {
+  let calls = 0;
+  const report = await run({ origin: 'http://127.0.0.1:54321', vulnType: 'info_disclosure',
+    curlImpl: async () => calls++ === 0 ? { status: 200, bodyJson: { results: [] } }
+      : { status: 403, bodyJson: { database: 'sample', installedPackages: [], activeSessions: 1 } } });
+  assert.equal(report.finding.status, 'not_confirmed');
+  assert.deepEqual(report.finding.hits, []);
+});
+
+test('empty or missing success criteria are rejected before requests', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'intruder-criteria-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const catalogPath = join(directory, 'catalog.json');
+  for (const criteria of [{}, { containsFields: [] }, { status: '200' }]) {
+    const request = { method: 'GET', path: '/api/search' };
+    await writeFile(catalogPath, JSON.stringify({ response: { vulnType: 'sql_injection',
+      target: { application: 'test' }, payloads: [{ payloadId: 'test', value: 'sample',
+        injectionPoint: { parameter: 'q' }, successCheck: { expect: { observe: 'httpResponse',
+          baseline: { request, resultCount: 0 }, attack: { request, ...criteria } } } }] } }));
+    assert.throws(() => loadIntruderPlan(catalogPath), /supported response criteria/);
+  }
 });
