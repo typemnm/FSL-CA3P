@@ -45,6 +45,10 @@ test('repeater confirms the IDOR case loaded from the catalog', async () => {
     assert.equal(report.vulnType, 'idor');
     assert.equal(report.finding.category, 'CWE-639');
     assert.equal(report.finding.status, 'confirmed');
+    assert.equal(report.provenance.catalog, 'casper-db.attack_catalog');
+    assert.ok(report.provenance.patternId);
+    assert.ok(report.provenance.patternRevision >= 1);
+    assert.match(report.provenance.definitionSha256, /^[a-f0-9]{64}$/);
     assert.deepEqual(report.evidence.map(item => [item.check, item.status ?? item.removed]), [
       ['control', 403], ['tamper', 200], ['verify', true],
     ]);

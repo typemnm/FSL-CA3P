@@ -1,16 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import attackModule from '../../attack-module/index.js';
 import guardrailPackage from '../../guardrail/src/index.js';
+import { loadAttackInfo } from './attack-plan-source.mjs';
 
 const { executeCurl } = attackModule;
 const { GuardrailEvaluator } = guardrailPackage;
 
 const PROFILE_ID = 'request_tamper_repeater';
 const DEFAULT_ORIGIN = 'http://127.0.0.1:3000';
-const DEFAULT_CATALOG = fileURLToPath(new URL('../../pentest-db/cases.multi.draft.json', import.meta.url));
 
 function exactLoopbackOrigin(value) {
   let url;
@@ -28,12 +27,6 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
-function selectResponse(catalog, vulnType) {
-  if (Array.isArray(catalog.responses)) return catalog.responses.find(item => item && item.vulnType === vulnType) ?? null;
-  if (catalog.response && catalog.response.vulnType === vulnType) return catalog.response;
-  return null;
-}
-
 function normalizeRequest(request) {
   if (!request || typeof request.method !== 'string' || typeof request.path !== 'string') {
     throw new Error('repeater case request is missing method or path.');
@@ -44,9 +37,9 @@ function normalizeRequest(request) {
   return { method: request.method, path, query };
 }
 
-export function loadPlan(catalogPath = DEFAULT_CATALOG, vulnType = 'idor') {
-  const catalog = JSON.parse(readFileSync(catalogPath, 'utf8'));
-  const response = selectResponse(catalog, vulnType);
+export function loadPlan(catalogPath, vulnType = 'idor', { databasePath, application } = {}) {
+  const source = loadAttackInfo({ catalogPath, vulnType, databasePath, application });
+  const response = source?.definition;
   const payload = response?.payloads?.find(item => item?.successCheck?.expect?.observe === 'httpResponse');
   const expect = payload?.successCheck?.expect;
   if (!response || !payload || !expect || !expect.baseline || !expect.attack) {
@@ -73,7 +66,7 @@ export function loadPlan(catalogPath = DEFAULT_CATALOG, vulnType = 'idor') {
   }
   return {
     vulnType, cwe: response.cwe ?? null, application: response.target?.application ?? 'target',
-    parameter, resourceRemoved, verifyStatus, stages,
+    parameter, resourceRemoved, verifyStatus, stages, provenance: source.provenance,
   };
 }
 
@@ -191,9 +184,10 @@ function findingStatus(plan, evidence) {
   return 'inconclusive';
 }
 
-export async function run({ origin, catalogPath = DEFAULT_CATALOG, vulnType = 'idor', curlImpl = executeCurl, signal } = {}) {
+export async function run({ origin, catalogPath, vulnType = 'idor', databasePath, application,
+  curlImpl = executeCurl, signal } = {}) {
   const allowedOrigin = exactLoopbackOrigin(origin ?? DEFAULT_ORIGIN);
-  const plan = loadPlan(catalogPath, vulnType);
+  const plan = loadPlan(catalogPath, vulnType, { databasePath, application });
   const runId = `repeater-${vulnType}-${randomUUID()}`;
   const startedAt = new Date().toISOString();
   const request = createGuardedRequest({ origin: allowedOrigin, runId, plan, curlImpl });
@@ -223,7 +217,7 @@ export async function run({ origin, catalogPath = DEFAULT_CATALOG, vulnType = 'i
     evidence: Object.values(evidence),
     provenance: {
       tool: 'repeater', guardrail: 'guardrail/GuardrailEvaluator', attack: 'attack-module/executeCurl',
-      catalog: 'pentest-db/cases.multi.draft.json',
+      ...plan.provenance,
     },
   };
 }
@@ -233,7 +227,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const vulnType = process.argv[2] ?? 'idor';
     const origin = process.env.REPEATER_ORIGIN ?? process.env.VULWEB1_ORIGIN;
     if (!origin) throw new Error('REPEATER_ORIGIN_REQUIRED');
-    const report = await run({ origin, vulnType });
+    const report = await run({ origin, vulnType, application: process.env.REPEATER_APPLICATION });
     console.log(JSON.stringify(report, null, 2));
     if (report.finding.status !== 'confirmed') process.exitCode = 1;
   } catch (error) {

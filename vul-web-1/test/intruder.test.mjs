@@ -41,6 +41,10 @@ test('intruder confirms SQL injection by firing the catalog payloads and compari
     assert.equal(report.vulnType, 'sql_injection');
     assert.equal(report.finding.category, 'CWE-89');
     assert.equal(report.finding.status, 'confirmed');
+    assert.equal(report.provenance.catalog, 'casper-db.attack_catalog');
+    assert.ok(report.provenance.patternId);
+    assert.ok(report.provenance.patternRevision >= 1);
+    assert.match(report.provenance.definitionSha256, /^[a-f0-9]{64}$/);
     assert.equal(report.evidence[0].check, 'baseline');
     assert.equal(report.evidence[0].resultCount, 0);
     assert.ok(report.finding.hits.length >= 1);

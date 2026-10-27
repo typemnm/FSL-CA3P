@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
+    "probe:idor": "node scripts/run-repeater.mjs idor",
     "repeater": "node scripts/run-repeater.mjs",
     "intruder": "node scripts/intruder.mjs"
   },
