@@ -530,17 +530,20 @@ function reportDocumentMarkup(item) {
   const status = document?.status ?? (general ? 'missing' : idor || item.simulated || item.mode === 'core-fixture' ? 'skipped'
     : ['completed', 'failed', 'stopped', 'cancelled', 'interrupted'].includes(item.status) ? 'missing' : 'waiting');
   const labels = { generating: '보고서 생성 중', ready: 'HWPX 보고서 준비됨', failed: '보고서 생성 실패', unavailable: '보고서 모델 설정 필요', skipped: '보고서 생성 생략', waiting: '실행 완료 후 보고서 생성', missing: '저장된 HWPX 보고서 없음' };
+  const generalUnsupported = general && status === 'skipped'
+    && document?.errorCode === 'GENERAL_DOCUMENT_UNSUPPORTED';
+  const statusLabel = generalUnsupported ? '범용 HWPX 미지원' : labels[status] || labels.waiting;
   const descriptions = {
     generating: '검사 결과로 보고서를 작성하고 있습니다. 생성이 완료되면 다운로드할 수 있습니다.',
     ready: '저장된 HWPX 문서를 다운로드할 수 있습니다.',
     failed: '검사 결과는 보존되어 있습니다. 보고서 생성 중 오류가 발생했습니다.',
     unavailable: '보고서 모델 설정을 확인하세요. 검사 결과 JSON은 계속 확인할 수 있습니다.',
-    skipped: general ? '아래에서 각 결과의 근거와 미점검 항목을 확인할 수 있습니다.' : idor ? 'IDOR 실습의 HWPX 보고서는 아직 지원하지 않습니다. 판정과 요청 근거는 아래에서 확인하고 JSON으로 내보낼 수 있습니다.' : '모의 fixture, 중지되었거나 최종 검사 결과가 없는 실행은 보고서를 생성하지 않습니다. 저장된 실행 기록은 JSON으로 내보낼 수 있습니다.',
+    skipped: generalUnsupported ? '범용 점검의 다중 결과는 아직 HWPX로 만들 수 없습니다. 화면의 가설별 결과와 JSON 내보내기를 확인하세요.' : general ? '이 실행에서는 HWPX 생성을 생략했습니다. 화면의 가설별 결과와 JSON 내보내기를 확인하세요.' : idor ? 'IDOR 실습의 HWPX 보고서는 아직 지원하지 않습니다. 판정과 요청 근거는 아래에서 확인하고 JSON으로 내보낼 수 있습니다.' : '모의 fixture, 중지되었거나 최종 검사 결과가 없는 실행은 보고서를 생성하지 않습니다. 저장된 실행 기록은 JSON으로 내보낼 수 있습니다.',
     waiting: '실제 격리 실습이 완료되면 설정된 모델로 보고서를 자동 생성합니다.',
-    missing: general ? '이 범용 실행에는 HWPX 생성 기록이 없습니다. 아래 결과와 JSON을 확인하세요.' : '이 실행에는 생성된 HWPX 보고서 기록이 없습니다. 검사 결과 JSON을 확인하세요.',
+    missing: general ? '이 범용 실행에는 HWPX 파일이 없습니다. 화면의 가설별 결과와 JSON 내보내기를 확인하세요.' : '이 실행에는 생성된 HWPX 보고서 기록이 없습니다. 검사 결과 JSON을 확인하세요.',
   };
   const ready = status === 'ready' && typeof document?.artifactId === 'string' && !!item.id;
-  return `<section class="panel report-document" aria-labelledby="report-document-title"><div><h2 id="report-document-title">HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(labels[status] || labels.waiting)}</p><small>${escape(descriptions[status] || descriptions.waiting)}</small>${document?.message ? `<p class="report-document-message">${escape(document.message)}</p>` : ''}<small class="report-cost-note">${general ? '문서 생성 여부는 이 실행의 서버 기록을 따릅니다.' : idor ? '이 IDOR 실습은 AI 및 보고서 모델을 호출하지 않습니다.' : '실제 실습의 자동 보고서는 모델 API를 호출하며 과금될 수 있습니다.'}</small></div>${ready ? `<a class="button primary" id="report-download-button" href="${escape(runtime.reportDownloadUrl(item.id))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</a>` : `<button class="button secondary" id="report-download-button" disabled aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</button>`}</section>`;
+  return `<section class="panel report-document" aria-labelledby="report-document-title"><div><h2 id="report-document-title">HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(statusLabel)}</p><small>${escape(descriptions[status] || descriptions.waiting)}</small>${document?.message ? `<p class="report-document-message">${escape(document.message)}</p>` : ''}<small class="report-cost-note">${general ? '문서 생성 여부는 이 실행의 서버 기록을 따릅니다.' : idor ? '이 IDOR 실습은 AI 및 보고서 모델을 호출하지 않습니다.' : '실제 실습의 자동 보고서는 모델 API를 호출하며 과금될 수 있습니다.'}</small></div>${ready ? `<a class="button primary" id="report-download-button" href="${escape(runtime.reportDownloadUrl(item.id))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</a>` : `<button class="button secondary" id="report-download-button" disabled aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</button>`}</section>`;
 }
 function renderReports() {
   const item = currentRun();

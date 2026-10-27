@@ -76,6 +76,47 @@ function plannedProbeLinks(events) {
   return links;
 }
 
+function liveMetadata(events) {
+  const hypotheses = new Map();
+  const evidence = new Map();
+  for (const event of events) {
+    const phase = phaseFor(event?.stage);
+    if (phase === 'plan') for (const item of list(eventRequest(event).hypothesisSummaries).slice(0, 32)) {
+      if (!object(item)) continue;
+      const id = safeId(item.id);
+      const category = text(item.category).slice(0, 128);
+      const asset = text(item.asset).slice(0, 512);
+      if (id && category && asset && (hypotheses.has(id) || hypotheses.size < 128)) {
+        hypotheses.set(id, { category, asset });
+      }
+    }
+    if (phase === 'observe' || phase === 'execute') {
+      for (const item of list(eventResponse(event).evidenceSummaries).slice(0, 32)) {
+        if (!object(item)) continue;
+        const id = safeId(item.id);
+        const kind = text(item.kind).slice(0, 128);
+        const asset = text(item.asset).slice(0, 512);
+        if (id && kind && (evidence.has(id) || evidence.size < 256)) {
+          evidence.set(id, { kind, asset });
+        }
+      }
+    }
+  }
+  return { hypotheses, evidence };
+}
+
+function renderLiveMetadata(metadata) {
+  const hypotheses = [...metadata.hypotheses].map(([id, item]) => '<li><span class="mono">'
+    + escape(id) + '</span> · ' + escape(item.category) + ' · ' + escape(item.asset) + '</li>').join('');
+  const evidence = [...metadata.evidence].map(([id, item]) => '<li><span class="mono">'
+    + escape(id) + '</span> · ' + escape(item.kind) + ' · '
+    + escape(item.asset || '자산 미기록') + '</li>').join('');
+  return (hypotheses ? '<details class="general-live-metadata"><summary>계획한 가설 '
+    + metadata.hypotheses.size + '건 · 잠정 정보</summary><ul>' + hypotheses + '</ul></details>' : '')
+    + (evidence ? '<details class="general-live-metadata"><summary>수집된 증거 메타데이터 '
+      + metadata.evidence.size + '건</summary><ul>' + evidence + '</ul></details>' : '');
+}
+
 export function generalObservedProbeCount(item) {
   return new Set(list(item?.events).map(probeIdFor).filter(Boolean)).size;
 }
@@ -237,6 +278,7 @@ export function renderGeneralLiveResults(item) {
     const events = list(item?.events).filter(object);
     const progress = latestProgress(events);
     const links = plannedProbeLinks(events);
+    const metadata = liveMetadata(events);
     const outcomes = events.filter(event => phaseFor(event.stage) === 'verify'
       || phaseFor(event.stage) === 'policy' && (text(eventResponse(event).status) || text(event.detail)) === 'blocked');
     const rows = outcomes.map(event => {
@@ -250,15 +292,24 @@ export function renderGeneralLiveResults(item) {
       const link = links.get(probeId);
       const hypothesisId = safeId(request.hypothesisId) || link?.hypothesisId;
       const tool = safeId(request.tool) || link?.tool;
+      const hypothesis = metadata.hypotheses.get(hypothesisId);
       const evidenceIds = list(response.evidenceIds).filter(value => typeof value === 'string')
         .slice(0, 32).map(safeId).filter(Boolean);
+      const evidenceDescriptions = evidenceIds.map(id => {
+        const entry = metadata.evidence.get(id);
+        return entry ? '<small>증거 ' + escape(id) + ': ' + escape(entry.kind) + ' · '
+          + escape(entry.asset || '자산 미기록') + '</small>' : '';
+      }).join('');
       const reason = text(response.reason).slice(0, 128);
       const context = [hypothesisId && '가설 ' + hypothesisId, tool && '도구 ' + tool,
         '반복 ' + (count(event.iteration) ?? '?')].filter(Boolean).join(' · ');
       return '<li class="general-live-result"><strong>검사 '
         + escape(probeId || 'ID 미기록') + '</strong><span>' + escape(label)
         + ' · ' + escape(context) + '</span>'
+        + (hypothesis ? '<small>가설 내용: ' + escape(hypothesis.category) + ' · '
+          + escape(hypothesis.asset) + '</small>' : '')
         + (evidenceIds.length ? '<small>증거 ID: ' + evidenceIds.map(escape).join(', ') + '</small>' : '')
+        + evidenceDescriptions
         + (reason ? '<small>사유: ' + escape(reason) + '</small>' : '') + '</li>';
     }).join('');
     return '<div class="general-live-body"><p>최종 보고서 전의 검사 이벤트입니다. 취약점 확정 건수로 집계하지 않습니다.</p>'
@@ -266,9 +317,10 @@ export function renderGeneralLiveResults(item) {
         ['가설', 'hypothesisCount'], ['실행 검사', 'probeCount'], ['수집 증거', 'evidenceCount'],
         ['확정 판정 검사', 'confirmedProbeCount'], ['정책 차단 검사', 'blockedProbeCount'],
       ])
+      + renderLiveMetadata(metadata)
       + (rows ? '<ul class="general-live-result-list">' + rows + '</ul>'
         : '<p class="general-live-empty">독립 검증 이벤트를 기다리는 중입니다.</p>')
-      + '<p class="general-live-note">진행 수치와 판정은 검사 기준입니다. 가설 분류·자산·증거 설명과 최종 finding 수는 보고서 저장 후 표시됩니다.</p></div>';
+      + '<p class="general-live-note">가설 분류·자산과 증거 종류·자산은 잠정 메타데이터입니다. 원문 근거와 최종 finding 수는 보고서 저장 후 표시됩니다. 메타데이터가 없는 이전 기록은 ID만 표시합니다.</p></div>';
   }
   const evidence = new Map(list(summary.report.evidence)
     .filter(value => object(value) && text(value.id)).map(value => [value.id, value]));

@@ -79,6 +79,17 @@ test('general core evaluates multiple vulnerability categories and keeps evidenc
     { probeId: 'probe-access', hypothesisId: 'access-1', tool: 'http-read' },
     { probeId: 'probe-config', hypothesisId: 'config-1', tool: 'header-read' },
   ]);
+  assert.deepEqual(events.find(item => item.stage === 'observe' && item.iteration === 1).evidenceSummaries,
+    [{ id: 'observation-1', kind: 'http', asset: '/search' }]);
+  assert.deepEqual(events.find(item => item.stage === 'plan' && item.iteration === 1).hypothesisSummaries, [
+    { id: 'access-1', category: 'access-control', asset: '/records/1' },
+    { id: 'config-1', category: 'security-configuration', asset: '/_diag/config' },
+  ]);
+  assert.deepEqual(events.filter(item => item.stage === 'execute').map(item => item.evidenceSummaries), [
+    [{ id: 'evidence-probe-access', kind: 'http' }],
+    [{ id: 'evidence-probe-config', kind: 'http' }],
+  ]);
+  assert.doesNotMatch(JSON.stringify(events), /Cross-user access may be possible|Checked probe-access/u);
   assert.deepEqual(events.filter(item => item.stage === 'verify').map(item =>
     ({ hypothesisId: item.hypothesisId, probeId: item.probeId, tool: item.tool,
       evidenceIds: item.evidenceIds })), [
@@ -92,6 +103,66 @@ test('general core evaluates multiple vulnerability categories and keeps evidenc
     confirmedProbeCount: 1, notReproducedProbeCount: 1, inconclusiveProbeCount: 0,
     blockedProbeCount: 0, remainingProbeBudget: 2,
   });
+});
+
+test('live metadata is bounded and omits observation summaries and secret query values', async () => {
+  const events = [];
+  const evidence = Array.from({ length: 16 }, (_, index) => ({
+    id: `observation-${index}`, source: 'lab-observer', kind: 'http',
+    asset: index === 0
+      ? `https://observer.example/records/${index}?opaque=PRIVATE_QUERY_${index}#PRIVATE_FRAGMENT`
+      : `/records/${index}?opaque=PRIVATE_QUERY_${index}#PRIVATE_FRAGMENT`,
+    summary: `PRIVATE_BODY_${index}`,
+  }));
+  const { report } = await runGeneralAssessment(ports({
+    observer: { async observe({ iteration }) { return { inventory: {}, evidence: iteration === 1 ? evidence : [] }; } },
+    planner: { async propose({ iteration }) { return iteration === 1 ? {
+      hypotheses: [{ id: 'query-asset', category: 'access-control',
+        asset: 'https://target.example/records?opaque=PRIVATE_ASSET#PRIVATE_FRAGMENT',
+        rationale: 'PRIVATE_RATIONALE', evidenceIds: ['observation-0'] }], probes: [],
+    } : { done: true, hypotheses: [], probes: [] }; } },
+    onEvent: event => events.push(event),
+  }));
+  assert.equal(report.status, 'completed');
+  const summaries = events.find(event => event.stage === 'observe').evidenceSummaries;
+  assert.equal(summaries.length, 16);
+  assert.ok(summaries.every(item => Object.keys(item).sort().join(',') === 'asset,id,kind'));
+  assert.deepEqual(summaries.map(item => item.asset),
+    Array.from({ length: 16 }, (_, index) => `/records/${index}`));
+  assert.deepEqual(events.find(event => event.stage === 'plan' && event.iteration === 1).hypothesisSummaries,
+    [{ id: 'query-asset', category: 'access-control', asset: '/records' }]);
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE_BODY|PRIVATE_QUERY|PRIVATE_ASSET|PRIVATE_FRAGMENT|PRIVATE_RATIONALE|observer\.example|target\.example/u);
+  assert.equal(report.evidence.length, 16);
+});
+
+test('same category and asset keep distinct hypothesis findings and evidence', async () => {
+  const { report } = await runGeneralAssessment(ports({
+    observer: { async observe({ iteration }) { return { inventory: {}, evidence: iteration === 1 ? [
+      { id: 'source-a', source: 'observer', kind: 'http', summary: 'First input was observed.' },
+      { id: 'source-b', source: 'observer', kind: 'http', summary: 'Second input was observed.' },
+    ] : [] }; } },
+    planner: { async propose({ iteration }) { return iteration === 1 ? {
+      hypotheses: [
+        { id: 'issue-a', category: 'access-control', asset: '/records/:id',
+          rationale: 'Owner check on the read path.', evidenceIds: ['source-a'] },
+        { id: 'issue-b', category: 'access-control', asset: '/records/:id',
+          rationale: 'Owner check on the write path.', evidenceIds: ['source-b'] },
+      ], probes: [
+        { id: 'probe-a', hypothesisId: 'issue-a', tool: 'http-read', input: {} },
+        { id: 'probe-b', hypothesisId: 'issue-b', tool: 'http-read', input: {} },
+      ],
+    } : { done: true, hypotheses: [], probes: [] }; } },
+    executor: { async execute({ probe }) { return { evidence: [{ id: `result-${probe.id}`,
+      source: 'http-read', kind: 'http', summary: `Checked ${probe.id}.` }] }; } },
+    verifier: { async verify({ probe }) { return { status: probe.id === 'probe-a' ? 'confirmed' : 'not_reproduced',
+      completed: true, evidenceIds: [`result-${probe.id}`] }; } },
+  }));
+  assert.equal(report.status, 'completed');
+  assert.deepEqual(report.findings.map(item => item.id), ['finding:issue-a', 'finding:issue-b']);
+  assert.deepEqual(report.findings.map(item => item.status), ['confirmed', 'not_reproduced']);
+  assert.deepEqual(report.findings.map(item => item.evidenceIds), [
+    ['source-a', 'result-probe-a'], ['source-b', 'result-probe-b'],
+  ]);
 });
 
 test('mandatory policy blocks execution and leaves the hypothesis not tested', async () => {

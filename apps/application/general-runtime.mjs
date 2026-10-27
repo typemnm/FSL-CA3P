@@ -95,6 +95,18 @@ const eventIdentifier = value => typeof value === 'string'
 const eventIdentifiers = (value, limit) => Array.isArray(value)
   ? value.slice(0, limit).map(eventIdentifier).filter(Boolean) : undefined;
 const eventCount = value => Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+function eventMetadataText(value, maxBytes, { asset = false } = {}) {
+  if (typeof value !== 'string' || !value.trim() || /[\u0000-\u001f\u007f]/u.test(value)) return undefined;
+  let text = value.trim();
+  if (asset) {
+    if (/^https?:\/\//iu.test(text)) {
+      try { text = new URL(text).pathname; } catch { return undefined; }
+    }
+    // An event only needs the affected location, never query values or fragments.
+    text = text.split(/[?#]/u, 1)[0];
+  }
+  return utf8Prefix(safeSourceExcerpt(text), maxBytes) || undefined;
+}
 function projectGeneralEvent(event) {
   const stage = eventIdentifier(event.stage) ?? 'unknown';
   const request = {};
@@ -107,6 +119,12 @@ function projectGeneralEvent(event) {
     const values = eventIdentifiers(event[key], limit);
     if (values) request[key] = values;
   }
+  if (Array.isArray(event.hypothesisSummaries)) request.hypothesisSummaries = event.hypothesisSummaries
+    .slice(0, 32).filter(record)
+    .map(item => ({ id: eventIdentifier(item.id),
+      category: eventMetadataText(item.category, 128),
+      asset: eventMetadataText(item.asset, 256, { asset: true }) }))
+    .filter(item => item.id && item.category && item.asset);
   if (Array.isArray(event.probeLinks)) request.probeLinks = event.probeLinks
     .slice(0, LIMITS.maxProbes)
     .map(link => ({ probeId: eventIdentifier(link?.probeId),
@@ -119,6 +137,12 @@ function projectGeneralEvent(event) {
   }
   const evidenceIds = eventIdentifiers(event.evidenceIds, LIMITS.maxEvidenceItems);
   if (evidenceIds) response.evidenceIds = evidenceIds;
+  if (Array.isArray(event.evidenceSummaries)) response.evidenceSummaries = event.evidenceSummaries
+    .slice(0, LIMITS.maxEvidenceItems).filter(record)
+    .map(item => ({ id: eventIdentifier(item.id), kind: eventMetadataText(item.kind, 128),
+      asset: eventMetadataText(item.asset, 256, { asset: true }) }))
+    .filter(item => item.id && item.kind)
+    .map(item => item.asset ? item : { id: item.id, kind: item.kind });
   if (record(event.progress)) {
     const progress = {};
     for (const key of ['hypothesisCount', 'probeCount', 'evidenceCount',

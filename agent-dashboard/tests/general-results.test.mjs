@@ -157,7 +157,13 @@ test('policy events are not shown as verified findings before a report exists', 
 test('live general events show projected progress and linked probe outcomes before the final report', () => {
   const item = normalizeGeneralRun({ id: 'run-projected', mode: 'local-lab-general', status: 'running',
     startedAt: '2026-10-26T00:00:00Z', events: [
-      { id: 'planned', stage: 'plan', iteration: 1, request: { probeLinks: [
+      { id: 'observed', stage: 'observe', iteration: 1, response: { evidenceSummaries: [
+        { id: 'e-observed', kind: '<script>alert(1)</script>', asset: '/search' },
+      ] } },
+      { id: 'planned', stage: 'plan', iteration: 1, request: { hypothesisSummaries: [
+        { id: 'h-wrong', category: 'xss', asset: '/search' },
+        { id: 'h-valid', category: 'access_control', asset: '/api/item/:id' },
+      ], probeLinks: [
         { probeId: 'p-blocked', hypothesisId: 'h-wrong', tool: 'known_record_idor_read' },
         { probeId: 'p-valid', hypothesisId: 'h-valid', tool: 'known_record_idor_read' },
       ] }, response: { progress: { hypothesisCount: 2, probeCount: 0, evidenceCount: 1,
@@ -166,6 +172,9 @@ test('live general events show projected progress and linked probe outcomes befo
         request: { probeId: 'p-blocked' }, response: { status: 'blocked',
           reason: '<hypothesis_tool_mismatch>', progress: { hypothesisCount: 2, probeCount: 1,
             evidenceCount: 1, confirmedProbeCount: 0, blockedProbeCount: 1, remainingProbeBudget: 3 } } },
+      { id: 'executed', stage: 'execute', iteration: 1, response: { evidenceSummaries: [
+        { id: 'e-1', kind: 'role-comparison', asset: '/api/item/:id' },
+      ] } },
       { id: 'verified', stage: 'verify', iteration: 1, detail: 'confirmed',
         request: { probeId: 'p-valid', hypothesisId: 'h-valid', tool: 'known_record_idor_read' },
         response: { status: 'confirmed', evidenceIds: ['e-1', '<img src=x onerror=alert(1)>'],
@@ -186,11 +195,35 @@ test('live general events show projected progress and linked probe outcomes befo
   assert.match(live, /&lt;hypothesis_tool_mismatch&gt;/);
   assert.match(live, /검사 p-valid/);
   assert.match(live, /확정 · 가설 h-valid · 도구 known_record_idor_read/);
+  assert.match(live, /가설 내용: access_control · \/api\/item\/:id/);
+  assert.match(live, /증거 e-1: role-comparison · \/api\/item\/:id/);
+  assert.match(live, /계획한 가설 2건 · 잠정 정보/);
+  assert.match(live, /수집된 증거 메타데이터 2건/);
   assert.match(live, /증거 ID: e-1, &lt;img src=x onerror=alert\(1\)&gt;/);
   assert.match(live, /확정 판정 검사 <strong>1<\/strong>/);
   assert.match(live, /취약점 확정 건수로 집계하지 않습니다/);
   assert.doesNotMatch(live, /<img src/);
+  assert.doesNotMatch(live, /<script>/);
+  assert.match(live, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(live, /<hypothesis_tool_mismatch>/);
+});
+
+test('planned hypotheses and observed evidence remain provisional before any probe verdict', () => {
+  const item = { mode: 'local-lab-general', status: 'running', events: [
+    { stage: 'observe', iteration: 1, response: { evidenceSummaries: [
+      { id: 'e-1', kind: 'status-metadata', asset: '/search' },
+    ] } },
+    { stage: 'plan', iteration: 1, request: { hypothesisSummaries: [
+      { id: 'h-1', category: 'xss', asset: '/search' },
+    ] } },
+  ] };
+  const live = renderGeneralLiveResults(item);
+  assert.match(live, /계획한 가설 1건 · 잠정 정보/);
+  assert.match(live, /h-1<\/span> · xss · \/search/);
+  assert.match(live, /수집된 증거 메타데이터 1건/);
+  assert.match(live, /e-1<\/span> · status-metadata · \/search/);
+  assert.match(live, /독립 검증 이벤트를 기다리는 중/);
+  assert.doesNotMatch(live, /확정 판정 검사/);
 });
 
 test('live result panel uses final findings and linked evidence only after report arrives', () => {

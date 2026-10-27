@@ -57,8 +57,9 @@ test('general university run uses multiple model hypotheses and confirms only th
         { id: 'h-idor', category: 'access_control', asset: '/api/admissions/partner/applications/:id',
           rationale: 'Role boundary should be compared. event-private-marker',
           evidenceIds: [id] },
-        { id: 'h-xss', category: 'xss', asset: '/api/search',
-          rationale: 'A query input exists but no browser verifier is connected.', evidenceIds: [id] },
+        { id: 'h-xss', category: 'xss', asset: '/api/search?token=event-private-asset',
+          rationale: 'A query input exists but no browser verifier is connected.',
+          evidenceIds: [id], secret: 'event-private-extra' },
       ], probes: [{ id: 'p-idor', hypothesisId: 'h-idor', tool: 'known_record_idor_read', input: {} }],
       modelMetadata: { provider: 'deepseek', model: 'deepseek-flash' } };
     } }),
@@ -89,6 +90,20 @@ test('general university run uses multiple model hypotheses and confirms only th
   assert.deepEqual(plan.request.probeLinks, [
     { probeId: 'p-idor', hypothesisId: 'h-idor', tool: 'known_record_idor_read' },
   ]);
+  assert.deepEqual(plan.request.hypothesisSummaries, [
+    { id: 'h-idor', category: 'access_control',
+      asset: '/api/admissions/partner/applications/:id' },
+    { id: 'h-xss', category: 'xss', asset: '/api/search' },
+  ]);
+  const observed = liveVerify.events.find(item => item.stage === 'observe');
+  assert.ok(observed.response.evidenceSummaries.length > 0);
+  assert.ok(observed.response.evidenceSummaries.every(item =>
+    Object.keys(item).every(key => ['id', 'kind', 'asset'].includes(key))));
+  const executed = liveVerify.events.find(item => item.stage === 'execute'
+    && item.request?.probeId === 'p-idor');
+  const probeEvidenceId = run.report.probes.find(item => item.id === 'p-idor').evidenceIds[0];
+  assert.deepEqual(executed.response.evidenceSummaries, [{ id: probeEvidenceId,
+    kind: 'role-comparison', asset: '/api/admissions/partner/applications/:id' }]);
   assert.equal(plan.response.progress.hypothesisCount, 2);
   assert.equal(liveVerify.event.request.hypothesisId, 'h-idor');
   assert.equal(liveVerify.event.request.tool, 'known_record_idor_read');
@@ -99,7 +114,7 @@ test('general university run uses multiple model hypotheses and confirms only th
   assert.equal(run.events.find(item => item.stage === 'complete').response.coverage.confirmed, 1);
   assert.equal(run.events.some(item => 'runId' in item || 'input' in item.request), false);
   assert.doesNotMatch(JSON.stringify(run.events.filter(item => item.stage)),
-    /event-private-marker/u);
+    /event-private-marker|event-private-asset|event-private-extra/u);
   detach();
   await runtime.close();
 });

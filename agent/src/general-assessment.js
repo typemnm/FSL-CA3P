@@ -44,6 +44,14 @@ function identifier(value, label) {
   if (typeof value !== 'string' || !ID.test(value)) throw fault(`INVALID_${label.toUpperCase()}`);
   return value;
 }
+function eventAsset(value) {
+  const withoutQuery = value.split(/[?#]/u, 1)[0];
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.pathname;
+  } catch { /* Relative assets use the path before any query or fragment. */ }
+  return withoutQuery;
+}
 
 /** Keep untrusted observations and model tool arguments JSON-only and bounded. */
 function jsonValue(value, label, maxBytes) {
@@ -274,7 +282,9 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
       const observationEvidence = normalizeEvidence(observed.evidence ?? [], evidenceById,
         budgetLimits.maxEvidenceItems - report.evidence.length, 'observation_evidence');
       for (const item of observationEvidence) { evidenceById.set(item.id, item); report.evidence.push(item); }
-      await emit({ stage: 'observe', iteration, evidenceIds: observationEvidence.map(item => item.id) });
+      await emit({ stage: 'observe', iteration, evidenceIds: observationEvidence.map(item => item.id),
+        evidenceSummaries: observationEvidence.map(item => ({ id: item.id, kind: item.kind,
+          ...(item.asset ? { asset: eventAsset(item.asset) } : {}) })) });
 
       const budget = { maxIterations: budgetLimits.maxIterations, maxProbes: budgetLimits.maxProbes,
         remainingProbes: budgetLimits.maxProbes - usedProbes, usedProbes };
@@ -307,6 +317,8 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
       report.rejectedProposals.push(...rejectedProbes);
       if (rejectedProbes.length) report.partial = true;
       await emit({ stage: 'plan', iteration, hypothesisIds: newHypotheses.map(item => item.id),
+        hypothesisSummaries: newHypotheses.map(item => ({ id: item.id,
+          category: item.category, asset: eventAsset(item.asset) })),
         probeIds: probes.map(item => item.id),
         probeLinks: probes.map(item => ({ probeId: item.id, hypothesisId: item.hypothesisId,
           tool: item.tool })), done: plan.done === true });
@@ -361,7 +373,9 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
         row.evidenceIds = newEvidence.map(item => item.id);
         await emit({ stage: 'execute', iteration, hypothesisId: probe.hypothesisId,
           probeId: probe.id, tool: probe.tool, status: 'completed',
-          evidenceIds: [...row.evidenceIds] });
+          evidenceIds: [...row.evidenceIds],
+          evidenceSummaries: newEvidence.map(item => ({ id: item.id, kind: item.kind,
+            ...(item.asset ? { asset: eventAsset(item.asset) } : {}) })) });
         if (!newEvidence.length) {
           row.status = 'inconclusive'; row.reason = 'no_evidence';
           verdicts.set(probe.hypothesisId, [...(verdicts.get(probe.hypothesisId) ?? []),

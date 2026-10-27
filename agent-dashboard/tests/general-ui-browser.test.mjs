@@ -25,7 +25,8 @@ const run = { id: 'general-run', mode: 'local-lab-general', assessmentMode: 'gen
   events: [{ stage: 'inventory.collect', title: 'Inventory', module: 'agent', time: '2026-10-26T00:00:00Z' },
     { stage: 'probe.verify', title: 'Verify', module: 'agent', time: '2026-10-26T00:00:01Z' },
     { stage: 'probe.observe', title: 'Untrusted channel', module: 'x"><img src=x onerror=alert(1)>', time: '2026-10-26T00:00:02Z' },
-    { stage: 'probe.observe', title: 'Prototype-like channel', module: 'constructor', time: '2026-10-26T00:00:03Z' }], report };
+    { stage: 'probe.observe', title: 'Prototype-like channel', module: 'constructor', time: '2026-10-26T00:00:03Z' }],
+  reportDocument: { status: 'skipped', errorCode: 'GENERAL_DOCUMENT_UNSUPPORTED' }, report };
 
 test('general run renders and supported targets launch the bounded model assessment', async t => {
   let browser;
@@ -88,6 +89,9 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.match(await page.locator('#report-content').textContent(), /모델 호출 1건/);
   assert.equal(await page.locator('#report-content script').count(), 0);
   assert.match(await page.locator('#report-content').textContent(), /미점검과 판정 불가는 안전하다는 뜻이 아닙니다/);
+  assert.match(await page.locator('#report-document-status').textContent(), /범용 HWPX 미지원/);
+  assert.match(await page.locator('.report-document').textContent(), /화면의 가설별 결과와 JSON 내보내기/);
+  assert.equal(await page.locator('#report-download-button').isDisabled(), true);
   await page.locator('[data-view=sessions]').click();
   await page.locator('[data-session=general-run]').click();
   await page.locator('[data-view=reports]').click();
@@ -131,9 +135,11 @@ test('general run renders and supported targets launch the bounded model assessm
   run.status = 'running'; run.report = null; run.iterations = 1;
   run.events = [
     { id: 'observed', stage: 'observe', iteration: 1, title: 'Observed', module: 'agent',
+      response: { evidenceSummaries: [{ id: 'e-observed', kind: 'status-metadata', asset: '/search' }] },
       time: '2026-10-26T00:00:00Z' },
     { id: 'planned', stage: 'plan', iteration: 1, title: 'Planned', module: 'agent',
-      request: { probeLinks: [{ probeId: 'p1', hypothesisId: 'h1', tool: 'known_record_idor_read' }] },
+      request: { hypothesisSummaries: [{ id: 'h1', category: 'access_control', asset: '/api/item/:id' }],
+        probeLinks: [{ probeId: 'p1', hypothesisId: 'h1', tool: 'known_record_idor_read' }] },
       response: { progress: { hypothesisCount: 1, probeCount: 0, evidenceCount: 1,
         confirmedProbeCount: 0, blockedProbeCount: 0, remainingProbeBudget: 3 } },
       time: '2026-10-26T00:00:00Z' },
@@ -142,6 +148,9 @@ test('general run renders and supported targets launch the bounded model assessm
       response: { status: 'allowed', progress: { hypothesisCount: 1, probeCount: 1,
         evidenceCount: 1, confirmedProbeCount: 0, blockedProbeCount: 0, remainingProbeBudget: 2 } },
       module: 'agent', time: '2026-10-26T00:00:01Z' },
+    { id: 'executed', stage: 'execute', iteration: 1, title: 'Execute', module: 'agent',
+      response: { evidenceSummaries: [{ id: 'e1', kind: 'role-comparison', asset: '/api/item/:id' }] },
+      time: '2026-10-26T00:00:02Z' },
     { id: 'verified', stage: 'verify', iteration: 1, title: 'Verify', detail: 'confirmed',
       request: { probeId: 'p1', hypothesisId: 'h1', tool: 'known_record_idor_read' },
       response: { status: 'confirmed', evidenceIds: ['e1'], progress: { hypothesisCount: 1,
@@ -155,16 +164,23 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.match(await page.locator('#general-live-results-panel').textContent(), /검사 p1/);
   assert.match(await page.locator('#general-run-summary').textContent(), /실행 검사 1/);
   assert.match(await page.locator('#general-live-results-panel').textContent(), /가설 h1 · 도구 known_record_idor_read/);
+  assert.match(await page.locator('#general-live-results-panel').textContent(), /가설 내용: access_control · \/api\/item\/:id/);
   assert.match(await page.locator('#general-live-results-panel').textContent(), /증거 ID: e1/);
+  assert.match(await page.locator('#general-live-results-panel').textContent(), /증거 e1: role-comparison · \/api\/item\/:id/);
   assert.match(await page.locator('#general-live-results-panel').textContent(), /확정 판정 검사 1/);
   assert.match(await page.locator('#general-live-results-panel').textContent(), /최종 보고서 전의 검사 이벤트/);
   assert.doesNotMatch(await page.locator('#general-live-results-panel').textContent(), /\/records\/1/);
   await page.locator('[data-general-event=verified]').click();
   assert.match(await page.locator('#trace-code').textContent(), /"stage": "verify"/);
   assert.match(await page.locator('#trace-code').textContent(), /"probeId": "p1"/);
-  run.status = 'completed'; run.report = report; run.iterations = 2; run.events = originalEvents;
+  run.status = 'completed'; run.report = report; run.reportDocument = undefined;
+  run.iterations = 2; run.events = originalEvents;
   await page.reload();
   await page.waitForFunction(() => document.querySelector('#execution-label')?.textContent === 'GENERAL / EVIDENCE');
   assert.match(await page.locator('#general-live-results-panel').textContent(), /owner mismatch observed/);
+  await page.locator('[data-view=reports]').click();
+  assert.match(await page.locator('#report-document-status').textContent(), /저장된 HWPX 보고서 없음/);
+  assert.match(await page.locator('.report-document').textContent(), /화면의 가설별 결과와 JSON 내보내기/);
+  assert.equal(await page.locator('#report-download-button').isDisabled(), true);
   assert.deepEqual(errors, []);
 });
