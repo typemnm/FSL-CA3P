@@ -1,0 +1,70 @@
+{
+  "additionalProperties": false,
+  "description": "Minimum agreed output from the endpoint parser for one input point.",
+  "properties": {
+    "target_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Target Id",
+      "type": "string"
+    },
+    "endpoint": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Endpoint",
+      "type": "string"
+    },
+    "method": {
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "HEAD",
+        "OPTIONS"
+      ],
+      "title": "Method",
+      "type": "string"
+    },
+    "parameter": {
+      "anyOf": [
+        {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parameter"
+    },
+    "parameter_location": {
+      "default": "unknown",
+      "enum": [
+        "query",
+        "body",
+        "path",
+        "header",
+        "cookie",
+        "fragment",
+        "unknown"
+      ],
+      "title": "Parameter Location",
+      "type": "string"
+    },
+    "parameter_not_applicable": {
+      "default": false,
+      "title": "Parameter Not Applicable",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "target_id",
+    "endpoint",
+    "method"
+  ],
+  "title": "ParserObservation",
+  "type": "object"
+}

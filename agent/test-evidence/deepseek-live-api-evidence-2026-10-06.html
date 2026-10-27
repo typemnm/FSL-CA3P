@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FSL-CA3P DeepSeek Execution Evidence</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08111f;
+      --panel: #0f1b2d;
+      --panel-2: #132238;
+      --line: #28405e;
+      --text: #eaf2ff;
+      --muted: #8fa5c1;
+      --green: #51e6a8;
+      --cyan: #68d5ff;
+      --yellow: #ffd36b;
+      --red: #ff808d;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 4%, rgba(55, 138, 255, .18), transparent 30%),
+        radial-gradient(circle at 90% 100%, rgba(56, 220, 166, .12), transparent 30%),
+        var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+    }
+
+    body { padding: 32px 42px; }
+
+    .page { max-width: 1356px; margin: 0 auto; }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 22px;
+    }
+
+    .eyebrow {
+      color: var(--cyan);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1 { margin: 7px 0 0; font-size: 31px; letter-spacing: -.03em; }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 15px;
+      border: 1px solid rgba(81, 230, 168, .45);
+      border-radius: 999px;
+      background: rgba(81, 230, 168, .08);
+      color: var(--green);
+      font-weight: 800;
+    }
+
+    .status::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 16px rgba(81, 230, 168, .9);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(300px, .75fr);
+      gap: 20px;
+    }
+
+    .terminal, .card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(15, 27, 45, .94);
+      box-shadow: 0 18px 55px rgba(0, 0, 0, .25);
+      overflow: hidden;
+    }
+
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 44px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+      background: #101a2a;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot.red { background: #ff6d78; }
+    .dot.yellow { background: #ffd36b; }
+    .dot.green { background: #51e6a8; }
+    .terminal-title { margin-left: 8px; }
+
+    pre {
+      height: 664px;
+      margin: 0;
+      padding: 22px 24px;
+      overflow: hidden;
+      color: #d9e7fa;
+      font: 14px/1.48 "Cascadia Code", Consolas, monospace;
+      white-space: pre-wrap;
+    }
+
+    .prompt { color: var(--cyan); }
+    .ok { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .fail { color: var(--red); }
+    .dim { color: var(--muted); }
+
+    aside { display: flex; flex-direction: column; gap: 16px; }
+    .card { padding: 20px; }
+    .card h2 { margin: 0 0 15px; font-size: 16px; }
+    .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+    .metric {
+      min-height: 87px;
+      padding: 13px;
+      border: 1px solid #263c58;
+      border-radius: 12px;
+      background: var(--panel-2);
+    }
+    .metric span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+    .metric strong { font-size: 20px; color: var(--text); }
+    .metric strong.good { color: var(--green); }
+
+    .checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 11px; }
+    .checks li { display: grid; grid-template-columns: 20px 1fr; gap: 9px; color: #c9d8ea; font-size: 13px; line-height: 1.4; }
+    .check { color: var(--green); font-weight: 900; }
+
+    .notice {
+      padding: 14px 16px;
+      border: 1px solid rgba(104, 213, 255, .25);
+      border-radius: 12px;
+      background: rgba(104, 213, 255, .06);
+      color: #b9d8ec;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    footer {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    [data-view] { display: none; }
+    body.live [data-view="live"], body.offline [data-view="offline"] { display: block; }
+  </style>
+</head>
+<body>
+  <main class="page" data-view="live">
+    <header>
+      <div>
+        <div class="eyebrow">FSL-CA3P · Agent Evidence</div>
+        <h1>DeepSeek 실제 API Contract Test</h1>
+      </div>
+      <div class="status">LIVE PASS</div>
+    </header>
+
+    <section class="grid">
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+          <span class="terminal-title">sanitized live execution · 2026-10-06 14:38:25 KST</span>
+        </div>
+        <pre><span class="prompt">PS&gt;</span> npm run demo:deepseek --prefix agent
+
+<span class="warn">WARNING</span> Billable DeepSeek request enabled.
+No real target will be contacted.
+
+{
+  "mode": "deepseek-agent-contract-demo",
+  "liveProvider": {
+    "invoked": <span class="ok">true</span>,
+    "elapsedMs": 758,
+    "metadata": {
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 264,
+        "completion_tokens": 25,
+        "total_tokens": 289
+      }
+    }
+  },
+  "report": {
+    "status": <span class="ok">"completed"</span>,
+    "iterations": 1,
+    "progress": {
+      "actionAttempted": true,
+      "actionCompleted": true,
+      "verificationCompleted": true
+    },
+    "finding": {
+      "cwe": "CWE-639",
+      "status": "confirmed",
+      "confidence": "high"
+    }
+  }
+}
+
+<span class="ok">Process exited with code 0</span></pre>
+      </div>
+
+      <aside>
+        <div class="card">
+          <h2>실행 요약</h2>
+          <div class="metric-grid">
+            <div class="metric"><span>MODEL</span><strong style="font-size:16px">deepseek-flash</strong></div>
+            <div class="metric"><span>TOTAL TOKENS</span><strong>289</strong></div>
+            <div class="metric"><span>FULL LOOP</span><strong>758ms</strong></div>
+            <div class="metric"><span>RESULT</span><strong class="good">PASS</strong></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>검증된 경계</h2>
+          <ul class="checks">
+            <li><span class="check">✓</span><span>DeepSeek Provider만 실제 네트워크 연결</span></li>
+            <li><span class="check">✓</span><span>모델 decision은 내부 ID 승인만 수행</span></li>
+            <li><span class="check">✓</span><span>Action Policy 이후 canonical action 실행</span></li>
+            <li><span class="check">✓</span><span>외부 운영 모듈은 scripted JSON gateway</span></li>
+            <li><span class="check">✓</span><span>실제 target HTTP 접속 없음</span></li>
+          </ul>
+        </div>
+        <div class="notice">
+          API key, Authorization header, request ID, raw model response와 chain-of-thought는 이 화면과 보고서에서 제외했다.
+        </div>
+      </aside>
+    </section>
+
+    <footer><span>Sanitized evidence capture · raw secrets omitted</span><span>Report date · 2026-10-06 KST</span></footer>
+  </main>
+
+  <main class="page" data-view="offline">
+    <header>
+      <div>
+        <div class="eyebrow">FSL-CA3P · Verification Evidence</div>
+        <h1>회귀 테스트 및 Fail-Closed 검증</h1>
+      </div>
+      <div class="status">75 / 75 PASS</div>
+    </header>
+
+    <section class="grid">
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+          <span class="terminal-title">sanitized offline verification · no billable API call</span>
+        </div>
+        <pre><span class="prompt">PS&gt;</span> npm test --prefix agent
+
+<span class="ok">✔</span> DeepSeekClient sends documented JSON request
+<span class="ok">✔</span> API key and upstream body never leak in errors
+<span class="ok">✔</span> non-success response bodies are cancelled
+<span class="ok">✔</span> timeout remains active during body reads
+<span class="ok">✔</span> 512 KiB response bound enforced while streaming
+<span class="ok">✔</span> caller abort is non-retryable
+<span class="ok">✔</span> strict decision schema rejects extra action fields
+<span class="ok">✔</span> external knowledge ID maps to candidate-0
+<span class="ok">✔</span> async local baseline is awaited
+<span class="ok">✔</span> real-client auth failure stays fail-closed
+<span class="ok">✔</span> one serialized JSON loop completes
+<span class="ok">✔</span> DELETE is never retried after failure
+
+ℹ tests 75
+ℹ pass  <span class="ok">75</span>
+ℹ fail  0
+ℹ duration_ms 387.4062
+
+<span class="prompt">PS&gt;</span> restricted-network live probe
+{
+  "code": <span class="fail">"DEEPSEEK_TRANSPORT_ERROR"</span>,
+  "source": "deepseek_api",
+  "progress": {
+    "actionAttempted": <span class="ok">false</span>,
+    "actionCompleted": false,
+    "verificationCompleted": false
+  }
+}
+
+<span class="ok">Fail-closed: no mutating action was dispatched</span></pre>
+      </div>
+
+      <aside>
+        <div class="card">
+          <h2>설정 사전검사</h2>
+          <div class="metric-grid">
+            <div class="metric"><span>KEY</span><strong class="good">configured</strong></div>
+            <div class="metric"><span>CONFIG</span><strong>frozen</strong></div>
+            <div class="metric"><span>TIMEOUT</span><strong>60s</strong></div>
+            <div class="metric"><span>MAX RETRY</span><strong>1</strong></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>보안 확인</h2>
+          <ul class="checks">
+            <li><span class="check">✓</span><span><code>agent/.env</code> Git ignore 적용</span></li>
+            <li><span class="check">✓</span><span>보고서·README·demo에서 key 값 0건</span></li>
+            <li><span class="check">✓</span><span>raw response 및 CoT 저장 안 함</span></li>
+            <li><span class="check">✓</span><span>schema 오류 시 local action fallback 금지</span></li>
+            <li><span class="check">✓</span><span>실패 report에 진행 상태 보존</span></li>
+          </ul>
+        </div>
+        <div class="notice">
+          제한 네트워크 probe는 provider 장애가 아니라 실행 환경의 outbound 차단을 재현한 것이다. 네트워크 허용 후 live contract test는 정상 성공했다.
+        </div>
+      </aside>
+    </section>
+
+    <footer><span>Sanitized evidence capture · values sourced from test output</span><span>Snapshot · 05d813bc…f75d</span></footer>
+  </main>
+
+  <script>
+    const view = new URLSearchParams(location.search).get('view');
+    document.body.className = view === 'offline' ? 'offline' : 'live';
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "web-parser",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=24 <25"},
+  "scripts": {
+    "start": "node ../vul-web-1/server.js",
+    "parse": "node cli.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {"playwright": "1.58.2", "acorn": "8.15.0"}
+}

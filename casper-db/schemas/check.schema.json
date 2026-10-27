@@ -1,0 +1,232 @@
+{
+  "$defs": {
+    "EvidenceMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "reference": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Reference",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reference",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "EvidenceMetadata",
+      "type": "object"
+    },
+    "LinkReview": {
+      "additionalProperties": false,
+      "description": "A local reviewer explicitly associates a changed location with an old report.",
+      "properties": {
+        "reviewer": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Reviewer",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "reviewed_at": {
+          "title": "Reviewed At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reviewer",
+        "reason",
+        "reviewed_at"
+      ],
+      "title": "LinkReview",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One later observation of an earlier case, never a rewrite of its report.",
+  "properties": {
+    "target_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Target Id",
+      "type": "string"
+    },
+    "endpoint": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Endpoint",
+      "type": "string"
+    },
+    "method": {
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "HEAD",
+        "OPTIONS"
+      ],
+      "title": "Method",
+      "type": "string"
+    },
+    "check_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Check Id",
+      "type": "string"
+    },
+    "case_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "run_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "case_revision": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Case Revision"
+    },
+    "observed_at": {
+      "title": "Observed At",
+      "type": "string"
+    },
+    "parameter": {
+      "anyOf": [
+        {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parameter"
+    },
+    "parameter_location": {
+      "default": "unknown",
+      "enum": [
+        "query",
+        "body",
+        "path",
+        "header",
+        "cookie",
+        "fragment",
+        "unknown"
+      ],
+      "title": "Parameter Location",
+      "type": "string"
+    },
+    "parameter_not_applicable": {
+      "default": false,
+      "title": "Parameter Not Applicable",
+      "type": "boolean"
+    },
+    "result": {
+      "enum": [
+        "confirmed",
+        "not_reproduced",
+        "inconclusive"
+      ],
+      "title": "Result",
+      "type": "string"
+    },
+    "observation": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Observation",
+      "type": "string"
+    },
+    "evidence_refs": {
+      "items": {
+        "maxLength": 4000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 30,
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "source": {
+      "enum": [
+        "synthetic",
+        "tool",
+        "manual"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "review_status": {
+      "const": "draft",
+      "default": "draft",
+      "title": "Review Status",
+      "type": "string"
+    },
+    "reviewer": {
+      "default": null,
+      "title": "Reviewer",
+      "type": "null"
+    },
+    "link_review": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LinkReview"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "observed_evidence": {
+      "items": {
+        "$ref": "#/$defs/EvidenceMetadata"
+      },
+      "maxItems": 30,
+      "title": "Observed Evidence",
+      "type": "array"
+    }
+  },
+  "required": [
+    "target_id",
+    "endpoint",
+    "method",
+    "check_id",
+    "case_id",
+    "run_id",
+    "observed_at",
+    "result",
+    "observation",
+    "source"
+  ],
+  "title": "Check",
+  "type": "object"
+}

@@ -589,7 +589,7 @@
       ]
     },
     "stored_xss_canary": {
-      "description": "Web Explorer가 로컬 vul-web-1에 테스트용 저장형 XSS 게시글 하나를 생성하고 관찰하는 프로필",
+      "description": "attack-module이 로컬 vul-web-1에 테스트용 저장형 XSS 게시글 하나를 생성하고 xss-parser가 관찰하는 프로필",
       "trustedContextRequirements": {
         "boundCanaryRequired": true,
         "maximumIterations": 1,
@@ -793,7 +793,7 @@
     "이 파일은 데이터이므로 실행 전에 별도 evaluator가 로드하고 스키마를 검증해야 한다.",
     "trustedContext는 LLM 출력이 아니라 Orchestrator 또는 Gateway가 주입해야 한다.",
     "분류용 정규식은 공격 여부를 표시할 뿐 단독으로 허용 여부를 결정하지 않는다.",
-    "Web Explorer 호출 직전에 최종 평가해야 하며 평가 후 action을 변경하면 다시 평가해야 한다.",
+    "attack-module 호출 직전에 최종 평가해야 하며 평가 후 action을 변경하면 다시 평가해야 한다.",
     "DELETE와 POST 같은 변경 요청은 전송 실패 후 자동 재시도하지 않는다.",
     "ALLOW 결정은 runId, stage, canary, budget과 함께 감사 로그로 남긴다.",
     "실제 웹사이트의 XSS와 권한 취약점은 의도된 실습 대상이므로 이 ruleset이 서버 보안 패치를 대체하지 않는다."
