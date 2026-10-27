@@ -75,19 +75,66 @@ test('general core evaluates multiple vulnerability categories and keeps evidenc
   assert.doesNotMatch(JSON.stringify({ report, events }), /PRIVATE/);
   assert.deepEqual(events.filter(item => item.stage === 'verify').map(item => item.status),
     ['confirmed', 'not_reproduced']);
+  assert.deepEqual(events.find(item => item.stage === 'plan').probeLinks, [
+    { probeId: 'probe-access', hypothesisId: 'access-1', tool: 'http-read' },
+    { probeId: 'probe-config', hypothesisId: 'config-1', tool: 'header-read' },
+  ]);
+  assert.deepEqual(events.filter(item => item.stage === 'verify').map(item =>
+    ({ hypothesisId: item.hypothesisId, probeId: item.probeId, tool: item.tool,
+      evidenceIds: item.evidenceIds })), [
+    { hypothesisId: 'access-1', probeId: 'probe-access', tool: 'http-read',
+      evidenceIds: ['evidence-probe-access'] },
+    { hypothesisId: 'config-1', probeId: 'probe-config', tool: 'header-read',
+      evidenceIds: ['evidence-probe-config'] },
+  ]);
+  assert.deepEqual(events.at(-1).progress, {
+    hypothesisCount: 2, probeCount: 2, evidenceCount: 3,
+    confirmedProbeCount: 1, notReproducedProbeCount: 1, inconclusiveProbeCount: 0,
+    blockedProbeCount: 0, remainingProbeBudget: 2,
+  });
 });
 
 test('mandatory policy blocks execution and leaves the hypothesis not tested', async () => {
   let calls = 0;
+  let policyHypothesis;
+  const events = [];
   const { report } = await runGeneralAssessment(ports({
-    policy: { async authorize() { return { allowed: false, reason: 'unsafe' }; } },
+    policy: { async authorize({ hypothesis }) { policyHypothesis = hypothesis;
+      hypothesis.asset = '/tampered'; return { allowed: false, reason: 'unsafe' }; } },
     executor: { async execute() { calls += 1; return { evidence: [] }; } },
+    onEvent: event => events.push(event),
   }));
   assert.equal(calls, 0);
+  assert.equal(policyHypothesis.category, 'access-control');
+  assert.equal(policyHypothesis.id, 'access-1');
   assert.equal(report.status, 'completed');
   assert.equal(report.probes[0].status, 'blocked');
   assert.equal(report.findings[0].status, 'not_tested');
   assert.equal(report.findings[0].reason, 'unsafe');
+  assert.equal(report.findings[0].asset, '/records/1');
+  assert.deepEqual(events.find(item => item.stage === 'policy').progress,
+    { hypothesisCount: 1, probeCount: 1, evidenceCount: 1, confirmedProbeCount: 0,
+      notReproducedProbeCount: 0, inconclusiveProbeCount: 0,
+      blockedProbeCount: 1, remainingProbeBudget: 3 });
+});
+
+test('a probe without evidence emits an inconclusive verification event', async () => {
+  const events = [];
+  const { report } = await runGeneralAssessment(ports({
+    executor: { async execute() { return { evidence: [] }; } },
+    onEvent: event => events.push(event),
+  }));
+  assert.equal(report.status, 'completed');
+  assert.equal(report.findings[0].status, 'inconclusive');
+  assert.deepEqual(events.find(item => item.stage === 'verify'), {
+    runId: report.runId, iteration: 1, stage: 'verify', hypothesisId: 'access-1',
+    probeId: 'read-other-record', tool: 'http-read', status: 'inconclusive',
+    reason: 'no_evidence', evidenceIds: [], progress: {
+      hypothesisCount: 1, probeCount: 1, evidenceCount: 1,
+      confirmedProbeCount: 0, notReproducedProbeCount: 0,
+      inconclusiveProbeCount: 1, blockedProbeCount: 0, remainingProbeBudget: 3,
+    },
+  });
 });
 
 test('unavailable tools, stale references and duplicate IDs fail before the executor', async () => {

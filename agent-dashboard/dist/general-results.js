@@ -16,6 +16,31 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[char]);
 
+const PHASES = [
+  { id: 'observe', label: '관측' }, { id: 'plan', label: '계획' },
+  { id: 'policy', label: '정책' }, { id: 'execute', label: '실행' },
+  { id: 'verify', label: '검증' },
+];
+
+function phaseFor(stage) {
+  const value = text(stage).toLowerCase();
+  const last = value.split(/[.:]/u).at(-1);
+  if (value === 'inventory.collect') return 'observe';
+  if (last === 'observe' || last === 'plan' || last === 'policy'
+    || last === 'execute' || last === 'verify') return last;
+  if (last === 'plan_rejected') return 'plan';
+  return null;
+}
+
+function probeIdFor(event) {
+  const id = text(event?.request?.probeId) || text(event?.probeId);
+  return id.slice(0, 128);
+}
+
+export function generalObservedProbeCount(item) {
+  return new Set(list(item?.events).map(probeIdFor).filter(Boolean)).size;
+}
+
 export function generalReport(item) {
   if (!object(item)) return null;
   const report = object(item.report) ? item.report : item;
@@ -109,6 +134,102 @@ export function renderGeneralOverview(item) {
   const stage = text(item.stage) || text(summary.report.stage) || text(last?.stage) || '실행 상태 수신 대기';
   const stopped = text(summary.report.stopReason);
   return `<section class="general-overview" aria-label="범용 점검 진행"><div class="eyebrow">GENERAL ASSESSMENT</div><h3>가설과 증거 기반 점검${summary.partial ? ' · 부분 결과' : ''}</h3><p>현재 단계: <strong>${escape(stage)}</strong></p><div class="general-overview-counts"><span>가설 <strong>${summary.totalHypotheses}</strong></span><span>검사 <strong>${summary.probes}</strong></span><span>확정 <strong>${summary.confirmed}</strong></span><span>미점검 <strong>${summary.notTested}</strong></span><span>거부 제안 <strong>${summary.rejectedProposals.length}</strong></span></div><p class="muted">발견한 공격면과 지원 가능한 검사의 범위만 집계합니다. 전체 취약점에 대한 완료율이 아닙니다.</p>${summary.partial ? '<p>일부 모델 제안이 실행되지 않아 점검 범위가 남아 있습니다.</p>' : ''}${stopped ? `<p>종료 사유: ${escape(stopped)}</p>` : ''}</section>`;
+}
+
+/** Show observed phases only. An unobserved phase is never counted as complete. */
+export function renderGeneralLoop(item, selectedEventId = null) {
+  const events = list(item?.events).filter(object);
+  const phasesByIteration = new Map();
+  for (const event of events) {
+    const phase = phaseFor(event.stage);
+    if (!phase) continue;
+    const iteration = count(event.iteration) ?? 0;
+    if (!phasesByIteration.has(iteration)) phasesByIteration.set(iteration, new Map());
+    const phases = phasesByIteration.get(iteration);
+    phases.set(phase, [...(phases.get(phase) ?? []), event]);
+  }
+  const rows = [...phasesByIteration].sort(([a], [b]) => a - b);
+  if (!rows.length) rows.push([count(item?.iterations) ?? 0, new Map()]);
+  const flow = rows.map(([iteration, phases]) => {
+    const nodes = PHASES.map(phase => {
+      const records = phases.get(phase.id) ?? [];
+      const latest = records.at(-1);
+      const content = '<strong>' + phase.label + '</strong><small>'
+        + (records.length ? '기록 ' + records.length + '건' : '미관측') + '</small>';
+      return latest
+        ? '<button type="button" class="general-loop-phase is-observed'
+          + (latest.id === selectedEventId ? ' is-selected' : '')
+          + '" data-general-event="' + escape(text(latest.id)) + '">' + content + '</button>'
+        : '<span class="general-loop-phase">' + content + '</span>';
+    }).join('<span class="general-loop-arrow" aria-hidden="true">→</span>');
+    return '<div class="general-loop-iteration"><h4>'
+      + (iteration ? '반복 ' + iteration : '반복 번호 미기록')
+      + '</h4><div class="general-loop-flow">' + nodes + '</div></div>';
+  }).join('');
+  const lastStage = text(events.at(-1)?.stage) || text(item?.status) || '실행 대기';
+  const summary = generalSummary(item);
+  const heading = summary ? '가설과 증거 기반 점검' + (summary.partial ? ' · 부분 결과' : '') : '점검 결과 대기';
+  const counts = summary
+    ? '<span>가설 <strong>' + summary.totalHypotheses + '</strong></span>'
+      + '<span>검사 <strong>' + summary.probes + '</strong></span>'
+      + '<span>확정 <strong>' + summary.confirmed + '</strong></span>'
+      + '<span>미점검 <strong>' + summary.notTested + '</strong></span>'
+    : '<span>수신 이벤트 <strong>' + events.length + '</strong></span>'
+      + '<span>기록된 검사 ID <strong>' + generalObservedProbeCount(item) + '</strong></span>';
+  return '<section class="general-loop" aria-label="범용 Agent loop">'
+    + '<div class="eyebrow">GENERAL ASSESSMENT / OBSERVED LOOP</div><h3>' + heading + '</h3>'
+    + '<p>최근 단계: <strong>' + escape(lastStage) + '</strong></p>'
+    + '<div class="general-overview-counts">' + counts + '</div>'
+    + '<div class="general-loop-iterations">' + flow + '</div>'
+    + '<p class="general-loop-note">실제로 수신한 단계만 기록으로 표시합니다. 전체 취약점에 대한 완료율이 아닙니다.</p>'
+    + '</section>';
+}
+
+/** A verify event is a probe observation, not a persisted finding. */
+export function renderGeneralLiveResults(item) {
+  const summary = generalSummary(item);
+  if (!summary) {
+    const verified = list(item?.events).filter(event => object(event) && phaseFor(event.stage) === 'verify');
+    const rows = verified.map(event => {
+      const verdict = text(event.detail);
+      const label = STATUSES.has(verdict) && verdict !== 'not_tested'
+        ? STATUS_LABELS[verdict] : '상태 미확인';
+      const probeId = probeIdFor(event);
+      return '<li class="general-live-result"><strong>검사 '
+        + escape(probeId || 'ID 미기록') + '</strong><span>' + escape(label)
+        + ' · 반복 ' + (count(event.iteration) ?? '?') + '</span></li>';
+    }).join('');
+    return '<div class="general-live-body"><p>최종 보고서 전의 검사 이벤트입니다. 취약점 확정 건수로 집계하지 않습니다.</p>'
+      + (rows ? '<ul class="general-live-result-list">' + rows + '</ul>'
+        : '<p class="general-live-empty">독립 검증 이벤트를 기다리는 중입니다.</p>')
+      + '<p class="general-live-note">현재 이벤트에는 가설·증거 연결이 없어 최종 결과와 근거는 보고서 저장 후 표시됩니다.</p></div>';
+  }
+  const evidence = new Map(list(summary.report.evidence)
+    .filter(value => object(value) && text(value.id)).map(value => [value.id, value]));
+  const rows = summary.findings.map(finding => {
+    const status = STATUSES.has(finding.status) ? finding.status : 'inconclusive';
+    const references = list(finding.evidenceIds).filter(id => typeof id === 'string');
+    const details = references.map(id => {
+      const row = evidence.get(id);
+      return '<li><span class="mono">' + escape(id) + '</span>'
+        + (row ? ' · ' + escape(text(row.summary).slice(0, 250) || text(row.kind) || '증거 설명 미기록')
+          : ' · 증거 상세 미제공') + '</li>';
+    }).join('');
+    return '<li class="general-live-result"><strong>'
+      + escape(text(finding.category) || '분류 미기록') + ' · '
+      + escape(text(finding.asset) || '위치 미기록') + '</strong><span>'
+      + escape(STATUS_LABELS[status]) + '</span>'
+      + (text(finding.reason) ? '<small>사유: ' + escape(finding.reason) + '</small>' : '')
+      + (details ? '<ul class="general-live-evidence">' + details + '</ul>' : '') + '</li>';
+  }).join('');
+  return '<div class="general-live-body"><div class="general-overview-counts">'
+    + '<span>확정 <strong>' + summary.confirmed + '</strong></span>'
+    + '<span>재현 안 됨 <strong>' + summary.notReproduced + '</strong></span>'
+    + '<span>판정 불가 <strong>' + summary.inconclusive + '</strong></span>'
+    + '<span>미점검 <strong>' + summary.notTested + '</strong></span></div>'
+    + (rows ? '<ul class="general-live-result-list">' + rows + '</ul>'
+      : '<p class="general-live-empty">기록된 결과가 없습니다.</p>')
+    + '<p class="general-live-note">발견한 가설 기준입니다. 미점검과 판정 불가는 안전 판정이 아닙니다.</p></div>';
 }
 
 export function renderGeneralReport(item) {

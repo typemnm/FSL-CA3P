@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun,
-  renderGeneralOverview, renderGeneralReport,
+  generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun,
+  renderGeneralLiveResults, renderGeneralLoop, renderGeneralOverview, renderGeneralReport,
 } from '../dist/general-results.js';
 
 function result() {
@@ -112,4 +112,54 @@ test('partial general results show rejected model proposals without hiding verif
   assert.match(html, /&lt;unknown_hypothesis_id&gt;/);
   assert.doesNotMatch(html, /<unknown_hypothesis_id>/);
   assert.match(html, /<span class="review-tag">확정<\/span>/);
+});
+
+test('general loop shows only observed phases and escapes event identifiers', () => {
+  const item = normalizeGeneralRun({ id: 'run-loop', mode: 'local-lab-general',
+    status: 'running', startedAt: '2026-10-26T00:00:00Z', iterations: 2,
+    events: [
+      { id: 'observe-1', stage: 'observe', iteration: 1 },
+      { id: 'policy-1', stage: 'policy', iteration: 1, detail: 'allowed',
+        request: { probeId: 'p1' } },
+      { id: 'verify-1', stage: 'verify', iteration: 1, detail: 'confirmed',
+        request: { probeId: 'p1' } },
+      { id: 'observe-2\"><script>alert(1)</script>', stage: 'observe', iteration: 2 },
+    ] });
+  assert.equal(generalObservedProbeCount(item), 1);
+  const html = renderGeneralLoop(item, 'verify-1');
+  assert.match(html, /반복 1/);
+  assert.match(html, /반복 2/);
+  assert.match(html, /기록 1건/);
+  assert.match(html, /미관측/);
+  assert.match(html, /is-selected/);
+  assert.match(html, /기록된 검사 ID/);
+  assert.match(html, /전체 취약점에 대한 완료율이 아닙니다/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;script&gt;/);
+});
+
+test('policy events are not shown as verified findings before a report exists', () => {
+  const item = { mode: 'local-lab-general', status: 'running',
+    events: [{ stage: 'policy', iteration: 1, detail: 'allowed', request: { probeId: 'p1' } }] };
+  const pending = renderGeneralLiveResults(item);
+  assert.match(pending, /독립 검증 이벤트를 기다리는 중/);
+  assert.doesNotMatch(pending, /검사 p1/);
+  item.events.push({ stage: 'verify', iteration: 1, detail: 'confirmed',
+    request: { probeId: '<img src=x onerror=alert(1)>' } });
+  const observed = renderGeneralLiveResults(item);
+  assert.match(observed, /최종 보고서 전의 검사 이벤트/);
+  assert.match(observed, /확정/);
+  assert.match(observed, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(observed, /<img src/);
+  assert.doesNotMatch(observed, /확정 <strong>1/);
+});
+
+test('live result panel uses final findings and linked evidence only after report arrives', () => {
+  const item = { mode: 'local-lab-general', report: result(), events: [] };
+  const html = renderGeneralLiveResults(item);
+  assert.match(html, /access_control/);
+  assert.match(html, /different role response/);
+  assert.match(html, /observer_unavailable/);
+  assert.match(html, /미점검과 판정 불가는 안전 판정이 아닙니다/);
+  assert.doesNotMatch(html, /<img src=x/);
 });

@@ -1,7 +1,7 @@
 import { MODULES, validateTarget, formatElapsed } from './engine.js';
 import { initStarfield } from './starfield.js';
 import { createRuntimeClient } from './runtime-client.js';
-import { generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun, renderGeneralOverview, renderGeneralReport } from './general-results.js';
+import { generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun, renderGeneralLiveResults, renderGeneralLoop, renderGeneralReport } from './general-results.js';
 
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -317,6 +317,13 @@ function historyReplace(view) { window.history.replaceState(null, '', `#${view}`
 function renderStats() {
   const item = currentRun();
   const general = isGeneralAssessment(item);
+  document.querySelector('.live-grid').classList.toggle('general-mode', general);
+  if (general && selectedEventId && !item.events.some(event => event.id === selectedEventId)) {
+    selectedEventId = null;
+  }
+  if (general && selectedModule !== 'agent') {
+    selectedModule = 'agent'; activeTab = 'agent';
+  }
   const generalCounts = general ? generalSummary(item) : null;
   const running = !inspectedRun && run.status === 'running';
   const active = ['queued', 'preparing', 'running', 'stopping'].includes(run.status);
@@ -332,14 +339,20 @@ function renderStats() {
   $('execution-label').textContent = general ? 'GENERAL / EVIDENCE' : isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
   $('dashboard-mode').textContent = general ? '범용 점검 결과 · 지원된 관측 범위' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
   $('elapsed-source').textContent = lab ? '로컬 실습 실행' : 'fixture 실행';
-  $('iteration-value').textContent = general ? String(generalCounts?.iteration ?? 0) : '01';
+  $('iteration-value').textContent = general ? String(generalCounts?.iteration ?? item.iterations ?? 0) : '01';
   $('iteration-value').nextElementSibling.textContent = general ? '회' : '/ 01';
   $('step-label').textContent = general ? (item.events.at(-1)?.stage || item.stage || '단계 기록 대기') : item.status === 'completed' ? '코어 실행 완료' : stage ? `최근 수신 · ${stage.role}` : '첫 이벤트 대기';
   $('total-event-count').textContent = general ? '가변 단계' : `${item.totalSteps} 이벤트`;
   $('event-count').textContent = String(item.events.length).padStart(2, '0');
   $('elapsed-value').textContent = formatElapsed(item.elapsedMs);
-  $('progress-label').textContent = general ? `가설 ${generalCounts?.totalHypotheses ?? 0}건 · ${statusNames[item.status] || item.status}` : item.status === 'completed' ? '모든 이벤트 수신 완료' : `수신한 코어 이벤트 · ${statusNames[item.status]}`;
-  $('progress-number').textContent = general ? `${item.events.length} events · 검사 ${generalCounts?.probes ?? 0}건` : `${String(item.step).padStart(2,'0')} / ${item.totalSteps} events`;
+  $('progress-label').textContent = general
+    ? generalCounts ? `가설 ${generalCounts.totalHypotheses}건 · ${statusNames[item.status] || item.status}`
+      : `결과 대기 · ${statusNames[item.status] || item.status}`
+    : item.status === 'completed' ? '모든 이벤트 수신 완료' : `수신한 코어 이벤트 · ${statusNames[item.status]}`;
+  $('progress-number').textContent = general
+    ? generalCounts ? `${item.events.length} events · 검사 ${generalCounts.probes}건`
+      : `${item.events.length} events · 기록된 검사 ID ${generalObservedProbeCount(item)}개`
+    : `${String(item.step).padStart(2,'0')} / ${item.totalSteps} events`;
   $('progress-fill').parentElement.hidden = general;
   $('progress-fill').style.width = general ? '0%' : `${Math.min(100, item.step / item.totalSteps * 100)}%`;
   $('core-state').textContent = inspectedRun ? 'SAVED SESSION' : !connected ? connection === 'connecting' ? 'CONNECTING' : 'CONNECTION LOST' : {queued:'QUEUED',preparing:'LAB PREPARING',running:'CORE RUNNING',stopping:'CORE STOPPING',stopped:'CORE STOPPED',cancelled:'CANCELLED',interrupted:'INTERRUPTED',completed:'CORE COMPLETE',failed:'CORE FAILED',idle:'READY TO START'}[item.status];
@@ -391,7 +404,7 @@ function renderStats() {
   $('general-run-summary').hidden = !general;
   $('loop-graph').hidden = general;
   if (general) {
-    $('general-run-summary').innerHTML = renderGeneralOverview(item);
+    $('general-run-summary').innerHTML = renderGeneralLoop(item, selectedEventId);
     return;
   }
   $('loop-graph').classList.toggle('is-paused', !running || !connected);
@@ -422,6 +435,9 @@ function renderActivity() {
   $('activity-list').innerHTML = events.length ? events.map((event) => `<button class="activity-event ${event.id === selectedEventId ? 'active' : ''}" data-event="${escape(event.id)}"><span class="event-indicator">${icon(event.type === 'success' ? 'check' : moduleById(event.module).icon)}</span><span class="event-copy"><span class="event-meta"><span>${escape(moduleById(event.module).name.replace(' Engine','').replace('Observation Review','Observer'))}</span><span class="event-time">${escape(timeLabel(event.time))}</span></span><span class="event-title">${escape(event.title)}</span><span class="event-detail">${escape(event.detail)}</span></span></button>`).join('') : `<div class="empty-state compact"><span data-icon="pulse"></span><h3>${query ? '일치하는 이벤트가 없습니다' : '첫 코어 이벤트를 기다리는 중'}</h3><p>${query ? '다른 검색어를 입력해 보세요.' : isLab(item) ? '로컬 실습 서버가 준비되고 첫 이벤트가 도착하면 표시됩니다.' : '표시용 URL을 입력하고 코어 fixture를 시작하세요.'}</p></div>`;
   hydrateIcons($('activity-list'));
   $('activity-list').scrollTop = settings.autoScroll ? 0 : previousScroll;
+  const general = isGeneralAssessment(item);
+  $('general-live-results-panel').hidden = !general;
+  if (general) $('general-live-results-content').innerHTML = renderGeneralLiveResults(item);
   if (!$('notification-popover').hidden) renderNotifications();
 }
 function getSnapshot() { const item = currentRun(); return selectedEventId ? item.events.find((event) => event.id === selectedEventId) : item.snapshots[selectedModule]; }
@@ -435,10 +451,15 @@ function traceData() {
   const item = currentRun();
   const lab = isLab(item);
   if (activeTab === 'agent') {
-    if (isGeneralAssessment(item)) return { source: 'general-assessment', mode: item.mode,
-      currentEvent: snapshot?.stage || null, input: { target: item.target, inventory: generalReport(item)?.inventory ?? null },
-      output: { hypotheses: generalReport(item)?.hypotheses ?? [], probes: generalReport(item)?.probes ?? [],
-        findings: generalReport(item)?.findings ?? [], coverage: generalReport(item)?.coverage ?? null } };
+    if (isGeneralAssessment(item)) {
+      if (selectedEventId && snapshot) return { source: 'general-assessment/event', mode: item.mode,
+        event: { id: snapshot.id, stage: snapshot.stage ?? null, iteration: snapshot.iteration,
+          detail: snapshot.detail, request: snapshot.request, response: snapshot.response } };
+      return { source: 'general-assessment', mode: item.mode,
+        currentEvent: snapshot?.stage || null, input: { target: item.target, inventory: generalReport(item)?.inventory ?? null },
+        output: { hypotheses: generalReport(item)?.hypotheses ?? [], probes: generalReport(item)?.probes ?? [],
+          findings: generalReport(item)?.findings ?? [], coverage: generalReport(item)?.coverage ?? null } };
+    }
     if (isIdorLab(item)) return { source: 'known-record-idor', mode: item.mode,
       input: { fixtureId: item.fixtureId ?? item.manifest?.target?.fixtureId, target: item.target, testProfile: 'known_record_idor_read' },
       output: item.report ?? { status: 'waiting', message: '정해진 IDOR 조회와 대조군의 결과를 기다리고 있습니다.' } };
@@ -702,7 +723,13 @@ function chooseModule(id, eventId = null) {
 }
 document.querySelectorAll('.graph-node').forEach((node) => node.addEventListener('click', () => chooseModule(node.dataset.module)));
 $('agent-core').addEventListener('click', () => chooseModule('agent'));
-$('activity-list').addEventListener('click', (event) => { const button = event.target.closest('[data-event]'); if (!button) return; const selected = currentRun().events.find((entry) => entry.id === button.dataset.event); if (selected) chooseModule(selected.module, selected.id); });
+$('general-run-summary').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-general-event]');
+  if (!button) return;
+  const selected = currentRun().events.find(entry => entry.id === button.dataset.generalEvent);
+  if (selected) chooseModule(isGeneralAssessment(currentRun()) ? 'agent' : selected.module, selected.id);
+});
+$('activity-list').addEventListener('click', (event) => { const button = event.target.closest('[data-event]'); if (!button) return; const selected = currentRun().events.find((entry) => entry.id === button.dataset.event); if (selected) chooseModule(isGeneralAssessment(currentRun()) ? 'agent' : selected.module, selected.id); });
 $('event-search').addEventListener('input', renderActivity);
 document.querySelectorAll('[data-tab]').forEach((tab) => tab.addEventListener('click', () => { activeTab = tab.dataset.tab; renderInspector(); }));
 document.querySelector('.inspector-tabs').addEventListener('keydown', (event) => {

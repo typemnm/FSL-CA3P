@@ -241,9 +241,25 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
   const hypothesisById = new Map();
   const probeIds = new Set();
   const verdicts = new Map();
-  const emit = async event => { if (onEvent) await onEvent({ runId: report.runId, ...event }); };
   let usedProbes = 0;
   let retriedInvalidOnlyPlan = false;
+  const emit = async event => {
+    if (!onEvent) return;
+    const statuses = report.probes.map(probe => probe.status);
+    // Progress counts describe probes, not final findings. No response bodies or
+    // model text enter this event contract.
+    const progress = {
+      hypothesisCount: report.hypotheses.length,
+      probeCount: report.probes.length,
+      evidenceCount: report.evidence.length,
+      confirmedProbeCount: statuses.filter(status => status === 'confirmed').length,
+      notReproducedProbeCount: statuses.filter(status => status === 'not_reproduced').length,
+      inconclusiveProbeCount: statuses.filter(status => status === 'inconclusive').length,
+      blockedProbeCount: statuses.filter(status => status === 'blocked').length,
+      remainingProbeBudget: budgetLimits.maxProbes - usedProbes,
+    };
+    await onEvent({ runId: report.runId, iteration: report.iterations, ...event, progress });
+  };
 
   try {
     for (let iteration = 1; iteration <= budgetLimits.maxIterations; iteration += 1) {
@@ -291,9 +307,11 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
       report.rejectedProposals.push(...rejectedProbes);
       if (rejectedProbes.length) report.partial = true;
       await emit({ stage: 'plan', iteration, hypothesisIds: newHypotheses.map(item => item.id),
-        probeIds: probes.map(item => item.id), done: plan.done === true });
+        probeIds: probes.map(item => item.id),
+        probeLinks: probes.map(item => ({ probeId: item.id, hypothesisId: item.hypothesisId,
+          tool: item.tool })), done: plan.done === true });
       if (rejectedProbes.length) await emit({ stage: 'plan_rejected', iteration,
-        status: `${rejectedProbes.length} invalid proposals` });
+        status: 'invalid_model_proposal', rejectedCount: rejectedProbes.length });
       if (plan.done === true && probes.length) throw fault('INVALID_PLAN');
       if (plan.done === true) { report.stopReason = 'planner_done'; break; }
       if (rejectedProbes.length && !probes.length) {
@@ -317,17 +335,22 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
         const row = { id: probe.id, hypothesisId: probe.hypothesisId, tool: probe.tool,
           status: 'pending', evidenceIds: [] };
         report.probes.push(row);
-        const decision = await policy.authorize({ probe, target: safeTarget, inventory: report.inventory,
+        const hypothesis = hypothesisById.get(probe.hypothesisId);
+        const decision = await policy.authorize({ probe,
+          hypothesis: { id: hypothesis.id, category: hypothesis.category, asset: hypothesis.asset,
+            status: hypothesis.status }, target: safeTarget, inventory: report.inventory,
           budget: { ...budget, remainingProbes: budgetLimits.maxProbes - usedProbes, usedProbes }, signal });
         aborted(signal);
         if (!record(decision) || typeof decision.allowed !== 'boolean') throw fault('INVALID_POLICY_DECISION');
         if (!decision.allowed) {
           row.status = 'blocked'; row.reason = typeof decision.reason === 'string' && ID.test(decision.reason)
             ? decision.reason : 'policy_denied';
-          await emit({ stage: 'policy', iteration, probeId: probe.id, status: 'blocked' });
+          await emit({ stage: 'policy', iteration, hypothesisId: probe.hypothesisId,
+            probeId: probe.id, tool: probe.tool, status: 'blocked', reason: row.reason });
           continue;
         }
-        await emit({ stage: 'policy', iteration, probeId: probe.id, status: 'allowed' });
+        await emit({ stage: 'policy', iteration, hypothesisId: probe.hypothesisId,
+          probeId: probe.id, tool: probe.tool, status: 'allowed' });
         const execution = await executor.execute({ probe, target: safeTarget, signal });
         aborted(signal);
         if (!record(execution)) throw fault('INVALID_EXECUTION');
@@ -336,11 +359,16 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
           budgetLimits.maxEvidenceItems - report.evidence.length, 'probe_evidence');
         for (const item of newEvidence) { evidenceById.set(item.id, item); report.evidence.push(item); }
         row.evidenceIds = newEvidence.map(item => item.id);
-        await emit({ stage: 'execute', iteration, probeId: probe.id, evidenceIds: row.evidenceIds });
+        await emit({ stage: 'execute', iteration, hypothesisId: probe.hypothesisId,
+          probeId: probe.id, tool: probe.tool, status: 'completed',
+          evidenceIds: [...row.evidenceIds] });
         if (!newEvidence.length) {
           row.status = 'inconclusive'; row.reason = 'no_evidence';
           verdicts.set(probe.hypothesisId, [...(verdicts.get(probe.hypothesisId) ?? []),
             { status: 'inconclusive', evidenceIds: [], reason: 'no_evidence' }]);
+          await emit({ stage: 'verify', iteration, hypothesisId: probe.hypothesisId,
+            probeId: probe.id, tool: probe.tool, status: 'inconclusive',
+            reason: 'no_evidence', evidenceIds: [] });
           continue;
         }
         const result = await verifier.verify({ hypothesis: hypothesisById.get(probe.hypothesisId),
@@ -356,7 +384,9 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
         const verdict = { status: result.status, evidenceIds: refs };
         if (result.reason !== undefined) verdict.reason = boundedString(result.reason, 'verdict_reason', 512);
         verdicts.set(probe.hypothesisId, [...(verdicts.get(probe.hypothesisId) ?? []), verdict]);
-        await emit({ stage: 'verify', iteration, probeId: probe.id, status: result.status, evidenceIds: refs });
+        await emit({ stage: 'verify', iteration, hypothesisId: probe.hypothesisId,
+          probeId: probe.id, tool: probe.tool, status: result.status,
+          ...(verdict.reason ? { reason: verdict.reason } : {}), evidenceIds: refs });
       }
       // The next model step needs the preceding verification state, not only
       // the original hypothesis text and newly collected evidence.

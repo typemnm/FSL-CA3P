@@ -69,6 +69,13 @@ test('general run renders and supported targets launch the bounded model assessm
   await page.waitForFunction(() => document.querySelector('#execution-label')?.textContent === 'GENERAL / EVIDENCE');
   assert.equal(await page.locator('#loop-graph').isHidden(), true);
   assert.equal(await page.locator('#general-run-summary').isVisible(), true);
+  assert.equal(await page.locator('.general-loop-phase.is-observed').count(), 2);
+  assert.equal(await page.locator('#general-live-results-panel').isVisible(), true);
+  assert.equal(await page.locator('#general-live-results-panel').evaluate(
+    element => element.previousElementSibling?.classList.contains('activity-panel')), true);
+  assert.match(await page.locator('#general-live-results-panel').textContent(), /owner mismatch observed/);
+  await page.locator('.general-loop-phase.is-observed').first().click();
+  assert.match(await page.locator('#trace-code').textContent(), /probe.observe/);
   assert.match(await page.locator('#progress-number').textContent(), /4 events · 검사 1건/);
   assert.equal(await page.locator('.progress-track').isHidden(), true);
   assert.match(await page.locator('#general-run-summary').textContent(), /전체 취약점에 대한 완료율이 아닙니다/);
@@ -119,5 +126,30 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.equal(await page.locator('#assessment-mode').inputValue(), 'general');
   assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-test');
   assert.equal(posts.length, 1);
+
+  const originalEvents = run.events;
+  run.status = 'running'; run.report = null; run.iterations = 1;
+  run.events = [
+    { id: 'observed', stage: 'observe', iteration: 1, title: 'Observed', module: 'agent',
+      time: '2026-10-26T00:00:00Z' },
+    { id: 'allowed', stage: 'policy', iteration: 1, title: 'Policy allowed', detail: 'allowed',
+      request: { probeId: 'p1' }, module: 'agent', time: '2026-10-26T00:00:01Z' },
+    { id: 'verified', stage: 'verify', iteration: 1, title: 'Verify', detail: 'confirmed',
+      request: { probeId: 'p1' }, module: 'agent', time: '2026-10-26T00:00:02Z' },
+  ];
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#execution-label')?.textContent === 'GENERAL / EVIDENCE');
+  assert.match(await page.locator('#progress-label').textContent(), /결과 대기/);
+  assert.match(await page.locator('#progress-number').textContent(), /기록된 검사 ID 1개/);
+  assert.match(await page.locator('#general-live-results-panel').textContent(), /검사 p1/);
+  assert.match(await page.locator('#general-live-results-panel').textContent(), /최종 보고서 전의 검사 이벤트/);
+  assert.doesNotMatch(await page.locator('#general-live-results-panel').textContent(), /\/records\/1/);
+  await page.locator('[data-general-event=verified]').click();
+  assert.match(await page.locator('#trace-code').textContent(), /"stage": "verify"/);
+  assert.match(await page.locator('#trace-code').textContent(), /"probeId": "p1"/);
+  run.status = 'completed'; run.report = report; run.iterations = 2; run.events = originalEvents;
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#execution-label')?.textContent === 'GENERAL / EVIDENCE');
+  assert.match(await page.locator('#general-live-results-panel').textContent(), /owner mismatch observed/);
   assert.deepEqual(errors, []);
 });

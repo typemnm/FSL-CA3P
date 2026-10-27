@@ -1,12 +1,14 @@
 # CA3P 펜테스팅 에이전트 코어 MVP
 
-## 범용 점검 코어 준비 단계
+## 범용 점검 코어와 운영 연결
 
 `src/general-assessment.js`의 `runGeneralAssessment()`는 기존 단일 XSS/IDOR `runOnce()`와 독립된 범용 판단 루프다. 호출자가 `observer.observe`, `planner.propose`, `policy.authorize`, `executor.execute`, `verifier.verify` 포트를 제공한다. 코어는 관측 증거를 바탕으로 여러 가설과 검사를 반복하고, 허용 도구·반복·검사·증거 예산을 확인한다. 정책을 거부한 검사는 실행하지 않으며, 완료된 검사의 독립 증거가 없으면 `confirmed`나 `not_reproduced`로 판정하지 않는다. 결과에는 `findings[]`, 미점검 수, 증거 출처와 종료 사유를 남긴다.
 
 `src/general-model-planner.js`는 기존 DeepSeek 클라이언트를 사용하는 구조화 플래너다. `createGeneralModelPlannerFromEnv()`를 선택해 호출하면 실제 모델 API를 사용한다. 대상 페이지와 관측 자료는 비신뢰 데이터로 취급하고, 허용된 도구·증거 ID를 벗어난 출력은 거부한다. 문맥이 모델 입력 한도를 넘으면 자료를 조용히 생략하지 않고 오류를 반환한다.
 
-현재 이 코어는 **에이전트 모듈 안의 사전 통합 구현**이다. 대시보드의 운영 실행 서비스와 worker는 기존 프로필을 사용하므로 새 함수만으로 세 실습 대상의 범용 점검이 시작되지는 않는다. 다른 모듈의 연결 계약은 소유자와 협의 후 적용한다. 브라우저 증거가 필요한 XSS 검사는 `xss-parser` 후속 패치 전까지 실측 확정으로 표시하지 않는다.
+범용 점검은 운영 경로의 API → 실행 서비스 → worker → `apps/application/general-runtime.mjs`를 통해 세 등록 실습 대상에 연결돼 있다. 에이전트 모듈은 판단 코어와 모델 플래너를 제공하고, 대상 요청·실행 정책·독립 검증과 실행 상태 저장은 런타임이 담당한다. 브라우저 증거가 필요한 XSS 검사는 `xss-parser` 관측이 범용 런타임에 연결되기 전까지 실측 확정으로 표시하지 않는다.
+
+코어의 `onEvent`는 `observe`, `plan`, `policy`, `execute`, `verify`, `complete` 단계와 반복 번호를 보낸다. 계획 이벤트에는 가설·검사 ID와 도구 연결이 있고, 검사 이벤트에는 가설·검사 ID, 도구, 판정 상태, 증거 ID 참조가 있다. 모든 이벤트의 `progress`는 가설·검사·증거 수와 **검사별** 판정 수를 기록한다. 이는 최종 `findings[]` 수나 전체 취약점 완료율이 아니다. 원본 HTTP 응답, 쿠키와 모델 출력은 진행 이벤트에 넣지 않는다. 현재 운영 런타임은 이 필드 일부만 화면에 전달하므로 상세 실시간 결과를 표시하려면 그 경계의 전달·저장 계약도 맞춰야 한다.
 
 ```powershell
 npm --prefix agent run test:general
