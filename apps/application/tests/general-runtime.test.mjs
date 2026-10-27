@@ -35,6 +35,7 @@ test('general university run uses multiple model hypotheses and confirms only th
   const calls = [];
   const modelCalls = [];
   const hooks = [];
+  let liveVerify;
   const runtime = createGeneralRuntime({
     fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
     modelId: 'deepseek-flash', runIdFactory: () => 'general-university-test',
@@ -54,13 +55,18 @@ test('general university run uses multiple model hypotheses and confirms only th
       const id = context.evidence[0].id;
       return { done: false, hypotheses: [
         { id: 'h-idor', category: 'access_control', asset: '/api/admissions/partner/applications/:id',
-          rationale: 'Role boundary should be compared.', evidenceIds: [id] },
+          rationale: 'Role boundary should be compared. event-private-marker',
+          evidenceIds: [id] },
         { id: 'h-xss', category: 'xss', asset: '/api/search',
           rationale: 'A query input exists but no browser verifier is connected.', evidenceIds: [id] },
       ], probes: [{ id: 'p-idor', hypothesisId: 'h-idor', tool: 'known_record_idor_read', input: {} }],
       modelMetadata: { provider: 'deepseek', model: 'deepseek-flash' } };
     } }),
     idorProbe: async () => confirmedIdor(),
+  });
+  const detach = runtime.subscribe(({ run }) => {
+    const event = run.events.find(item => item.stage === 'verify' && item.request?.probeId === 'p-idor');
+    if (event && !run.report) liveVerify = { event, events: run.events };
   });
   const done = terminal(runtime);
   runtime.startLab();
@@ -77,6 +83,24 @@ test('general university run uses multiple model hypotheses and confirms only th
   assert.ok(hooks.every(item => item.method === 'GET'
     || item.method === 'POST' && new URL(item.url).pathname === '/login'));
   assert.ok(run.report.inventory.referenceSources.some(item => item.source === 'run-store/previous-runs'));
+  assert.ok(liveVerify, 'the verify event is published before the final report');
+  const plan = liveVerify.events.find(item => item.stage === 'plan');
+  assert.deepEqual(plan.request.hypothesisIds, ['h-idor', 'h-xss']);
+  assert.deepEqual(plan.request.probeLinks, [
+    { probeId: 'p-idor', hypothesisId: 'h-idor', tool: 'known_record_idor_read' },
+  ]);
+  assert.equal(plan.response.progress.hypothesisCount, 2);
+  assert.equal(liveVerify.event.request.hypothesisId, 'h-idor');
+  assert.equal(liveVerify.event.request.tool, 'known_record_idor_read');
+  assert.equal(liveVerify.event.response.status, 'confirmed');
+  assert.deepEqual(liveVerify.event.response.evidenceIds,
+    run.report.probes.find(item => item.id === 'p-idor').evidenceIds);
+  assert.equal(liveVerify.event.response.progress.confirmedProbeCount, 1);
+  assert.equal(run.events.find(item => item.stage === 'complete').response.coverage.confirmed, 1);
+  assert.equal(run.events.some(item => 'runId' in item || 'input' in item.request), false);
+  assert.doesNotMatch(JSON.stringify(run.events.filter(item => item.stage)),
+    /event-private-marker/u);
+  detach();
   await runtime.close();
 });
 
@@ -186,6 +210,7 @@ test('wrong private service fails identity binding before the model or general p
 });
 
 test('a model cannot turn guarded IDOR evidence into an XSS confirmation', async () => {
+  let idorCalls = 0;
   const runtime = createGeneralRuntime({
     fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     runIdFactory: () => 'mislabelled-idor',
@@ -197,15 +222,64 @@ test('a model cannot turn guarded IDOR evidence into an XSS confirmation', async
         evidenceIds: [context.evidence[0].id] }],
       probes: [{ id: 'p1', hypothesisId: 'wrong-type', tool: 'known_record_idor_read', input: {} }] };
     } }),
-    idorProbe: async () => confirmedIdor(),
+    idorProbe: async () => { idorCalls += 1; return confirmedIdor(); },
   });
   const done = terminal(runtime);
   runtime.startLab();
   const run = await done;
   assert.equal(run.status, 'completed');
-  assert.equal(run.report.findings[0].status, 'inconclusive');
+  assert.equal(run.report.probes[0].status, 'blocked');
+  assert.equal(run.report.probes[0].reason, 'hypothesis_tool_mismatch');
+  assert.equal(run.report.findings[0].status, 'not_tested');
   assert.equal(run.report.findings[0].reason, 'hypothesis_tool_mismatch');
   assert.equal(run.report.coverage.confirmed, 0);
+  assert.equal(idorCalls, 0);
+  await runtime.close();
+});
+
+test('mismatched IDOR probes leave the one-shot comparison for the registered asset', async () => {
+  let idorCalls = 0;
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
+    runIdFactory: () => 'idor-mismatch-then-valid',
+    fetchImpl: async url => response(new URL(url).pathname),
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      const evidenceIds = [context.evidence[0].id];
+      return { done: false, hypotheses: [
+        { id: 'wrong-category', category: 'xss',
+          asset: '/api/admissions/partner/applications/:id',
+          rationale: 'Wrong vulnerability class.', evidenceIds },
+        { id: 'wrong-asset', category: 'access_control', asset: '/api/search',
+          rationale: 'Wrong registered asset.', evidenceIds },
+        { id: 'registered-idor', category: 'access_control',
+          asset: '/api/admissions/partner/applications/:id',
+          rationale: 'Compare registered records.', evidenceIds },
+      ], probes: [
+        { id: 'p-wrong-category', hypothesisId: 'wrong-category',
+          tool: 'known_record_idor_read', input: {} },
+        { id: 'p-wrong-asset', hypothesisId: 'wrong-asset',
+          tool: 'known_record_idor_read', input: {} },
+        { id: 'p-valid', hypothesisId: 'registered-idor',
+          tool: 'known_record_idor_read', input: {} },
+      ] };
+    } }),
+    idorProbe: async () => { idorCalls += 1; return confirmedIdor(); },
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  assert.deepEqual(run.report.probes.map(item => item.status), ['blocked', 'blocked', 'confirmed']);
+  assert.deepEqual(run.report.probes.slice(0, 2).map(item => item.reason),
+    ['hypothesis_tool_mismatch', 'hypothesis_tool_mismatch']);
+  assert.equal(run.events.find(item => item.stage === 'policy'
+    && item.request?.probeId === 'p-wrong-category').response.reason,
+  'hypothesis_tool_mismatch');
+  assert.ok(run.report.probes.slice(0, 2).every(item => item.evidenceIds.length === 0));
+  assert.equal(run.report.findings.find(item => item.hypothesisId === 'registered-idor').status,
+    'confirmed');
+  assert.equal(idorCalls, 1);
   await runtime.close();
 });
 
@@ -517,6 +591,53 @@ function fakeBoardPlanner() {
       tool: 'known_cross_user_delete_canary', input: {} }] };
   } };
 }
+
+test('mismatched board probes leave the one-shot canary for the registered asset', async () => {
+  let candidateSent = 0;
+  const hooks = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    runIdFactory: () => 'board-mismatch-then-valid',
+    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
+    fetchImpl: fakeBoardResponses({ onCandidate: () => { candidateSent += 1; } }),
+    beforeProbe: async hook => { hooks.push(hook); },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      const evidenceIds = [context.evidence[0].id];
+      return { done: false, hypotheses: [
+        { id: 'board-wrong-category', category: 'xss', asset: '/api/posts/:id',
+          rationale: 'Wrong vulnerability class.', evidenceIds },
+        { id: 'board-wrong-asset', category: 'access_control', asset: '/api/posts/7',
+          rationale: 'Concrete post is not the registered asset.', evidenceIds },
+        { id: 'board-valid', category: 'access_control', asset: '/api/posts/:id',
+          rationale: 'Compare isolated cross-user delete.', evidenceIds },
+      ], probes: [
+        { id: 'p-board-wrong-category', hypothesisId: 'board-wrong-category',
+          tool: 'known_cross_user_delete_canary', input: {} },
+        { id: 'p-board-wrong-asset', hypothesisId: 'board-wrong-asset',
+          tool: 'known_cross_user_delete_canary', input: {} },
+        { id: 'p-board-valid', hypothesisId: 'board-valid',
+          tool: 'known_cross_user_delete_canary', input: {} },
+      ] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  assert.deepEqual(run.report.probes.map(item => item.status), ['blocked', 'blocked', 'confirmed']);
+  assert.deepEqual(run.report.probes.slice(0, 2).map(item => item.reason),
+    ['hypothesis_tool_mismatch', 'hypothesis_tool_mismatch']);
+  assert.equal(run.events.find(item => item.stage === 'policy'
+    && item.request?.probeId === 'p-board-wrong-category').response.reason,
+  'hypothesis_tool_mismatch');
+  assert.ok(run.report.probes.slice(0, 2).every(item => item.evidenceIds.length === 0));
+  assert.equal(run.report.findings.find(item => item.hypothesisId === 'board-valid').status,
+    'confirmed');
+  assert.equal(candidateSent, 1);
+  assert.equal(hooks.filter(item => item.tool === 'known_cross_user_delete_canary').length, 8);
+  await runtime.close();
+});
 
 test('denied control that removes the canary never proceeds to candidate deletion', async () => {
   let candidateSent = 0;

@@ -132,16 +132,31 @@ test('general run renders and supported targets launch the bounded model assessm
   run.events = [
     { id: 'observed', stage: 'observe', iteration: 1, title: 'Observed', module: 'agent',
       time: '2026-10-26T00:00:00Z' },
+    { id: 'planned', stage: 'plan', iteration: 1, title: 'Planned', module: 'agent',
+      request: { probeLinks: [{ probeId: 'p1', hypothesisId: 'h1', tool: 'known_record_idor_read' }] },
+      response: { progress: { hypothesisCount: 1, probeCount: 0, evidenceCount: 1,
+        confirmedProbeCount: 0, blockedProbeCount: 0, remainingProbeBudget: 3 } },
+      time: '2026-10-26T00:00:00Z' },
     { id: 'allowed', stage: 'policy', iteration: 1, title: 'Policy allowed', detail: 'allowed',
-      request: { probeId: 'p1' }, module: 'agent', time: '2026-10-26T00:00:01Z' },
+      request: { probeId: 'p1', hypothesisId: 'h1', tool: 'known_record_idor_read' },
+      response: { status: 'allowed', progress: { hypothesisCount: 1, probeCount: 1,
+        evidenceCount: 1, confirmedProbeCount: 0, blockedProbeCount: 0, remainingProbeBudget: 2 } },
+      module: 'agent', time: '2026-10-26T00:00:01Z' },
     { id: 'verified', stage: 'verify', iteration: 1, title: 'Verify', detail: 'confirmed',
-      request: { probeId: 'p1' }, module: 'agent', time: '2026-10-26T00:00:02Z' },
+      request: { probeId: 'p1', hypothesisId: 'h1', tool: 'known_record_idor_read' },
+      response: { status: 'confirmed', evidenceIds: ['e1'], progress: { hypothesisCount: 1,
+        probeCount: 1, evidenceCount: 2, confirmedProbeCount: 1, blockedProbeCount: 0,
+        remainingProbeBudget: 2 } }, module: 'agent', time: '2026-10-26T00:00:02Z' },
   ];
   await page.reload();
   await page.waitForFunction(() => document.querySelector('#execution-label')?.textContent === 'GENERAL / EVIDENCE');
   assert.match(await page.locator('#progress-label').textContent(), /결과 대기/);
   assert.match(await page.locator('#progress-number').textContent(), /기록된 검사 ID 1개/);
   assert.match(await page.locator('#general-live-results-panel').textContent(), /검사 p1/);
+  assert.match(await page.locator('#general-run-summary').textContent(), /실행 검사 1/);
+  assert.match(await page.locator('#general-live-results-panel').textContent(), /가설 h1 · 도구 known_record_idor_read/);
+  assert.match(await page.locator('#general-live-results-panel').textContent(), /증거 ID: e1/);
+  assert.match(await page.locator('#general-live-results-panel').textContent(), /확정 판정 검사 1/);
   assert.match(await page.locator('#general-live-results-panel').textContent(), /최종 보고서 전의 검사 이벤트/);
   assert.doesNotMatch(await page.locator('#general-live-results-panel').textContent(), /\/records\/1/);
   await page.locator('[data-general-event=verified]').click();

@@ -90,6 +90,59 @@ function utf8Prefix(value, maxBytes) {
   return characters.join('');
 }
 const evidenceId = (prefix, value) => prefix + '-' + createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
+const eventIdentifier = value => typeof value === 'string'
+  && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value) ? value : undefined;
+const eventIdentifiers = (value, limit) => Array.isArray(value)
+  ? value.slice(0, limit).map(eventIdentifier).filter(Boolean) : undefined;
+const eventCount = value => Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+function projectGeneralEvent(event) {
+  const stage = eventIdentifier(event.stage) ?? 'unknown';
+  const request = {};
+  const response = {};
+  for (const key of ['hypothesisId', 'probeId', 'tool']) {
+    const value = eventIdentifier(event[key]);
+    if (value) request[key] = value;
+  }
+  for (const [key, limit] of [['hypothesisIds', 128], ['probeIds', LIMITS.maxProbes]]) {
+    const values = eventIdentifiers(event[key], limit);
+    if (values) request[key] = values;
+  }
+  if (Array.isArray(event.probeLinks)) request.probeLinks = event.probeLinks
+    .slice(0, LIMITS.maxProbes)
+    .map(link => ({ probeId: eventIdentifier(link?.probeId),
+      hypothesisId: eventIdentifier(link?.hypothesisId), tool: eventIdentifier(link?.tool) }))
+    .filter(link => link.probeId && link.hypothesisId && link.tool);
+  if (typeof event.done === 'boolean') request.done = event.done;
+  for (const key of ['status', 'reason', 'stopReason']) {
+    const value = eventIdentifier(event[key]);
+    if (value) response[key] = value;
+  }
+  const evidenceIds = eventIdentifiers(event.evidenceIds, LIMITS.maxEvidenceItems);
+  if (evidenceIds) response.evidenceIds = evidenceIds;
+  if (record(event.progress)) {
+    const progress = {};
+    for (const key of ['hypothesisCount', 'probeCount', 'evidenceCount',
+      'confirmedProbeCount', 'notReproducedProbeCount', 'inconclusiveProbeCount',
+      'blockedProbeCount', 'remainingProbeBudget']) {
+      const count = eventCount(event.progress[key]);
+      if (count !== undefined) progress[key] = count;
+    }
+    response.progress = progress;
+  }
+  if (record(event.coverage)) {
+    const coverage = {};
+    for (const key of ['totalHypotheses', 'confirmed', 'notReproduced', 'inconclusive', 'notTested']) {
+      const count = eventCount(event.coverage[key]);
+      if (count !== undefined) coverage[key] = count;
+    }
+    response.coverage = coverage;
+  }
+  const rejectedCount = eventCount(event.rejectedCount);
+  if (rejectedCount !== undefined) response.rejectedCount = rejectedCount;
+  const detail = response.status ?? response.stopReason
+    ?? (request.probeId ? '검사 ' + request.probeId : '관측과 판단 기록');
+  return { stage, title: '범용 점검 · ' + stage, detail, request, response };
+}
 async function invokeHook(callback, ...args) {
   if (!callback) return undefined;
   try { return await callback(...args); }
@@ -648,6 +701,12 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     let inventory;
     let usedIdor = false;
     let usedBoardDelete = false;
+    const matchesIdorHypothesis = hypothesis =>
+      /^(?:access_control|idor|cwe-639)$/iu.test(hypothesis?.category ?? '')
+      && hypothesis?.asset === config.idorAsset;
+    const matchesBoardAccessHypothesis = hypothesis =>
+      /^(?:access_control|idor|bola|cwe-639)$/iu.test(hypothesis?.category ?? '')
+      && hypothesis?.asset === BOARD_ACCESS_ASSET;
     const failedModelCalls = [];
     const allowedPaths = new Set(config.routes.map(path => new URL(path, allowedOrigin).pathname));
     const extendPaths = page => {
@@ -663,7 +722,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       [...inventory.pages, ...inventory.authenticatedPages].forEach(extendPaths);
       return initial;
     } };
-    const policy = { async authorize({ probe }) {
+    const policy = { async authorize({ probe, hypothesis }) {
       if (probe.tool === 'http_get') {
         const input = probe.input;
         if (!record(input) || Object.keys(input).some(key => !['path', 'sessionRole'].includes(key))
@@ -679,12 +738,20 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           && (probe.input.offset === undefined || Number.isSafeInteger(probe.input.offset)
             && probe.input.offset >= 0 && probe.input.offset <= 32 * 1024),
         reason: 'file_out_of_scope' };
-      if (probe.tool === 'known_record_idor_read') return {
-        allowed: !!config.siteKey && !usedIdor && Object.keys(probe.input).length === 0,
-        reason: 'fixed_probe_unavailable' };
-      if (probe.tool === 'known_cross_user_delete_canary') return {
-        allowed: !config.siteKey && !usedBoardDelete && Object.keys(probe.input).length === 0,
-        reason: 'fixed_probe_unavailable' };
+      if (probe.tool === 'known_record_idor_read') {
+        if (!matchesIdorHypothesis(hypothesis)) {
+          return { allowed: false, reason: 'hypothesis_tool_mismatch' };
+        }
+        return { allowed: !!config.siteKey && !usedIdor && Object.keys(probe.input).length === 0,
+          reason: 'fixed_probe_unavailable' };
+      }
+      if (probe.tool === 'known_cross_user_delete_canary') {
+        if (!matchesBoardAccessHypothesis(hypothesis)) {
+          return { allowed: false, reason: 'hypothesis_tool_mismatch' };
+        }
+        return { allowed: !config.siteKey && !usedBoardDelete && Object.keys(probe.input).length === 0,
+          reason: 'fixed_probe_unavailable' };
+      }
       return { allowed: false, reason: 'tool_unavailable' };
     } };
     const executor = { async execute({ probe }) {
@@ -802,10 +869,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     } };
     const verifier = { async verify({ execution, hypothesis }) {
       const id = execution.evidence?.[0]?.id;
-      const idorHypothesis = /^(?:access_control|idor|cwe-639)$/iu.test(hypothesis?.category ?? '')
-        && hypothesis?.asset === config.idorAsset;
-      const boardAccessHypothesis = /^(?:access_control|idor|bola|cwe-639)$/iu.test(hypothesis?.category ?? '')
-        && hypothesis?.asset === BOARD_ACCESS_ASSET;
+      const idorHypothesis = matchesIdorHypothesis(hypothesis);
+      const boardAccessHypothesis = matchesBoardAccessHypothesis(hypothesis);
       if (execution.kind === 'known_record_idor_read'
         && idorHypothesis
         && ['confirmed', 'not_reproduced'].includes(execution.verdictStatus)) {
@@ -852,12 +917,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       target: { fixtureId, origin: allowedOrigin }, observer, planner: wrappedPlanner,
       policy, executor, verifier, availableTools, limits, signal: currentSignal,
       onEvent: async event => {
-        run.iterations = Math.max(run.iterations, event.iteration ?? run.iterations);
-        appendEvent({ stage: event.stage, iteration: event.iteration ?? run.iterations,
-          title: '범용 점검 · ' + event.stage, detail: event.status ?? event.stopReason
-            ?? (event.probeId ? '검사 ' + event.probeId : '관측과 판단 기록'),
-          request: event.probeId ? { probeId: event.probeId } : {},
-          response: event.coverage ? { coverage: event.coverage } : {} });
+        const iteration = eventCount(event.iteration) ?? run.iterations;
+        run.iterations = Math.max(run.iterations, iteration);
+        appendEvent({ ...projectGeneralEvent(event), iteration });
       },
     });
     report.runId = run.id;

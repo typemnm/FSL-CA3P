@@ -154,6 +154,45 @@ test('policy events are not shown as verified findings before a report exists', 
   assert.doesNotMatch(observed, /확정 <strong>1/);
 });
 
+test('live general events show projected progress and linked probe outcomes before the final report', () => {
+  const item = normalizeGeneralRun({ id: 'run-projected', mode: 'local-lab-general', status: 'running',
+    startedAt: '2026-10-26T00:00:00Z', events: [
+      { id: 'planned', stage: 'plan', iteration: 1, request: { probeLinks: [
+        { probeId: 'p-blocked', hypothesisId: 'h-wrong', tool: 'known_record_idor_read' },
+        { probeId: 'p-valid', hypothesisId: 'h-valid', tool: 'known_record_idor_read' },
+      ] }, response: { progress: { hypothesisCount: 2, probeCount: 0, evidenceCount: 1,
+        confirmedProbeCount: 0, blockedProbeCount: 0, remainingProbeBudget: 4 } } },
+      { id: 'blocked', stage: 'policy', iteration: 1, detail: 'blocked',
+        request: { probeId: 'p-blocked' }, response: { status: 'blocked',
+          reason: '<hypothesis_tool_mismatch>', progress: { hypothesisCount: 2, probeCount: 1,
+            evidenceCount: 1, confirmedProbeCount: 0, blockedProbeCount: 1, remainingProbeBudget: 3 } } },
+      { id: 'verified', stage: 'verify', iteration: 1, detail: 'confirmed',
+        request: { probeId: 'p-valid', hypothesisId: 'h-valid', tool: 'known_record_idor_read' },
+        response: { status: 'confirmed', evidenceIds: ['e-1', '<img src=x onerror=alert(1)>'],
+          progress: { hypothesisCount: 2, probeCount: 2, evidenceCount: 3,
+            confirmedProbeCount: 1, blockedProbeCount: 1, remainingProbeBudget: 2 } } },
+      { id: 'completed', stage: 'complete', iteration: 1,
+        response: { progress: { hypothesisCount: 2, probeCount: 2, evidenceCount: 3,
+          confirmedProbeCount: 1, blockedProbeCount: 1, remainingProbeBudget: 2 } } },
+    ] });
+  const loop = renderGeneralLoop(item);
+  assert.match(loop, /가설 <strong>2<\/strong>/);
+  assert.match(loop, /실행 검사 <strong>2<\/strong>/);
+  assert.match(loop, /수집 증거 <strong>3<\/strong>/);
+  assert.match(loop, /남은 검사 예산 <strong>2<\/strong>/);
+  const live = renderGeneralLiveResults(item);
+  assert.match(live, /검사 p-blocked/);
+  assert.match(live, /정책 차단 · 가설 h-wrong · 도구 known_record_idor_read/);
+  assert.match(live, /&lt;hypothesis_tool_mismatch&gt;/);
+  assert.match(live, /검사 p-valid/);
+  assert.match(live, /확정 · 가설 h-valid · 도구 known_record_idor_read/);
+  assert.match(live, /증거 ID: e-1, &lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(live, /확정 판정 검사 <strong>1<\/strong>/);
+  assert.match(live, /취약점 확정 건수로 집계하지 않습니다/);
+  assert.doesNotMatch(live, /<img src/);
+  assert.doesNotMatch(live, /<hypothesis_tool_mismatch>/);
+});
+
 test('live result panel uses final findings and linked evidence only after report arrives', () => {
   const item = { mode: 'local-lab-general', report: result(), events: [] };
   const html = renderGeneralLiveResults(item);

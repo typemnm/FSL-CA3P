@@ -37,6 +37,45 @@ function probeIdFor(event) {
   return id.slice(0, 128);
 }
 
+const safeId = value => text(value).slice(0, 128);
+const eventRequest = event => object(event?.request) ? event.request : {};
+const eventResponse = event => object(event?.response) ? event.response : {};
+
+function latestProgress(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const value = eventResponse(events[index]).progress;
+    if (!object(value)) continue;
+    const progress = Object.fromEntries([
+      'hypothesisCount', 'probeCount', 'evidenceCount', 'confirmedProbeCount',
+      'notReproducedProbeCount', 'inconclusiveProbeCount', 'blockedProbeCount',
+      'remainingProbeBudget',
+    ].map(key => [key, count(value[key])]));
+    if (Object.values(progress).some(value => value !== null)) return progress;
+  }
+  return null;
+}
+
+function progressCounts(progress, fields) {
+  if (!progress) return '';
+  const rows = fields.filter(([, key]) => progress[key] !== null);
+  return rows.length ? '<div class="general-overview-counts">'
+    + rows.map(([label, key]) => '<span>' + label + ' <strong>' + progress[key] + '</strong></span>').join('')
+    + '</div>' : '';
+}
+
+function plannedProbeLinks(events) {
+  const links = new Map();
+  for (const event of events) {
+    if (phaseFor(event?.stage) !== 'plan') continue;
+    for (const link of list(eventRequest(event).probeLinks).slice(0, 32).filter(object)) {
+      const probeId = safeId(link.probeId);
+      if (links.size >= 128 && !links.has(probeId)) continue;
+      if (probeId) links.set(probeId, { hypothesisId: safeId(link.hypothesisId), tool: safeId(link.tool) });
+    }
+  }
+  return links;
+}
+
 export function generalObservedProbeCount(item) {
   return new Set(list(item?.events).map(probeIdFor).filter(Boolean)).size;
 }
@@ -139,6 +178,7 @@ export function renderGeneralOverview(item) {
 /** Show observed phases only. An unobserved phase is never counted as complete. */
 export function renderGeneralLoop(item, selectedEventId = null) {
   const events = list(item?.events).filter(object);
+  const progress = latestProgress(events);
   const phasesByIteration = new Map();
   for (const event of events) {
     const phase = phaseFor(event.stage);
@@ -174,6 +214,11 @@ export function renderGeneralLoop(item, selectedEventId = null) {
       + '<span>검사 <strong>' + summary.probes + '</strong></span>'
       + '<span>확정 <strong>' + summary.confirmed + '</strong></span>'
       + '<span>미점검 <strong>' + summary.notTested + '</strong></span>'
+    : progress
+      ? '<span>가설 <strong>' + (progress.hypothesisCount ?? '?') + '</strong></span>'
+        + '<span>실행 검사 <strong>' + (progress.probeCount ?? '?') + '</strong></span>'
+        + '<span>수집 증거 <strong>' + (progress.evidenceCount ?? '?') + '</strong></span>'
+        + '<span>남은 검사 예산 <strong>' + (progress.remainingProbeBudget ?? '?') + '</strong></span>'
     : '<span>수신 이벤트 <strong>' + events.length + '</strong></span>'
       + '<span>기록된 검사 ID <strong>' + generalObservedProbeCount(item) + '</strong></span>';
   return '<section class="general-loop" aria-label="범용 Agent loop">'
@@ -181,7 +226,7 @@ export function renderGeneralLoop(item, selectedEventId = null) {
     + '<p>최근 단계: <strong>' + escape(lastStage) + '</strong></p>'
     + '<div class="general-overview-counts">' + counts + '</div>'
     + '<div class="general-loop-iterations">' + flow + '</div>'
-    + '<p class="general-loop-note">실제로 수신한 단계만 기록으로 표시합니다. 전체 취약점에 대한 완료율이 아닙니다.</p>'
+    + '<p class="general-loop-note">실제로 수신한 단계만 기록으로 표시합니다. 진행 수치는 검사 기준이며 전체 취약점에 대한 완료율이 아닙니다.</p>'
     + '</section>';
 }
 
@@ -189,20 +234,41 @@ export function renderGeneralLoop(item, selectedEventId = null) {
 export function renderGeneralLiveResults(item) {
   const summary = generalSummary(item);
   if (!summary) {
-    const verified = list(item?.events).filter(event => object(event) && phaseFor(event.stage) === 'verify');
-    const rows = verified.map(event => {
-      const verdict = text(event.detail);
-      const label = STATUSES.has(verdict) && verdict !== 'not_tested'
-        ? STATUS_LABELS[verdict] : '상태 미확인';
+    const events = list(item?.events).filter(object);
+    const progress = latestProgress(events);
+    const links = plannedProbeLinks(events);
+    const outcomes = events.filter(event => phaseFor(event.stage) === 'verify'
+      || phaseFor(event.stage) === 'policy' && (text(eventResponse(event).status) || text(event.detail)) === 'blocked');
+    const rows = outcomes.map(event => {
+      const phase = phaseFor(event.stage);
+      const response = eventResponse(event);
+      const request = eventRequest(event);
+      const verdict = text(response.status) || text(event.detail);
+      const label = phase === 'policy' ? '정책 차단'
+        : STATUSES.has(verdict) && verdict !== 'not_tested' ? STATUS_LABELS[verdict] : '상태 미확인';
       const probeId = probeIdFor(event);
+      const link = links.get(probeId);
+      const hypothesisId = safeId(request.hypothesisId) || link?.hypothesisId;
+      const tool = safeId(request.tool) || link?.tool;
+      const evidenceIds = list(response.evidenceIds).filter(value => typeof value === 'string')
+        .slice(0, 32).map(safeId).filter(Boolean);
+      const reason = text(response.reason).slice(0, 128);
+      const context = [hypothesisId && '가설 ' + hypothesisId, tool && '도구 ' + tool,
+        '반복 ' + (count(event.iteration) ?? '?')].filter(Boolean).join(' · ');
       return '<li class="general-live-result"><strong>검사 '
         + escape(probeId || 'ID 미기록') + '</strong><span>' + escape(label)
-        + ' · 반복 ' + (count(event.iteration) ?? '?') + '</span></li>';
+        + ' · ' + escape(context) + '</span>'
+        + (evidenceIds.length ? '<small>증거 ID: ' + evidenceIds.map(escape).join(', ') + '</small>' : '')
+        + (reason ? '<small>사유: ' + escape(reason) + '</small>' : '') + '</li>';
     }).join('');
     return '<div class="general-live-body"><p>최종 보고서 전의 검사 이벤트입니다. 취약점 확정 건수로 집계하지 않습니다.</p>'
+      + progressCounts(progress, [
+        ['가설', 'hypothesisCount'], ['실행 검사', 'probeCount'], ['수집 증거', 'evidenceCount'],
+        ['확정 판정 검사', 'confirmedProbeCount'], ['정책 차단 검사', 'blockedProbeCount'],
+      ])
       + (rows ? '<ul class="general-live-result-list">' + rows + '</ul>'
         : '<p class="general-live-empty">독립 검증 이벤트를 기다리는 중입니다.</p>')
-      + '<p class="general-live-note">현재 이벤트에는 가설·증거 연결이 없어 최종 결과와 근거는 보고서 저장 후 표시됩니다.</p></div>';
+      + '<p class="general-live-note">진행 수치와 판정은 검사 기준입니다. 가설 분류·자산·증거 설명과 최종 finding 수는 보고서 저장 후 표시됩니다.</p></div>';
   }
   const evidence = new Map(list(summary.report.evidence)
     .filter(value => object(value) && text(value.id)).map(value => [value.id, value]));
