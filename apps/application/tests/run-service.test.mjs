@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRunService } from '../run-service.mjs';
 
 function setup(t, options = {}) {
-  const directory = mkdtempSync(join(tmpdir(), 'ca3p-service-test-')); const storePath = join(directory, 'runs.sqlite');
+  const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
+  mkdirSync(runtimeRoot, { recursive: true });
+  const directory = mkdtempSync(join(runtimeRoot, 'ca3p-service-test-')); const storePath = join(directory, 'runs.sqlite');
   const service = createRunService({ storePath, envFile: null, env: { ...process.env, DEEPSEEK_API_KEY: '' }, ...options });
   const services = [service];
   t.after(async () => { for (const item of services.reverse()) await item.close(); rmSync(directory, { recursive: true, force: true }); });

@@ -33,6 +33,8 @@
 
 `GET /api/experiment-reset`은 삭제 범위·개수·현재 초기화 상태를 조회한다. `POST /api/experiment-reset`은 정확히 `{ "confirmed": true }`를 요구한다. 기존 인증·운영자 권한·CSRF·배포 중 mutation 차단을 적용한다. 기존 `/api/reset`은 화면 초기화로 유지한다.
 
+실행 목록만 정리할 때는 운영자/관리자 인증과 CSRF 토큰으로 `POST /api/run-history/clear`에 정확히 `{ "confirmed": true }`를 보낸다. 이 경로는 실행 registry의 이력·비교 자료, 실행별 JSON/HWPX·snapshot·보고서 파일, 해당 run에 연결된 CASPER check를 삭제하고 epoch를 올려 대시보드 캐시와 legacy 재가져오기를 차단한다. 계정·API 설정·검토된 사례와 대학 실습 대상의 상태는 보존한다. 접촉한 대상의 복원 의무는 별도 DB 기록으로 남으므로, 대학 대상 관리 훅이 필요한 경우 또는 이전 전체 초기화가 실패한 경우 새 실행은 계속 차단된다. 이후 `POST /api/experiment-reset`은 이 의무를 확인하고 전체 대상 복원을 마쳐야 실행을 다시 허용한다.
+
 1. 영구 maintenance 상태를 잠근다. 어떤 실행이든 queued/leased/running이면 409로 거부한다. 다른 reset과 CASPER 검토 쓰기도 상호 배제한다.
 2. idle worker가 실제로 종료될 때까지 기다려 보고서 촬영·게시판 정리와의 경쟁을 없앤다.
 3. 전체 run과 삭제 경로, DB identity, 소유권, 대상 관리 훅 설정을 사전 검증한다.

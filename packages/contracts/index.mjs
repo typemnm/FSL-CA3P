@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export const CONTRACT_VERSIONS = Object.freeze({ envelope: '1.0', parserReport: '3.4',
   catalog: 'casper-attack-catalog-1', caseStoreMigration: 7, runManifest: '1.0', runEvent: '1.0' });
-export const RUN_MODES = Object.freeze(['core-fixture', 'local-lab-rule', 'local-lab-deepseek', 'local-lab-general']);
+export const RUN_MODES = Object.freeze(['core-fixture', 'local-lab-rule', 'local-lab-deepseek', 'local-lab-general', 'external-general']);
 export const TERMINAL_STATUSES = Object.freeze(['completed', 'failed', 'cancelled', 'interrupted']);
 export const ACTIVE_STATUSES = Object.freeze(['queued', 'preparing', 'running', 'stopping']);
 export const digest = value => createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value)
@@ -16,7 +16,7 @@ export function assertIdentifier(value, name = 'identifier') {
 
 // Apply at the persistence boundary as well as the HTTP boundary. Token counts
 // and boolean policy fields are telemetry, so do not redact by substring.
-const SECRET_KEY = /^(?:authorization|proxyauthorization|cookie|setcookie|(?:x)?apikey|password|passwd|secret|accesstoken|refreshtoken|sessiontoken|clientsecret|bearertoken|jwt)$/iu;
+const SECRET_KEY = /^(?:authorization|proxyauthorization|cookie|setcookie|(?:x)?apikey|password|passwd|secret|accesstoken|refreshtoken|sessiontoken|clientsecret|bearertoken|jwt|auth|authtoken|idtoken|key|accesskey|awsaccesskeyid|googleaccessid|signature|sig|credential|xamzcredential|xamzsignature|xamzsecuritytoken|xgoogcredential|xgoogsignature|keypairid)$/iu;
 const isSecretKey = key => SECRET_KEY.test(key.toLowerCase().replace(/[^a-z0-9]/gu, ''))
   || /(?:apikey|cookiesecret|clientsecret|accesstoken|refreshtoken|sessiontoken)$/u.test(key.toLowerCase().replace(/[^a-z0-9]/gu, ''));
 function redactString(value) {

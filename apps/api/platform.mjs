@@ -26,5 +26,6 @@ export async function getPlatform() {
     dirty: Boolean(git('status', '--porcelain', '--untracked-files=no')), baselineSha: manifest.baselineSha ?? '0e850e0' },
     modules, tests, integration: manifest, deployment: await deploymentStatus(),
     architecture: ['dashboard', 'api', 'application', 'worker', 'module-ports', 'sqlite-run-repository'],
-    scope: '팀 내부 공유 · 격리된 실습 대상', modelEvaluation: '제한된 행동 계획과 증거 기반 판정' };
+    scope: '팀 내부 공유 · 격리된 실습 대상 및 승인된 외부 URL의 읽기 전용 관찰',
+    modelEvaluation: '제한된 행동 계획과 증거 기반 판정' };
 }

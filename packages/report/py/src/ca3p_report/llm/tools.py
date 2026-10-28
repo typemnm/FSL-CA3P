@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..hwpx.filename import normalize_filename
-from ..hwpx.writer import write_hwpx, write_markdown
+from ..hwpx.writer import write_html, write_hwpx, write_markdown
 from .redact import redact
 
 CAPTURE_CLI = Path(__file__).resolve().parents[4] / "capture" / "cli.mjs"
@@ -215,10 +215,12 @@ class ReportTools:
         hwpx_path = self._out / name
         model_path = self._out / "report-model.json"
         md_path = self._out / "report.md"
+        html_path = self._out / "report.html"
         write_hwpx(safe_model, hwpx_path, image_root=self._bundle)
         write_markdown(safe_model, md_path)
+        write_html(safe_model, html_path, image_root=self._bundle)
         model_path.write_text(json.dumps(safe_model, ensure_ascii=False, indent=2), "utf-8")
-        files = [_file_entry(p) for p in (hwpx_path, model_path, md_path)]
+        files = [_file_entry(p) for p in (hwpx_path, model_path, md_path, html_path)]
         self.finished = FinishResult(files=files, out_dir=self._out, report_filename=name)
         return {"ok": True, "files": files}
 

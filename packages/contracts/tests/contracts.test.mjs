@@ -13,6 +13,9 @@ test('redaction preserves verified URL bytes and token usage while removing cred
   const output = redact(input);
   assert.equal(output.origin, input.origin); assert.equal(output.usage.total_tokens, 4);
   assert.equal(output.headers.authorization, '[REDACTED]'); assert.ok(!output.target.includes('private'));
+  const signed = redact({ target: 'https://example.invalid/?X-Amz-Credential=ACCESS&X-Amz-Signature=SECRET&sig=AZURE',
+    credential: 'ACCESS', signature: 'SECRET' });
+  assert.doesNotMatch(JSON.stringify(signed), /ACCESS|SECRET|AZURE/);
   assert.equal(validateDisplayTarget('https://user:secret@example.invalid').ok, false);
 });
 test('manifest tree hashing detects source changes without hashing runtime secrets or dependency caches', t => {

@@ -50,6 +50,9 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
       id INTEGER PRIMARY KEY CHECK(id=1), status TEXT NOT NULL, owner TEXT,
       epoch INTEGER NOT NULL DEFAULT 0, last_reset_at TEXT, summary_json TEXT, error TEXT);
     INSERT OR IGNORE INTO experiment_control(id,status) VALUES (1,'ready');
+    CREATE TABLE IF NOT EXISTS pending_target_resets (
+      id INTEGER PRIMARY KEY CHECK(id=1), obligations_json TEXT NOT NULL);
+    INSERT OR IGNORE INTO pending_target_resets(id,obligations_json) VALUES (1,'[]');
     PRAGMA user_version=1;`);
   let closed = false;
   function transaction(fn) {
@@ -73,6 +76,24 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
     const row = db.prepare('SELECT * FROM experiment_control WHERE id=1').get();
     return { status: row.status, epoch: row.epoch, lastResetAt: row.last_reset_at,
       summary: parse(row.summary_json), error: row.error };
+  }
+  function pendingTargetResets() {
+    const value = parse(db.prepare('SELECT obligations_json FROM pending_target_resets WHERE id=1').get().obligations_json);
+    if (!Array.isArray(value)) throw fault('INVALID_RESET_OBLIGATIONS', 'Stored target reset obligations are invalid.', 503);
+    return value;
+  }
+  function deleteRunRecords() {
+    const counts = {};
+    for (const table of ['review_audit', 'artifacts', 'model_calls', 'action_intents', 'run_events', 'jobs', 'runs']) {
+      counts[table] = db.prepare(`SELECT count(*) AS count FROM ${table}`).get().count;
+      db.exec(`DELETE FROM ${table}`);
+    }
+    return counts;
+  }
+  function compactRunStore() {
+    db.exec('VACUUM');
+    const checkpoint = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+    if (checkpoint.busy) throw fault('RESET_CHECKPOINT_BUSY', 'SQLite cleanup is waiting for another reader. Retry the reset.');
   }
   function assertExperimentReady() {
     if (experimentState().status !== 'ready') {
@@ -114,6 +135,7 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
   const api = {
     path: storePath,
     experimentState,
+    pendingTargetResets,
     activeRunCount,
     recoverAbandonedExperimentOperation() {
       return transaction(() => {
@@ -134,7 +156,7 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
         if (!['ready', 'failed'].includes(state.status)) throw fault('EXPERIMENT_BUSY', '다른 초기화 또는 검토 작업이 진행 중입니다.');
         if (activeRunCount()) throw fault('RUN_ACTIVE', '실행과 보고서 생성을 중지하고 완료를 기다린 뒤 초기화하세요.');
         db.prepare("UPDATE experiment_control SET status='resetting',owner=?,error=NULL WHERE id=1").run(owner);
-        return experimentState();
+        return { ...experimentState(), previousStatus: state.status };
       });
     },
     failExperimentReset(owner) {
@@ -152,22 +174,42 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
       const result = transaction(() => {
         assertResetOwner(owner);
         if (activeRunCount()) throw fault('RUN_ACTIVE', 'A worker is still active.');
-        const counts = {};
-        for (const table of ['review_audit', 'artifacts', 'model_calls', 'action_intents', 'run_events', 'jobs', 'runs']) {
-          counts[table] = db.prepare(`SELECT count(*) AS count FROM ${table}`).get().count;
-          db.exec(`DELETE FROM ${table}`);
-        }
+        const counts = deleteRunRecords();
+        db.prepare("UPDATE pending_target_resets SET obligations_json='[]' WHERE id=1").run();
         return { ...summary, deleted: counts };
       });
-      db.exec('VACUUM');
-      const checkpoint = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
-      if (checkpoint.busy) throw fault('RESET_CHECKPOINT_BUSY', 'SQLite cleanup is waiting for another reader. Retry the reset.');
+      compactRunStore();
       transaction(() => {
         assertResetOwner(owner);
         db.prepare("UPDATE experiment_control SET status='ready',owner=NULL,epoch=epoch+1,last_reset_at=?,summary_json=?,error=NULL WHERE id=1")
           .run(now(), json(result));
       });
       return { ...result, epoch: experimentState().epoch, completedAt: experimentState().lastResetAt };
+    },
+    completeRunHistoryClear(owner, { newTargetObligations = [], wasFailed = false, summary = {} } = {}) {
+      if (!Array.isArray(newTargetObligations) || typeof wasFailed !== 'boolean') {
+        throw fault('INVALID_HISTORY_CLEAR', 'Invalid run history clear request.', 400);
+      }
+      db.exec('PRAGMA secure_delete=ON');
+      const result = transaction(() => {
+        assertResetOwner(owner);
+        if (activeRunCount()) throw fault('RUN_ACTIVE', 'A worker is still active.');
+        const obligations = [...new Map([...pendingTargetResets(), ...newTargetObligations]
+          .map(value => [JSON.stringify(value), value])).values()];
+        const counts = deleteRunRecords();
+        db.prepare('UPDATE pending_target_resets SET obligations_json=? WHERE id=1').run(json(obligations));
+        return { ...summary, deleted: counts, pendingTargetResetCount: obligations.length };
+      });
+      compactRunStore();
+      const clearedAt = now();
+      const needsFullReset = wasFailed || result.pendingTargetResetCount > 0;
+      transaction(() => {
+        assertResetOwner(owner);
+        db.prepare('UPDATE experiment_control SET status=?,owner=NULL,epoch=epoch+1,summary_json=?,error=? WHERE id=1')
+          .run(needsFullReset ? 'failed' : 'ready', json({ ...result, kind: 'run-history-clear', clearedAt }),
+            needsFullReset ? '대상 복원 또는 이전 초기화 실패로 전체 실험 초기화가 필요합니다.' : null);
+      });
+      return { ...result, epoch: experimentState().epoch, clearedAt, experimentStatus: experimentState().status };
     },
     beginExperimentMutation(owner) {
       assertIdentifier(owner, 'mutation owner');

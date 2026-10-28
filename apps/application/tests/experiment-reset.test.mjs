@@ -3,10 +3,20 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { createRunService } from '../run-service.mjs';
 import { digest } from '../../../packages/contracts/index.mjs';
+import { PROJECT_ROOT } from '../../../packages/contracts/manifest.mjs';
 import { prepareRunFileCleanup } from '../experiment-files.mjs';
 import { prepareExperimentCleanup } from '../experiment-cleanup.mjs';
+
+const python = process.env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3');
+function sql(path, program) {
+  const result = spawnSync(python, ['-c', program, path], { encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, PYTHONPATH: join(PROJECT_ROOT, 'casper-db/src') } });
+  assert.equal(result.status, 0, result.error?.message || result.stderr);
+  return result.stdout.trim();
+}
 
 function setup(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-experiment-reset-'));
@@ -124,6 +134,76 @@ test('real cleanup removes run-derived files, preserves credentials and never re
   assert.equal(reopened.listRuns().total, 0); assert.equal(reopened.getState().run.status, 'idle');
   const next = await reopened.start({ mode: 'core-fixture' });
   assert.equal(next.run.manifest.experiment.previousRunCount, 0);
+});
+
+test('history clear removes linked files and checks while preserving the later target reset obligation', async t => {
+  const { service, open, calls, directory } = setup(t);
+  const casesPath = join(directory, 'absent-cases.sqlite3');
+  sql(casesPath, String.raw`
+import sqlite3,sys
+from casper_db.repository import SCHEMA_VERSION
+with sqlite3.connect(sys.argv[1]) as c:
+    c.executescript('CREATE TABLE cases(id TEXT); CREATE TABLE case_versions(id TEXT); CREATE TABLE checks(check_id TEXT,run_id TEXT,source TEXT,review_status TEXT);')
+    c.execute('INSERT INTO cases VALUES (?)', ('curated',))
+    c.executemany('INSERT INTO checks VALUES (?,?,?,?)', [('old-check','university-run','tool','reviewed'),('other-check','other-run','manual','reviewed')])
+    c.execute('PRAGMA user_version=' + str(SCHEMA_VERSION))
+`);
+  const id = 'university-run'; const origin = 'http://127.0.0.1:4101';
+  const manifest = { runId: id, target: { fixtureId: 'vul-web2-daehan', origin },
+    data: { caseDatabaseSourcePath: casesPath } };
+  const state = { id, mode: 'local-lab-general', status: 'queued', simulated: false,
+    targetContacted: true, fixtureId: 'vul-web2-daehan', target: origin, coreTargetOrigin: origin, events: [] };
+  service.store.createRun({ id, mode: state.mode, modelId: 'rule-baseline', manifest, state });
+  const lease = service.store.claimNext('test-worker');
+  service.store.saveState(lease, { ...state, status: 'completed' }); service.store.finish(lease, 'completed');
+  const artifact = service.store.writeArtifact(id, 'run-report', { marker: 'old-run' });
+  const reportPath = join(directory, 'reports', digest(id), 'report.hwpx');
+  mkdirSync(join(reportPath, '..'), { recursive: true }); writeFileSync(reportPath, 'old-run');
+  const credentials = join(directory, 'auth.json'); writeFileSync(credentials, 'keep-account');
+  const result = await service.clearRunHistory({ confirmed: true });
+  assert.equal(result.historyClear.status, 'completed');
+  assert.equal(result.historyClear.deleted.runs, 1);
+  assert.equal(result.historyClear.history.checksRemoved, 1);
+  assert.equal(result.historyClear.pendingTargetResetCount, 1);
+  assert.equal(result.experiment.status, 'failed');
+  assert.equal(result.experiment.epoch, 1);
+  assert.equal(service.listRuns().total, 0);
+  assert.equal(calls.length, 0, 'history clear must not invoke target reset');
+  assert.equal(existsSync(artifact.path), false);
+  assert.equal(existsSync(reportPath), false);
+  assert.equal(readFileSync(credentials, 'utf8'), 'keep-account');
+  assert.equal(sql(casesPath, "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('SELECT count(*) FROM checks').fetchone()[0])"), '1');
+  assert.equal(sql(casesPath, "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('SELECT count(*) FROM cases').fetchone()[0])"), '1');
+  const restarted = open({ experimentCleanupFactory: prepareExperimentCleanup });
+  await assert.rejects(restarted.resetExperiment({ confirmed: true }), { status: 409 });
+  assert.equal(restarted.store.pendingTargetResets().length, 1);
+  assert.equal(restarted.getState().experiment.status, 'failed');
+});
+
+test('history clear of isolated runs advances the epoch and permits another run', async t => {
+  const { service } = setup(t);
+  const first = await service.start({ mode: 'core-fixture' }); service.stop(first.run.id);
+  const result = await service.clearRunHistory({ confirmed: true });
+  assert.equal(result.experiment.status, 'ready');
+  assert.equal(result.experiment.epoch, 1);
+  assert.equal(service.listRuns().total, 0);
+  const next = await service.start({ mode: 'core-fixture' });
+  assert.equal(next.run.manifest.experiment.epoch, 1);
+});
+
+test('history clear retains an unmanaged contacted target blocker after runs disappear', async t => {
+  const { service, open } = setup(t);
+  const id = 'external-run';
+  service.store.createRun({ id, mode: 'local-lab-general', modelId: 'rule-baseline', manifest: { runId: id },
+    state: { id, status: 'queued', mode: 'local-lab-general', fixtureId: 'external-url',
+      targetContacted: true, simulated: false, events: [] } });
+  service.store.requestCancel(id);
+  await service.clearRunHistory({ confirmed: true });
+  assert.equal(service.listRuns().total, 0);
+  assert.equal(service.store.pendingTargetResets()[0].targetContacted, true);
+  const restarted = open({ experimentCleanupFactory: prepareExperimentCleanup });
+  await assert.rejects(restarted.resetExperiment({ confirmed: true }), /외부 대상/);
+  assert.equal(restarted.store.pendingTargetResets().length, 1);
 });
 
 test('file cleanup refuses links before deleting any other run-derived files', async t => {

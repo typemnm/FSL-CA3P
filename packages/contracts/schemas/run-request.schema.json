@@ -1,16 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ca3p.local/contracts/run-request/1.0",
-  "title": "CA3P registered lab request",
+  "title": "CA3P lab or external observation request",
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "mode": {"enum": ["core-fixture", "local-lab-rule", "local-lab-deepseek", "local-lab-general"]},
+    "mode": {"enum": ["core-fixture", "local-lab-rule", "local-lab-deepseek", "local-lab-general", "external-general"]},
     "modelId": {"enum": ["rule-baseline", "deepseek-flash", "deepseek-v4-pro"]},
     "fixtureId": {"enum": ["vul-web-1", "vul-web2-daehan", "vul-web2-wonchang"]},
     "target": {"type": "string", "maxLength": 2048},
     "delayMs": {"type": "integer", "minimum": 0, "maximum": 3000},
-    "testProfile": {"enum": ["stored_xss_canary", "agent_cross_user_delete_canary", "known_record_idor_read", "general"]}
+    "testProfile": {"enum": ["stored_xss_canary", "agent_cross_user_delete_canary", "known_record_idor_read", "general"]},
+    "scope": {"type": "object", "additionalProperties": false,
+      "properties": {"pathPrefix": {"type": "string", "maxLength": 1024, "pattern": "^/"}}},
+    "preflightToken": {"type": "string", "maxLength": 4096},
+    "authorizationConfirmed": {"type": "boolean"}
   },
   "allOf": [
     {"if": {"not": {"properties": {"fixtureId": {"enum": ["vul-web2-daehan", "vul-web2-wonchang"]}}, "required": ["fixtureId"]}},
@@ -20,6 +24,12 @@
       "then": {"properties": {"mode": {"enum": ["local-lab-rule", "local-lab-general"]}}}},
     {"if": {"properties": {"mode": {"const": "local-lab-general"}}, "required": ["mode"]},
       "then": {"properties": {"modelId": {"enum": ["deepseek-flash", "deepseek-v4-pro"]}, "testProfile": {"const": "general"}}},
-      "else": {"properties": {"testProfile": {"not": {"const": "general"}}}}}
+      "else": {"properties": {"testProfile": {"not": {"const": "general"}}}}},
+    {"if": {"properties": {"mode": {"const": "external-general"}}, "required": ["mode"]},
+      "then": {"required": ["target", "preflightToken", "authorizationConfirmed"],
+        "properties": {"modelId": {"const": "rule-baseline"}, "authorizationConfirmed": {"const": true}},
+        "not": {"anyOf": [{"required": ["fixtureId"]}, {"required": ["testProfile"]}, {"required": ["delayMs"]}]}},
+      "else": {"not": {"anyOf": [{"required": ["scope"]}, {"required": ["preflightToken"]},
+        {"required": ["authorizationConfirmed"]}]}}}
   ]
 }

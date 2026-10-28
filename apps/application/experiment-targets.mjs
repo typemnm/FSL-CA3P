@@ -7,6 +7,24 @@ const REQUIRED_SCOPES = ['database', 'sessions', 'process', 'files'];
 const RESET_PATH = '/_ca3p/experiment-reset';
 const fault = (status, message) => Object.assign(new Error(message), { status, code: 'EXPERIMENT_TARGET_RESET_BLOCKED' });
 
+/** Keep only the target facts needed by a later full reset after run history is removed. */
+export function targetResetObligationsForRuns(runs = []) {
+  const obligations = [];
+  for (const run of runs) {
+    if (run.mode === 'core-fixture' || run.simulated === true) continue;
+    const fixtureId = run.fixtureId ?? run.manifest?.target?.fixtureId;
+    if (UNIVERSITY_FIXTURES.has(fixtureId)) {
+      obligations.push({ fixtureId,
+        manifest: { target: { fixtureId, origin: run.manifest?.target?.origin } },
+        coreTargetOrigin: run.coreTargetOrigin, target: run.target,
+        report: { target: { origin: run.report?.target?.origin } } });
+    } else if (!ISOLATED_FIXTURES.has(fixtureId) && run.targetContacted === true) {
+      obligations.push({ fixtureId: fixtureId ?? null, targetContacted: true });
+    }
+  }
+  return obligations;
+}
+
 function managementOrigin(value) {
   if (typeof value !== 'string' || value !== value.trim() || value.length > 256) throw new Error();
   const url = new URL(value);

@@ -3,14 +3,16 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository, DEFAULT_STORE_PATH } from '../../packages/run-store/index.mjs';
 import { createRunManifest } from '../../packages/contracts/manifest.mjs';
-import { emptyRun, RUN_MODES, ACTIVE_STATUSES } from '../../packages/contracts/index.mjs';
+import { emptyRun, RUN_MODES, ACTIVE_STATUSES, redact } from '../../packages/contracts/index.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
+import { normalizeExternalTarget, resolvePublicAddresses, verifyExternalPreflightToken } from './external-target.mjs';
 import { compareRunRecords } from '../../packages/evaluation/index.mjs';
 import { listModels as registryModels } from '../../packages/models/registry.mjs';
 import { prepareCaseSnapshot } from './case-snapshot.mjs';
 import { importLegacyRuns } from './import-legacy.mjs';
-import { prepareExperimentCleanup } from './experiment-cleanup.mjs';
+import { prepareExperimentCleanup, prepareHistoryReset } from './experiment-cleanup.mjs';
 import { prepareRunFileCleanup } from './experiment-files.mjs';
+import { targetResetObligationsForRuns } from './experiment-targets.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const workerFile = fileURLToPath(new URL('../worker/worker.mjs', import.meta.url));
@@ -50,7 +52,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     const experiment = store.experimentState();
     return { run, mode: run.mode, instanceId, experiment: { epoch: experiment.epoch, lastResetAt: experiment.lastResetAt, status: experiment.status },
       experimentReset: experiment, lab: { available: true, model: 'rule-baseline', provider: 'rules',
-      remoteAvailable: Boolean(remote), generalSupported: true, generalAvailable: Boolean(remote), models } };
+      remoteAvailable: Boolean(remote), generalSupported: true, generalAvailable: Boolean(remote),
+      externalSupported: true, externalAvailable: true, models } };
   }
   function publish(force = false) {
     if (closed) return;
@@ -90,8 +93,37 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (closing || closed) throw fault(503, 'Run service is closed.');
     if (resetting || store.experimentState().status !== 'ready') throw fault(409, '실험 초기화 또는 검토가 진행 중이거나 초기화 재시도가 필요합니다.');
     if (!body || typeof body !== 'object' || Array.isArray(body)
-      || Object.keys(body).some(key => !['mode', 'modelId', 'target', 'delayMs', 'testProfile', 'fixtureId'].includes(key))) {
+      || Object.keys(body).some(key => !['mode', 'modelId', 'target', 'delayMs', 'testProfile', 'fixtureId',
+        'scope', 'preflightToken', 'authorizationConfirmed'].includes(key))) {
       throw fault(400, 'Unsupported run options.');
+    }
+    if (body.mode === 'external-general') {
+      if (body.fixtureId !== undefined || body.testProfile !== undefined || body.delayMs !== undefined
+        || body.authorizationConfirmed !== true) throw fault(400, 'Confirm the external target and use the external profile.');
+      const modelId = body.modelId ?? 'rule-baseline';
+      if (modelId !== 'rule-baseline') throw fault(400, 'Initial external observation requires rule-baseline.');
+      const { normalizedUrl, scope } = normalizeExternalTarget(body);
+      if (!verifyExternalPreflightToken(body.preflightToken, normalizedUrl, scope)) {
+        throw fault(400, 'External target preflight expired or changed. Check the target again.');
+      }
+      await resolvePublicAddresses(new URL(normalizedUrl).hostname);
+      const id = `run-${randomUUID()}`;
+      const options = { mode: body.mode, modelId, target: normalizedUrl, scope,
+        testProfile: 'external-read-only', fixtureId: null, delayMs: 0 };
+      const manifest = createRunManifest({ runId: id, mode: body.mode, modelId, options,
+        model: listModels().find(item => item.id === modelId), env });
+      const experiment = store.experimentState();
+      manifest.experiment = { epoch: experiment.epoch, lastResetAt: experiment.lastResetAt,
+        previousRunCount: store.listRuns({ limit: 1 }).total };
+      const state = { ...emptyRun(), id, coreRunId: id, status: 'queued', mode: body.mode, modelId,
+        assessmentMode: 'general', target: redact(normalizedUrl), targetKind: 'external',
+        targetContacted: false, simulated: false, testProfile: 'external-read-only', fixtureId: null, manifest };
+      store.createRun({ id, mode: body.mode, modelId, manifest, state, options });
+      selectedRunId = id; ensureWorker(); publish(true); child?.send({ type: 'wake' });
+      return getState();
+    }
+    if (body.scope !== undefined || body.preflightToken !== undefined || body.authorizationConfirmed !== undefined) {
+      throw fault(400, 'External target options require external-general mode.');
     }
     const fixtureId = body.fixtureId ?? 'vul-web-1';
     if (typeof fixtureId !== 'string') throw fault(400, 'Choose a registered local fixture.');
@@ -174,6 +206,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
   function experimentResetPreview() {
     const control = store.experimentState();
     return { ...control, runCount: store.listRuns({ limit: 1 }).total,
+      pendingTargetResetCount: store.pendingTargetResets().length,
       canReset: !closing && !closed && !resetting && ['ready', 'failed'].includes(control.status) && store.activeRunCount() === 0,
       deletes: ['실행 이력과 비교 결과', '이벤트·모델 호출·검토 기록', 'JSON·HWPX·촬영 및 보고서 작업 파일', '실행별 사례 DB snapshot과 연결된 재검증 기록', '관리 대상 실습 웹사이트 상태'],
       preserves: ['로그인 계정과 API 설정', '검토된 사례·카탈로그·소스 코드'],
@@ -223,7 +256,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       // Quiesce the worker before validating participants: terminal publication
       // can precede its final browser/process teardown by a few milliseconds.
       const files = await prepareRunFileCleanup({ ...experimentFileOptions, runs, storePath: store.path });
-      const cleanup = await experimentCleanupFactory({ runs, storePath: store.path, env });
+      const cleanup = await experimentCleanupFactory({ runs: [...runs, ...store.pendingTargetResets()], storePath: store.path, env });
       const summary = await cleanup.execute();
       const fileSummary = await files.execute();
       const result = store.completeExperimentReset(token, { ...summary, runFiles: fileSummary });
@@ -240,6 +273,46 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
   function resetExperiment(body) {
     if (resetTask) return Promise.reject(fault(409, '다른 실험 초기화가 진행 중입니다.'));
     resetTask = performExperimentReset(body).finally(() => { resetTask = null; });
+    return resetTask;
+  }
+  async function performRunHistoryClear(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body) || body.confirmed !== true
+      || Object.keys(body).some(key => key !== 'confirmed')) throw fault(400, '실행 기록 삭제를 명시적으로 확인하세요.');
+    if (closing || closed) throw fault(503, 'Run service is closed.');
+    if (resetting) throw fault(409, '다른 초기화가 진행 중입니다.');
+    resetting = true;
+    const token = `api-${process.pid}-reset-${randomUUID()}`;
+    let locked = false;
+    try {
+      await ready;
+      const { previousStatus } = store.beginExperimentReset(token); locked = true; publish(true);
+      const runs = []; let offset = 0;
+      while (true) {
+        const page = store.listRuns({ limit: 200, offset }); runs.push(...page.items); offset += page.items.length;
+        if (offset >= page.total) break;
+      }
+      await stopIdleWorker();
+      const files = await prepareRunFileCleanup({ ...experimentFileOptions, runs, storePath: store.path });
+      const history = await prepareHistoryReset({ runs, env });
+      const historyResult = await history.execute();
+      const fileResult = await files.execute();
+      const result = store.completeRunHistoryClear(token, {
+        newTargetObligations: targetResetObligationsForRuns(runs), wasFailed: previousStatus === 'failed',
+        summary: { history: historyResult, runFiles: fileResult },
+      });
+      selectedRunId = null; idleRun = emptyRun();
+      const state = { ...getState(), historyClear: { ...result, status: 'completed' } };
+      publish(true); return state;
+    } catch (failure) {
+      if (locked) store.failExperimentReset(token);
+      publish(true);
+      const known = ['UNSAFE_EXPERIMENT_FILES', 'EXPERIMENT_HISTORY_RESET_BLOCKED'].includes(failure.code);
+      throw locked ? fault(failure.status ?? 503, `실행 기록 삭제를 완료하지 못했습니다. 초기화를 다시 시도해야 합니다.${known ? ` ${failure.message}` : ''}`) : failure;
+    } finally { resetting = false; ensureWorker(); }
+  }
+  function clearRunHistory(body) {
+    if (resetTask) return Promise.reject(fault(409, '다른 초기화가 진행 중입니다.'));
+    resetTask = performRunHistoryClear(body).finally(() => { resetTask = null; });
     return resetTask;
   }
   function close() {
@@ -263,7 +336,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
   }
   return { getState, start, startLab: ({ modelId = 'rule-baseline', ...options } = {}) => start({ ...options,
     modelId, mode: modelId === 'rule-baseline' ? 'local-lab-rule' : 'local-lab-deepseek' }),
-    stop, reset, resetExperiment, experimentResetPreview, withMutationLock, close, listModels, store, ready,
+    stop, reset, resetExperiment, clearRunHistory, experimentResetPreview, withMutationLock, close, listModels, store, ready,
     importLegacyRuns: options => withMutationLock(() => importLegacyRuns(store, options)),
     listRuns: filters => store.listRuns(filters), getRun: id => store.getRun(id),
     compareRuns: (base, candidate, options) => compareRunRecords(store.getRun(base), store.getRun(candidate), options),

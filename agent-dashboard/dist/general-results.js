@@ -129,7 +129,7 @@ export function generalReport(item) {
 }
 
 export function isGeneralAssessment(item) { return object(item)
-  && (item.mode === 'local-lab-general' || item.assessmentMode === 'general' || generalReport(item) !== null); }
+  && (item.mode === 'local-lab-general' || item.mode === 'external-general' || item.assessmentMode === 'general' || generalReport(item) !== null); }
 
 function normalizeEvent(event, index, fallbackTime, runId) {
   const source = object(event) ? event : {};
@@ -169,6 +169,7 @@ export function normalizeGeneralRun(item) {
     elapsedMs: typeof item.elapsedMs === 'number' && Number.isFinite(item.elapsedMs) && item.elapsedMs >= 0 ? item.elapsedMs : 0,
     simulated: false,
     targetContacted: item.targetContacted === true,
+    requestAttempted: item.requestAttempted === true,
     events,
     snapshots,
     reviewItems: list(item.reviewItems),
@@ -213,12 +214,19 @@ export function renderGeneralOverview(item) {
   const last = list(item.events).at(-1);
   const stage = text(item.stage) || text(summary.report.stage) || text(last?.stage) || '실행 상태 수신 대기';
   const stopped = text(summary.report.stopReason);
+  if (item.mode === 'external-general') {
+    const coverage = object(summary.report.coverage) ? summary.report.coverage : {};
+    return `<section class="general-overview" aria-label="외부 대상 관찰 진행"><div class="eyebrow">EXTERNAL / READ ONLY</div><h3>공개 페이지 관찰${summary.partial ? ' · 부분 결과' : ''}</h3><p>현재 단계: <strong>${escape(stage)}</strong></p><div class="general-overview-counts"><span>요청 <strong>${count(coverage.requestsUsed) ?? 0}</strong></span><span>응답 페이지 <strong>${count(coverage.observedPages) ?? 0}</strong></span><span>거부 후보 <strong>${count(coverage.rejectedCandidates) ?? 0}</strong></span></div><p class="muted">비인증 읽기 요청만 수행합니다. 독립 검증기가 없어 취약점 확정을 수행하지 않습니다.</p>${stopped ? `<p>종료 사유: ${escape(stopped)}</p>` : ''}</section>`;
+  }
   return `<section class="general-overview" aria-label="범용 점검 진행"><div class="eyebrow">GENERAL ASSESSMENT</div><h3>가설과 증거 기반 점검${summary.partial ? ' · 부분 결과' : ''}</h3><p>현재 단계: <strong>${escape(stage)}</strong></p><div class="general-overview-counts"><span>가설 <strong>${summary.totalHypotheses}</strong></span><span>검사 <strong>${summary.probes}</strong></span><span>확정 <strong>${summary.confirmed}</strong></span><span>미점검 <strong>${summary.notTested}</strong></span><span>거부 제안 <strong>${summary.rejectedProposals.length}</strong></span></div><p class="muted">발견한 공격면과 지원 가능한 검사의 범위만 집계합니다. 전체 취약점에 대한 완료율이 아닙니다.</p>${summary.partial ? '<p>일부 모델 제안이 실행되지 않아 점검 범위가 남아 있습니다.</p>' : ''}${stopped ? `<p>종료 사유: ${escape(stopped)}</p>` : ''}</section>`;
 }
 
 /** Show observed phases only. An unobserved phase is never counted as complete. */
 export function renderGeneralLoop(item, selectedEventId = null) {
   const events = list(item?.events).filter(object);
+  if (item?.mode === 'external-general') {
+    return `<section class="general-loop" aria-label="외부 대상 관찰 이벤트"><div class="eyebrow">EXTERNAL / OBSERVED EVENTS</div><h3>실제 관찰 단계</h3><div class="general-loop-iterations">${events.length ? events.map(event => `<button type="button" class="general-loop-phase is-observed${event.id === selectedEventId ? ' is-selected' : ''}" data-general-event="${escape(text(event.id))}"><strong>${escape(text(event.title) || text(event.stage) || '관찰 이벤트')}</strong><small>${escape(text(event.stage))}</small></button>`).join('') : '<p>아직 수신한 이벤트가 없습니다.</p>'}</div><p class="general-loop-note">범위 밖 링크와 리다이렉트는 요청하지 않으며 거부 사유를 이벤트에 남깁니다.</p></section>`;
+  }
   const progress = latestProgress(events);
   const phasesByIteration = new Map();
   for (const event of events) {
@@ -357,6 +365,18 @@ export function renderGeneralReport(item) {
   const evidence = new Map(list(report.evidence).filter(value => object(value) && text(value.id)).map(value => [value.id, value]));
   const unresolved = hypotheses.filter(value => value.status === 'not_tested' || value.status === 'inconclusive');
   const target = displayTarget(item.target) || displayTarget(report.target) || '대상 미기록';
+  if (item.mode === 'external-general' || report.inspectionMode === 'external-read-only') {
+    const coverage = object(report.coverage) ? report.coverage : {};
+    const scope = object(report.scope) ? report.scope : {};
+    const pages = list(report.inventory?.pages).filter(object);
+    const rejections = object(report.policyRejections?.byReason) ? report.policyRejections.byReason : {};
+    const errors = list(report.observationErrors).filter(object);
+    const rejected = Object.entries(rejections).filter(([, value]) => count(value) !== null && value > 0);
+    return `<section class="panel report-top general-report-top"><div><div class="eyebrow">EXTERNAL / READ ONLY REPORT</div><h2>외부 공개 페이지 관찰${summary.partial ? ' · 부분 결과' : ''}</h2><p>${escape(target)}</p><small>허용 범위 ${escape(scope.origin || '—')}${escape(scope.pathPrefix || '/')} · 메서드 ${escape(list(scope.methods).join(', ') || 'GET, HEAD')} · 최대 ${escape(scope.maxRequests ?? '—')}요청</small></div><div class="report-count"><strong>${count(coverage.observedPages) ?? pages.length}</strong><span>응답 페이지</span></div></section>
+      <section class="panel general-coverage"><h3>관찰 범위와 한계</h3><div class="general-overview-counts"><span>요청 시도 <strong>${report.requestAttempted === true || item.requestAttempted === true ? '예' : '아니오'}</strong></span><span>HTTP 응답 수신 <strong>${report.targetContacted === true || item.targetContacted === true ? '예' : '아니오'}</strong></span><span>사용 요청 <strong>${count(coverage.requestsUsed) ?? 0}</strong></span><span>거부 후보 <strong>${count(coverage.rejectedCandidates) ?? 0}</strong></span></div><p>인증 없는 공개 페이지에 읽기 요청만 수행했습니다. 독립 검증기가 없어 확정 취약점을 주장하지 않습니다. 관찰하지 못한 페이지는 안전 판정이 아닙니다.</p>${summary.partial ? '<p>부분 결과입니다. 아래 관찰 실패 또는 응답 제한을 확인하세요.</p>' : ''}${text(report.stopReason) ? `<p>종료 사유: ${escape(report.stopReason)}</p>` : ''}</section>
+      <section class="panel general-coverage"><h3>관찰 페이지 ${pages.length}건</h3>${pages.length ? `<ul>${pages.map(page => `<li>${escape(text(page.url) || 'URL 미기록')} · HTTP ${escape(page.status ?? '—')} · ${escape(text(page.contentType) || '형식 미기록')}${page.truncated ? ' · 본문 제한으로 일부만 수신' : ''}${text(page.title) ? ` · ${escape(page.title)}` : ''}</li>`).join('')}</ul>` : '<p>읽을 수 있었던 페이지가 없습니다.</p>'}</section>
+      <section class="panel general-coverage"><h3>범위 정책과 관찰 오류</h3>${rejected.length ? `<ul>${rejected.map(([reason, value]) => `<li>${escape(reason)} ${escape(value)}건</li>`).join('')}</ul>` : '<p>거부된 링크 후보가 없습니다.</p>'}${errors.length ? `<ul>${errors.map(row => `<li>${escape(text(row.code) || 'REQUEST_FAILED')} · ${escape(text(row.url) || 'URL 미기록')}</li>`).join('')}</ul>` : ''}</section>`;
+  }
   const findingCards = findings.map((finding, index) => {
     const status = STATUSES.has(finding.status) ? finding.status : 'inconclusive';
     const evidenceRefs = list(finding.evidenceIds).filter(id => typeof id === 'string');
