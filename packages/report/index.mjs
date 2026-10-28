@@ -77,16 +77,34 @@ async function readVerifiedFile(directory, name, entry, maxBytes) {
 
 /** Runs the existing Python report agent; public results never contain paths or credentials. */
 export async function generateReportDocument({ run, storePath, historyPath, envFile, env = process.env,
-  signal, timeoutMs = DEFAULT_TIMEOUT_MS, execute = executeReportProcess } = {}) {
+  findingId, signal, timeoutMs = DEFAULT_TIMEOUT_MS, execute = executeReportProcess } = {}) {
   if (run?.mode === 'core-fixture' || run?.simulated) {
     return { status: 'skipped', errorCode: 'FIXTURE_SKIPPED', message: '코어 fixture는 HWPX 보고서를 생성하지 않습니다.' };
   }
   if (!run?.report || !['completed', 'failed'].includes(run.report.status)) {
     return { status: 'skipped', errorCode: 'NO_FINAL_REPORT', message: '최종 검사 보고서가 없습니다.' };
   }
+  const general = run.report.assessmentMode === 'general';
+  let selectedFinding;
+  if (general) {
+    const matches = Array.isArray(run.report.findings) && typeof findingId === 'string'
+      ? run.report.findings.filter(item => item?.id === findingId) : [];
+    if (matches.length !== 1 || matches[0].status !== 'confirmed'
+      || !Array.isArray(matches[0].evidenceIds)
+      || matches[0].evidenceIds.some(id => typeof id !== 'string')) {
+      return { status: 'failed', errorCode: 'REPORT_INVALID_SELECTION',
+        message: '확정된 범용 finding을 하나 선택해야 합니다.' };
+    }
+    selectedFinding = matches[0];
+  } else if (findingId !== undefined) {
+    return { status: 'failed', errorCode: 'REPORT_INVALID_SELECTION',
+      message: '이 보고서 형식은 finding 선택을 지원하지 않습니다.' };
+  }
   let settings;
-  try { settings = configuration.resolveDeepSeekOptions({ env, ...(envFile !== undefined ? { envFile } : {}) }); }
-  catch { return { status: 'unavailable', errorCode: 'REPORT_NOT_CONFIGURED', message: '보고서용 DeepSeek API 설정이 필요합니다.' }; }
+  if (!general) {
+    try { settings = configuration.resolveDeepSeekOptions({ env, ...(envFile !== undefined ? { envFile } : {}) }); }
+    catch { return { status: 'unavailable', errorCode: 'REPORT_NOT_CONFIGURED', message: '보고서용 DeepSeek API 설정이 필요합니다.' }; }
+  }
   try {
     if (signal?.aborted) throw failure('REPORT_CANCELLED', '보고서 생성을 취소했습니다.');
     const output = join(dirname(resolve(storePath)), 'reports', hash(run.id), randomUUID());
@@ -94,9 +112,13 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     const trigger = { schemaVersion: 'report-trigger-1.0', runId: run.id,
       sources: { run: { kind: 'run-store', location: resolve(storePath) },
         history: historyPath ? { kind: 'casper-db', location: resolve(historyPath) } : { kind: 'none' } },
-      output: { dir: output } };
+      output: { dir: output }, ...(general ? { options: { findingId } } : {}) };
     const childEnv = { ...env, PYTHONPATH: PYTHON_ROOT, PYTHONIOENCODING: 'utf-8',
-      DEEPSEEK_BASE_URL: settings.baseUrl, DEEPSEEK_API_KEY: settings.apiKey, DEEPSEEK_MODEL: settings.model };
+      ...(settings ? { DEEPSEEK_BASE_URL: settings.baseUrl,
+        DEEPSEEK_API_KEY: settings.apiKey, DEEPSEEK_MODEL: settings.model } : {}) };
+    if (general) for (const key of Object.keys(childEnv)) {
+      if (/^DEEPSEEK_/iu.test(key)) delete childEnv[key];
+    }
     const result = await execute({ command: env.CA3P_REPORT_PYTHON || env.CASPER_DB_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'),
       args: ['-m', 'ca3p_report', 'run', '--trigger', '-'], input: JSON.stringify(trigger), env: childEnv, signal, timeoutMs });
     if (signal?.aborted) throw failure('REPORT_CANCELLED', '보고서 생성을 취소했습니다.');
@@ -108,6 +130,7 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     }
     const name = response.reportFilename;
     if (response.schemaVersion !== 'report-result-1.0' || response.runId !== run.id || response.stage !== 'reported'
+      || (general && response.findingId !== findingId)
       || typeof name !== 'string' || !/^[^<>:"/\\|?*\u0000-\u001f]{1,120}\.hwpx$/u.test(name)
       || name.includes('..') || !Array.isArray(response.files)) {
       throw failure('REPORT_INVALID_OUTPUT', '보고서 실행 식별자 또는 파일명이 올바르지 않습니다.');
@@ -119,14 +142,29 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
       throw failure('REPORT_INVALID_OUTPUT', '보고서 출력 디렉터리가 올바르지 않습니다.');
     }
     const modelBytes = await readVerifiedFile(reportDir, 'report-model.json', response.files.find(item => item.name === 'report-model.json'), 2_000_000);
-    if (JSON.parse(modelBytes.toString('utf8'))?.run?.runId !== run.id) {
+    let model;
+    try { model = JSON.parse(modelBytes.toString('utf8')); }
+    catch { throw failure('REPORT_INVALID_OUTPUT', '보고서 모델의 형식이 올바르지 않습니다.'); }
+    if (model?.run?.runId !== run.id) {
       throw failure('REPORT_INVALID_OUTPUT', '보고서 내용의 실행 식별자가 일치하지 않습니다.');
+    }
+    if (general && (model.sourceFindingId !== findingId
+      || model.generator?.method !== 'deterministic'
+      || model.run?.status !== run.report.status
+      || !Array.isArray(model.findings) || model.findings.length !== 1
+      || model.findings[0]?.common?.findingId !== findingId
+      || model.findings[0]?.common?.status !== 'confirmed'
+      || !Array.isArray(model.sourceEvidenceIds) || !model.sourceEvidenceIds.length
+      || new Set(model.sourceEvidenceIds).size !== model.sourceEvidenceIds.length
+      || model.sourceEvidenceIds.some(id => typeof id !== 'string' || !selectedFinding.evidenceIds.includes(id)))) {
+      throw failure('REPORT_INVALID_OUTPUT', '보고서의 확정 finding 또는 증거 참조가 원본과 일치하지 않습니다.');
     }
     const bytes = await readVerifiedFile(reportDir, name, response.files.find(item => item.name === name), MAX_DOCUMENT_BYTES);
     if (bytes.length < 4 || !bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
       throw failure('REPORT_INVALID_OUTPUT', 'HWPX 파일 형식이 올바르지 않습니다.');
     }
-    return { status: 'ready', filename: name, bytes, sha256: hash(bytes), size: bytes.length };
+    return { status: 'ready', ...(general ? { findingId } : {}),
+      filename: name, bytes, sha256: hash(bytes), size: bytes.length };
   } catch (error) {
     const known = typeof error?.code === 'string' && /^REPORT_[A-Z_]+$/.test(error.code);
     return { status: 'failed', errorCode: known ? error.code : 'REPORT_GENERATION_FAILED',

@@ -67,6 +67,67 @@ test('university fixtures queue their known-record IDOR check without a case dat
   }
 });
 
+test('registered universities queue a model-backed general assessment without selecting an IDOR profile', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: 'test-key', CASPER_DB_PYTHON: 'unavailable-python-for-general' } });
+  assert.equal(service.getState().lab.generalSupported, true);
+  assert.equal(service.getState().lab.generalAvailable, true);
+  for (const [fixtureId, target] of [['vul-web2-daehan', 'http://127.0.0.1:4101'], ['vul-web2-wonchang', 'http://192.168.0.20:4102']]) {
+    const state = await service.start({ mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId, target });
+    assert.equal(state.run.status, 'queued');
+    assert.equal(state.run.mode, 'local-lab-general');
+    assert.equal(state.run.assessmentMode, 'general');
+    assert.equal(state.run.testProfile, 'general');
+    assert.equal(state.run.target, target);
+    assert.equal(state.run.manifest.target.origin, target);
+    assert.equal(state.run.manifest.execution.maxIterations, 6);
+    assert.equal(state.run.manifest.model.executionRole, undefined);
+    assert.deepEqual(state.run.manifest.data.unavailableInputs, ['casper-db']);
+    const lease = service.store.claimNext('general-options-test');
+    assert.equal(lease.options.mode, 'local-lab-general');
+    assert.equal(lease.options.modelId, 'deepseek-flash');
+    assert.equal(lease.options.testProfile, 'general');
+    assert.equal(lease.options.fixtureId, fixtureId);
+    assert.equal(lease.options.target, target);
+    assert.equal(lease.options.caseSnapshot, undefined);
+    assert.deepEqual(lease.options.unavailableInputs, ['casper-db']);
+    service.store.finish(lease, 'completed');
+  }
+});
+
+test('general assessment requires a real configured model and registered target scope', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false });
+  assert.equal(service.getState().lab.generalSupported, true);
+  assert.equal(service.getState().lab.generalAvailable, false);
+  await assert.rejects(service.start({ mode: 'local-lab-general', fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash' }), { status: 503 });
+  const { service: configured } = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: 'test-key' } });
+  for (const options of [
+    { mode: 'local-lab-general', fixtureId: 'vul-web2-daehan', modelId: 'rule-baseline' },
+    { mode: 'local-lab-general', fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash', target: 'https://external.invalid' },
+    { mode: 'local-lab-general', fixtureId: 'unknown', modelId: 'deepseek-flash' },
+    { mode: 'local-lab-general', fixtureId: 'vul-web-1', modelId: 'deepseek-flash', target: 'http://127.0.0.1:4101' },
+    { mode: 'local-lab-general', fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash', testProfile: 'known_record_idor_read' },
+  ]) await assert.rejects(configured.start(options), { status: 400 });
+  assert.equal(service.listRuns().total, 0);
+  assert.equal(configured.listRuns().total, 0);
+});
+
+test('general board run records unavailable case history instead of failing to queue', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: 'test-key', CASPER_DB_PYTHON: 'missing-python-for-general-board' } });
+  const state = await service.start({ mode: 'local-lab-general', modelId: 'deepseek-v4-pro', fixtureId: 'vul-web-1' });
+  assert.equal(state.run.status, 'queued');
+  assert.equal(state.run.assessmentMode, 'general');
+  assert.equal(state.run.manifest.data.caseSnapshotDigest, null);
+  assert.deepEqual(state.run.manifest.data.unavailableInputs, ['casper-db']);
+  const lease = service.store.claimNext('general-board-test');
+  assert.equal(lease.options.fixtureId, 'vul-web-1');
+  assert.equal(lease.options.caseSnapshot, undefined);
+  assert.deepEqual(lease.options.unavailableInputs, ['casper-db']);
+  service.store.finish(lease, 'completed');
+});
+
 test('university fixture selections forward approved private Docker target origins', async t => {
   const { service } = setup(t, { autoStartWorker: false, importLegacy: false });
   for (const target of ['http://192.168.0.20:4101', 'http://10.0.0.8:4102', 'http://host.docker.internal:4101', 'http://daehan:3000', 'http://wonchang:8080']) {

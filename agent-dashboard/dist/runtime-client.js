@@ -12,7 +12,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
   const remote = !['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname);
 
   function readEnvelope(value) {
-    if (!value || !['core-fixture', 'local-lab-rule', 'local-lab-deepseek'].includes(value.mode ?? value.run?.mode)
+    if (!value || !['core-fixture', 'local-lab-rule', 'local-lab-deepseek', 'local-lab-general'].includes(value.mode ?? value.run?.mode)
       || typeof value.instanceId !== 'string' || !value.run || !Array.isArray(value.run.events)) {
       throw new Error('실행 서버의 상태 형식을 확인할 수 없습니다.');
     }
@@ -159,6 +159,9 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     },
     getRun(id) { return request(`/api/runs/${encodeURIComponent(id)}`); },
     reportDownloadUrl(id) { return `/api/runs/${encodeURIComponent(id)}/report.hwpx`; },
+    findingReportDownloadUrl(runId, artifactId) {
+      return `/api/runs/${encodeURIComponent(runId)}/reports/${encodeURIComponent(artifactId)}.hwpx`;
+    },
     getModels() { return request('/api/models'); },
     getPlatform() { return request('/api/platform'); },
     getCiResults() { return request('/api/ci-results'); },

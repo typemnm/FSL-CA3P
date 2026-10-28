@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { redact, validateDisplayTarget } from '../index.mjs';
+import { redact, validateDisplayTarget, RUN_MODES } from '../index.mjs';
 import { createRunManifest, PROJECT_ROOT, treeDigest } from '../manifest.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 test('redaction preserves verified URL bytes and token usage while removing credentials', () => {
   const input = { origin: 'http://127.0.0.1:3000', headers: { authorization: 'private' }, usage: { total_tokens: 4 },
@@ -66,4 +67,65 @@ test('the existing local board manifest keeps its browser and agent execution co
   assert.ok(manifest.shared.lockDigest);
   assert.ok(manifest.model.adapterDigest);
   assert.equal(manifest.modules['vul-web2'], undefined);
+});
+
+test('general university manifests record model execution and omit deferred XSS browser conditions', () => {
+  assert.ok(RUN_MODES.includes('local-lab-general'));
+  const manifest = createRunManifest({ runId: 'general-university', mode: 'local-lab-general',
+    modelId: 'deepseek-flash', model: { provider: 'deepseek' },
+    options: { fixtureId: 'vul-web2-daehan', testProfile: 'general', target: 'http://192.168.0.20:4101' } });
+  assert.equal(manifest.target.fixtureId, 'vul-web2-daehan');
+  assert.equal(manifest.target.origin, 'http://192.168.0.20:4101');
+  assert.equal(manifest.target.testProfile, 'general');
+  assert.equal(manifest.execution.maxIterations, 6);
+  assert.equal(manifest.model.provider, 'deepseek');
+  assert.equal(manifest.model.executionRole, undefined);
+  assert.ok(manifest.model.promptTemplateDigest);
+  assert.ok(manifest.modules.agent.contentDigest);
+  assert.equal(manifest.modules['xss-parser'], undefined);
+  assert.equal(manifest.environment.browserVersion, 'not-applicable');
+});
+
+test('general manifests bind the unified catalog snapshot and actual execution dependencies', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'ca3p-general-catalog-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'catalog.sqlite');
+  const database = new DatabaseSync(path);
+  database.exec("CREATE TABLE attack_catalog_metadata(key TEXT PRIMARY KEY, value TEXT); INSERT INTO attack_catalog_metadata VALUES ('schema', 'casper-attack-catalog-1'); CREATE TABLE attack_patterns(pattern_id TEXT, revision INTEGER, content_sha256 TEXT); INSERT INTO attack_patterns VALUES ('known-access', 1, 'alpha'); CREATE TABLE attack_templates(template_id TEXT, version TEXT, content_sha256 TEXT);");
+  database.close();
+  const snapshot = { path, contentDigest: 'case-content-digest' };
+  const env = { CASPER_DB_PYTHON: 'missing-python-for-contract-test' };
+  const university = createRunManifest({ runId: 'general-university-catalog', mode: 'local-lab-general',
+    modelId: 'deepseek-flash', options: { fixtureId: 'vul-web2-daehan', caseSnapshot: snapshot }, env });
+  assert.equal(university.target.testProfile, 'general');
+  assert.equal(university.data.caseSnapshotDigest, snapshot.contentDigest);
+  assert.match(university.data.catalogDigest, /^[a-f0-9]{64}$/u);
+  assert.equal(university.data.catalogSeedDigest, treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')));
+  for (const name of ['agent', 'vul-web2', 'casper-db', 'attack-module', 'guardrail', 'packages/models', 'packages/report', 'packages/run-store']) {
+    assert.ok(university.modules[name]?.contentDigest, `${name} must be frozen for general university runs`);
+  }
+  assert.ok(university.policy.rulesetDigest);
+  assert.equal(university.environment.pythonVersion, null, 'the unavailable Python dependency is not inapplicable');
+  assert.equal(university.environment.browserVersion, 'not-applicable');
+  assert.equal(university.modules['xss-parser'], undefined);
+
+  const changed = new DatabaseSync(path);
+  changed.exec("UPDATE attack_patterns SET content_sha256='beta'");
+  changed.close();
+  const changedManifest = createRunManifest({ runId: 'general-university-catalog-changed', mode: 'local-lab-general',
+    modelId: 'deepseek-flash', options: { fixtureId: 'vul-web2-daehan', caseSnapshot: snapshot }, env });
+  assert.notEqual(changedManifest.data.catalogDigest, university.data.catalogDigest);
+
+  const board = createRunManifest({ runId: 'general-board-catalog', mode: 'local-lab-general',
+    modelId: 'deepseek-flash', options: { fixtureId: 'vul-web-1', caseSnapshot: snapshot }, env });
+  assert.equal(board.target.testProfile, 'general');
+  assert.ok(board.modules['casper-db']?.contentDigest);
+  for (const name of ['attack-module', 'guardrail', 'packages/run-store']) {
+    assert.ok(board.modules[name]?.contentDigest, `${name} must be frozen for general board runs`);
+  }
+  assert.equal(board.policy.rulesetDigest, null);
+  const unavailable = createRunManifest({ runId: 'general-board-unavailable', mode: 'local-lab-general',
+    modelId: 'deepseek-flash', options: { fixtureId: 'vul-web-1', unavailableInputs: ['casper-db'] }, env });
+  assert.equal(unavailable.data.catalogDigest, null);
+  assert.deepEqual(unavailable.data.unavailableInputs, ['casper-db']);
 });

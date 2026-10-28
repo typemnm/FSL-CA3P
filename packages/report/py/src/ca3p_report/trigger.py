@@ -12,6 +12,7 @@ from pathlib import Path
 
 SCHEMA_VERSION = "report-trigger-1.0"
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+FINDING_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 RUN_KINDS = frozenset({"pentest-db-disk", "run-store"})
 HISTORY_KINDS = frozenset({"casper-db", "none"})
 TOP_LEVEL_KEYS = frozenset({"schemaVersion", "runId", "sources", "capture", "output", "options"})
@@ -33,6 +34,7 @@ class Trigger:
     run: SourceRef
     history: SourceRef
     output_dir: Path
+    finding_id: str | None = None
 
 
 def _record(value: object, name: str) -> dict:
@@ -78,11 +80,20 @@ def parse_trigger(data: object) -> Trigger:
         raise TriggerError("sources has unknown keys")
     history = sources.get("history", {"kind": "none"})
     output = _record(trigger.get("output"), "output")
+    options = _record(trigger.get("options", {}), "options")
+    if set(options) - {"findingId"}:
+        raise TriggerError("options has unknown keys")
+    finding_id = options.get("findingId")
+    if finding_id is not None and (
+        not isinstance(finding_id, str) or not FINDING_ID.fullmatch(finding_id)
+    ):
+        raise TriggerError("options.findingId must be a safe identifier")
     parsed = Trigger(
         run_id=run_id,
         run=_source(sources.get("run"), "sources.run", RUN_KINDS),
         history=_source(history, "sources.history", HISTORY_KINDS),
         output_dir=_absolute(output.get("dir"), "output.dir"),
+        finding_id=finding_id,
     )
     _refuse_output_inside_sources(parsed)
     return parsed

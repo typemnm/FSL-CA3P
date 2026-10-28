@@ -94,6 +94,32 @@ def _core_event(runtime_event: dict) -> StoredEvent | None:
     )
 
 
+def _general_events(state: dict) -> list[StoredEvent]:
+    """Read the final, projected Agent events used by general verification.
+
+    General runs do not send pentest-db append messages. The application stores
+    its bounded event projection in state_json instead.
+    """
+    raw = state.get("events")
+    if not isinstance(raw, list):
+        raise CollectError("general run has no event list")
+    result = []
+    for event in raw:
+        if not isinstance(event, dict) or event.get("source") != "agent/general-assessment":
+            continue
+        if event.get("module") != "agent" or not _structured(event):
+            raise CollectError("general run contains a malformed Agent event")
+        result.append(StoredEvent(
+            stage=event["stage"],
+            iteration=event.get("iteration") if isinstance(event.get("iteration"), int) else None,
+            recorded_at=event.get("time") if isinstance(event.get("time"), str) else None,
+            message_id=event.get("id") if isinstance(event.get("id"), str) else None,
+            request=event["request"],
+            response=event["response"],
+        ))
+    return result
+
+
 def read_run(db_path: Path, run_id: str) -> RunRecord | None:
     if not db_path.is_file():
         raise CollectError("run-store database not found")
@@ -129,6 +155,8 @@ def read_run(db_path: Path, run_id: str) -> RunRecord | None:
         runtime_event = _load(value, "event")
         if isinstance(runtime_event, dict) and (event := _core_event(runtime_event)):
             events.append(event)
+    if isinstance(report, dict) and report.get("assessmentMode") == "general":
+        events = _general_events(state)
     return RunRecord(
         run_id=run_id,
         driver=DRIVER,
