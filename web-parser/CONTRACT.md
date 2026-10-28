@@ -110,13 +110,14 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   원문. `action` 속성이 없거나 빈 문자열이면 브라우저처럼 **문서 URL**(`<base>`와 무관; `raw`는 `null`/`''`). SVG `<a>`/`<script>`도 속성값 기준.
 - **탐색 실패 정책**: 메인 프레임 응답을 **하나라도 받았다면 resolve** — 3xx 홉도 받은 응답이다. status/headers를 채우고
   `errors`에 `{stage:'load'}`(load/networkidle 타임아웃: 커밋된 DOM은 추출) 또는 `{stage:'navigate'}`(다운로드형 응답, 죽은
-  호스트로의 리다이렉트, 리다이렉트 루프 등: DOM 추출 없음)를 기록. goto 타임아웃은 항상
-  `load`다 — 3xx 뒤 대상이 응답하지 않아 아무것도 커밋되지 않은 경우도 `load`이며, 이때 추출은 진행 중 내비게이션을 멈추고
+  호스트로의 리다이렉트, 리다이렉트 루프 등: DOM 추출 없음)를 기록. 응답을 하나라도 받은 뒤의 goto 타임아웃은 항상
+  `load`다(응답을 받기 전에 타임아웃이면 받은 응답이 없으므로 아래 규칙대로 reject) — 3xx 뒤 대상이 응답하지 않아 아무것도 커밋되지 않은 경우도 `load`이며, 이때 추출은 진행 중 내비게이션을 멈추고
   (`pending navigation stopped`) `about:blank`를 읽으므로 `extracted document has no response (about:blank)`가 이어진다. 최종 문서 없이 3xx에서 끝났으면 `target.finalUrl`·status·
   headers는 **마지막으로 받은 3xx 응답**의 것, `redirectChain`은 그 앞 홉들. HTTP 4xx/5xx도 정상 resolve. **응답이 전혀 없을
   때만 reject**(DNS 실패, 연결 거부, 3xx 없이 `ignoreHTTPSErrors:false`의 인증서 오류). **알려진 예외**: Chromium이 따르기를
-  거부하는 Location(`file:`·`data:`·`chrome:` 등)의 3xx는 Playwright 응답 객체가 생기지 않아 `net::ERR_UNSAFE_REDIRECT`로
-  **reject**되고 그 3xx의 status·헤더(`Set-Cookie` 포함)는 잃는다(미수정, §8).
+  거부하는 Location(`file:`·`data:`·`chrome:` 등)의 3xx는 Playwright 응답 객체가 생기지 않는다. 그 3xx가 **첫 응답**이면
+  `net::ERR_UNSAFE_REDIRECT`로 **reject**, 앞서 받은 3xx 홉이 있으면 그 3xx로 resolve + `navigate` 에러. 어느 쪽이든 그 unsafe
+  3xx 자체의 status·헤더(`Set-Cookie` 포함)는 잃는다(미수정, §8).
 - **비 HTML 문서**: 판정은 응답 헤더가 아니라 **추출한 문서의 `document.contentType`**(프로토타입 getter, Content-Type이 없으면
   Chromium이 스니핑한 값)이 text/html·application/xhtml+xml인지로. 아니면 `contentType`(받은 헤더 그대로, 없으면 null)·status·
   headers만 기록하고 `meta`/`html`/`structure`/DOM probe/JS 전역은 비운다(브라우저 뷰어가 만든 DOM을 대상 데이터로 보고하지
