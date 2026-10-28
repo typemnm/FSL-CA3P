@@ -1,0 +1,148 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "casper-attack-template-1",
+      "default": "casper-attack-template-1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "template_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Template Id",
+      "type": "string"
+    },
+    "version": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    },
+    "pattern_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Pattern Id",
+      "type": "string"
+    },
+    "pattern_revision": {
+      "minimum": 1,
+      "title": "Pattern Revision",
+      "type": "integer"
+    },
+    "executor_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Executor Id",
+      "type": "string"
+    },
+    "executor_contract_version": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Executor Contract Version",
+      "type": "string"
+    },
+    "input_schema": {
+      "additionalProperties": true,
+      "title": "Input Schema",
+      "type": "object"
+    },
+    "required_capabilities": {
+      "items": {
+        "maxLength": 4000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 30,
+      "minItems": 1,
+      "title": "Required Capabilities",
+      "type": "array"
+    },
+    "verification_rule_ids": {
+      "items": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+        "type": "string"
+      },
+      "maxItems": 30,
+      "minItems": 1,
+      "title": "Verification Rule Ids",
+      "type": "array"
+    },
+    "origin": {
+      "enum": [
+        "imported",
+        "human_authored",
+        "ai_generated"
+      ],
+      "title": "Origin",
+      "type": "string"
+    },
+    "source_refs": {
+      "items": {
+        "maxLength": 4000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 30,
+      "minItems": 1,
+      "title": "Source Refs",
+      "type": "array"
+    },
+    "parent_template_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Template Id"
+    },
+    "parent_template_version": {
+      "anyOf": [
+        {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Template Version"
+    },
+    "generation_metadata": {
+      "additionalProperties": true,
+      "title": "Generation Metadata",
+      "type": "object"
+    },
+    "registration_state": {
+      "const": "draft",
+      "default": "draft",
+      "title": "Registration State",
+      "type": "string"
+    },
+    "execution_enabled": {
+      "const": false,
+      "default": false,
+      "title": "Execution Enabled",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "template_id",
+    "version",
+    "pattern_id",
+    "pattern_revision",
+    "executor_id",
+    "executor_contract_version",
+    "input_schema",
+    "required_capabilities",
+    "verification_rule_ids",
+    "origin",
+    "source_refs"
+  ],
+  "title": "AttackTemplate",
+  "type": "object"
+}

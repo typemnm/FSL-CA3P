@@ -135,6 +135,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       previousRunCount: store.listRuns({ limit: 1 }).total };
     if (options.caseSnapshot) {
       manifest.data.caseSnapshotDigest = options.caseSnapshot.contentDigest;
+      manifest.data.knowledgeSnapshotDigest = options.caseSnapshot.knowledgeDigest;
+      manifest.data.knowledgeSnapshotFileDigest = options.caseSnapshot.fileDigest;
       manifest.data.caseRevisions = options.caseSnapshot.caseRevisions;
       manifest.data.caseStoreMigration = options.caseSnapshot.schemaVersion;
       manifest.data.caseDatabaseSourcePath = options.caseSnapshot.sourcePath;

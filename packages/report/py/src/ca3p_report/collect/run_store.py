@@ -74,7 +74,7 @@ def _core_event(runtime_event: dict) -> StoredEvent | None:
     if (legacy := _legacy_event(runtime_event)) is not None:
         return legacy
     request = runtime_event.get("request")
-    if not isinstance(request, dict) or request.get("receiver") != "pentest-db":
+    if not isinstance(request, dict) or request.get("receiver") not in {"casper-db", "pentest-db"}:
         return None
     payload = request.get("payload")
     if not isinstance(payload, dict) or payload.get("operation") != "append":

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
@@ -200,9 +200,17 @@ def initialize_database(path: str | Path) -> Path:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             ).fetchall()
             if tables:
-                raise ValueError(
-                    "refusing to initialize a database that already has unknown tables"
-                )
+                from .external_vulnerabilities import EXTERNAL_TABLES
+
+                names = {row["name"] for row in tables}
+                owned = names.issubset(EXTERNAL_TABLES) and "external_metadata" in names
+                marker = connection.execute(
+                    "SELECT value FROM external_metadata WHERE key='schema'"
+                ).fetchone() if owned else None
+                if not marker or marker[0] != "external-vuln-1":
+                    raise ValueError(
+                        "refusing to initialize a database that already has unknown tables"
+                    )
             for name in ("schema.sql", "history.sql", "checks.sql"):
                 _run_schema(connection, _sql(name))
         elif version < SCHEMA_VERSION:
@@ -287,7 +295,9 @@ class CaseStore:
             _save_version(connection, result)
         return result
 
-    def add_many(self, cases: list[Case | dict]) -> dict[str, list[CaseRecord]]:
+    def add_many(
+        self, cases: list[Case | dict], *, _connection: sqlite3.Connection | None = None,
+    ) -> dict[str, list[CaseRecord]]:
         """Atomically import reviewed cases; identical retries do not add revisions."""
         validated = [Case.model_validate(case) for case in cases]
         ids = [case.case_id for case in validated]
@@ -299,7 +309,8 @@ class CaseStore:
         now = datetime.now(UTC).isoformat()
         columns = COLUMNS + ("created_at", "updated_at")
         sql = f"INSERT INTO cases ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})"
-        with self._connect(write=True) as connection:
+        context = self._connect(write=True) if _connection is None else nullcontext(_connection)
+        with context as connection:
             for case in validated:
                 existing = connection.execute(
                     "SELECT * FROM cases WHERE case_id = ?", (case.case_id,)

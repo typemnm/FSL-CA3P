@@ -51,7 +51,9 @@ def pick_hwpx() -> Path | None:
         import tkinter as tk
         from tkinter import filedialog
     except ImportError as exc:
-        raise ValueError("file picker needs Python's optional tkinter component") from exc
+        raise ValueError(
+            "file picker needs tkinter; on a server pass --file <report-path>"
+        ) from exc
     root = None
     try:
         root = tk.Tk()
@@ -68,7 +70,9 @@ def pick_hwpx() -> Path | None:
         )
         return Path(selected) if selected else None
     except tk.TclError as exc:
-        raise ValueError("file picker could not open; run this task on the local desktop") from exc
+        raise ValueError(
+            "file picker could not open; on a server pass --file <report-path>"
+        ) from exc
     finally:
         if root is not None:
             root.destroy()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from pydantic import TypeAdapter
@@ -109,7 +110,7 @@ def build_reference_context(
         try:
             # Verify even an empty selection, without creating a SQLite file.
             path = Path(external_database).resolve(strict=True)
-            with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as connection:
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
                 marker = connection.execute(
                     "SELECT value FROM external_metadata WHERE key='schema'"
                 ).fetchone()

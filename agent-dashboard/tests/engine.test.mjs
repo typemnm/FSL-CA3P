@@ -8,7 +8,7 @@ test('dashboard lists the five external modules without internal Agent stages', 
     ['casper', 'casper-db'],
     ['attack', 'attack-module'],
     ['guardrail', 'guardrail'],
-    ['pentest', 'pentest-db'],
+    ['pentest', 'run-evidence'],
   ]);
 });
 

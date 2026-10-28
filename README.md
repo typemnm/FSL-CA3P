@@ -98,7 +98,7 @@ docker compose logs -f dashboard
 
 DeepSeek를 사용하는 로컬 실습에는 `agent/.env.example`을 참고해 `agent/.env`에 `DEEPSEEK_API_KEY`를 설정한 뒤 컨테이너를 시작하세요. 이 파일은 선택 사항이며 코어 fixture에는 필요하지 않습니다. 키는 Git이나 Docker 이미지에 포함하지 마세요. 로컬 실습은 저장소의 격리된 게시판만 대상으로 사용하며 모델 API 호출에는 과금이 발생할 수 있습니다.
 
-`casper-db`의 SQLite 파일과 `pentest-db` 실행 보고서는 Docker named volume에 보존됩니다. 컨테이너를 내렸다가 다시 올려도 이 데이터는 남습니다. 기존 호스트의 `casper-db/data/cases.sqlite3`와 `reports/`는 새 컨테이너에 자동으로 복사되지 않습니다. 기존 과거 사례 DB가 필요하면 실습을 실행하지 않는 상태에서 `docker compose cp casper-db/data/cases.sqlite3 dashboard:/app/casper-db/data/cases.sqlite3`로 가져올 수 있습니다. 개별 보고서는 대시보드의 JSON 내보내기로 저장할 수 있습니다.
+`casper-db`의 통합 SQLite 파일과 기존 실행 보고서는 Docker named volume에 보존됩니다. 컨테이너를 내렸다가 다시 올려도 이 데이터는 남습니다. 기존 호스트의 `casper-db/data/cases.sqlite3`와 `reports/`는 새 컨테이너에 자동으로 복사되지 않습니다. 기존 과거 사례 DB가 필요하면 실습을 실행하지 않는 상태에서 `docker compose cp casper-db/data/cases.sqlite3 dashboard:/app/casper-db/data/cases.sqlite3`로 가져올 수 있습니다. 개별 보고서는 대시보드의 JSON 내보내기로 저장할 수 있습니다.
 
 ```powershell
 docker compose down
@@ -148,9 +148,9 @@ node start.mjs --help
 
 루트 시작 스크립트는 대시보드와 로컬 실행 서버를 엽니다. 화면의 **코어 fixture 시작**을 누르면 `agent/src/orchestrator.js`의 `runOnce()`가 규칙 기반 Reasoning Engine과 모의 모듈을 한 번 실행합니다. 입력한 URL은 이 모드에서 표시용이며 접속하지 않습니다.
 
-모델 선택에서 규칙 baseline 또는 등록된 DeepSeek 모델을 선택하고 **로컬 실습 시작**을 누르면 `vul-web-1` 게시판을 `127.0.0.1`의 임시 포트와 별도 데이터 파일로 시작합니다. 기본 실습은 `stored_xss_canary`의 단일 반복 저장형 XSS 검사입니다. `xss-parser`가 Chromium으로 입력 위치와 HTML 렌더링을 관찰하고 `casper-db`가 과거 사례와 대조하며 `pentest-db`가 초안 카탈로그를 반환합니다. 과거 일치나 카탈로그만으로 현재 취약점을 확정하지 않습니다.
+모델 선택에서 규칙 baseline 또는 등록된 DeepSeek 모델을 선택하고 **로컬 실습 시작**을 누르면 `vul-web-1` 게시판을 `127.0.0.1`의 임시 포트와 별도 데이터 파일로 시작합니다. 기본 실습은 `stored_xss_canary`의 단일 반복 저장형 XSS 검사입니다. `xss-parser`가 Chromium으로 입력 위치와 HTML 렌더링을 관찰하고 `casper-db`가 과거 사례와 대조하고 같은 SQLite DB의 버전된 공격 정보를 반환합니다. 과거 일치나 카탈로그만으로 현재 취약점을 확정하지 않습니다.
 
-Agent는 관찰한 입력 위치와 카탈로그 조언을 확인한 뒤 실행별 고유 마커를 가진 무해한 canary 게시글을 계획합니다. DeepSeek가 제안한 구조화된 curl JSON은 코어가 계산한 허용 `POST /api/posts` 요청과 정확히 일치해야 합니다. `guardrail`이 로컬 게시판·canary·요청 예산을 전송 직전에 평가하고, 허용된 한 번의 검사 POST를 `attack-module`이 실행합니다. 이어서 독립된 Chromium 관찰이 같은 게시글의 마커 콜백 실행 여부를 확인합니다. 코어의 결정론적 `reflect()`가 게시글 생성·표시·마커·브라우저 실행 증거를 묶어 finding을 판정하고 `pentest-db`에 이벤트와 보고서를 저장합니다. 각 요청·응답, guardrail 판정과 Agent 입출력은 실시간으로 표시합니다.
+Agent는 관찰한 입력 위치와 카탈로그 조언을 확인한 뒤 실행별 고유 마커를 가진 무해한 canary 게시글을 계획합니다. DeepSeek가 제안한 구조화된 curl JSON은 코어가 계산한 허용 `POST /api/posts` 요청과 정확히 일치해야 합니다. `guardrail`이 로컬 게시판·canary·요청 예산을 전송 직전에 평가하고, 허용된 한 번의 검사 POST를 `attack-module`이 실행합니다. 이어서 독립된 Chromium 관찰이 같은 게시글의 마커 콜백 실행 여부를 확인합니다. 코어의 결정론적 `reflect()`가 게시글 생성·표시·마커·브라우저 실행 증거를 묶어 finding을 판정하고 실행 기록 저장기에 이벤트와 보고서를 보존합니다. 각 요청·응답, guardrail 판정과 Agent 입출력은 실시간으로 표시합니다.
 
 규칙 baseline은 API key 없이 실제 브라우저 실습을 수행합니다. DeepSeek 모델을 선택할 때는 `agent/.env` 또는 환경변수의 `DEEPSEEK_API_KEY`가 필요하고 API 호출에 과금이 발생할 수 있습니다. `npm start` 자체로는 실습이나 모델 호출을 시작하지 않습니다. 대상은 서버가 만든 로컬 게시판으로 고정하며 입력한 임의 URL에는 접속하지 않습니다. 과거 사례가 비어 있으면 일치 결과도 없습니다. 기존 삭제 권한 검사는 레거시 프로필로 유지합니다.
 
@@ -163,8 +163,7 @@ Agent는 관찰한 입력 위치와 카탈로그 조언을 확인한 뒤 실행�
 | `packages/adapters`, `history` | parser·attack·guardrail·지식 DB 연결 및 검증 이력 동기화 | worker에서 사용 |
 | `agent` | 단일 반복 코어·Reasoning Engine | fixture 또는 로컬 실습 모드에서 실행 |
 | `xss-parser` | Chromium 기반 읽기 전용 관찰과 브라우저 실행 확인 | 검사 전 입력·sink 관찰, POST 후 별도 브라우저에서 canary 실행 확인 |
-| `casper-db` | SQLite 과거 XSS 사례 매칭 | parser 관찰값을 대조하고 참고 판정 반환 |
-| `pentest-db` | 초안 XSS 카탈로그·로컬 실행 기록 | 참고 정보 조회와 이벤트·보고서 파일 저장 |
+| `casper-db` | 사례·공개 권고·공격 정보·미래 템플릿의 통합 DB | 위치·제품 기반 조회와 버전·근거 제공 |
 | `attack-module` | JSON curl 요청의 검증·전송·성공/실패 JSON 응답 | 기본 실습에서 세션 GET과 제한된 검사 POST 실행 |
 | `guardrail` | canary 범위·요청 예산 정책 평가 | `attack-module` 전송 직전에 실행; 별도 상주 프로세스 없음 |
 | `vul-web-1` | 독립 실습용 서버 | 로컬 실습 버튼을 누르면 격리된 임시 인스턴스 시작 |
@@ -201,3 +200,7 @@ npm start
 `integration-gate`와 담당자 리뷰를 통과한 변경을 머지하고 main에는 검증된 release를 승격합니다.
 ## 수정
 모듈별 담당 리뷰를 유지하고, 계약·공통 어댑터 변경에는 영향을 받는 모듈의 테스트를 함께 수행합니다.
+
+`pentest-db` 독립 모듈은 `casper-db`로 대체했습니다. 기존 공격 정보는 같은 SQLite DB의 `attack_*` 테이블로 이관하며 향후 공격 템플릿은 그 revision과 검증 규칙을 참조해 등록합니다. 이관·템플릿 계약·호환 범위는 [DB 안내](casper-db/README.md#pentest-db-통합과-폐기)에 있습니다.
+
+HTTP 기반 공격 정의를 실행하는 [Repeater](vul-web-1/scripts/REPEATER.md)와 [Intruder](vul-web-1/scripts/INTRUDER.md)도 같은 DB를 조회합니다. 실행 결과에는 사용한 공격 정보의 ID·revision·내용 해시와 단계별 근거를 남깁니다. 호출은 CLI·Node API로 제공하며 범용 Agent의 자동 도구 선택과 sLLM 연결은 별도 범위입니다.

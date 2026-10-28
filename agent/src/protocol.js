@@ -161,7 +161,7 @@ function validateResponseContract(request, response) {
     expectedType = 'attack.result';
   } else if (request.receiver === 'casper-db' && request.type === 'module.request') {
     expectedType = 'history.result';
-  } else if (request.receiver === 'pentest-db' && request.type === 'storage.request') {
+  } else if (['casper-db', 'pentest-db'].includes(request.receiver) && request.type === 'storage.request') {
     if (request.payload.operation === 'get_attack_info') expectedType = 'storage.attack_info';
     if (request.payload.operation === 'append') expectedType = 'storage.appended';
     if (request.payload.operation === 'finalize') expectedType = 'storage.finalized';

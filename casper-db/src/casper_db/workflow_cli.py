@@ -30,6 +30,10 @@ COMMANDS = {
     "external-get",
     "external-assess",
     "external-assessments",
+    "knowledge-query",
+    "knowledge-sync",
+    "knowledge-sync-runs",
+    "attack-catalog-import", "attack-catalog", "attack-info", "attack-template-register",
 }
 
 
@@ -38,7 +42,7 @@ def register_commands(commands):
         command = commands.add_parser(
             name,
             help={
-                "ocr-status": "Inspect the installed offline Windows OCR recognizer",
+                "ocr-status": "Inspect the offline Tesseract runtime and language models",
                 "report-db": "Stage reports and publish reviewed Cases in a NEW owned workspace",
                 "automate": "Run a local multi-input ingestion job; default is dry run",
                 "review-template": "Create pending human review JSON",
@@ -46,12 +50,19 @@ def register_commands(commands):
                 "import-reviewed": "Dry-run a Case package; DB writes require --apply and --draft",
                 "normalize-external": "Normalize a saved public advisory JSON; no network or DB",
                 "collect-external": "Collect bounded public advisory pages; writes JSON only",
-                "external-import": "Dry-run public records; separate DB writes require --apply",
+                "external-import": "Dry-run public records; DB writes require --apply",
                 "external-get": "Read stored provider records for one exact CVE; no writes",
                 "external-assess": (
                     "Compare software inventory with advisories; writes require --apply"
                 ),
                 "external-assessments": "Read target-specific applicability history",
+                "knowledge-query": "Find prior cases and product advisories without CVE input",
+                "knowledge-sync": "Collect product advisories, optionally store, then query",
+                "knowledge-sync-runs": "Read local collection receipts and unfinished jobs",
+                "attack-catalog-import": "Migrate attack guidance into the owned knowledge DB",
+                "attack-catalog": "Read current versioned attack guidance",
+                "attack-info": "Read scoped payload and verification guidance",
+                "attack-template-register": "Register a versioned future executor contract",
             }[name],
         )
         if name == "report-db":
@@ -60,6 +71,32 @@ def register_commands(commands):
             register_intake(command)
             continue
         if name == "ocr-status":
+            command.add_argument("--language", default="ko")
+            command.add_argument(
+                "--require", action="store_true", help="Exit nonzero if unavailable",
+            )
+            continue
+        if name in {"attack-catalog", "knowledge-sync-runs"}:
+            continue
+        if name == "attack-catalog-import":
+            command.add_argument("file", type=Path, nargs="?")
+            command.add_argument("--bundled", action="store_true")
+            command.add_argument("--source-ref")
+            command.add_argument("--apply", action="store_true")
+            continue
+        if name in {"attack-info", "attack-template-register"}:
+            command.add_argument("file", type=Path)
+            if name == "attack-template-register":
+                command.add_argument("--apply", action="store_true")
+            continue
+        if name == "knowledge-query":
+            command.add_argument("file", type=Path)
+            command.add_argument("--external-db", type=Path)
+            continue
+        if name == "knowledge-sync":
+            command.add_argument("file", type=Path)
+            command.add_argument("--apply", action="store_true")
+            command.add_argument("--output", type=Path)
             continue
         if name in {"external-assess", "external-assessments"}:
             command.add_argument("database", type=Path)
@@ -77,6 +114,7 @@ def register_commands(commands):
             command.add_argument("--apply", action="store_true")
             command.add_argument("--cert-db", type=Path)
             command.add_argument("--external-db", type=Path)
+            command.add_argument("--knowledge-db", type=Path)
             continue
         if name in {"normalize-external", "collect-external"}:
             command.add_argument("source", choices=["nvd", "github"])
@@ -143,6 +181,62 @@ def _bundles(path):
 
 
 def run_command(args, emit):
+    if args.command == "knowledge-sync-runs":
+        from .sync_journal import list_sync_runs
+
+        emit({"runs": list_sync_runs(args.db), "database_written": False})
+        return 0
+    if args.command == "knowledge-sync":
+        from .advisory_sync import sync_knowledge
+
+        if args.output and (args.output.exists() or args.output.resolve() in {
+            args.file.resolve(), args.db.resolve(),
+        }):
+            raise ValueError("sync output must be a new file outside its input and database")
+        result = sync_knowledge(args.db, _read(args.file), apply=args.apply)
+        if args.output:
+            _write(result, args.output, inputs=[args.file, args.db])
+        emit(result)
+        return 0 if result["collection_complete"] else 2
+    if args.command.startswith("attack-"):
+        from .attack_catalog import (
+            AttackTemplate,
+            _blocks,
+            bundled_catalogs,
+            import_attack_catalog,
+            list_attack_patterns,
+            lookup_attack_info,
+            register_attack_template,
+        )
+
+        if args.command == "attack-catalog":
+            emit(list_attack_patterns(args.db))
+        elif args.command == "attack-info":
+            emit(lookup_attack_info(args.db, _read(args.file)))
+        elif args.command == "attack-template-register":
+            template = AttackTemplate.model_validate(_read(args.file))
+            emit(register_attack_template(args.db, template) if args.apply else {
+                "database_written": False, "schema_valid": True, "references_checked": False,
+                "template": template.model_dump(mode="json"),
+            })
+        else:
+            if bool(args.file) == args.bundled:
+                raise ValueError("choose one catalog file or --bundled")
+            inputs = bundled_catalogs() if args.bundled else [
+                (args.source_ref or args.file.resolve().as_uri(), _read(args.file)),
+            ]
+            for _, catalog in inputs:
+                _blocks(catalog)
+            emit({"database_written": args.apply, "imports": [
+                import_attack_catalog(args.db, catalog, source_ref=source)
+                for source, catalog in inputs
+            ]} if args.apply else {"database_written": False, "catalogs": len(inputs)})
+        return 0
+    if args.command == "knowledge-query":
+        from .knowledge import query_knowledge
+
+        emit(query_knowledge(args.db, _read(args.file), external_database=args.external_db))
+        return 0
     if args.command == "external-assess":
         from .applicability import assess_database
 
@@ -154,10 +248,11 @@ def run_command(args, emit):
         emit(lookup_assessments(args.database, args.target, args.cve))
         return 0
     if args.command == "ocr-status":
-        from .local_ocr import windows_ocr_status
+        from .local_ocr import ocr_status
 
-        emit(windows_ocr_status())
-        return 0
+        status = ocr_status(args.language)
+        emit(status)
+        return 2 if args.require and not status["available"] else 0
     if args.command == "report-db":
         from .report_intake_cli import run_command as run_intake
 
@@ -171,6 +266,7 @@ def run_command(args, emit):
             apply=args.apply,
             cert_db=args.cert_db,
             external_db=args.external_db,
+            knowledge_db=args.knowledge_db,
         )
         emit(result)
         return {"failed": 2, "partial_failure": 2, "needs_review": 3}.get(result["status"], 0)

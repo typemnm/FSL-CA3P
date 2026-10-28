@@ -26,9 +26,9 @@ npm run dev
 3. 실시간 진행 상태와 모듈별 요청·응답 JSON, Correlation ID, Agent I/O를 확인합니다. 중지를 누르면 다음 gateway 경계 또는 진행 중인 요청에서 중단을 시도합니다.
 4. 실행 이력에서 기록을 열거나 현재 실행으로 돌아갑니다. 보관할 실행은 JSON으로 내보냅니다.
 
-대시보드의 기본 로컬 실습 프로필은 `stored_xss_canary`입니다. Alice 세션 준비 GET 후 `xss-parser`가 Chromium으로 게시판 한 페이지의 입력 폼, `POST /api/posts`와 HTML 렌더링 위치를 변경 없이 관찰합니다. `casper-db`는 관찰한 API 입력 위치를 SQLite의 과거 XSS 사례와 대조해 참고 판정을 반환합니다. `pentest-db`는 `cases.json`의 초안 XSS 정보를 입력 위치·브라우저 확인 방법에 대한 조언으로 반환합니다. 과거 일치나 카탈로그만으로 현재 취약점을 확정하지 않습니다.
+대시보드의 기본 로컬 실습 프로필은 `stored_xss_canary`입니다. Alice 세션 준비 GET 후 `xss-parser`가 Chromium으로 게시판 한 페이지의 입력 폼, `POST /api/posts`와 HTML 렌더링 위치를 변경 없이 관찰합니다. `casper-db`는 관찰한 API 입력 위치를 SQLite의 과거 XSS 사례와 대조해 참고 판정을 반환합니다. `casper-db`는 같은 SQLite DB의 공격 정보에서 입력 위치·브라우저 확인 방법에 대한 조언도 반환합니다. 과거 일치나 카탈로그만으로 현재 취약점을 확정하지 않습니다.
 
-Agent가 실행별 고유 마커를 가진 무해한 canary를 만들고 DeepSeek가 단일 `{method,url,body}` POST를 제안합니다. 모델 출력은 코어가 만든 허용 요청과 정확히 같아야 합니다. 로컬 gateway가 게시판 원점·canary 본문·순서를 확인하고 `guardrail`이 요청 예산과 범위를 전송 직전에 평가합니다. 그 뒤 `attack-module`이 `POST /api/posts`를 한 번 실행합니다. 별도 Chromium 브라우저가 생성된 같은 게시글을 다시 열어 고유 마커의 콜백이 실제 호출됐는지 확인합니다. 코어의 결정론적 `reflect()`는 게시글 ID·마커·원점·표시·콜백·오류와 증거 참조를 확인해 finding을 판정합니다. `pentest-db`는 이벤트·보고서를 `reports/pentest-db-runs/`에 저장합니다. 모델 요청은 실패 시 기본 1회, 설정에 따라 최대 2회 재시도할 수 있지만 검사 POST는 자동 재시도하지 않습니다. `npm start`만으로는 모델 호출이나 검증이 시작되지 않습니다.
+Agent가 실행별 고유 마커를 가진 무해한 canary를 만들고 DeepSeek가 단일 `{method,url,body}` POST를 제안합니다. 모델 출력은 코어가 만든 허용 요청과 정확히 같아야 합니다. 로컬 gateway가 게시판 원점·canary 본문·순서를 확인하고 `guardrail`이 요청 예산과 범위를 전송 직전에 평가합니다. 그 뒤 `attack-module`이 `POST /api/posts`를 한 번 실행합니다. 별도 Chromium 브라우저가 생성된 같은 게시글을 다시 열어 고유 마커의 콜백이 실제 호출됐는지 확인합니다. 코어의 결정론적 `reflect()`는 게시글 ID·마커·원점·표시·콜백·오류와 증거 참조를 확인해 finding을 판정합니다. 실행 기록 저장기는 이벤트·보고서를 `reports/pentest-db-runs/`에 저장합니다. 모델 요청은 실패 시 기본 1회, 설정에 따라 최대 2회 재시도할 수 있지만 검사 POST는 자동 재시도하지 않습니다. `npm start`만으로는 모델 호출이나 검증이 시작되지 않습니다.
 
 기존 교차 사용자 삭제 검사(`agent_cross_user_delete_canary`)는 명시적으로 선택하는 레거시 프로필입니다. 대시보드의 **로컬 실습 시작**은 저장형 XSS 프로필을 사용합니다. 코어 fixture는 모의 응답을 사용하며 입력 URL에 접속하지 않습니다.
 
@@ -38,7 +38,7 @@ Agent가 실행별 고유 마커를 가진 무해한 canary를 만들고 DeepSee
 
 ## 실행 범위
 
-두 모드 모두 `agent/src/orchestrator.js`의 `runOnce()`를 사용하고 `maxIterations`는 1입니다. 실제 모듈의 요청·응답, `guardrail` 판정, 내부 `loop.think`·`loop.reflect` 입출력을 실시간 SSE로 표시합니다. 화면의 Agent Loop는 실제 모듈 이름인 `xss-parser`, `casper-db`, `pentest-db`, `attack-module`, `guardrail`을 사용합니다.
+두 모드 모두 `agent/src/orchestrator.js`의 `runOnce()`를 사용하고 `maxIterations`는 1입니다. 실제 모듈의 요청·응답, `guardrail` 판정, 내부 `loop.think`·`loop.reflect` 입출력을 실시간 SSE로 표시합니다. 화면의 Agent Loop는 실제 모듈 이름인 `xss-parser`, `casper-db`, `attack-module`, `guardrail`과 실행 기록 저장기를 사용합니다.
 
 | 모드 | Agent 판단 | 읽기·과거 자료 | HTTP 요청·정책 | 실행 기록 |
 | --- | --- | --- | --- | --- |
@@ -53,7 +53,7 @@ Agent가 실행별 고유 마커를 가진 무해한 canary를 만들고 DeepSee
 
 현재 실행은 서버가 관리합니다. 브라우저 새로고침 후 SSE가 재연결되면 서버의 현재 실행을 다시 표시하고, 서버에서 진행 중인 루프는 계속됩니다. 연결이 끊기면 화면에 연결 상태를 표시하며 재연결을 시도합니다. 연결이 끊긴 동안의 화면 상태를 완료로 판단하지 마세요.
 
-현재 화면 상태와 보고서는 서버 메모리에 저장되어 서버 종료 시 사라집니다. 브라우저의 `localStorage`에는 최근 12개 실행 이력과 화면 설정만 저장됩니다. 코어 실행 이력은 기존 브라우저 모의 실행과 다른 키로 저장하여 이전 기록을 덮어쓰지 않습니다. 실제 로컬 실습에서 `pentest-db` 어댑터는 이벤트와 최종 보고서를 `reports/pentest-db-runs/`의 로컬 JSON 파일에도 저장합니다. 화면에서 보관·공유할 보고서는 JSON 내보내기를 사용하세요.
+현재 화면 상태와 보고서는 서버 메모리에 저장되어 서버 종료 시 사라집니다. 브라우저의 `localStorage`에는 최근 12개 실행 이력과 화면 설정만 저장됩니다. 코어 실행 이력은 기존 브라우저 모의 실행과 다른 키로 저장하여 이전 기록을 덮어쓰지 않습니다. 실제 로컬 실습에서 실행 기록 어댑터는 이벤트와 최종 보고서를 `reports/pentest-db-runs/`의 로컬 JSON 파일에도 저장합니다. 화면에서 보관·공유할 보고서는 JSON 내보내기를 사용하세요.
 
 ## 파일 구성
 
@@ -69,7 +69,7 @@ Agent가 실행별 고유 마커를 가진 무해한 canary를 만들고 DeepSee
 | `local-lab-gateway.mjs` | 임시 로컬 게시판 수명 관리와 실제 모듈 라우팅 |
 | `integrations/xss-parser.mjs` | 한 페이지 Chromium 입력 관찰과 별도 브라우저 canary 실행 확인 |
 | `integrations/casper-db.mjs` | parser 결과에서 입력 위치를 추출하고 SQLite 과거 사례 대조 |
-| `integrations/pentest-db.mjs` | 초안 카탈로그 조회와 실행 JSON 파일 저장 |
+| `integrations/knowledge-db.mjs` | 통합 DB의 공격 정보 조회와 실행 기록 어댑터 연결 |
 | `integrations/guardrail.mjs` | 로컬 실행에 바인딩된 규칙 평가와 예산 관리 |
 | `../attack-module/index.js` | 검증된 JSON curl 요청 실행과 결과 JSON 생성 |
 | `lab-reasoning.mjs` | DeepSeek 설정 확인·모델 요청 취소 연결과 제한된 curl JSON 계획 |

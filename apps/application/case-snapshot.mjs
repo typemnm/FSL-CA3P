@@ -6,18 +6,24 @@ import { digest } from '../../packages/contracts/index.mjs';
 
 const SNAPSHOT_CODE = String.raw`
 import json, sqlite3, sys
+from contextlib import closing
 from pathlib import Path
-from casper_db.repository import initialize_database, CaseStore, SCHEMA_VERSION
+from casper_db.repository import CaseStore, SCHEMA_VERSION
+from casper_db.attack_catalog import prepare_catalog_database
+from casper_db.snapshot_identity import knowledge_identity
 source, destination = map(Path, sys.argv[1:3])
 source.parent.mkdir(parents=True, exist_ok=True)
-if not source.exists():
-    initialize_database(source)
-with sqlite3.connect(source) as origin, sqlite3.connect(destination) as snapshot:
+prepare_catalog_database(source)
+with closing(sqlite3.connect(source.resolve().as_uri()+'?mode=ro',uri=True)) as origin, \
+        closing(sqlite3.connect(destination)) as snapshot:
     origin.backup(snapshot)
 store = CaseStore(destination)
 cases = store.list_for_target('vul-web-1')
 checks = [check.model_dump() for item in cases for check in store.list_checks(item.case_id)]
-json.dump({'schemaVersion': SCHEMA_VERSION, 'cases': [item.model_dump() for item in cases], 'checks': checks}, sys.stdout)
+case_rows = [item.model_dump() for item in cases]
+with closing(sqlite3.connect(destination)) as connection:
+    identity = knowledge_identity(connection, case_rows, checks)
+json.dump({'schemaVersion': SCHEMA_VERSION, 'cases': case_rows, 'checks': checks, 'knowledgeDigest': identity}, sys.stdout)
 `;
 
 /** SQLite backup includes a consistent view of WAL data and freezes lookup input. */
@@ -26,13 +32,14 @@ export function prepareCaseSnapshot({ runId, storePath, env = process.env } = {}
   const directory = join(dirname(storePath), 'case-snapshots');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, `${digest(runId)}.sqlite`);
-  const python = env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python.exe' : 'python');
+  const python = env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python.exe' : 'python3');
   const result = spawnSync(python, ['-c', SNAPSHOT_CODE, sourcePath, path], { cwd: PROJECT_ROOT,
     env: { ...env, PYTHONPATH: join(PROJECT_ROOT, 'casper-db/src') }, encoding: 'utf8',
     timeout: 15_000, maxBuffer: 2_000_000, windowsHide: true });
   if (result.error || result.status !== 0) throw Object.assign(new Error('Cannot prepare the historical-case snapshot. Configure CASPER_DB_PYTHON and the case database.'),
     { status: 503, code: 'CASE_SNAPSHOT_UNAVAILABLE' });
   const snapshot = JSON.parse(result.stdout);
-  return { path, sourcePath, contentDigest: digest(snapshot), fileDigest: treeDigest(path), schemaVersion: snapshot.schemaVersion,
+  return { path, sourcePath, contentDigest: digest({ schemaVersion: snapshot.schemaVersion, cases: snapshot.cases, checks: snapshot.checks }),
+    knowledgeDigest: snapshot.knowledgeDigest, fileDigest: treeDigest(path), schemaVersion: snapshot.schemaVersion,
     caseRevisions: snapshot.cases.map(item => ({ caseId: item.case_id, revision: item.revision })) };
 }

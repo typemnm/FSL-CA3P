@@ -1,24 +1,21 @@
-"""Offline Windows OCR with image/source binding. OCR text is always unreviewed."""
+"""Portable offline OCR with image/source binding. Historical Windows records remain readable."""
 
 from __future__ import annotations
 
 import hashlib
-import json
-import os
-import re
-import subprocess
 import zlib
 from io import BytesIO
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Literal
 from zipfile import ZipFile
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from .import_workflow import digest
+from .ocr_tesseract import BACKEND_VERSION, cache_identity, language_codes, recognize_raster
+from .ocr_tesseract import ocr_status as ocr_status
 
-VERSION = "local-windows-ocr-1"
+VERSION = BACKEND_VERSION
 MAX_IMAGES = 8
 MAX_RASTER_BYTES = 16_000_000
 MAX_PIXELS = 8_000_000
@@ -46,7 +43,7 @@ class Line(OcrModel):
 
 
 class Recognition(OcrModel):
-    engine: Literal["windows-media-ocr"]
+    engine: Literal["windows-media-ocr", "tesseract"]
     language: str
     width: int = Field(gt=0, le=10000)
     height: int = Field(gt=0, le=10000)
@@ -55,6 +52,18 @@ class Recognition(OcrModel):
     text_angle: float | None = None
     confidence: None = None
     pixel_conversion: str
+    engine_version: str | None = Field(default=None, max_length=300)
+    traineddata_sha256: dict[str, str] = Field(default_factory=dict)
+    configuration: dict[str, str | int] = Field(default_factory=dict)
+    raw_tsv: str | None = Field(default=None, max_length=4_000_000)
+
+    @model_serializer(mode="wrap")
+    def preserve_historical_shape(self, handler):
+        data = handler(self)
+        for key in ("engine_version", "traineddata_sha256", "configuration", "raw_tsv"):
+            if data[key] is None or data[key] == {}:
+                data.pop(key)
+        return data
 
 
 class OcrImage(OcrModel):
@@ -69,70 +78,10 @@ class OcrImage(OcrModel):
 class OcrBundle(OcrModel):
     schema_version: Literal["local-ocr-1"] = "local-ocr-1"
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    version: Literal["local-windows-ocr-1"] = VERSION
+    version: Literal["local-windows-ocr-1", "local-tesseract-ocr-1"] = VERSION
     language: str
     images: list[OcrImage]
     review_status: Literal["unreviewed"] = "unreviewed"
-
-
-def run_windows_worker(asset: str, request: dict, *, timeout=25):
-    """Only a bundled script is run; document text never becomes shell code."""
-    if os.name != "nt":
-        raise ValueError("Windows local OCR is unavailable on this platform")
-    executable = Path(os.environ.get("WINDIR", "C:/Windows")) / (
-        "System32/WindowsPowerShell/v1.0/powershell.exe"
-    )
-    script = Path(__file__).parent / "ocr_assets" / asset
-    if asset != "windows_ocr.ps1":
-        raise ValueError("unknown bundled OCR worker")
-    try:
-        result = subprocess.run(
-            [
-                str(executable),
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script),
-            ],
-            input=json.dumps(request, ensure_ascii=False),
-            text=True,
-            encoding="utf-8",
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise ValueError("local OCR worker exceeded its time limit") from exc
-    if len(result.stdout) > 4_000_000:
-        raise ValueError("local OCR output exceeds limits")
-    try:
-        output = json.loads(result.stdout)
-    except (ValueError, TypeError) as exc:
-        raise ValueError("local OCR worker returned invalid output") from exc
-    if not isinstance(output, dict):
-        raise ValueError("local OCR worker returned a non-object result")
-    if result.returncode:
-        raise ValueError(str(output.get("message", "local OCR failed"))[:500])
-    return output
-
-
-def windows_ocr_status():
-    return run_windows_worker("windows_ocr.ps1", {"action": "status"})
-
-
-def recognize_raster(raw: bytes, *, language="ko") -> Recognition:
-    if not 0 < len(raw) <= MAX_RASTER_BYTES:
-        raise ValueError("raster bytes exceed OCR limits")
-    with TemporaryDirectory(prefix="casper-ocr-") as temporary:
-        path = Path(temporary) / "image.bin"
-        path.write_bytes(raw)
-        output = run_windows_worker(
-            "windows_ocr.ps1", {"action": "recognize", "path": str(path), "language": language}
-        )
-    return validate_recognition(output)
 
 
 def validate_recognition(output):
@@ -150,6 +99,11 @@ def validate_recognition(output):
             ):
                 raise ValueError("OCR bounding box is outside the image")
     return recognition
+
+
+def ocr_cache_identity(language="ko"):
+    """Changing the OCR executable, models, or segmentation invalidates extraction caches."""
+    return cache_identity(language)
 
 
 def _is_raster(raw):
@@ -186,8 +140,7 @@ def _hwp_raster(source, image):
 
 def extract_local_ocr(source: Path, report, *, language="ko", recognizer=None) -> OcrBundle:
     """Extract embedded raster pixels from the hash-matched source document."""
-    if not re.fullmatch(r"[A-Za-z][A-Za-z-]{0,30}", language):
-        raise ValueError("invalid OCR language tag")
+    language_codes(language)
     raw = Path(source).read_bytes()
     if hashlib.sha256(raw).hexdigest() != report.source["sha256"]:
         raise ValueError("OCR input source does not match draft SHA-256")

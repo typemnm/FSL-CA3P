@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         parse_hwpx.add_argument("file", type=Path)
         parse_hwpx.add_argument(
-            "--ocr", action="store_true", help="Local Windows OCR; unreviewed candidates"
+            "--ocr", action="store_true", help="Offline Tesseract OCR; unreviewed candidates"
         )
         parse_hwpx.add_argument("--ocr-language", default="ko")
         parse_hwpx.add_argument("--target", help="Existing team target ID, if known")
@@ -121,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--port", type=int, default=8001)
     serve.add_argument("--intake-workspace", type=Path)
     serve.add_argument("--external-db", type=Path)
+    serve.add_argument("--allow-advisory-sync", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command in COMMANDS:
@@ -310,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.db,
                         intake_workspace=args.intake_workspace,
                         external_database=args.external_db,
+                        enable_advisory_sync=args.allow_advisory_sync,
                     ),
                     host="127.0.0.1",
                     port=args.port,

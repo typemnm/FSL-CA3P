@@ -4,7 +4,7 @@ export const MODULES = [
   { id: 'casper', name: 'casper-db', role: '취약점 지식 조회', icon: 'database' },
   { id: 'attack', name: 'attack-module', role: 'curl 쓰기 요청', icon: 'terminal' },
   { id: 'guardrail', name: 'guardrail', role: '실행 전 요청 검사', icon: 'shield' },
-  { id: 'pentest', name: 'pentest-db', role: '실행 기록', icon: 'archive' },
+  { id: 'pentest', name: 'run-evidence', role: '통합 DB 조회·실행 기록', icon: 'archive' },
 ];
 
 const TOTAL_STEPS = MODULES.length * 3;

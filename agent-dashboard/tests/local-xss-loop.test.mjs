@@ -74,7 +74,7 @@ test('one local Agent loop posts a bounded XSS canary and confirms browser execu
     assert.equal(approvedCurl.body.title.endsWith(report.finding.marker), true);
     const posts = await fetch(`${lab.origin}/api/posts`).then(response => response.json());
     assert.equal(posts.posts.filter(post => post.title === approvedCurl.body.title).length, 1);
-    assert.equal(report.referenceContext.pentestDb.available, true);
+    assert.equal(report.referenceContext.attackCatalog.available, true);
     await lab.close();
     await assert.rejects(fetch(`${lab.origin}/api/posts`));
   });
