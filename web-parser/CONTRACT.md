@@ -1,12 +1,12 @@
 # web-parser — 모듈 계약 (초안)
 
-- 상태: 초안 v0.5 (P2.3: 데이터셋 다운로드 전환, 최종 게이트 G0–G6 수정, §4 URL마다 요청 1회) · 2026-10-29 · 브랜치 `woohyun212/web-parser` (← develop `a7e62b3`)
+- 상태: 초안 v0.6 (P2.4: `paths` 통합 색인, 비 HTML 텍스트 `body`, robots/sitemap 경로, URL 출처 추가, `resources[].method`) · 2026-10-29 · 브랜치 `woohyun212/web-parser` (← develop `a7e62b3`)
 - 소유: woohyun. **xss-parser를 대체**(xss-parser는 deprecated 예정).
 
 ## 1. 역할
 **Agent가 정한 endpoint**를 입력받아 그 문서의 **웹 정보를 수집**해 Agent에 넘기는 **취약점 종류 무관(XSS/IDOR/SQLi 독립)
-범용 웹 정보 수집기**. 판정하지 않고, 공격하지 않는다. 크롤하지 않는다 — 다음에 볼 endpoint는 Agent가 `structure.links`
-등을 보고 고른다.
+범용 웹 정보 수집기**. 판정하지 않고, 공격하지 않는다. 크롤하지 않는다 — 다음에 볼 endpoint는 Agent가 `paths`(이 문서에서
+갈 수 있는 경로의 통합 색인, §3)를 보고 골라 **URL마다 따로 요청**한다. 수집기는 목록만 만들고 그 경로를 방문하지 않는다.
 - **수집기 자신은** 그 URL로의 GET 탐색 1회만 보내고 클릭·입력·제출을 하지 않는다. 그러나 일반 브라우저 방문처럼 **대상
   페이지 자신의 JS가 실행되고**, 그 JS가 보내는 요청(POST·폼 자동 제출·XHR/fetch·beacon 포함)과 내비게이션도 **받은 그대로
   보내지고 따라가며 기록된다**(요청 차단 없음, 사용자 결정 — §6). 즉 "상태를 바꾸지 않는다"는 보장은 **없다**: 페이지가
@@ -59,6 +59,7 @@
   cookies:   [ { name, value, domain, path, expires, httpOnly, secure, sameSite, partitionKey?, _crHasCrossSiteAncestor? } ],
   meta:      [ { name?|property?|http-equiv?|itemprop?, content } ],
   html:      string|null,                    // 추출한 문서의 document.documentElement.outerHTML 원본 (HTML 문서 아니거나, 추출 없거나, 응답 없는 문서면 null)
+  body:      string|null,                    // 추출한 문서가 HTML이 아닌 텍스트형이면 응답 본문 원본 (아래 "body"; HTML·바이너리·추출 없음이면 null)
   technologies: [ { name, categories:[카테고리명], version|null, confidence:0-100, evidence:[{field, key?, match}] } ],
   libraries:    [ { name, version|null, source:"fingerprint", evidence:[{field, key?, match}] } ],
   structure: {   // 그 endpoint의 문서 하나에서 나온 그대로 (같은 항목이 여러 번 있으면 여러 번)
@@ -66,10 +67,19 @@
     links:   [ { href, raw?, text } ],
     scripts: [ { src, raw?, type|null } | { inline, type|null } ],
     iframes: [ { src|null, raw?, sandbox|null } ],  // 받은 대로 (차단 안 함)
-    inputs:  [ { selector, tag, name|null, type, form|null } ]
+    inputs:  [ { selector, tag, name|null, type, form|null } ],
+    linkTags:    [ { href, raw?, rel|null, type|null } ],      // <link href> (canonical·alternate·manifest·preload·next·prev 등 모든 rel)
+    areas:       [ { href, raw? } ],                           // <area href>
+    formActions: [ { selector, formaction, raw?, formmethod|null, form|null } ],  // <button|input formaction>; form = 소속 폼 selector
+    frames:      [ { src, raw? } ],                            // <frame src>
+    embeds:      [ { src, raw?, type|null } ],                 // <embed src>
+    objects:     [ { data, raw?, type|null } ],                // <object data>
+    metaRefresh: [ { url|null, raw?, content } ],              // <meta http-equiv=refresh>의 content에서 파싱한 URL (URL 부분 없으면 null)
+    media:       [ { tag:"img"|"source", src|null, raw?, srcset:[{ url, raw? }] } ]  // <img|source src|srcset>; srcset 후보마다 URL
   },
-  resources: [ { kind, url, status } ],      // 로드된 리소스 (실패는 status null, 응답 후 abort된 요청은 응답 1건만)
-  errors:    [ { stage, message } ],         // stage: navigate|load|extract|dom|js|headers|cookies|fingerprint; navigate|load|extract|dom|js|headers의 message는 "<requestedUrl>: <사유>", cookies|fingerprint는 사유만
+  resources: [ { kind, method, url, status } ],  // 로드된 리소스 (method = 요청의 HTTP 메서드; 실패는 status null, 응답 후 abort된 요청은 응답 1건만)
+  paths:     [ { url, sources:[...], methods:[...], sameOrigin, params:[...], wildcard? } ],  // Agent용 경로 통합 색인 (아래 "paths")
+  errors:    [ { stage, message } ],         // stage: navigate|load|extract|dom|js|headers|body|cookies|fingerprint; navigate|load|extract|dom|js|headers|body의 message는 "<requestedUrl>: <사유>", cookies|fingerprint는 사유만
   truncated: false                           // 아래 상한 중 하나라도 걸리면 true (예외 없음)
 }
 hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
@@ -106,8 +116,37 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   최종 문서의 `headers`와 각 HTTP 홉의 `headers`에 있다.
 - **script `href`**: `src`가 없으면 `href` 속성을 쓴다 — SVG `<script>`용이지만 **모든** `<script>`에 적용된다(HTML
   `<script href=x>본문</script>`도 외부 `{src, raw}`로 보고되고 실제 실행된 인라인 본문은 빠진다; 받은 대로 기록하는 대가).
-- **URL 필드**: `href`/`src`/`action`은 `document.baseURI` 기준으로 resolve한 절대 URL. 속성 원문이 그와 다르면 `raw`에
-  원문. `action` 속성이 없거나 빈 문자열이면 브라우저처럼 **문서 URL**(`<base>`와 무관; `raw`는 `null`/`''`). SVG `<a>`/`<script>`도 속성값 기준.
+- **URL 필드**: `href`/`src`/`action`/`formaction`/`data`/`url`(metaRefresh·srcset 후보)은 `document.baseURI` 기준으로 resolve한
+  절대 URL. 속성 원문이 그와 다르면 `raw`에 원문. `action`·`formaction` 속성이 없거나 빈 문자열이면 브라우저처럼 **문서 URL**
+  (`<base>`와 무관; `raw`는 `null`/`''`). SVG `<a>`/`<script>`도 속성값 기준.
+  - `formmethod`는 소문자로, 없으면 `null`(소속 폼의 method를 따름). `linkTags[].rel`은 받은 그대로(대소문자·여러 토큰).
+  - `metaRefresh`: HTML 선언적 refresh 규칙대로 `<시간>(;|,|공백)[url=]['|"]<URL>`에서 URL을 뽑는다(따옴표는 닫는 따옴표까지).
+  - `srcset`: HTML srcset 규칙대로 후보마다 URL만(공백 아닌 연속 문자열; 서술자 `1x`·`100w`는 버림; 쉼표 없는 `a.jpg,b.jpg`는
+    URL 하나). 후보 목록도 `MAX_STRUCTURE_ITEMS`까지.
+- **body**: 추출한 문서(응답과 짝지어진 커밋 문서)의 `document.contentType`이 HTML이 아닌 텍스트형(`text/*`,
+  `application/json|xml|javascript|ecmascript|x-javascript`, `*/*+json`, `*/*+xml`)이면 그 응답 본문을 받은 그대로(UTF-8로 디코딩)
+  담는다 — robots.txt·sitemap·JSON·JS 등. HTML 문서는 지금처럼 `html`만(본문 중복 저장 안 함), 바이너리(이미지 등)는 `null`.
+  커밋되지 않은 문서(다운로드, 실패한 리다이렉트, 3xx로 끝남)도 읽을 본문이 없어 `null`(에러 없음). 읽기 실패·타임아웃은
+  `{stage:'body'}`. `MAX_BODY_LENGTH`(5,000,000자) 초과 시 앞부분 + `truncated: true`.
+- **paths** (Agent용 통합 색인 — 원본 필드 `structure`/`resources`/`redirectChain`/`body`는 그대로 두고 따로 만든다): 이 문서에서
+  발견한 **http(s) URL**(`mailto:`·`javascript:`·`data:` 등은 structure에만)을 **fragment를 뺀 절대 URL** 하나당 1항목으로, 처음
+  발견한 순서대로(리다이렉트 → resources → structure → body). 수집기는 이 URL들을 **요청하지 않는다**(Agent가 필요할 때 따로 요청).
+  - `sources`: 발견 위치(중복 없이) — `redirect`(redirectChain 홉의 from/to), `request:<resources[].kind>`(실제 요청),
+    `form`, `formaction`, `link`(`<a>`), `link-rel:<rel>`(`<link>`; rel 토큰마다 소문자, rel 없으면 `link-rel:`), `area`, `script`,
+    `iframe`, `frame`, `embed`, `object`, `meta-refresh`, `img`/`source`(`src`), `srcset`, `robots:allow|disallow|sitemap`,
+    `sitemap`(`<urlset><url><loc>`), `sitemap-index`(`<sitemapindex><sitemap><loc>`).
+  - `methods`: 대문자, 중복 없이 — 폼 `method`(속성 원문 그대로, 기본 GET), `formmethod`(없으면 소속 폼의 method), 실제 요청의
+    메서드. 모르면 `[]`.
+  - `sameOrigin`: `target.origin`과 같은 origin인지. `params`: 쿼리 파라미터 **이름** ∪ (폼 action·formaction이면 소속 폼의 필드
+    **이름**) — **값은 담지 않는다**.
+  - `wildcard: true`: robots `Allow`/`Disallow` 값에 `*`·`$`가 있으면 붙는다 — 경로가 아니라 **패턴**이며 원문 그대로 둔다
+    (`/private/*.php$` → `<origin>/private/*.php$`).
+  - **robots**: `body`에 `User-agent:` 또는 `Sitemap:` 줄이 있으면(파일 이름·URL 무관, 내용으로 판정) `Allow`/`Disallow`/`Sitemap`
+    줄의 값(`#` 주석 제외, 빈 값 무시)을 문서 URL 기준으로 resolve. **sitemap**: `body`에 `<sitemapindex`가 있으면 `sitemap-index`,
+    `<urlset`이 있으면 `sitemap`으로 `<loc>` 텍스트(XML 이름 엔티티 5종 디코딩; CDATA·숫자 참조는 미지원). web-parser가 robots.txt나
+    sitemap을 **알아서 요청하지는 않는다** — Agent가 그 URL을 따로 요청하면 그 응답의 `paths`에 나온다.
+  - JS 코드·JSON 안의 문자열 경로는 추출하지 않는다(§11 백로그).
+  - `MAX_PATHS`(2000)개 초과 시 그 뒤의 새 URL은 버리고 `truncated: true`(이미 있는 항목의 sources 등은 계속 합친다).
 - **탐색 실패 정책**: 메인 프레임 응답을 **하나라도 받았다면 resolve** — 3xx 홉도 받은 응답이다. status/headers를 채우고
   `errors`에 `{stage:'load'}`(load/networkidle 타임아웃: 커밋된 DOM은 추출) 또는 `{stage:'navigate'}`(다운로드형 응답, 죽은
   호스트로의 리다이렉트, 리다이렉트 루프 등: DOM 추출 없음)를 기록. 응답을 하나라도 받은 뒤의 goto 타임아웃은 항상
@@ -120,8 +159,8 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   3xx 자체의 status·헤더(`Set-Cookie` 포함)는 잃는다(미수정, §8).
 - **비 HTML 문서**: 판정은 응답 헤더가 아니라 **추출한 문서의 `document.contentType`**(프로토타입 getter, Content-Type이 없으면
   Chromium이 스니핑한 값)이 text/html·application/xhtml+xml인지로. 아니면 `contentType`(받은 헤더 그대로, 없으면 null)·status·
-  headers만 기록하고 `meta`/`html`/`structure`/DOM probe/JS 전역은 비운다(브라우저 뷰어가 만든 DOM을 대상 데이터로 보고하지
-  않음). load 후 클라이언트 리다이렉트로 비 HTML 문서에 착지해도 같다.
+  headers(텍스트형이면 `body`도, 위 "body")만 기록하고 `meta`/`html`/`structure`/DOM probe/JS 전역은 비운다(브라우저 뷰어가 만든
+  DOM을 대상 데이터로 보고하지 않음). load 후 클라이언트 리다이렉트로 비 HTML 문서에 착지해도 같다.
 - **추출 안전**: DOM 추출은 **격리 world**(CDP `Page.createIsolatedWorld`)에서 실행하고 DOM은 프로토타입 getter/메서드로
   읽는다(폼 컨트롤의 `type`·`form`만 직접 읽음 — 폼 컨트롤엔 named-property getter가 없어 무해) — 페이지 JS의 DOM API 몽키패칭이나 named-property DOM clobbering(`<input name=parentElement>`,
   `<img name=querySelectorAll>` 등)이 추출을 깨거나 위조하지 못한다.
@@ -129,8 +168,9 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   죽지 않도록. `html`은 `MAX_HTML_LENGTH`(5,000,000자)까지 앞부분, `meta`와 `structure`의 각 배열(폼의 `fields` 포함)은
   `MAX_STRUCTURE_ITEMS`(500)개, 그 안의 문자열 값(링크 텍스트, 인라인 스크립트, 속성값, selector 등)은 각각
   `MAX_TEXT_LENGTH`(10,000자), 한 문서의 meta+structure 문자열 합계는 `MAX_SNAPSHOT_TEXT`(10,000,000자), DOM probe 값은
-  `MAX_TEXT_LENGTH`, JS 전역 값은 1000자. `resources`는 `MAX_RESOURCES`(500)개. `truncated: true`는 **TargetInfo에 들어가는
-  데이터가 잘렸을 때만**(위 html·meta·structure·resources 상한). DOM probe·JS 전역 값 상한과 매처의 html/scripts 표본
+  `MAX_TEXT_LENGTH`, JS 전역 값은 1000자. `resources`는 `MAX_RESOURCES`(500)개, `body`는 `MAX_BODY_LENGTH`(5,000,000자; 본문은
+  Chromium 버퍼에서 받아 호스트에서 자른다), `paths`는 `MAX_PATHS`(2000)개. `truncated: true`는 **TargetInfo에 들어가는
+  데이터가 잘렸을 때만**(위 html·meta·structure·resources·body·paths 상한). DOM probe·JS 전역 값 상한과 매처의 html/scripts 표본
   (`MATCH_SAMPLE_LENGTH`)은 지문 매칭용 내부 입력만 자르므로 `truncated`를 세우지 않는다(기록도 없음).
 - **알려진 한계** (미수정):
   - html은 페이지 안에서 `outerHTML` 전체를 직렬화한 뒤 자른다. 직렬화가 텍스트보다 커지는 페이지(예: `&` 약 1억 개 →
@@ -227,6 +267,8 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
 - **P2.3**: 데이터셋을 레포에서 빼고 설치 시 고정 커밋에서 다운로드(§7), §4 URL마다 요청 1회, 최종 게이트 G0–G6(착지 문서
   load 대기, 모든 렌더러 읽기의 내비게이션 정지, 결정적 Worker 검사, V8 예산 여유), `truncated` 범위(TargetInfo 데이터만),
   CLI `--out` 임시 파일, 테스트 신뢰성.
+- **P2.4**: `paths` 통합 색인(§3), 빠진 URL 출처(`<link>`·`<area>`·formaction·`<frame>`·`<embed>`·`<object>`·meta refresh·srcset)를
+  structure에 추가, `resources[].method`, 비 HTML 텍스트 응답 `body`, robots.txt/sitemap 파싱. 동시 실행 상한은 넣지 않음(결정).
 - **P3 (Agent 연동, 1mn2147 조율)**: §4 결선과 Agent 쪽 시간·봉투 1MB 제약(§4), xss-parser 경로 대체·폐기,
   integration-manifest에서 모듈 id 교체.
 - **P4 (정리)**: xss-parser deprecate(매니페스트·어댑터·테스트 정리), 문서화.
@@ -244,6 +286,10 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   유지), DOM probe·JS 전역 상한은 `truncated`를 세우지 않음(W4), **자산 간 섞임 없음**(서로 다른 두 페이지를 연달아·동시에 수집:
   쿠키·헤더·structure·technologies), clobbering, form action, 헤더 줄 단위, 상한 시 `truncated`, `collectEach` 검증(희소 배열·
   `userAgent`·`opts` 타입), CLI(단일·다중·`--urls-file` 단독·`--out` 열기 실패·실패 시 기존 `--out` 보존·사용법 오류).
+- paths(P2.4): 모든 URL 출처가 담긴 페이지 → structure 각 항목과 `paths.sources`(frameset 포함), 중복 제거(fragment만 다른 링크 +
+  area → 1항목), `sameOrigin`, `params`(이름만, 폼 값이 색인에 없음), formaction의 method·필드 상속, 로드 시 POST fetch →
+  `resources[].method`·`paths.methods`, 리다이렉트 홉, robots.txt(와일드카드 표시)·sitemap·sitemap index·JSON의 `body` 원본과 경로,
+  나열된 경로를 요청하지 않음, 바이너리 `body:null`, `body`·`paths` 상한 시 `truncated`.
 - TLS(`ignoreHTTPSErrors` 기본 true의 자체서명 수용, `securityDetails`, false의 reject)는 **테스트 없음**.
 - 어댑터: dom 속성 버전, xhr(host+path), 3단계 `requires` 체인, `requiresCategory`, implies로만 충족되는 requirement, excludes,
   중복 detection confidence, 이름 정규화·`constructor`/`__proto__`(V6), html 표본(가운데는 버리고 끝은 매치), Worker 데드라인(V5),
@@ -255,3 +301,7 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
 ## 10. xss-parser 폐기(deprecation)
 - web-parser가 Agent 경로를 대체하면 xss-parser의 wire(`xss-parser` sender, `parse_site`),
   integration-manifest 항목, 어댑터, 테스트 스위트를 순차 제거/치환. P3~P4에서 1mn2147·매니페스트와 조율.
+
+## 11. 백로그
+- **JS 코드 안의 API 경로 추출**(정적 분석) — 백로그. 인라인·외부 스크립트(와 JSON 본문)의 문자열·`fetch`/XHR 호출에서 경로를
+  뽑아 `paths`에 넣으려면 **추론임을 표시**해야 한다(예: 별도 source와 확신도) — 받은 그대로의 출처와 섞이지 않게.

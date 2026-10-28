@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import wt from 'node:worker_threads';
 import {
-  collect, collectEach, MAX_HTML_LENGTH, MAX_RESOURCES, MAX_STRUCTURE_ITEMS, MAX_TEXT_LENGTH, PROFILE_PREFIX, SCHEMA_VERSION,
+  collect, collectEach, MAX_BODY_LENGTH, MAX_HTML_LENGTH, MAX_PATHS, MAX_RESOURCES, MAX_STRUCTURE_ITEMS, MAX_TEXT_LENGTH, PROFILE_PREFIX,
+  SCHEMA_VERSION,
 } from '../collect.mjs';
 
 // Per-test limit travels with the file (not only with the npm script flag).
@@ -93,6 +94,40 @@ const PAGES = {
   // W4: the token sits past the DOM-probe text cap of the dataset's `style` selector; a JS global over its value cap.
   '/style-long': html('', `<style>/*${'c'.repeat(MAX_TEXT_LENGTH)}*/ :root{--bs-gutter-x:1rem}</style>`),
   '/js-long': html('', `<script>window.jQuery = { fn: { jquery: '3.7.1${'x'.repeat(1000)}' } };</script>`),
+  // Every URL source the structure records; /a?x=1&y=2 appears three times (two fragments, one area).
+  '/sources': html(
+    `<a href="/a?x=1&amp;y=2#one">A</a><a href="/a?x=1&amp;y=2#two">A again</a>
+     <map name="m"><area href="/a?x=1&amp;y=2" coords="0,0,1,1"></map>
+     <form id="f" action="/submit?step=1" method="POST"><input name="user" value="alice-secret">
+       <input name="pw" type="password" value="pw-secret"><button formaction="/alt" formmethod="GET">alt</button>
+       <input type="submit" formaction="/alt2?mode=x"></form>
+     <embed src="/movie.swf" type="application/x-shockwave-flash"><object data="/obj.svg" type="image/svg+xml"></object>
+     <img src="/img.png" srcset="/img-1x.png 1x, /img-2x.png 2x">
+     <picture><source srcset="/pic.webp" type="image/webp"><img src="/pic.png"></picture>
+     <iframe src="/frame"></iframe><script src="/app.js"></script>
+     <a href="https://example.invalid/ext">ext</a><a href="mailto:x@example.invalid">mail</a>`,
+    `<link rel="canonical" href="/canon"><link rel="Alternate" type="application/rss+xml" href="/feed.xml">
+     <link rel="manifest" href="/site.webmanifest"><link rel="next" href="/page/2"><link rel="prev" href="/page/0">
+     <link rel="preload" as="image" href="/pre.png"><meta http-equiv="refresh" content="3600; url='/later?r=1'">`,
+  ),
+  '/frameset': '<!doctype html><html><frameset><frame src="/frame"><frame src="/a"></frameset></html>',
+  '/post-fetch': html('', "<script>fetch('/api/save?id=7', { method: 'POST', body: 'x=1' })</script>"),
+};
+const ROBOTS = () => `# rules\nUser-agent: *\nDisallow: /admin/\nDisallow: /private/*.php$ # no php\nAllow: /admin/public?view=1\n`
+  + `Disallow:\n\nSitemap: ${base}/sitemap.xml\n`;
+const SITEMAP = () => `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>${base}/</loc><lastmod>2026-10-01</lastmod></url>
+  <url><loc>\n    ${base}/list?page=2&amp;sort=asc\n  </loc></url>
+  <url><loc>https://example.invalid/elsewhere</loc></url>\n</urlset>\n`;
+const SITEMAP_INDEX = () => `<?xml version="1.0"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`
+  + `<sitemap><loc>${base}/sitemap.xml</loc></sitemap><sitemap><loc>${base}/sitemap-2.xml.gz</loc></sitemap></sitemapindex>`;
+const TEXTS = {
+  '/robots.txt': ['text/plain', ROBOTS],
+  '/sitemap.xml': ['application/xml', SITEMAP],
+  '/sitemap-index.xml': ['text/xml', SITEMAP_INDEX],
+  '/big.txt': ['text/plain', () => 'x'.repeat(MAX_BODY_LENGTH + 1)],
+  // Content decides: robots-shaped text under any name, with more distinct paths than the index keeps.
+  '/many-paths.txt': ['text/plain', () => `User-agent: *\n${Array.from({ length: MAX_PATHS }, (_, i) => `Disallow: /p/${i}`).join('\n')}\n`],
 };
 
 let server;
@@ -153,7 +188,9 @@ before(async () => {
       return res.end(html('<a href="/b-only">b</a><form action="/b-form"><input name="bq"></form>',
         '<meta name="generator" content="Joomla! - Open Source Content Management">'));
     }
-    if (pathname.startsWith('/img/')) return res.writeHead(204).end();
+    if (pathname.startsWith('/img/') || pathname === '/api/save') return res.writeHead(204).end();
+    if (TEXTS[pathname]) return res.writeHead(200, { 'content-type': TEXTS[pathname][0] }).end(TEXTS[pathname][1]());
+    if (pathname === '/bin.png') return res.writeHead(200, { 'content-type': 'image/png' }).end(Buffer.from('89504e470d0a1a0a00', 'hex'));
     if (pathname === '/data.json') return res.writeHead(200, { 'content-type': 'application/json' }).end('{"a":"/a"}');
     if (pathname === '/plain') return res.writeHead(200).end('hello plain text body'); // no Content-Type
     if (pathname === '/download') {
@@ -192,13 +229,19 @@ const DEAD_ERR = /net::ERR_(CONNECTION_[A-Z_]+|EMPTY_RESPONSE|SOCKET_NOT_CONNECT
 const header = (headers, name) => headers.filter((h) => h.name === name).map((h) => h.value);
 const onLoopback = (info) => info.resources.every((r) => r.url.startsWith(base));
 const documents = (info) => info.resources.filter((r) => r.kind === 'document').map((r) => r.url);
-const EMPTY_STRUCTURE = { forms: [], links: [], scripts: [], iframes: [], inputs: [] };
+const EMPTY_STRUCTURE = {
+  forms: [], links: [], scripts: [], iframes: [], inputs: [],
+  linkTags: [], areas: [], formActions: [], frames: [], embeds: [], objects: [], metaRefresh: [], media: [],
+};
+const pathsOf = (info) => Object.fromEntries(info.paths.map((p) => [p.url, p]));
+const DOC = (url) => ({ url, sources: ['request:document'], methods: ['GET'], sameOrigin: true, params: [] });
 
 test('returns TargetInfo shape with raw headers, meta, structure and resources', T, async () => {
   const info = await collect(`${base}/`);
   assert.equal(info.schemaVersion, SCHEMA_VERSION);
-  assert.deepEqual(Object.keys(info).sort(), ['cookies', 'errors', 'headers', 'html', 'libraries', 'meta', 'navigation',
-    'resources', 'schemaVersion', 'structure', 'target', 'technologies', 'truncated']);
+  assert.deepEqual(Object.keys(info).sort(), ['body', 'cookies', 'errors', 'headers', 'html', 'libraries', 'meta', 'navigation',
+    'paths', 'resources', 'schemaVersion', 'structure', 'target', 'technologies', 'truncated']);
+  assert.equal(info.body, null, 'an HTML document is reported as html only');
   assert.deepEqual(info.target, { requestedUrl: `${base}/`, finalUrl: `${base}/`, origin: base });
   assert.equal(info.navigation.status, 200);
   assert.equal(info.navigation.contentType, 'text/html');
@@ -226,9 +269,100 @@ test('returns TargetInfo shape with raw headers, meta, structure and resources',
   assert.deepEqual(inputs.map((i) => [i.name, i.form]), [['user', '#login'], ['pw', '#login']]);
 
   const byUrl = Object.fromEntries(info.resources.map((r) => [r.url, r]));
-  assert.deepEqual(byUrl[`${base}/`], { kind: 'document', url: `${base}/`, status: 200 });
-  assert.deepEqual(byUrl[`${base}/frame`], { kind: 'document', url: `${base}/frame`, status: 200 });
-  assert.deepEqual(byUrl[`${base}/app.js`], { kind: 'script', url: `${base}/app.js`, status: 200 });
+  assert.deepEqual(byUrl[`${base}/`], { kind: 'document', method: 'GET', url: `${base}/`, status: 200 });
+  assert.deepEqual(byUrl[`${base}/frame`], { kind: 'document', method: 'GET', url: `${base}/frame`, status: 200 });
+  assert.deepEqual(byUrl[`${base}/app.js`], { kind: 'script', method: 'GET', url: `${base}/app.js`, status: 200 });
+});
+
+test('paths (a)/(d): every URL source is in structure and in one deduplicated paths entry per URL, names without values', T, async () => {
+  const info = await collect(`${base}/sources`);
+  assert.deepEqual(core(info), []);
+  const s = info.structure;
+  assert.deepEqual(s.linkTags.map((l) => [l.href, l.raw, l.rel, l.type]), [
+    [`${base}/canon`, '/canon', 'canonical', null], [`${base}/feed.xml`, '/feed.xml', 'Alternate', 'application/rss+xml'],
+    [`${base}/site.webmanifest`, '/site.webmanifest', 'manifest', null], [`${base}/page/2`, '/page/2', 'next', null],
+    [`${base}/page/0`, '/page/0', 'prev', null], [`${base}/pre.png`, '/pre.png', 'preload', null]]);
+  assert.deepEqual(s.areas, [{ href: `${base}/a?x=1&y=2`, raw: '/a?x=1&y=2' }]);
+  assert.deepEqual(s.formActions, [
+    { selector: '#f > button', formaction: `${base}/alt`, raw: '/alt', formmethod: 'get', form: '#f' },
+    { selector: '#f > input:nth-of-type(3)', formaction: `${base}/alt2?mode=x`, raw: '/alt2?mode=x', formmethod: null, form: '#f' }]);
+  assert.deepEqual(s.embeds, [{ src: `${base}/movie.swf`, raw: '/movie.swf', type: 'application/x-shockwave-flash' }]);
+  assert.deepEqual(s.objects, [{ data: `${base}/obj.svg`, raw: '/obj.svg', type: 'image/svg+xml' }]);
+  assert.deepEqual(s.metaRefresh, [{ url: `${base}/later?r=1`, raw: '/later?r=1', content: "3600; url='/later?r=1'" }]);
+  assert.deepEqual(s.media, [
+    { tag: 'img', src: `${base}/img.png`, raw: '/img.png', srcset: [{ url: `${base}/img-1x.png`, raw: '/img-1x.png' },
+      { url: `${base}/img-2x.png`, raw: '/img-2x.png' }] },
+    { tag: 'source', src: null, srcset: [{ url: `${base}/pic.webp`, raw: '/pic.webp' }] },
+    { tag: 'img', src: `${base}/pic.png`, raw: '/pic.png', srcset: [] }]);
+
+  const paths = pathsOf(info);
+  assert.equal(info.paths.length, Object.keys(paths).length, 'one entry per URL');
+  assert.ok(info.paths.every((p) => /^https?:\/\/[^#]*$/.test(p.url)), 'http(s) only, fragments dropped (no mailto:)');
+  assert.deepEqual(paths[`${base}/sources`], DOC(`${base}/sources`));
+  assert.deepEqual(paths[`${base}/a?x=1&y=2`], { url: `${base}/a?x=1&y=2`, sources: ['link', 'area'], methods: [], sameOrigin: true, params: ['x', 'y'] });
+  assert.deepEqual(paths[`${base}/submit?step=1`], { url: `${base}/submit?step=1`, sources: ['form'], methods: ['POST'], sameOrigin: true,
+    params: ['step', 'user', 'pw'] });
+  assert.deepEqual([paths[`${base}/alt`].methods, paths[`${base}/alt`].params], [['GET'], ['user', 'pw']]);
+  assert.deepEqual([paths[`${base}/alt2?mode=x`].methods, paths[`${base}/alt2?mode=x`].params], [['POST'], ['mode', 'user', 'pw']],
+    'a formaction without formmethod submits with its form\'s method and fields');
+  assert.ok(!/alice-secret|pw-secret/.test(JSON.stringify(info.paths)), 'parameter names only, never values');
+  assert.deepEqual(paths[`${base}/feed.xml`].sources, ['link-rel:alternate']);
+  assert.deepEqual(paths[`${base}/pre.png`].sources.sort(), ['link-rel:preload', 'request:image'], 'the preload was also requested');
+  assert.deepEqual(paths[`${base}/later?r=1`].params, ['r']);
+  assert.deepEqual(paths['https://example.invalid/ext'], { url: 'https://example.invalid/ext', sources: ['link'], methods: [],
+    sameOrigin: false, params: [] });
+  for (const [path, source] of [['/img.png', 'img'], ['/img-1x.png', 'srcset'], ['/img-2x.png', 'srcset'], ['/pic.webp', 'srcset'],
+    ['/pic.png', 'img'], ['/movie.swf', 'embed'], ['/obj.svg', 'object'], ['/frame', 'iframe'], ['/app.js', 'script'],
+    ['/canon', 'link-rel:canonical'], ['/site.webmanifest', 'link-rel:manifest'], ['/page/2', 'link-rel:next'],
+    ['/page/0', 'link-rel:prev'], ['/later?r=1', 'meta-refresh']]) {
+    assert.ok(paths[`${base}${path}`]?.sources.includes(source), `${path}: ${JSON.stringify(paths[`${base}${path}`])}`);
+  }
+
+  const frames = await collect(`${base}/frameset`);
+  assert.deepEqual(frames.structure.frames, [{ src: `${base}/frame`, raw: '/frame' }, { src: `${base}/a`, raw: '/a' }]);
+  assert.deepEqual(pathsOf(frames)[`${base}/a`].sources, ['request:document', 'frame']);
+});
+
+test('paths (c): a POST the page sends on load is in resources[].method and paths.methods', T, async () => {
+  const info = await collect(`${base}/post-fetch`, { waitUntil: 'networkidle' });
+  const url = `${base}/api/save?id=7`;
+  assert.deepEqual(info.resources.find((r) => r.url === url), { kind: 'fetch', method: 'POST', url, status: 204 });
+  assert.deepEqual(pathsOf(info)[url], { url, sources: ['request:fetch'], methods: ['POST'], sameOrigin: true, params: ['id'] });
+});
+
+test('paths (b)/(f): non-HTML text bodies as received; robots.txt and sitemap entries become paths; binary has no body', T, async () => {
+  const robots = await collect(`${base}/robots.txt`);
+  assert.deepEqual([robots.body, robots.html, core(robots)], [ROBOTS(), null, []]);
+  assert.deepEqual(robots.paths, [
+    DOC(`${base}/robots.txt`),
+    { url: `${base}/admin/`, sources: ['robots:disallow'], methods: [], sameOrigin: true, params: [] },
+    { url: `${base}/private/*.php$`, sources: ['robots:disallow'], methods: [], sameOrigin: true, params: [], wildcard: true },
+    { url: `${base}/admin/public?view=1`, sources: ['robots:allow'], methods: [], sameOrigin: true, params: ['view'] },
+    { url: `${base}/sitemap.xml`, sources: ['robots:sitemap'], methods: [], sameOrigin: true, params: [] },
+  ]);
+  assert.deepEqual(documents(robots), [`${base}/robots.txt`], 'listed paths are never requested');
+
+  const sitemap = await collect(`${base}/sitemap.xml`);
+  assert.deepEqual([sitemap.body, core(sitemap)], [SITEMAP(), []]);
+  assert.deepEqual(sitemap.paths, [
+    DOC(`${base}/sitemap.xml`),
+    { url: `${base}/`, sources: ['sitemap'], methods: [], sameOrigin: true, params: [] },
+    { url: `${base}/list?page=2&sort=asc`, sources: ['sitemap'], methods: [], sameOrigin: true, params: ['page', 'sort'] },
+    { url: 'https://example.invalid/elsewhere', sources: ['sitemap'], methods: [], sameOrigin: false, params: [] },
+  ]);
+
+  const index = await collect(`${base}/sitemap-index.xml`);
+  assert.equal(index.body, SITEMAP_INDEX());
+  assert.deepEqual(index.paths.slice(1).map((p) => [p.url, p.sources]), [
+    [`${base}/sitemap.xml`, ['sitemap-index']], [`${base}/sitemap-2.xml.gz`, ['sitemap-index']]]);
+
+  const json = await collect(`${base}/data.json`);
+  assert.equal(json.body, '{"a":"/a"}');
+  assert.deepEqual(json.paths, [DOC(`${base}/data.json`)], 'paths inside JSON/JS are not extracted (backlog)');
+
+  const bin = await collect(`${base}/bin.png`);
+  assert.equal(bin.navigation.contentType, 'image/png');
+  assert.deepEqual([bin.body, core(bin)], [null, []]);
 });
 
 test('crawler removed: exactly one endpoint is visited, maxPages is rejected, repeated items are kept', T, async () => {
@@ -275,6 +409,7 @@ test('follows HTTP redirects and records each hop with its raw headers', T, asyn
   ]);
   assert.deepEqual(header(chain[0].headers, 'X-Hop'), ['one']);
   assert.deepEqual(header(chain[1].headers, 'location'), ['/']);
+  assert.deepEqual(pathsOf(info)[`${base}/r2`].sources, ['redirect', 'request:document']);
 });
 
 test('V2: a 3xx that leads nowhere is a received response: resolve with it and a navigate error', T, async () => {
@@ -329,6 +464,7 @@ test('V0: non-HTML documents keep status/headers but no viewer DOM, judged by th
   const plain = await collect(`${base}/plain`);
   assert.equal(plain.navigation.contentType, null, 'no Content-Type as received');
   assert.deepEqual([plain.structure, plain.meta, plain.html], [EMPTY_STRUCTURE, [], null], 'sniffed text/plain viewer dropped');
+  assert.equal(plain.body, 'hello plain text body', 'sniffed text/plain body as received');
 
   const toJson = await collect(`${base}/to-json`);
   assert.equal(toJson.target.finalUrl, `${base}/data.json`);
@@ -490,6 +626,13 @@ test('sets truncated at the structure, resource, html and text caps', T, async (
   const text = await collect(`${base}/long-text`);
   assert.equal(text.structure.links[0].text.length, MAX_TEXT_LENGTH);
   assert.equal(text.truncated, true);
+  const body = await collect(`${base}/big.txt`);
+  assert.equal(body.body.length, MAX_BODY_LENGTH);
+  assert.equal(body.truncated, true);
+  const paths = await collect(`${base}/many-paths.txt`);
+  assert.ok(paths.body.endsWith(`Disallow: /p/${MAX_PATHS - 1}\n`), 'the body itself is whole');
+  assert.equal(paths.paths.length, MAX_PATHS);
+  assert.equal(paths.truncated, true);
 });
 
 test('V4: a page far larger than any cap is bounded inside the page; the host process survives', T, async () => {

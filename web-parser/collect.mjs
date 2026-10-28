@@ -9,6 +9,8 @@ export const PROFILE_PREFIX = 'web-parser-';
 export const MAX_RESOURCES = 500;
 export const MAX_STRUCTURE_ITEMS = 500;
 export const MAX_HTML_LENGTH = 5_000_000;
+export const MAX_BODY_LENGTH = 5_000_000;
+export const MAX_PATHS = 2000;
 // Applied inside the page before anything crosses CDP, so a hostile page can't blow up the host process (CONTRACT §3).
 export const MAX_TEXT_LENGTH = 10_000; // per string value in meta/structure/DOM probes
 export const MAX_SNAPSHOT_TEXT = 10_000_000; // all meta/structure strings of one document together
@@ -25,6 +27,8 @@ const PROBE_SHARE = 0.9;
 const MAX_EXTRACT_ATTEMPTS = 10;
 const WORLD_NAME = 'web-parser';
 const HTML_TYPE = /^(text\/html|application\/xhtml\+xml)$/i;
+const TEXT_TYPE = /^(text\/[\w.+-]+|application\/(json|xml|javascript|ecmascript|x-javascript)|[\w.-]+\/[\w.+-]+\+(json|xml))$/i;
+const XML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
 
 function checkOptions(opts) {
   if (opts != null && typeof opts !== 'object') throw new Error('opts must be an object');
@@ -69,16 +73,21 @@ export async function collect(url, opts) {
     cookies: [],
     meta: [],
     html: null,
+    body: null,
     technologies: [],
     libraries: [],
-    structure: { forms: [], links: [], scripts: [], iframes: [], inputs: [] },
+    structure: {
+      forms: [], links: [], scripts: [], iframes: [], inputs: [],
+      linkTags: [], areas: [], formActions: [], frames: [], embeds: [], objects: [], metaRefresh: [], media: [],
+    },
     resources: [],
+    paths: [],
     errors: [],
     truncated: false,
   };
-  const pushResource = (kind, resUrl, status) => {
+  const pushResource = (kind, req, status) => {
     if (info.resources.length >= MAX_RESOURCES) info.truncated = true;
-    else info.resources.push({ kind, url: resUrl, status });
+    else info.resources.push({ kind, method: req.method(), url: req.url(), status });
   };
   const fail = (stage, err) => info.errors.push({ stage, message: `${start.href}: ${err.message}` });
 
@@ -93,8 +102,8 @@ export async function collect(url, opts) {
       ignoreHTTPSErrors,
     });
     const answered = new WeakSet(); // a request aborted after its response is already recorded
-    context.on('response', (r) => { answered.add(r.request()); pushResource(r.request().resourceType(), r.url(), r.status()); });
-    context.on('requestfailed', (r) => { if (!answered.has(r)) pushResource(r.resourceType(), r.url(), null); });
+    context.on('response', (r) => { answered.add(r.request()); pushResource(r.request().resourceType(), r.request(), r.status()); });
+    context.on('requestfailed', (r) => { if (!answered.has(r)) pushResource(r.resourceType(), r, null); });
     let probes = null; // dataset-driven matcher inputs; a dataset error only costs the fingerprint stage
     try {
       probes = pageProbes();
@@ -208,6 +217,19 @@ export async function collect(url, opts) {
     } catch (err) {
       fail('headers', err);
     }
+    // The extracted document's body as received when it is non-HTML text (robots.txt, sitemaps, JSON, ...), typed like
+    // isHtml by its own contentType. A document never committed (download, failed redirect) has no body to read.
+    if (paired && !isHtml && TEXT_TYPE.test(snap.contentType)) {
+      try {
+        // shortcut: decoded as UTF-8 whatever the charset; decode by the Content-Type charset if non-UTF-8 targets matter.
+        const text = await bounded(final.text(), left(1));
+        info.body = text.slice(0, MAX_BODY_LENGTH);
+        if (text.length > MAX_BODY_LENGTH) info.truncated = true;
+      } catch (err) {
+        fail('body', err);
+      }
+    }
+    info.paths = indexPaths(info);
     let pageCookies = [];
     try {
       // Output: the whole jar; matcher: only the cookies that apply to the analysed document.
@@ -262,6 +284,64 @@ async function documentChain(docs) {
     chain.push(...hops);
   }
   return chain;
+}
+
+// The Agent's index of where this document leads (CONTRACT §3): one entry per http(s) URL without its fragment, from
+// redirects, requests, structure and a robots.txt/sitemap body. Nothing is visited.
+function indexPaths(info) {
+  const paths = new Map();
+  const add = (href, source, method, names = []) => {
+    if (href == null) return null;
+    let u;
+    try { u = new URL(href, info.target.finalUrl); } catch { return null; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    u.hash = '';
+    let p = paths.get(u.href);
+    if (!p) {
+      if (paths.size >= MAX_PATHS) { info.truncated = true; return null; }
+      p = { url: u.href, sources: new Set(), methods: new Set(), sameOrigin: u.origin === info.target.origin, params: new Set() };
+      paths.set(u.href, p);
+    }
+    p.sources.add(source);
+    if (method) p.methods.add(method.toUpperCase());
+    for (const n of [...u.searchParams.keys(), ...names]) p.params.add(n);
+    return p;
+  };
+  for (const h of info.navigation.redirectChain) { add(h.from, 'redirect'); add(h.to, 'redirect'); }
+  for (const r of info.resources) add(r.url, `request:${r.kind}`, r.method);
+  const s = info.structure;
+  const fieldsOf = (form) => form?.fields.map((f) => f.name);
+  for (const f of s.forms) add(f.action, 'form', f.method, fieldsOf(f));
+  for (const b of s.formActions) {
+    const form = s.forms.find((f) => f.selector === b.form);
+    add(b.formaction, 'formaction', b.formmethod ?? form?.method, fieldsOf(form));
+  }
+  for (const l of s.links) add(l.href, 'link');
+  for (const l of s.linkTags) for (const rel of (l.rel ?? '').trim().toLowerCase().split(/\s+/)) add(l.href, `link-rel:${rel}`);
+  for (const a of s.areas) add(a.href, 'area');
+  for (const x of s.scripts) add(x.src, 'script');
+  for (const f of s.iframes) add(f.src, 'iframe');
+  for (const f of s.frames) add(f.src, 'frame');
+  for (const e of s.embeds) add(e.src, 'embed');
+  for (const o of s.objects) add(o.data, 'object');
+  for (const m of s.metaRefresh) add(m.url, 'meta-refresh');
+  for (const m of s.media) {
+    add(m.src, m.tag);
+    for (const c of m.srcset) add(c.url, 'srcset');
+  }
+  const body = info.body ?? '';
+  if (/^[ \t]*(user-agent|sitemap)[ \t]*:/im.test(body)) {
+    for (const line of body.split(/\r\n?|\n/)) {
+      const [, field, value] = /^[ \t]*(allow|disallow|sitemap)[ \t]*:([^#]*)/i.exec(line) ?? [];
+      const raw = value?.trim();
+      const p = raw && add(raw, `robots:${field.toLowerCase()}`);
+      if (p && field.toLowerCase() !== 'sitemap' && /[*$]/.test(raw)) p.wildcard = true; // a pattern, kept as written
+    }
+  }
+  const sitemap = /<sitemapindex[\s>]/.test(body) ? 'sitemap-index' : /<urlset[\s>]/.test(body) && 'sitemap';
+  // shortcut: plain <loc> text with the five named XML entities; add CDATA/numeric references if real sitemaps use them.
+  if (sitemap) for (const [, loc] of body.matchAll(/<loc>([^<]*)<\/loc>/g)) add(loc.replace(/&(amp|lt|gt|quot|apos);/g, (_, e) => XML_ENTITIES[e]), sitemap);
+  return [...paths.values()].map((p) => ({ ...p, sources: [...p.sources], methods: [...p.methods], params: [...p.params] }));
 }
 
 // Extracts from the committed document, re-extracting while a client-side redirect replaces it.
@@ -401,6 +481,25 @@ function extractPage({ maxHtml, maxItems, maxText, budget }) {
     try { if (raw != null) value = new URL(raw, base).href; } catch {}
     return value === raw ? { [key]: cap(value) } : { [key]: cap(value), raw: cap(raw) };
   };
+  // A missing or empty action submits to the document URL (not the <base> URL).
+  const submitTo = (key, raw) => (raw ? url(key, raw) : { [key]: cap(docUrl), raw: cap(raw) });
+  // srcset candidate URLs (HTML srcset parsing: a URL is a run of non-whitespace; its descriptors end at a comma outside
+  // parentheses), at most maxItems + 1 so `first` flags the rest.
+  const ws = (c) => ' \t\n\f\r'.includes(c);
+  const candidates = (s) => {
+    const out = [];
+    for (let i = 0; i < s.length && out.length <= maxItems;) {
+      if (ws(s[i]) || s[i] === ',') { i++; continue; }
+      let j = i;
+      while (j < s.length && !ws(s[j])) j++;
+      let end = j;
+      while (s[end - 1] === ',') end--;
+      out.push(s.slice(i, end));
+      if (end === j) for (let paren = false; j < s.length && (paren || s[j] !== ','); j++) paren = s[j] === '(' || (paren && s[j] !== ')');
+      i = j;
+    }
+    return out;
+  };
   const html = root ? get(Element.prototype, 'outerHTML')(root) : null;
   if (html && html.length > maxHtml) truncated = true;
   return {
@@ -415,18 +514,12 @@ function extractPage({ maxHtml, maxItems, maxText, budget }) {
       return out;
     }),
     structure: {
-      forms: all('form').map((f) => {
-        const raw = attr(f, 'action');
-        // A missing or empty action submits to the document URL (not the <base> URL).
-        const action = raw ? url('action', raw).action : cap(docUrl);
-        return {
-          selector: path(f),
-          action,
-          ...(raw === action ? {} : { raw: cap(raw) }),
-          method: cap((attr(f, 'method') || 'get').toLowerCase()),
-          fields: first([...elementsOf(f)].filter((e) => attr(e, 'name'))).map((e) => ({ name: cap(attr(e, 'name')), type: cap(e.type) })),
-        };
-      }),
+      forms: all('form').map((f) => ({
+        selector: path(f),
+        ...submitTo('action', attr(f, 'action')),
+        method: cap((attr(f, 'method') || 'get').toLowerCase()),
+        fields: first([...elementsOf(f)].filter((e) => attr(e, 'name'))).map((e) => ({ name: cap(attr(e, 'name')), type: cap(e.type) })),
+      })),
       links: all('a[href]').map((a) => ({ ...url('href', attr(a, 'href')), text: cap(textOf(a).trim()) })),
       scripts: all('script').map((s) => {
         const src = attr(s, 'src') ?? attr(s, 'href'); // SVG <script> uses href
@@ -439,6 +532,29 @@ function extractPage({ maxHtml, maxItems, maxText, budget }) {
         name: cap(attr(e, 'name')),
         type: cap(e.type),
         form: e.form ? path(e.form) : null,
+      })),
+      linkTags: all('link[href]').map((l) => ({ ...url('href', attr(l, 'href')), rel: cap(attr(l, 'rel')), type: cap(attr(l, 'type')) })),
+      areas: all('area[href]').map((a) => url('href', attr(a, 'href'))),
+      formActions: all('button[formaction], input[formaction]').map((b) => ({
+        selector: path(b),
+        ...submitTo('formaction', attr(b, 'formaction')),
+        formmethod: cap(attr(b, 'formmethod')?.toLowerCase() ?? null),
+        form: b.form ? path(b.form) : null,
+      })),
+      frames: all('frame[src]').map((f) => url('src', attr(f, 'src'))),
+      embeds: all('embed[src]').map((e) => ({ ...url('src', attr(e, 'src')), type: cap(attr(e, 'type')) })),
+      objects: all('object[data]').map((o) => ({ ...url('data', attr(o, 'data')), type: cap(attr(o, 'type')) })),
+      metaRefresh: all('meta[http-equiv="refresh" i][content]').map((m) => {
+        const content = attr(m, 'content');
+        // HTML declarative refresh: <time>(;|,|space)[url=]['|"]<URL>; no URL part means "reload this document".
+        const [, quote, rest] = /^\s*[\d.]*(?:\s*[;,]\s*|\s+)(?:url\s*=\s*)?(['"]?)(.*)$/is.exec(content) ?? [];
+        const raw = quote && rest.includes(quote) ? rest.slice(0, rest.indexOf(quote)) : rest;
+        return { ...(raw ? url('url', raw) : { url: null }), content: cap(content) };
+      }),
+      media: all('img[src], img[srcset], source[src], source[srcset]').map((m) => ({
+        tag: tagOf(m),
+        ...url('src', attr(m, 'src')),
+        srcset: first(candidates(attr(m, 'srcset') ?? '')).map((c) => url('url', c)),
       })),
     },
     truncated,
