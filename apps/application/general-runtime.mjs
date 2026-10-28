@@ -6,7 +6,7 @@ import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
 import { probeSite } from '../../vul-web2/scripts/idor-probe.mjs';
 import { executeUniversityRead } from '../../packages/adapters/university-read.mjs';
-import { readPentestCatalog } from '../../packages/adapters/integrations/pentest-db.mjs';
+import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
 
 const { runGeneralAssessment } = generalCore;
 const { createGeneralModelPlannerFromEnv } = generalPlanner;
@@ -16,6 +16,7 @@ const LIMITS = Object.freeze({ maxIterations: 6, maxProbes: 24, maxEvidenceItems
 const MAX_BODY_BYTES = 24 * 1024;
 const MAX_INITIAL_PAGES = 14;
 const BOARD_ACCESS_ASSET = '/api/posts/:id';
+const CATALOG_SOURCE = 'casper-db/attack-catalog';
 const FIXTURES = Object.freeze({
   'vul-web-1': {
     name: '로컬 게시판', siteKey: null, origin: null,
@@ -289,11 +290,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   runIdFactory = () => 'general-' + randomUUID(), env = process.env, envFile,
   signal, onModelCall, beforeProbe, afterProbe, caseSnapshot, unavailableInputs = [],
   historyProvider, plannerFactory, boardFactory, cleanupRegistryPath, fetchImpl = fetch,
-  idorProbe = probeSite, limits = LIMITS } = {}) {
+  idorProbe = probeSite, catalogReader = readKnowledgeCatalogReadOnly, limits = LIMITS } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!MODELS.has(modelId)) throw new TypeError('A registered DeepSeek model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
-    || typeof idorProbe !== 'function') throw new TypeError('Invalid general runtime dependency.');
+    || typeof idorProbe !== 'function' || typeof catalogReader !== 'function') {
+    throw new TypeError('Invalid general runtime dependency.');
+  }
   for (const callback of [onModelCall, beforeProbe, afterProbe, historyProvider, plannerFactory, boardFactory]) {
     if (callback !== undefined && typeof callback !== 'function') throw new TypeError('Invalid general runtime callback.');
   }
@@ -612,19 +615,39 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         ? { summaryStatus: 'case_summaries_not_exposed' } : {}) });
     else entries.push({ source: 'casper-db/case-snapshot', status: 'unavailable',
       reason: unavailableInputs.includes('casper-db') ? 'snapshot_unavailable' : 'not_applicable' });
-    try {
-      const catalog = await readPentestCatalog();
-      const blocks = Array.isArray(catalog.responses) ? catalog.responses
-        : catalog.response ? [catalog.response] : [];
-      entries.push({ source: 'pentest-db/cases.json', status: 'available',
-        kind: 'draft-advisory', sha256: catalog.provenance.sha256,
-        currentRunVerified: false,
-        entries: blocks.filter(item => item.target?.application === fixtureId)
-          .slice(0, 20).map(item => ({ category: item.vulnType,
-            endpoint: item.target.endpoint,
-            payloadIds: (item.payloads ?? []).map(payload => payload.payloadId).slice(0, 20) })) });
+    if (typeof caseSnapshot?.path !== 'string') {
+      entries.push({ source: CATALOG_SOURCE, status: 'unavailable',
+        reason: unavailableInputs.includes('casper-db') ? 'snapshot_unavailable'
+          : caseSnapshot ? 'snapshot_missing_path' : 'snapshot_missing' });
+    } else try {
+      // Read the same frozen database that supplied the historical-case context.
+      const catalog = await catalogReader({ databasePath: caseSnapshot.path,
+        python: env.CASPER_DB_PYTHON });
+      if (catalog?.schemaVersion !== 'casper-attack-catalog-1'
+        || !Array.isArray(catalog.patterns)) throw new Error('Invalid attack catalog.');
+      if (catalog.status === 'not_configured') {
+        entries.push({ source: CATALOG_SOURCE, status: 'unavailable',
+          reason: 'catalog_not_configured' });
+      } else {
+        if (catalog.status !== 'ok' || catalog.provenance?.source !== 'casper-db.attack_catalog'
+          || !/^[a-f0-9]{64}$/u.test(catalog.provenance.sha256)) {
+          throw new Error('Invalid attack catalog provenance.');
+        }
+        entries.push({ source: CATALOG_SOURCE, status: 'available',
+          kind: 'draft-advisory', catalogVersion: catalog.schemaVersion,
+          sha256: catalog.provenance.sha256, currentRunVerified: false,
+          entries: catalog.patterns.filter(item => item?.definition?.target?.application === fixtureId)
+            .slice(0, 20).map(item => ({
+              patternId: safeText(item.pattern_id ?? '').slice(0, 100),
+              revision: Number.isSafeInteger(item.revision) ? item.revision : null,
+              category: safeText(item.definition.vulnType ?? '').slice(0, 80),
+              endpoint: safeText(item.definition.target.endpoint ?? '').slice(0, 200),
+              payloadIds: (Array.isArray(item.definition.payloads) ? item.definition.payloads : [])
+                .slice(0, 20).map(payload => safeText(payload?.payloadId ?? '').slice(0, 100)),
+            })) });
+      }
     } catch {
-      entries.push({ source: 'pentest-db/cases.json', status: 'unavailable',
+      entries.push({ source: CATALOG_SOURCE, status: 'unavailable',
         reason: 'catalog_read_failed' });
     }
     try {

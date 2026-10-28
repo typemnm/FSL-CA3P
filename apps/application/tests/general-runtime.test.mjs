@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createGeneralRuntime } from '../general-runtime.mjs';
 import plannerModule from '../../../agent/src/general-model-planner.js';
+import { readKnowledgeCatalog } from '../../../packages/adapters/integrations/knowledge-db.mjs';
 
 function terminal(runtime) {
   return new Promise(resolve => {
@@ -39,6 +42,8 @@ test('general university run uses multiple model hypotheses and confirms only th
   const runtime = createGeneralRuntime({
     fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
     modelId: 'deepseek-flash', runIdFactory: () => 'general-university-test',
+    unavailableInputs: ['casper-db'],
+    catalogReader: async () => { throw new Error('catalog must not read the shared database without a snapshot'); },
     fetchImpl: async (url, init) => {
       calls.push({ url: String(url), method: init.method });
       return response(new URL(url).pathname);
@@ -84,6 +89,9 @@ test('general university run uses multiple model hypotheses and confirms only th
   assert.ok(hooks.every(item => item.method === 'GET'
     || item.method === 'POST' && new URL(item.url).pathname === '/login'));
   assert.ok(run.report.inventory.referenceSources.some(item => item.source === 'run-store/previous-runs'));
+  assert.ok(run.report.inventory.referenceSources.some(item =>
+    item.source === 'casper-db/attack-catalog' && item.status === 'unavailable'
+      && item.reason === 'snapshot_unavailable'));
   assert.ok(liveVerify, 'the verify event is published before the final report');
   const plan = liveVerify.events.find(item => item.stage === 'plan');
   assert.deepEqual(plan.request.hypothesisIds, ['h-idor', 'h-xss']);
@@ -121,16 +129,33 @@ test('general university run uses multiple model hypotheses and confirms only th
 
 test('general board run stays isolated and rejects off-origin model probes', async () => {
   const urls = [];
+  const catalogReads = [];
   let boardClosed = false;
   const runtime = createGeneralRuntime({
     fixtureId: 'vul-web-1', modelId: 'deepseek-v4-pro',
     runIdFactory: () => 'general-board-test',
     boardFactory: async () => ({ origin: 'http://127.0.0.1:49678',
       close: async () => { boardClosed = true; } }),
-    caseSnapshot: { caseRevisions: [{ caseId: 'old-case', revision: 2 }],
+    caseSnapshot: { path: '/frozen/general-board-catalog.sqlite',
+      caseRevisions: [{ caseId: 'old-case', revision: 2 }],
       caseSummaries: [{ caseId: 'old-case', revision: 2, title: 'Prior finding',
         vulnerabilityType: 'access_control', endpoint: '/api/posts/1', method: 'DELETE',
         description: 'api_key=old-secret', status: 'ready', patchStatus: 'unknown' }] },
+    catalogReader: async options => {
+      catalogReads.push(options);
+      return { schemaVersion: 'casper-attack-catalog-1', status: 'ok',
+        provenance: { source: 'casper-db.attack_catalog', sha256: 'a'.repeat(64) },
+        patterns: [
+          { pattern_id: 'board-xss', revision: 2, definition: {
+            vulnType: 'stored_xss', target: { application: 'vul-web-1', endpoint: 'POST /api/posts' },
+            payloads: [{ payloadId: 'board-payload', value: 'catalog-private-payload' }],
+          } },
+          { pattern_id: 'university-idor', revision: 1, definition: {
+            vulnType: 'access_control', target: { application: 'vul-web2-daehan', endpoint: 'GET /api/item' },
+            payloads: [{ payloadId: 'university-payload' }],
+          } },
+        ] };
+    },
     fetchImpl: async url => { urls.push(String(url)); return response(new URL(url).pathname); },
     plannerFactory: () => ({ async propose(context) {
       if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
@@ -156,11 +181,90 @@ test('general board run stays isolated and rejects off-origin model probes', asy
   assert.ok(urls.every(url => url.startsWith('http://127.0.0.1:49678/')));
   assert.ok(run.report.inventory.referenceSources.some(item =>
     item.source === 'casper-db/case-snapshot' && item.summaries[0].caseId === 'old-case'));
-  assert.ok(run.report.inventory.referenceSources.some(item =>
-    item.source === 'pentest-db/cases.json' && item.status === 'available'));
+  const catalog = run.report.inventory.referenceSources.find(item =>
+    item.source === 'casper-db/attack-catalog');
+  assert.equal(catalog.status, 'available');
+  assert.equal(catalog.sha256, 'a'.repeat(64));
+  assert.deepEqual(catalog.entries, [{ patternId: 'board-xss', revision: 2,
+    category: 'stored_xss', endpoint: 'POST /api/posts', payloadIds: ['board-payload'] }]);
+  assert.equal(catalogReads.length, 1);
+  assert.equal(catalogReads[0].databasePath, '/frozen/general-board-catalog.sqlite');
+  assert.doesNotMatch(JSON.stringify(run.report), /catalog-private-payload/u);
   assert.doesNotMatch(JSON.stringify(run.report), /old-secret/u);
   await runtime.close();
   assert.equal(boardClosed, true);
+});
+
+test('general university catalog uses its frozen snapshot and excludes other targets', async () => {
+  const reads = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => 'university-catalog-snapshot',
+    caseSnapshot: { path: '/frozen/university-catalog.sqlite', caseRevisions: [] },
+    catalogReader: async options => {
+      reads.push(options);
+      return { schemaVersion: 'casper-attack-catalog-1', status: 'ok',
+        provenance: { source: 'casper-db.attack_catalog', sha256: 'b'.repeat(64) },
+        patterns: [
+          { pattern_id: 'board-xss', revision: 1, definition: {
+            vulnType: 'stored_xss', target: { application: 'vul-web-1', endpoint: 'POST /api/posts' },
+            payloads: [{ payloadId: 'board-only' }],
+          } },
+          { pattern_id: 'university-access', revision: 3, definition: {
+            vulnType: 'access_control', target: { application: 'vul-web2-daehan', endpoint: 'GET /api/item' },
+            payloads: [{ payloadId: 'university-only' }],
+          } },
+        ] };
+    },
+    fetchImpl: async url => response(new URL(url).pathname),
+    plannerFactory: () => ({ async propose() {
+      return { done: true, hypotheses: [], probes: [] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed');
+  const catalog = run.report.inventory.referenceSources.find(item =>
+    item.source === 'casper-db/attack-catalog');
+  assert.equal(catalog.status, 'available');
+  assert.deepEqual(catalog.entries, [{ patternId: 'university-access', revision: 3,
+    category: 'access_control', endpoint: 'GET /api/item', payloadIds: ['university-only'] }]);
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].databasePath, '/frozen/university-catalog.sqlite');
+  await runtime.close();
+});
+
+test('general runtime default catalog reader preserves the frozen database', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'general-catalog-readonly-'));
+  const databasePath = join(directory, 'snapshot.sqlite3');
+  let runtime;
+  try {
+    const seeded = await readKnowledgeCatalog({ databasePath });
+    assert.equal(seeded.status, 'ok');
+    const before = await readFile(databasePath);
+    runtime = createGeneralRuntime({
+      fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+      modelId: 'deepseek-flash', runIdFactory: () => 'general-catalog-readonly',
+      caseSnapshot: { path: databasePath, caseRevisions: [] },
+      fetchImpl: async url => response(new URL(url).pathname),
+      plannerFactory: () => ({ async propose() {
+        return { done: true, hypotheses: [], probes: [] };
+      } }),
+    });
+    const done = terminal(runtime);
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed');
+    const catalog = run.report.inventory.referenceSources.find(item =>
+      item.source === 'casper-db/attack-catalog');
+    assert.equal(catalog.status, 'available');
+    assert.equal(catalog.sha256, seeded.provenance.sha256);
+    assert.deepEqual(await readFile(databasePath), before);
+  } finally {
+    await runtime?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('multibyte repository excerpts stay within the core evidence byte limit', async () => {

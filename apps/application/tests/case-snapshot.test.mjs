@@ -25,6 +25,7 @@ case=json.load(open(sys.argv[2],encoding='utf-8'))
 store.add({**case,'target_id':'vul-web-1','status':'ready'})
 `);
   const before = prepareCaseSnapshot({ runId: 'snapshot-before', storePath: join(directory, 'runs.sqlite'), env });
+  assert.match(before.knowledgeDigest, /^[a-f0-9]{64}$/u);
   const sourceBefore = readFileSync(database);
   execute(String.raw`
 import sqlite3,sys
@@ -56,7 +57,7 @@ test('historical snapshot filters cases by the registered general fixture', t =>
         assert.equal(args[4], fixtureId);
         assert.ok(options.env.PYTHONPATH.endsWith(join('casper-db', 'src')));
         writeFileSync(args[3], `snapshot for ${fixtureId}`);
-        return { status: 0, stdout: JSON.stringify({ schemaVersion: 5, cases: [{
+        return { status: 0, stdout: JSON.stringify({ schemaVersion: 7, knowledgeDigest: `knowledge-${fixtureId}`, cases: [{
           case_id: `case-${fixtureId}`, revision: 2, title: 'Past case',
           vulnerability_type: 'access_control', endpoint: '/api/posts', method: 'GET',
           description: 'Historical reference only', status: 'confirmed', patch_status: 'open',
@@ -65,6 +66,8 @@ test('historical snapshot filters cases by the registered general fixture', t =>
     });
     assert.equal(called, 1);
     assert.equal(result.caseSummaries[0].caseId, `case-${fixtureId}`);
+    assert.equal(result.knowledgeDigest, `knowledge-${fixtureId}`);
+    assert.equal(result.schemaVersion, 7);
     assert.deepEqual(result.caseRevisions, [{ caseId: `case-${fixtureId}`, revision: 2 }]);
   }
 });

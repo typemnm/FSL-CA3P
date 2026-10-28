@@ -38,7 +38,7 @@ export function prepareCaseSnapshot({ runId, storePath, fixtureId = 'vul-web-1',
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, `${digest(runId)}.sqlite`);
   const python = env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python.exe' : 'python3');
-  const result = spawnSync(python, ['-c', SNAPSHOT_CODE, sourcePath, path], { cwd: PROJECT_ROOT,
+  const result = spawn(python, ['-c', SNAPSHOT_CODE, sourcePath, path, fixtureId], { cwd: PROJECT_ROOT,
     env: { ...env, PYTHONPATH: join(PROJECT_ROOT, 'casper-db/src') }, encoding: 'utf8',
     timeout: 15_000, maxBuffer: 2_000_000, windowsHide: true });
   if (result.error || result.status !== 0) throw Object.assign(new Error('Cannot prepare the historical-case snapshot. Configure CASPER_DB_PYTHON and the case database.'),
@@ -46,5 +46,14 @@ export function prepareCaseSnapshot({ runId, storePath, fixtureId = 'vul-web-1',
   const snapshot = JSON.parse(result.stdout);
   return { path, sourcePath, contentDigest: digest({ schemaVersion: snapshot.schemaVersion, cases: snapshot.cases, checks: snapshot.checks }),
     knowledgeDigest: snapshot.knowledgeDigest, fileDigest: treeDigest(path), schemaVersion: snapshot.schemaVersion,
-    caseRevisions: snapshot.cases.map(item => ({ caseId: item.case_id, revision: item.revision })) };
+    caseRevisions: snapshot.cases.map(item => ({ caseId: item.case_id, revision: item.revision })),
+    caseSummaries: snapshot.cases.slice(0, 30).map(item => ({
+      caseId: item.case_id, revision: item.revision,
+      title: String(item.title ?? '').slice(0, 160),
+      vulnerabilityType: String(item.vulnerability_type ?? '').slice(0, 80),
+      endpoint: String(item.endpoint ?? '').slice(0, 200),
+      method: String(item.method ?? '').slice(0, 12),
+      description: String(item.description ?? '').slice(0, 300),
+      status: item.status, patchStatus: item.patch_status,
+    })) };
 }

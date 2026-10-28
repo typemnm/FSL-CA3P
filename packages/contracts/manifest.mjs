@@ -50,10 +50,12 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
   const universityLab = mode !== 'core-fixture' && Object.hasOwn(universityOrigins, fixtureId);
   const fixedUniversityProbe = universityLab && !general;
   const universityOrigin = universityLab ? options.target ?? universityOrigins[fixtureId] : null;
-  const testProfile = options.testProfile ?? (universityLab ? 'known_record_idor_read'
+  const testProfile = options.testProfile ?? (general ? 'general' : universityLab ? 'known_record_idor_read'
     : mode === 'core-fixture' ? 'agent_cross_user_delete_canary' : 'stored_xss_canary');
   const moduleNames = general
-    ? ['agent', universityLab ? 'vul-web2' : 'vul-web-1', 'packages/models', 'packages/adapters', 'apps/application', 'apps/worker']
+    ? ['agent', universityLab ? 'vul-web2' : 'vul-web-1', 'casper-db',
+      'attack-module', 'guardrail', 'packages/models', 'packages/adapters',
+      'packages/report', 'packages/run-store', 'apps/application', 'apps/worker']
     : universityLab
     ? ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker']
     : ['agent', 'xss-parser', 'attack-module', 'guardrail', 'casper-db',
@@ -80,11 +82,13 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
     data: { logicalInputDigest: digest({ mode, fixtureId, testProfile, ...(universityLab ? { origin: universityOrigin } : {}) }),
       datasetDigest: treeDigest(join(PROJECT_ROOT, universityLab ? 'vul-web2'
         : mode === 'core-fixture' ? 'apps/application/scripted-gateway.cjs' : 'vul-web-1')),
-      catalogDigest: universityLab ? null : mode === 'core-fixture'
+      catalogDigest: general ? (options.caseSnapshot?.path ? attackCatalogSnapshot(options.caseSnapshot.path) : null)
+        : universityLab ? null : mode === 'core-fixture'
         ? treeDigest(join(PROJECT_ROOT, 'apps/application/scripted-gateway.cjs'))
         : attackCatalogSnapshot(options.caseSnapshot?.path ?? env.CASPER_DB_PATH ?? join(PROJECT_ROOT, 'casper-db/data/cases.sqlite3')),
-      catalogSeedDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')),
-      caseSnapshotDigest: universityLab ? null : mode === 'core-fixture' ? treeDigest(join(PROJECT_ROOT, 'apps/application/scripted-gateway.cjs'))
+      catalogSeedDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')),
+      caseSnapshotDigest: general ? options.caseSnapshot?.contentDigest ?? null
+        : universityLab ? null : mode === 'core-fixture' ? treeDigest(join(PROJECT_ROOT, 'apps/application/scripted-gateway.cjs'))
         : treeDigest(process.env.CASPER_DB_PATH ?? join(PROJECT_ROOT, 'casper-db/data/cases.sqlite3')),
       caseRevisions: [], ...(options.unavailableInputs ? { unavailableInputs: options.unavailableInputs } : {}) },
     target: { fixtureId: mode === 'core-fixture' ? 'scripted-contract-fixture' : fixtureId,
@@ -92,11 +96,11 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       initialStateDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'vul-web-1/server.js')),
       ...(universityLab ? { origin: universityOrigin, stateCapture: 'running-fixture-not-snapshotted' } : {}),
       testProfile },
-    policy: { rulesetDigest: general ? null : treeDigest(join(PROJECT_ROOT, 'guardrail/rules')),
+    policy: { rulesetDigest: general && !universityLab ? null : treeDigest(join(PROJECT_ROOT, 'guardrail/rules')),
       mutationRetry: 'never', recovery: 'interrupted-new-run-required', maxIterations: general ? 6 : 1 },
     environment: { nodeVersion: process.version,
-      pythonVersion: mode === 'core-fixture' || universityLab ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'), ['--version']),
-      browserVersion: mode === 'core-fixture' || universityLab ? 'not-applicable' : (() => {
+      pythonVersion: mode === 'core-fixture' || fixedUniversityProbe ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'), ['--version']),
+      browserVersion: mode === 'core-fixture' || universityLab || general ? 'not-applicable' : (() => {
         try {
           const require = createRequire(new URL('../../xss-parser/package.json', import.meta.url));
           const path = env.XSS_PARSER_BROWSER_PATH ?? require('playwright').chromium.executablePath();
