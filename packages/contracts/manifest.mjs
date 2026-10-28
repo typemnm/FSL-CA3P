@@ -45,12 +45,16 @@ function attackCatalogSnapshot(path) {
 }
 export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
   const fixtureId = options.fixtureId ?? 'vul-web-1';
+  const general = mode === 'local-lab-general';
   const universityOrigins = { 'vul-web2-daehan': 'http://127.0.0.1:4101', 'vul-web2-wonchang': 'http://127.0.0.1:4102' };
   const universityLab = mode !== 'core-fixture' && Object.hasOwn(universityOrigins, fixtureId);
+  const fixedUniversityProbe = universityLab && !general;
   const universityOrigin = universityLab ? options.target ?? universityOrigins[fixtureId] : null;
   const testProfile = options.testProfile ?? (universityLab ? 'known_record_idor_read'
     : mode === 'core-fixture' ? 'agent_cross_user_delete_canary' : 'stored_xss_canary');
-  const moduleNames = universityLab
+  const moduleNames = general
+    ? ['agent', universityLab ? 'vul-web2' : 'vul-web-1', 'packages/models', 'packages/adapters', 'apps/application', 'apps/worker']
+    : universityLab
     ? ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker']
     : ['agent', 'xss-parser', 'attack-module', 'guardrail', 'casper-db',
       'packages/adapters', 'packages/history', 'packages/evaluation', 'packages/report', 'apps/application', 'apps/worker'];
@@ -64,13 +68,14 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       ciWorkflowRunId: process.env.GITHUB_RUN_ID ?? null, ciAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
     contracts: CONTRACT_VERSIONS, modules,
     shared: { contractDigest: treeDigest(join(PROJECT_ROOT, 'packages/contracts')),
-      lockDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'xss-parser/package-lock.json')),
-      modelRegistryDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')) },
-    execution: { mode, simulated: mode === 'core-fixture', maxIterations: 1, delayMs: options.delayMs ?? 0 },
+      lockDigest: universityLab || general ? null : treeDigest(join(PROJECT_ROOT, 'xss-parser/package-lock.json')),
+      modelRegistryDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')) },
+    execution: { mode, simulated: mode === 'core-fixture', maxIterations: general ? 6 : 1, delayMs: options.delayMs ?? 0 },
     model: { id: modelId, provider: model.provider ?? (requestedModel ? 'deepseek' : 'rules'), requestedModel,
-      reportedModel: null, snapshot: null, adapterDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')),
-      promptTemplateDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'agent/src/deepseek-reasoning-engine.js')),
-      ...(universityLab ? { executionRole: 'not-used-fixed-probe' } : {}),
+      reportedModel: null, snapshot: null, adapterDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')),
+      promptTemplateDigest: general ? treeDigest(join(PROJECT_ROOT, 'agent/src/general-model-planner.js'))
+        : fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'agent/src/deepseek-reasoning-engine.js')),
+      ...(fixedUniversityProbe ? { executionRole: 'not-used-fixed-probe' } : {}),
       settings: model.settings ?? {}, actualPromptDigests: [] },
     data: { logicalInputDigest: digest({ mode, fixtureId, testProfile, ...(universityLab ? { origin: universityOrigin } : {}) }),
       datasetDigest: treeDigest(join(PROJECT_ROOT, universityLab ? 'vul-web2'
@@ -81,14 +86,14 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       catalogSeedDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')),
       caseSnapshotDigest: universityLab ? null : mode === 'core-fixture' ? treeDigest(join(PROJECT_ROOT, 'apps/application/scripted-gateway.cjs'))
         : treeDigest(process.env.CASPER_DB_PATH ?? join(PROJECT_ROOT, 'casper-db/data/cases.sqlite3')),
-      caseRevisions: [] },
+      caseRevisions: [], ...(options.unavailableInputs ? { unavailableInputs: options.unavailableInputs } : {}) },
     target: { fixtureId: mode === 'core-fixture' ? 'scripted-contract-fixture' : fixtureId,
       imageDigest: process.env.CA3P_FIXTURE_IMAGE_DIGEST ?? null,
       initialStateDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'vul-web-1/server.js')),
       ...(universityLab ? { origin: universityOrigin, stateCapture: 'running-fixture-not-snapshotted' } : {}),
       testProfile },
-    policy: { rulesetDigest: treeDigest(join(PROJECT_ROOT, 'guardrail/rules')),
-      mutationRetry: 'never', recovery: 'interrupted-new-run-required', maxIterations: 1 },
+    policy: { rulesetDigest: general ? null : treeDigest(join(PROJECT_ROOT, 'guardrail/rules')),
+      mutationRetry: 'never', recovery: 'interrupted-new-run-required', maxIterations: general ? 6 : 1 },
     environment: { nodeVersion: process.version,
       pythonVersion: mode === 'core-fixture' || universityLab ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'), ['--version']),
       browserVersion: mode === 'core-fixture' || universityLab ? 'not-applicable' : (() => {
@@ -105,7 +110,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
           return runtimeVersion(path, ['--version']);
         } catch { return null; }
       })(),
-      playwrightVersion: universityLab ? 'not-applicable' : (() => { try { return JSON.parse(readFileSync(join(PROJECT_ROOT, 'xss-parser/node_modules/playwright/package.json'), 'utf8')).version; } catch { return null; } })(),
+      playwrightVersion: universityLab || general ? 'not-applicable' : (() => { try { return JSON.parse(readFileSync(join(PROJECT_ROOT, 'xss-parser/node_modules/playwright/package.json'), 'utf8')).version; } catch { return null; } })(),
       runnerImageDigest: process.env.CA3P_RUNNER_IMAGE_DIGEST ?? null },
     provenance: 'captured-before-execution', missingValuesMean: 'unavailable' };
 }

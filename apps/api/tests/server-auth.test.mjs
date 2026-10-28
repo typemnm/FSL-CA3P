@@ -17,9 +17,9 @@ async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBy
   const bytes = Buffer.from(artifactBytes ?? '{"runId":"run-a","evidence":"fixture"}');
   const artifactPath = join(directory, 'evidence.json'); await writeFile(artifactPath, bytes);
   const artifact = { id: sha256('artifact-id'), path: artifactPath, sha256: sha256(bytes), size: bytes.length };
-  const listeners = new Set(); const calls = { start: 0, stop: 0, lab: [], experimentReset: [] };
+  const listeners = new Set(); const calls = { start: 0, startBodies: [], stop: 0, lab: [], experimentReset: [] };
   const runtime = { getState: () => runtimeState, getRun: id => id === 'run-a' ? runtimeState.run : null,
-    listRuns: () => [state.run], listModels: () => [], start: async () => { calls.start += 1; return state; },
+    listRuns: () => [state.run], listModels: () => [], start: async body => { calls.start += 1; calls.startBodies.push(body); return state; },
     startLab: async body => { calls.lab.push(body); return state; }, stop: async () => { calls.stop += 1; return state; }, reset: () => state,
     experimentResetPreview: () => ({ status: 'ready', runCount: 1, canReset: true }),
     resetExperiment: async body => { calls.experimentReset.push(body); return { ...state, experimentReset: { status: 'completed', epoch: 1 } }; },
@@ -126,6 +126,15 @@ test('lab API forwards the university fixture and target selection but rejects e
     assert.equal((await api(base, '/api/lab-runs', { method: 'POST', headers: operator.headers, body })).status, 400);
   }
   assert.equal(calls.lab.length, 1);
+});
+
+test('authenticated run API forwards a general university assessment request unchanged', async t => {
+  const { base, calls } = await fixture(t);
+  const operator = await login(base, 'operator');
+  const body = { mode: 'local-lab-general', modelId: 'deepseek-flash',
+    fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.20:4101' };
+  assert.equal((await api(base, '/api/runs', { method: 'POST', headers: operator.headers, body })).status, 202);
+  assert.deepEqual(calls.startBodies, [body]);
 });
 
 test('artifact retrieval requires a session and rejects altered original evidence', async t => {

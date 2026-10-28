@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import json as _json
 import sys
@@ -93,7 +94,7 @@ def _origin_and_switch(bundle: Path, run_report: dict) -> tuple[str, dict | None
 
 
 def _run(trigger_text: str, *, client=None, node: str = "node") -> int:
-    """Collect, then let the LLM write the report. Injected client is used in tests."""
+    """Collect and render a selected general finding or run the legacy LLM writer."""
     try:
         trigger = parse_trigger(json.loads(trigger_text))
     except (json.JSONDecodeError, RecursionError, TriggerError) as exc:
@@ -131,17 +132,36 @@ def _run(trigger_text: str, *, client=None, node: str = "node") -> int:
     report = collected.run.report or {}
     origin, switch = _origin_and_switch(collected.bundle, report)
     try:
-        if client is None:
-            client = HttpChatClient(LLMConfig.from_env())
-        built = run_build(
-            client,
-            bundle=collected.bundle,
-            out_dir=trigger.output_dir / "report",
-            test_profile=report.get("testProfile"),
-            origin=origin,
-            session_switch=switch,
-            node=node,
-        )
+        if collected.selection is not None:
+            from .general_model import build_general_model
+            from .llm.tools import ReportTools
+
+            model = build_general_model(
+                collected.selection, report, collected.manifest,
+                stored_at=collected.run.stored_at,
+            )
+            tools = ReportTools(
+                collected.bundle, trigger.output_dir / "report",
+                origin=origin, session_switch=None, node=node,
+            )
+            suffix = hashlib.sha256(trigger.finding_id.encode("utf-8")).hexdigest()[:16]
+            tools.finish_report(model=model, filename=f"issue-{suffix}-{trigger.run_id[:80]}.hwpx")
+            built = {
+                "files": tools.finished.files,
+                "reportFilename": tools.finished.report_filename,
+            }
+        else:
+            if client is None:
+                client = HttpChatClient(LLMConfig.from_env())
+            built = run_build(
+                client,
+                bundle=collected.bundle,
+                out_dir=trigger.output_dir / "report",
+                test_profile=report.get("testProfile"),
+                origin=origin,
+                session_switch=switch,
+                node=node,
+            )
     except LLMError as exc:
         _emit(_failure(trigger.run_id, "LLM_FAILED", str(exc)))
         return EXIT_LLM
@@ -149,15 +169,22 @@ def _run(trigger_text: str, *, client=None, node: str = "node") -> int:
         _emit(_failure(trigger.run_id, "INTERNAL_ERROR", type(exc).__name__))
         return EXIT_INTERNAL
 
-    finding = report.get("finding") if isinstance(report.get("finding"), dict) else {}
+    finding = (collected.selection["finding"] if collected.selection is not None
+               else report.get("finding") if isinstance(report.get("finding"), dict) else {})
+    vulnerability = (
+        f"{finding.get('category', '')} · {finding.get('asset', '')}".strip(" ·")
+        if collected.selection is not None
+        else f"{finding.get('title', '')} ({finding.get('cwe', '')})".strip()
+    )
     _emit(
         {
             "schemaVersion": "report-result-1.0",
             "ok": True,
             "runId": trigger.run_id,
             "stage": "reported",
+            **({"findingId": trigger.finding_id} if collected.selection is not None else {}),
             "summary": {
-                "vulnerability": f"{finding.get('title', '')} ({finding.get('cwe', '')})".strip(),
+                "vulnerability": vulnerability,
                 "target": origin or "",
                 "exploit": finding.get("status", ""),
             },
@@ -186,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     collect_cmd = commands.add_parser("collect", help="collect run results into a bundle")
     collect_cmd.add_argument("--trigger", required=True, help="trigger JSON file, or - for stdin")
-    run_cmd = commands.add_parser("run", help="collect then write the HWPX report with the LLM")
+    run_cmd = commands.add_parser("run", help="collect then write the HWPX report")
     run_cmd.add_argument("--trigger", required=True, help="trigger JSON file, or - for stdin")
     args = parser.parse_args(argv)
     text = _read_trigger(args.trigger)

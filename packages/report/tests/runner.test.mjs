@@ -77,6 +77,49 @@ test('provider errors and raw output never enter public failure messages', async
   assert.doesNotMatch(JSON.stringify(result), /SECRET|private|report-test-fake-key/);
 });
 
+test('general report selects one confirmed finding without a model key and rejects mismatched output', async t => {
+  const options = await setup(t);
+  const generalRun = { id: 'general-report-run', mode: 'local-lab-general', simulated: false,
+    report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general', status: 'completed',
+      findings: [{ id: 'finding:h-a', status: 'confirmed', evidenceIds: ['ev-a'] },
+        { id: 'finding:h-b', status: 'not_reproduced', evidenceIds: ['ev-b'] }] } };
+  const runGeneral = (modelChange = value => value, responseChange = value => value) => async ({ input, env: childEnv }) => {
+    const trigger = JSON.parse(input);
+    assert.deepEqual(trigger.options, { findingId: 'finding:h-a' });
+    assert.equal(childEnv.DEEPSEEK_API_KEY, undefined);
+    const directory = join(trigger.output.dir, 'report');
+    await mkdir(directory);
+    const model = Buffer.from(JSON.stringify(modelChange({ run: { runId: trigger.runId, status: 'completed' },
+      generator: { method: 'deterministic' },
+      sourceFindingId: 'finding:h-a', sourceEvidenceIds: ['ev-a'],
+      findings: [{ common: { findingId: 'finding:h-a', status: 'confirmed' } }] })));
+    await writeFile(join(directory, 'selected.hwpx'), hwpx);
+    await writeFile(join(directory, 'report-model.json'), model);
+    return { code: 0, stdout: JSON.stringify(responseChange({ schemaVersion: 'report-result-1.0', ok: true,
+      stage: 'reported', runId: trigger.runId, findingId: 'finding:h-a', reportFilename: 'selected.hwpx', files: [
+        { name: 'selected.hwpx', sha256: sha(hwpx), size: hwpx.length },
+        { name: 'report-model.json', sha256: sha(model), size: model.length },
+      ] })) };
+  };
+  const result = await generateReportDocument({ ...options, run: generalRun, findingId: 'finding:h-a',
+    env: {}, envFile: null, execute: runGeneral() });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.findingId, 'finding:h-a');
+  for (const execute of [
+    runGeneral(value => ({ ...value, sourceFindingId: 'finding:h-b' })),
+    runGeneral(value => ({ ...value, findings: [{ common: { findingId: 'finding:h-a', status: 'not_reproduced' } }] })),
+    runGeneral(undefined, value => ({ ...value, findingId: 'finding:h-b' })),
+  ]) {
+    const rejected = await generateReportDocument({ ...options, run: generalRun, findingId: 'finding:h-a',
+      env: {}, envFile: null, execute });
+    assert.equal(rejected.errorCode, 'REPORT_INVALID_OUTPUT');
+  }
+  const never = () => assert.fail('nonconfirmed finding must not start Python');
+  const unconfirmed = await generateReportDocument({ ...options, run: generalRun,
+    findingId: 'finding:h-b', env: {}, envFile: null, execute: never });
+  assert.equal(unconfirmed.errorCode, 'REPORT_INVALID_SELECTION');
+});
+
 test('process timeout, cancellation and output cap terminate the child', async () => {
   const invoke = options => executeReportProcess({ command: process.execPath,
     args: ['-e', 'setInterval(() => {}, 1000)'], input: '', ...options });
