@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunService } from '../../application/run-service.mjs';
 import { runWorker } from '../worker.mjs';
 
 async function waitFor(check) {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const value = check();
     if (value) return value;
@@ -16,12 +16,16 @@ async function waitFor(check) {
   assert.fail('general integration run did not finish');
 }
 
-test('service, worker, and general runtime persist a model-planned multi-finding report without external APIs', async () => {
+test('service, worker, and general runtime create a real HWPX for a confirmed finding without a report model API',
+  { timeout: 60_000 }, async () => {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   mkdirSync(runtimeRoot, { recursive: true });
   const directory = mkdtempSync(join(runtimeRoot, 'general-integration-'));
   const storePath = join(directory, 'runs.sqlite');
-  const env = { DEEPSEEK_API_KEY: 'synthetic-test-only' };
+  const localPython = fileURLToPath(new URL(`../../../.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`, import.meta.url));
+  const env = { ...process.env, DEEPSEEK_API_KEY: 'synthetic-test-only',
+    CA3P_REPORT_PYTHON: process.env.CA3P_REPORT_PYTHON || process.env.CASPER_DB_PYTHON
+      || (existsSync(localPython) ? localPython : process.platform === 'win32' ? 'py' : 'python3') };
   let service; let worker; let reopened;
   try {
     service = createRunService({ storePath, autoStartWorker: false, importLegacy: false,
@@ -73,8 +77,7 @@ test('service, worker, and general runtime persist a model-planned multi-finding
       { check: 'studentRole', recordId: 3, status: 403, ownerId: null },
     ] });
     worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 20,
-      env, generalPlannerFactory, generalFetchImpl, generalIdorProbe,
-      reportGenerator: () => assert.fail('general report must not enter the legacy HWPX generator') });
+      env, generalPlannerFactory, generalFetchImpl, generalIdorProbe });
     const final = await waitFor(() => { const run = service.getRun(id); return run.status === 'completed' && run; });
     assert.equal(final.assessmentMode, 'general');
     assert.equal(final.report.schemaVersion, 'general-assessment/1');
@@ -82,7 +85,11 @@ test('service, worker, and general runtime persist a model-planned multi-finding
     assert.equal(final.report.findings.find(item => item.hypothesisId === 'h-access').status, 'confirmed');
     assert.equal(final.report.findings.find(item => item.hypothesisId === 'h-xss').status, 'not_tested');
     assert.equal(final.modelCalls.length, 2);
-    assert.equal(final.reportDocument.errorCode, 'GENERAL_DOCUMENT_UNSUPPORTED');
+    assert.equal(final.reportDocuments.status, 'ready', JSON.stringify(final.reportDocuments));
+    assert.deepEqual(final.reportDocuments.items.map(item => [item.findingId, item.status]),
+      [['finding:h-access', 'ready']]);
+    assert.match(final.reportDocuments.items[0].filename, /\.hwpx$/);
+    assert.equal(worker.store.getArtifact(final.reportDocuments.items[0].artifactId).kind, 'hwpx-report');
     assert.equal(final.historyWrite.status, 'skipped');
     assert.ok(final.artifacts.some(item => item.kind === 'run-report'));
     assert.ok(fetchCalls.length >= 2);
@@ -97,6 +104,7 @@ test('service, worker, and general runtime persist a model-planned multi-finding
       envFile: null, env: {} });
     const saved = reopened.getRun(id);
     assert.equal(saved.report.findings.length, 2);
+    assert.equal(saved.reportDocuments.items.length, 1);
     assert.equal(saved.modelCalls.length, 2);
     assert.equal(reopened.listRuns().items[0].id, id);
   } finally {
@@ -132,7 +140,7 @@ test('general worker starts the real isolated board and records a bounded read w
           input: { path: '/api/posts' } }],
         modelMetadata: { provider: 'deepseek', requestedModel: 'deepseek-flash' } };
       } }),
-      reportGenerator: () => assert.fail('general JSON report must not invoke the HWPX generator') });
+      reportGenerator: () => assert.fail('unconfirmed findings must not invoke the HWPX generator') });
     const final = await waitFor(() => { const run = service.getRun(id); return run.status === 'completed' && run; });
     assert.match(final.target, /^http:\/\/127\.0\.0\.1:\d+$/);
     assert.equal(final.targetContacted, true);
@@ -141,7 +149,8 @@ test('general worker starts the real isolated board and records a bounded read w
     assert.equal(final.report.findings[0].status, 'inconclusive');
     assert.equal(final.modelCalls.length, 2);
     assert.deepEqual(final.manifest.data.caseRevisions, []);
-    assert.equal(final.reportDocument.status, 'skipped');
+    assert.equal(final.reportDocuments.status, 'skipped');
+    assert.equal(final.reportDocuments.errorCode, 'NO_CONFIRMED_FINDINGS');
   } finally {
     await worker?.shutdown();
     await service?.close();

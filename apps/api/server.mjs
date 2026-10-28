@@ -13,6 +13,7 @@ import { deploymentPaused, deploymentStatus } from './deployment.mjs';
 const root = fileURLToPath(new URL('../../agent-dashboard/dist/', import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
 const MAX_BODY = 8192;
+const GENERAL_REPORT_DOCUMENTS_SCHEMA_VERSION = 'general-report-documents/1';
 const headers = {
   'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
@@ -29,6 +30,18 @@ function reportFilename(value) {
     .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '-').replace(/^[. ]+|[. ]+$/g, '');
   const stem = Array.from(name.replace(/\.hwpx$/i, '')).slice(0, 150).join('') || 'ca3p-report';
   return `${stem}.hwpx`;
+}
+
+async function sendHwpx(res, artifact, document) {
+  const data = await readFile(artifact.path);
+  if (data.length !== artifact.size || createHash('sha256').update(data).digest('hex') !== artifact.sha256) {
+    throw error(409, 'Report integrity check failed.');
+  }
+  const filename = reportFilename(artifact.filename ?? document.filename);
+  const encoded = encodeURIComponent(filename).replace(/['()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  res.writeHead(200, { ...headers, 'Content-Type': 'application/hwp+zip', 'Content-Length': data.length,
+    'Content-Disposition': `attachment; filename="ca3p-report.hwpx"; filename*=UTF-8''${encoded}` });
+  return res.end(data);
 }
 
 function readJson(req) {
@@ -131,15 +144,29 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
           const artifact = typeof document.artifactId === 'string' && /^[a-f0-9]{64}$/.test(document.artifactId)
             ? runtime.store?.getArtifact(document.artifactId) : null;
           if (!artifact || artifact.runId !== run.id || artifact.kind !== 'hwpx-report') throw error(404, 'Report artifact not found.');
-          const data = await readFile(artifact.path);
-          if (data.length !== artifact.size || createHash('sha256').update(data).digest('hex') !== artifact.sha256) {
-            throw error(409, 'Report integrity check failed.');
+          return await sendHwpx(res, artifact, document);
+        }
+        const generalReportMatch = /^\/api\/runs\/([a-zA-Z0-9_-]+)\/reports\/([a-f0-9]{64})\.hwpx$/.exec(pathname);
+        if (generalReportMatch && req.method === 'GET') {
+          const run = await (runtime.store?.getRun?.(generalReportMatch[1]) ?? runtime.getRun?.(generalReportMatch[1]));
+          if (!run) throw error(404, 'Run not found.');
+          if (run.report?.assessmentMode !== 'general') throw error(404, 'Report document not found.');
+          const items = run.reportDocuments?.schemaVersion === GENERAL_REPORT_DOCUMENTS_SCHEMA_VERSION
+            && Array.isArray(run.reportDocuments.items) ? run.reportDocuments.items : [];
+          const linked = items.filter(item => item?.artifactId === generalReportMatch[2]);
+          if (linked.length !== 1) throw error(404, 'Report document not found.');
+          const [document] = linked;
+          if (document.status !== 'ready') throw error(409, 'The HWPX report is not ready.');
+          if (!Array.isArray(run.report?.findings)
+            || !run.report.findings.some(finding => finding?.id === document.findingId && finding.status === 'confirmed')) {
+            throw error(409, 'Report finding is not confirmed.');
           }
-          const filename = reportFilename(artifact.filename ?? document.filename);
-          const encoded = encodeURIComponent(filename).replace(/['()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
-          res.writeHead(200, { ...headers, 'Content-Type': 'application/hwp+zip', 'Content-Length': data.length,
-            'Content-Disposition': `attachment; filename="ca3p-report.hwpx"; filename*=UTF-8''${encoded}` });
-          return res.end(data);
+          const artifact = runtime.store?.getArtifact(generalReportMatch[2]);
+          if (!artifact || artifact.runId !== run.id || artifact.kind !== 'hwpx-report'
+            || artifact.findingId !== document.findingId || artifact.filename !== document.filename) {
+            throw error(404, 'Report artifact not found.');
+          }
+          return await sendHwpx(res, artifact, document);
         }
         if (pathname === '/api/platform' && req.method === 'GET') return json(res, 200, await platformProvider());
         if (pathname === '/api/ci-results' && req.method === 'GET') return json(res, 200,

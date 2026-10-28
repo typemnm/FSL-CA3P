@@ -127,3 +127,4 @@
 .general-live-body .general-live-note{margin:12px 0 0;color:#91a999}
 .general-live-empty{border:1px dashed #405948;border-radius:5px;padding:12px}
 @media(max-width:760px){.general-loop{padding:18px;min-height:250px}.general-loop-phase{flex-basis:105px}.general-loop-arrow{display:none}.general-live-body{padding:15px}}
+.report-documents{display:block}.report-document-list{list-style:none;padding:0;margin:16px 0 0;display:grid;gap:10px}.report-document-item{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025)}.report-document-item strong{display:block;overflow-wrap:anywhere}.report-document-item small{overflow-wrap:anywhere}.report-document-item .button{flex-shrink:0}@media(max-width:640px){.report-document-item{align-items:stretch;flex-direction:column}.report-document-item .button{align-self:flex-start}}

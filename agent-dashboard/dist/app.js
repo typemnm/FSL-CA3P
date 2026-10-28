@@ -523,7 +523,47 @@ function renderModules() {
   }).join('') : '<section class="panel empty-state"><h3>수신한 도구 이벤트 없음</h3><p>이번 실행에서 실제로 사용한 도구만 여기에 표시합니다.</p></section>';
   hydrateIcons($('module-grid'));
 }
+function generalReportDocumentsMarkup(item) {
+  const documents = item.reportDocuments;
+  if (documents?.schemaVersion !== 'general-report-documents/1') return null;
+  const entries = Array.isArray(documents.items) ? documents.items : [];
+  const findings = Array.isArray(generalReport(item)?.findings) ? generalReport(item).findings : [];
+  const byId = new Map(findings.filter(finding => finding && typeof finding.id === 'string')
+    .map(finding => [finding.id, finding]));
+  const confirmedCount = findings.filter(finding => finding?.status === 'confirmed').length;
+  const readyCount = entries.filter(document => document?.status === 'ready').length;
+  const status = documents.status;
+  const statusLabels = {
+    generating: '취약점별 HWPX 생성 중', ready: `HWPX ${readyCount}건 준비됨`,
+    partial: `HWPX ${readyCount}건 준비됨 · 일부 생성 실패`, failed: '취약점별 HWPX 생성 실패',
+    unavailable: '보고서 생성 환경 확인 필요', skipped: confirmedCount === 0 ? '확정된 취약점 없음 · HWPX 미작성' : 'HWPX 생성 생략',
+  };
+  const description = status === 'skipped' && confirmedCount === 0
+    ? '이번 실행에서 확인된 취약점이 없어 HWPX를 작성하지 않았습니다. 다른 점검 결과는 아래와 JSON에서 확인할 수 있습니다.'
+    : status === 'generating' ? '확정된 finding마다 문서를 작성하고 있습니다. 완료된 문서는 먼저 다운로드할 수 있습니다.'
+      : status === 'unavailable' ? '보고서 생성 환경을 확인하세요. 검사 결과와 증거는 JSON에 보존되어 있습니다.'
+        : status === 'partial' || status === 'failed' ? '문서 생성에 실패한 항목이 있습니다. 검사 결과와 성공한 문서는 보존되어 있습니다.'
+          : status === 'ready' ? '확정된 finding마다 작성한 HWPX 초안을 다운로드해 검토하세요.'
+            : '검사 결과와 증거는 아래와 JSON에서 확인할 수 있습니다.';
+  const rows = entries.map((document, index) => {
+    const findingId = typeof document?.findingId === 'string' ? document.findingId : '';
+    const finding = byId.get(findingId);
+    const title = finding ? `${finding.category || '분류 미상'} · ${finding.asset || '위치 미상'}` : findingId || `결과 ${index + 1}`;
+    const itemStatus = document?.status;
+    const itemLabels = { generating: '생성 중', ready: '준비됨', failed: '생성 실패', unavailable: '생성 환경 확인 필요', skipped: '생략' };
+    const ready = itemStatus === 'ready' && /^[a-f0-9]{64}$/u.test(document.artifactId || '') && !!item.id;
+    const button = ready
+      ? `<a class="button primary report-document-download" href="${escape(runtime.findingReportDownloadUrl(item.id, document.artifactId))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-label="${escape(findingId)} HWPX 다운로드">${icon('download')}HWPX 다운로드</a>`
+      : '<button class="button secondary report-document-download" disabled>HWPX 다운로드</button>';
+    return `<li class="report-document-item"><div><strong>${escape(title)}</strong><small>finding ID: ${escape(findingId || '—')} · ${escape(itemLabels[itemStatus] || itemStatus || '대기')}</small>${document?.message ? `<small>${escape(document.message)}</small>` : ''}</div>${button}</li>`;
+  }).join('');
+  return `<section class="panel report-document report-documents" aria-labelledby="report-document-title"><div><h2 id="report-document-title">확정 finding별 HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(statusLabels[status] || '보고서 상태 확인 중')}</p><small>${escape(description)}</small>${documents.message ? `<p class="report-document-message">${escape(documents.message)}</p>` : ''}<small class="report-cost-note">저장된 현재 검증 결과와 근거를 사용합니다.</small></div>${rows ? `<ul class="report-document-list">${rows}</ul>` : ''}</section>`;
+}
 function reportDocumentMarkup(item) {
+  if (isGeneralAssessment(item)) {
+    const multiple = generalReportDocumentsMarkup(item);
+    if (multiple) return multiple;
+  }
   const document = item.reportDocument;
   const idor = isIdorLab(item);
   const general = isGeneralAssessment(item);
@@ -878,7 +918,8 @@ async function refreshHistory() {
     }
     history = records.map(item => normalizeGeneralRun(redactTelemetry(item))).filter(item => isRun(item) || isLegacyRun(item)).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
     const inspectedUpdate = inspectedRun && history.find(item => item.id === inspectedRun.id);
-    if (inspectedUpdate) inspectedRun = { ...inspectedRun, reportDocument: inspectedUpdate.reportDocument };
+    if (inspectedUpdate) inspectedRun = { ...inspectedRun, reportDocument: inspectedUpdate.reportDocument,
+      reportDocuments: inspectedUpdate.reportDocuments };
     if (run.id && isRun(run) && !history.some(item => item.id === run.id)) history.unshift(structuredClone(run));
     centralHistoryLoaded = true; historyError = ''; updateComparisonSelectors(); render();
   } catch (error) { historyError = error.message; if (activeView === 'sessions') renderSessions(); }

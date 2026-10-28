@@ -13,6 +13,17 @@ import { PROJECT_ROOT, treeDigest } from '../../packages/contracts/manifest.mjs'
 import { join } from 'node:path';
 import { generateReportDocument } from '../../packages/report/index.mjs';
 
+const GENERAL_DOCUMENTS_SCHEMA_VERSION = 'general-report-documents/1';
+
+function generalDocumentsStatus(items) {
+  if (!items.length || items.every(item => item.status === 'skipped')) return 'skipped';
+  if (items.some(item => item.status === 'waiting' || item.status === 'generating')) return 'generating';
+  if (items.every(item => item.status === 'ready')) return 'ready';
+  if (items.some(item => item.status === 'ready')) return 'partial';
+  if (items.every(item => item.status === 'unavailable')) return 'unavailable';
+  return 'failed';
+}
+
 export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
   pollMs = 150, leaseMs = 15_000, heartbeatMs = 1000, envFile, env = process.env,
   reportGenerator = generateReportDocument, runtimeFactory = createLocalRuntime,
@@ -168,32 +179,101 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         // Persist the core JSON before the report collector opens its read-only DB.
         // The lease/heartbeat and local board stay alive through document capture.
         const startedAt = new Date().toISOString();
-        finalState.reportDocument = { status: 'generating', startedAt, message: 'HWPX 보고서를 작성하고 있습니다.' };
-        store.saveState(lease, { ...finalState, status: 'running' }); notify();
-        let document;
-        try {
-          if (generalLab) document = { status: 'skipped', errorCode: 'GENERAL_DOCUMENT_UNSUPPORTED', message: '범용 점검의 다중 결과는 실행 이력과 JSON 보고서에서 확인할 수 있습니다. HWPX 생성은 아직 지원하지 않습니다.' };
-          else if (idorLab) document = { status: 'skipped', errorCode: 'IDOR_DOCUMENT_UNSUPPORTED', message: 'IDOR 실습은 실행 이력과 JSON 보고서를 제공합니다. HWPX 생성과 모델 API 호출은 수행하지 않습니다.' };
-          else if (lease.mode === 'core-fixture') document = { status: 'skipped', errorCode: 'FIXTURE_SKIPPED', message: '코어 fixture는 HWPX 보고서를 생성하지 않습니다.' };
-          else if (status === 'cancelled' || !final.report) document = { status: 'skipped', errorCode: 'RUN_STOPPED', message: '중지했거나 최종 보고서가 없어 문서를 생성하지 않습니다.' };
-          else document = await reportGenerator({ run: finalState, storePath: store.path,
-            historyPath: lease.options.caseSnapshot?.sourcePath, envFile, env, signal: controller.signal });
-          if (document.status === 'ready' && controller.signal.aborted) document = {
-            status: 'failed', errorCode: 'REPORT_CANCELLED', message: '보고서 생성을 취소했습니다.',
-          };
-          if (document.status === 'ready') {
-            const binary = store.writeBinaryArtifact(lease.runId, 'hwpx-report', document.bytes, {
-              filename: document.filename, contentType: 'application/hwp+zip', provenance: 'report-agent-generated',
-            });
-            document = { status: 'ready', artifactId: binary.id, filename: document.filename,
-              message: 'HWPX 보고서 초안이 준비되었습니다. 내려받은 뒤 검토하세요.' };
-          } else document = { status: ['failed', 'unavailable', 'skipped'].includes(document.status) ? document.status : 'failed',
-            message: document.message, errorCode: document.errorCode };
-        } catch {
-          // Document errors must not change the inspection's finding or status.
-          document = { status: 'failed', errorCode: 'REPORT_GENERATION_FAILED', message: 'HWPX 보고서 생성에 실패했습니다.' };
+        if (generalLab) {
+          const confirmed = Array.isArray(final.report?.findings)
+            ? final.report.findings.filter(finding => finding?.status === 'confirmed') : [];
+          const items = confirmed.map(finding => ({ findingId: finding.id, status: 'waiting' }));
+          const documents = { schemaVersion: GENERAL_DOCUMENTS_SCHEMA_VERSION, status: 'generating',
+            startedAt, items };
+          finalState.reportDocuments = documents;
+          const saveProgress = () => { documents.status = generalDocumentsStatus(items);
+            store.saveState(lease, { ...finalState, status: 'running' }); notify(); };
+          const ids = items.map(item => item.findingId);
+          const validIds = ids.every(id => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,71}$/u.test(id))
+            && new Set(ids).size === ids.length;
+          if (!final.report) {
+            documents.status = 'skipped'; documents.errorCode = 'NO_FINAL_REPORT';
+            documents.message = '최종 검사 결과가 없어 HWPX를 생성하지 않았습니다.';
+          } else if (status === 'cancelled' || controller.signal.aborted) {
+            for (const item of items) { item.status = 'skipped'; item.errorCode = 'RUN_STOPPED'; }
+            documents.status = 'skipped'; documents.errorCode = 'RUN_STOPPED';
+            documents.message = '취소된 점검의 HWPX 생성을 생략했습니다.';
+          } else if (!items.length) {
+            documents.status = 'skipped'; documents.errorCode = 'NO_CONFIRMED_FINDINGS';
+            documents.message = '확정된 취약점이 없어 HWPX를 생성하지 않았습니다.';
+          } else if (!validIds) {
+            for (const item of items) { item.status = 'failed'; item.errorCode = 'INVALID_FINDING_SELECTION'; }
+            documents.status = 'failed'; documents.errorCode = 'INVALID_FINDING_SELECTION';
+            documents.message = '확정 결과의 식별자가 올바르지 않아 HWPX를 생성하지 않았습니다.';
+          } else {
+            saveProgress();
+            for (const item of items) {
+              if (controller.signal.aborted) {
+                item.status = 'skipped'; item.errorCode = 'REPORT_CANCELLED';
+                continue;
+              }
+              item.status = 'generating'; item.startedAt = new Date().toISOString();
+              saveProgress();
+              let document;
+              try {
+                document = await reportGenerator({ run: finalState, findingId: item.findingId,
+                  storePath: store.path, historyPath: lease.options.caseSnapshot?.sourcePath,
+                  envFile, env, signal: controller.signal });
+                if (document?.status === 'ready' && controller.signal.aborted) document = {
+                  status: 'failed', errorCode: 'REPORT_CANCELLED', message: '보고서 생성을 취소했습니다.',
+                };
+                if (document?.status === 'ready') {
+                  const binary = store.writeBinaryArtifact(lease.runId, 'hwpx-report', document.bytes, {
+                    filename: document.filename, findingId: item.findingId,
+                    contentType: 'application/hwp+zip', provenance: 'report-agent-generated',
+                  });
+                  if (items.some(other => other !== item && other.status === 'ready' && other.artifactId === binary.id)) {
+                    throw new Error('Two selected findings produced the same HWPX bytes.');
+                  }
+                  document = { status: 'ready', artifactId: binary.id, filename: document.filename,
+                    message: 'HWPX 보고서 초안이 준비되었습니다. 내려받은 뒤 검토하세요.' };
+                } else document = { status: ['failed', 'unavailable', 'skipped'].includes(document?.status) ? document.status : 'failed',
+                  message: document?.message, errorCode: document?.errorCode ?? 'REPORT_GENERATION_FAILED' };
+              } catch {
+                // A document failure must not change the inspection or other documents.
+                document = { status: 'failed', errorCode: 'REPORT_GENERATION_FAILED',
+                  message: 'HWPX 보고서 생성에 실패했습니다.' };
+              }
+              Object.assign(item, document, { completedAt: new Date().toISOString() });
+              saveProgress();
+            }
+          }
+          documents.completedAt = new Date().toISOString();
+          documents.status = generalDocumentsStatus(items);
+          // Empty selections and invalid IDs have no item state to derive from.
+          if (!items.length || !validIds) documents.status = !items.length ? 'skipped' : 'failed';
+        } else {
+          finalState.reportDocument = { status: 'generating', startedAt, message: 'HWPX 보고서를 작성하고 있습니다.' };
+          store.saveState(lease, { ...finalState, status: 'running' }); notify();
+          let document;
+          try {
+            if (idorLab) document = { status: 'skipped', errorCode: 'IDOR_DOCUMENT_UNSUPPORTED', message: 'IDOR 실습은 실행 이력과 JSON 보고서를 제공합니다. HWPX 생성과 모델 API 호출은 수행하지 않습니다.' };
+            else if (lease.mode === 'core-fixture') document = { status: 'skipped', errorCode: 'FIXTURE_SKIPPED', message: '코어 fixture는 HWPX 보고서를 생성하지 않습니다.' };
+            else if (status === 'cancelled' || !final.report) document = { status: 'skipped', errorCode: 'RUN_STOPPED', message: '중지했거나 최종 보고서가 없어 문서를 생성하지 않습니다.' };
+            else document = await reportGenerator({ run: finalState, storePath: store.path,
+              historyPath: lease.options.caseSnapshot?.sourcePath, envFile, env, signal: controller.signal });
+            if (document.status === 'ready' && controller.signal.aborted) document = {
+              status: 'failed', errorCode: 'REPORT_CANCELLED', message: '보고서 생성을 취소했습니다.',
+            };
+            if (document.status === 'ready') {
+              const binary = store.writeBinaryArtifact(lease.runId, 'hwpx-report', document.bytes, {
+                filename: document.filename, contentType: 'application/hwp+zip', provenance: 'report-agent-generated',
+              });
+              document = { status: 'ready', artifactId: binary.id, filename: document.filename,
+                message: 'HWPX 보고서 초안이 준비되었습니다. 내려받은 뒤 검토하세요.' };
+            } else document = { status: ['failed', 'unavailable', 'skipped'].includes(document.status) ? document.status : 'failed',
+              message: document.message, errorCode: document.errorCode };
+          } catch {
+            // Document errors must not change the inspection's finding or status.
+            document = { status: 'failed', errorCode: 'REPORT_GENERATION_FAILED', message: 'HWPX 보고서 생성에 실패했습니다.' };
+          }
+          finalState.reportDocument = { ...document, startedAt, completedAt: new Date().toISOString() };
         }
-        finalState.reportDocument = { ...document, startedAt, completedAt: new Date().toISOString() };
         store.saveState(lease, finalState);
         store.finish(lease, status);
         notify();

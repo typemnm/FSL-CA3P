@@ -143,25 +143,32 @@ def _summary(model: dict, failed: bool) -> list[tuple]:
                 _text(common.get("status")),
             ]
         )
-    return [*blocks, ("table", rows), ("p", f"CVSS: {CVSS_NOTE} 판정 상태: {VERDICT_CAVEAT}")]
+    cvss_note = CVSS_NOTE if any(_obj(_obj(item, "common"), "cvss") for item in findings) else NONE
+    return [*blocks, ("table", rows), ("p", f"CVSS: {cvss_note} 판정 상태: {VERDICT_CAVEAT}")]
 
 
 def _finding(n: int, finding: dict) -> list[tuple]:
     common = _obj(finding, "common")
     score, vector = _cvss(common)
+    severity = (
+        f"{vector} / {score} — {CVSS_NOTE} 상류 severity: {_text(common.get('severity'))}"
+        if _obj(common, "cvss")
+        else f"CVSS: {NONE} / 상류 severity: {_text(common.get('severity'))}"
+    )
+    identity = (
+        ["원본 finding ID", _text(common.get("findingId"))]
+        if common.get("findingId") else None
+    )
     blocks: list[tuple] = [
         ("h", 2, f"3.{n} {_text(common.get('title'))}"),
         ("h", 3, f"3.{n}.1 기본 정보"),
         (
             "table",
             [
+                *([identity] if identity else []),
                 ["취약점 유형", f"{_text(common.get('title'))} ({_text(common.get('cwe'))})"],
                 ["발생 위치", _location(common)],
-                [
-                    "심각도",
-                    f"{vector} / {score} — {CVSS_NOTE} 상류 severity: "
-                    f"{_text(common.get('severity'))}",
-                ],
+                ["심각도", severity],
                 ["판정 상태", f"{_text(common.get('status'))} — {VERDICT_CAVEAT}"],
                 ["상세 설명", _text(common.get("summary"))],
                 ["조치 방안", _text(common.get("remediation"))],
@@ -424,16 +431,25 @@ def _sources(model: dict) -> list[tuple]:
 
 def build_blocks(model: dict) -> list[tuple]:
     run = _obj(model, "run")
-    failed = run.get("status") == "failed"
+    selected_general = (isinstance(model.get("sourceFindingId"), str)
+                        and _obj(model, "generator").get("method") == "deterministic")
+    failed_run = run.get("status") == "failed"
+    failed = failed_run and not selected_general
     body = (
         _failure(run)
         if failed
         else [("h", 1, "3. 취약점 상세")]
         + [block for n, f in enumerate(_dicts(model, "findings"), 1) for block in _finding(n, f)]
     )
+    if selected_general and failed_run:
+        body += [("p", "점검 미완료: 실행 실패 전에 독립 검증으로 확정된 finding만 기록했습니다.")]
     return [
         *_cover(model),
         *_overview(run),
+        *(
+            [("p", f"원본 finding ID: {_text(model.get('sourceFindingId'))}")]
+            if selected_general else []
+        ),
         *_summary(model, failed),
         *body,
         *_history(model),
