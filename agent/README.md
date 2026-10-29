@@ -6,7 +6,7 @@
 
 `src/general-model-planner.js`는 기존 DeepSeek 클라이언트를 사용하는 구조화 플래너다. `createGeneralModelPlannerFromEnv()`를 선택해 호출하면 실제 모델 API를 사용한다. 대상 페이지와 관측 자료는 비신뢰 데이터로 취급하고, 허용된 도구·증거 ID를 벗어난 출력은 거부한다. 문맥이 모델 입력 한도를 넘으면 자료를 조용히 생략하지 않고 오류를 반환한다.
 
-범용 점검은 운영 경로의 API → 실행 서비스 → worker → `apps/application/general-runtime.mjs`를 통해 세 등록 실습 대상에 연결돼 있다. 에이전트 모듈은 판단 코어와 모델 플래너를 제공하고, 대상 요청·실행 정책·독립 검증과 실행 상태 저장은 런타임이 담당한다. 브라우저 증거가 필요한 XSS 검사는 `xss-parser` 관측이 범용 런타임에 연결되기 전까지 실측 확정으로 표시하지 않는다.
+범용 점검은 운영 경로의 API → 실행 서비스 → worker → `apps/application/general-runtime.mjs`를 통해 세 등록 실습 대상에 연결돼 있다. 외부 URL에서 DeepSeek 모델을 선택하면 `apps/application/external-runtime.mjs`가 같은 `runGeneralAssessment()` 코어를 외부 전용 읽기 전용 포트로 실행한다. 외부 URL의 규칙 기반 공개 페이지 관찰은 범용 코어를 호출하지 않는다. 에이전트 모듈은 판단 코어와 모델 플래너를 제공하고, 대상 요청·실행 정책·독립 검증과 실행 상태 저장은 런타임이 담당한다. 브라우저 증거가 필요한 XSS 검사는 `xss-parser` 관측이 범용 런타임에 연결되기 전까지 실측 확정으로 표시하지 않는다.
 
 코어의 `onEvent`는 `observe`, `plan`, `policy`, `execute`, `verify`, `complete` 단계와 반복 번호를 보낸다. 계획 이벤트에는 가설·검사 ID와 도구 연결, 가설의 분류·자산이 있고, 관측·실행 이벤트에는 새 증거의 유형·자산이 있다. 검사 이벤트에는 가설·검사 ID, 도구, 판정 상태, 증거 ID 참조가 있다. 모든 이벤트의 `progress`는 가설·검사·증거 수와 **검사별** 판정 수를 기록한다. 이는 최종 `findings[]` 수나 전체 취약점 완료율이 아니다. 운영 런타임은 이 제한된 메타데이터를 실행 상태와 대시보드로 전달한다. 원본 HTTP 응답, 쿠키, 모델 출력, 가설의 원문 rationale과 증거의 원문 summary는 진행 이벤트에 넣지 않는다. 자세한 근거와 최종 finding은 보고서가 저장된 뒤 표시한다.
 
