@@ -1,7 +1,49 @@
 {
   "schemaVersion": "1.0",
-  "generatedAt": "2026-10-29T14:07:54.404Z",
+  "generatedAt": "2026-10-29T14:10:37.552Z",
   "runs": [
+    {
+      "runId": "40888748268",
+      "runAttempt": 1,
+      "commitSha": "1014e2940562f01dfcbc2d981b2caafbf9b9ce2b",
+      "branch": "develop",
+      "eventName": "push",
+      "startedAt": "2026-10-29T14:10:18.059219+00:00",
+      "completedAt": "2026-10-29T14:10:18.059219+00:00",
+      "status": "failed",
+      "completeSuite": false,
+      "tests": null,
+      "passed": null,
+      "failed": null,
+      "skipped": null,
+      "jobs": [
+        {
+          "id": "ci-workflow",
+          "status": "failed",
+          "tests": null,
+          "passed": null,
+          "failed": null,
+          "skipped": null
+        }
+      ],
+      "changedFromSha": "d7f4d0f1a4e5861987e39691a6fb1ac6503dea1e",
+      "changedModules": [
+        "agent",
+        "agent-dashboard",
+        "contracts",
+        "adapters",
+        "models",
+        "application",
+        "worker",
+        "api"
+      ],
+      "pipeline": {
+        "tests": "cancelled",
+        "containerSmoke": "cancelled",
+        "integrationGate": "failure"
+      },
+      "runUrl": "https://github.com/typemnm/FSL-CA3P/actions/runs/40888748268"
+    },
     {
       "runId": "40887701568",
       "runAttempt": 1,
