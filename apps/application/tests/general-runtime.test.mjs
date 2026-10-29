@@ -139,7 +139,7 @@ test('the first real planner request contains a bounded summary row for every pr
     fixtureId: 'vul-web2-daehan', origin, entryUrl, expiresAt: '2099-01-01T00:00:00.000Z',
     crawl: { maxPages: 48, visited: 48, queued: 7, truncated: true, stopReason: 'page-limit' },
     discoveredPaths: [discovered], pages: [{ url: entryUrl, status: 200,
-      title: 'Admissions', technologies: [{ name: 'jQuery' }], libraries: [{ name: 'jQuery' }],
+      title: 'Admissions', technologies: [{ name: 'jQuery' }], libraries: [{ name: 'jQuery', source: 'indicator' }],
       forms: [{ action: `${origin}/notices`, method: 'GET', fields: [{ name: 'q' }] }],
       paths: [{ url: discovered, sources: ['html:link'] }], errors: [] }] };
   for (let index = 1; index < 48; index += 1) parserPreview.pages.push({
@@ -174,7 +174,7 @@ test('the first real planner request contains a bounded summary row for every pr
     assert.deepEqual(observed.preParsedPages.map(page => page.path),
       ['/admissions', ...Array.from({ length: 47 }, (_, index) => `/reviewed/${index + 1}`)]);
     assert.deepEqual(observed.preParsedPages[0].queryParameterNames, ['year']);
-    assert.deepEqual(observed.preParsedPages[0].libraries, ['jQuery']);
+    assert.deepEqual(observed.preParsedPages[0].libraries, ['jQuery [indicator]']);
     assert.ok(observed.preParsedPages.every(page => page.status === 200));
     assert.ok(observed.preParsedPages.every(page => page.technologies.length >= 1
       && page.libraries.length >= 1));

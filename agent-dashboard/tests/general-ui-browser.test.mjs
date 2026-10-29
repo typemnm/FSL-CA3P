@@ -168,6 +168,7 @@ test('general run renders and supported targets launch the bounded model assessm
   await page.locator('#parse-start-button').click();
   await page.locator('#target-preview-pages .parser-preview-card').first().waitFor();
   assert.match(await page.locator('#target-preview-pages .parser-preview-card').first().textContent(), /대한대학교.*Bootstrap 5.*jQuery 3/s);
+  assert.match(await page.locator('#target-preview-pages .parser-preview-card').first().textContent(), /식별된 라이브러리·프레임워크/u);
   assert.match(await page.locator('#target-preview-pages .parser-preview-card').first().textContent(), /Axios 1\.6\.8 \(파일명·주석 단서\)/u);
   assert.equal(await page.locator('#target-preview-paths button').count(), 3);
   assert.match(await page.locator('#target-preview-coverage').textContent(), /등록 대학 · 브라우저 관찰.*방문 3개.*최대 48개 URL.*부분 수집.*미수집 후보 2개/);

@@ -115,12 +115,13 @@ function previewPath(value, origin, maxBytes = 96) {
   const path = previewPathname(value, origin);
   return path ? utf8Prefix(path, maxBytes) : null;
 }
-function previewComponent(value) {
+function previewComponent(value, library = false) {
   const name = previewText(value?.name, 52);
   if (!name) return null;
   const version = previewText(value?.version, 24);
-  return /^\d+(?:\.\d+){0,3}(?:[-+][a-z0-9.]{1,16})?$/iu.test(version)
+  const identified = /^\d+(?:\.\d+){0,3}(?:[-+][a-z0-9.]{1,16})?$/iu.test(version)
     ? `${name} ${version}` : name;
+  return library && value?.source === 'indicator' ? `${identified} [indicator]` : identified;
 }
 function previewForm(value, origin) {
   const path = previewPath(value?.action, origin, 72);
@@ -175,7 +176,7 @@ function modelPreviewPages(parserPreview, origin, maxBytes = MAX_PREVIEW_INVENTO
     technologies: (Array.isArray(page?.technologies) ? page.technologies : [])
       .slice(0, 24).map(previewComponent).filter(Boolean),
     libraries: (Array.isArray(page?.libraries) ? page.libraries : [])
-      .slice(0, 24).map(previewComponent).filter(Boolean),
+      .slice(0, 24).map(value => previewComponent(value, true)).filter(Boolean),
     forms: (Array.isArray(page?.forms) ? page.forms : [])
       .slice(0, 16).map(form => previewForm(form, origin)).filter(Boolean),
     paths: (Array.isArray(page?.paths) ? page.paths : [])

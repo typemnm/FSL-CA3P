@@ -778,7 +778,7 @@ function renderPreview() {
       <h3>${escape(page.url)}</h3>
       <p class="parser-preview-meta">HTTP ${escape(page.status ?? '응답 없음')} · ${escape(page.contentType || '콘텐츠 유형 미확인')} · ${page.mode === 'browser' ? '브라우저 관찰' : 'HTTP 응답 분석'}</p>
       <p>${escape(page.title || '제목 없음')}</p>
-      ${row('기술', tech)}${row('외부 라이브러리', libs)}${row('폼', forms)}
+      ${row('기술', tech)}${row('식별된 라이브러리·프레임워크', libs)}${row('폼', forms)}
       <div class="parser-preview-row"><strong>발견 경로</strong><span>${escape(`${paths.length}개${paths.length ? ' · ' + paths.slice(0, 3).map(previewPathLabel).join(', ') + (paths.length > 3 ? ' 외' : '') : ''}`)}</span></div>
       ${pageErrors.length ? `<p class="parser-preview-warning">수집 오류: ${escape(pageErrors.join(', '))}</p>` : ''}
       ${page.truncated ? '<p class="parser-preview-warning">이 URL은 부분 결과입니다.</p>' : ''}
