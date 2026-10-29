@@ -98,10 +98,12 @@ system prompt는 `VERIFIER_SYSTEM_PROMPT`(`index.mjs`)다. 프롬프트가 모�
 | 전달 | `writeReportHandoff(result, { outDir })` | `verifier/1` → `outDir/verification.json`, `outDir/images/` |
 | 보고서 읽기 | `load_verification_handoff(dir)`, `copy_handoff_images(handoff, bundle_dir)` | handoff 디렉터리 → 검증된 dict, 번들 `evidence/images/` |
 
-연결된 흐름(범용 점검, vul-web-1):
-1. **attack → verifier**: `known_cross_user_delete_canary` 실행기(`apps/application/general-runtime.mjs`의 `boardCrossUserDeleteCanary`)가 자기 교환으로 AttackRecord를 만든다. setup은 Bob의 글 작성과 목록 조회, control은 거부돼야 할 삭제, 본 요청은 authorId를 바꾼 삭제, followUp은 Bob의 목록 조회다. 범용 런타임의 `verifier` 포트는 실행 결과에 AttackRecord가 있으면 `verifyAttack`을 부르고, 결과를 `{ status, completed, evidenceIds: [probe 증거 id], reason }`으로 바꾼다. 코어는 그 probe의 증거 id를 참조해야 판정을 받아 준다(`UNSUPPORTED_VERDICT`). verifier 오류는 `inconclusive: verifier_failed`, 빈 사유는 `verifier_no_reason`이다. `known_record_idor_read`(대학 대상)는 기존 판정을 그대로 쓴다.
+연결된 흐름(범용 점검):
+1. **attack → verifier**: 범용 런타임의 `verifier` 포트(`apps/application/general-runtime.mjs`)는 도구 실행 결과에 `attackRecord`가 있으면, 도구 종류와 관계없이 `judgeAttackRecord`로 AI 판정을 받는다. `judgeAttackRecord`는 `verifyAttack`을 부르고 handoff를 쓴 뒤, 결과를 `{ status, completed, evidenceIds: [probe 증거 id], reason }`으로 바꾼다. 코어는 그 probe의 증거 id를 참조해야 판정을 받아 준다(`UNSUPPORTED_VERDICT`). verifier 오류는 `inconclusive: verifier_failed`, 빈 사유는 `verifier_no_reason`이다. 실습 대상 전용 고정 도구(`known_cross_user_delete_canary`, `known_record_idor_read`)는 AttackRecord를 만들지 않고 기존 판정을 쓴다. verifier가 실습 대상에 의존하지 않게 하려는 것이다.
 2. **handoff 위치**: worker가 `verificationRoot = <store 디렉터리>/artifacts/<digest(runId)>/verifications`를 런타임에 넘기고, 런타임은 probe마다 `<verificationRoot>/<probeId>/`에 handoff를 쓴다. 이 경로는 실행 기록을 지울 때 `prepareRunFileCleanup`이 함께 지운다.
-3. **verifier → 보고서**: worker가 confirmed finding마다 그 가설의 confirmed probe 중 handoff가 있는 것을 찾아 `generateReportDocument({ ..., verificationDir })`로 넘긴다. 보고서 trigger에는 `sources.verification: { kind: 'handoff-dir', location }`가 들어간다. collector는 handoff를 검사한다(attackId가 confirmed probe인지, 해시가 맞는지). 그리고 `run/verification.json`과 `evidence/images/<file>`을 봉인된 번들에 넣는다. 범용 보고서 모델은 AI 판정 사유를 문자 증거로, 스크린샷을 `images`로 싣고, HWPX writer가 그림으로 넣는다.
+3. **verifier → 보고서**: worker가 confirmed finding마다 그 가설의 confirmed probe 중 handoff가 있는 것을 찾아 `generateReportDocument({ ..., verificationDir })`로 넘긴다. 보고서 trigger에는 `sources.verification: { kind: 'handoff-dir', location }`가 들어간다. collector는 handoff를 검사한다(attackId가 confirmed probe인지, 해시가 맞는지). 그리고 `run/verification.json`과 `evidence/images/<file>`을 봉인된 번들에 넣는다. 범용 보고서 모델은 AI 판정 사유를 문자 증거로, 스크린샷을 `images`로 싣는다.
+
+지금 실제 점검에서 AttackRecord를 만드는 도구는 없다. attack-tool이 연결되면 그 결과가 첫 입력이 된다.
 
 남은 연결:
 - **attack-tool**: `execute_attack_template` 결과 `{ templateId, baseline, attack, verification }`를 AttackRecord로 옮긴다. `request`는 `renderTemplate({ templateId, payload }).packet`(`attack-tool/templates.mjs`), `response`는 `attack` 관찰(`bodyExcerpt`를 `bodyText`로), `control`은 baseline이다. attack-tool이 직접 낸 `verification`은 모델 입력에 넣지 않는다. 이 도구는 아직 범용 런타임의 `availableTools`에 없다. attack-tool이 완성되면 연결해서 테스트한다.

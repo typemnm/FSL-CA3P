@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { mkdtempSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGeneralRuntime } from '../general-runtime.mjs';
-import { verifyAttack } from '../../../packages/verifier/index.mjs';
+import { createGeneralRuntime, judgeAttackRecord } from '../general-runtime.mjs';
 import { readReportHandoff } from '../../../packages/verifier/report-handoff.mjs';
 import plannerModule from '../../../agent/src/general-model-planner.js';
 import { readKnowledgeCatalog } from '../../../packages/adapters/integrations/knowledge-db.mjs';
@@ -681,14 +681,6 @@ test('a custom planner cannot forge extra model call attempts', async () => {
   await runtime.close();
 });
 
-// Stands in for the AI verifier with a fixed verdict; the status is the verifier/1 status.
-function scriptedVerifier(status, seen = []) {
-  return async (record, options) => {
-    seen.push({ record, options });
-    return { status, reason: 'scripted ' + status, artifacts: [] };
-  };
-}
-
 async function runRealBoardCanary(safeMode) {
   const hooks = [];
   const runtime = createGeneralRuntime({
@@ -698,7 +690,6 @@ async function runRealBoardCanary(safeMode) {
       const { startLocalLab } = await import('../../../packages/adapters/local-lab-gateway.mjs');
       return startLocalLab({ safeMode });
     },
-    verifyAttackImpl: scriptedVerifier(safeMode ? 'not_reproduced' : 'confirmed'),
     beforeProbe: async probe => { hooks.push(probe); },
     plannerFactory: () => ({ async propose(context) {
       if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
@@ -795,7 +786,6 @@ test('mismatched board probes leave the one-shot canary for the registered asset
     runIdFactory: () => 'board-mismatch-then-valid',
     boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
     fetchImpl: fakeBoardResponses({ onCandidate: () => { candidateSent += 1; } }),
-    verifyAttackImpl: scriptedVerifier('confirmed'),
     beforeProbe: async hook => { hooks.push(hook); },
     plannerFactory: () => ({ async propose(context) {
       if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
@@ -833,71 +823,6 @@ test('mismatched board probes leave the one-shot canary for the registered asset
   assert.equal(candidateSent, 1);
   assert.equal(hooks.filter(item => item.tool === 'known_cross_user_delete_canary').length, 8);
   await runtime.close();
-});
-
-async function runBoardWithVerifier(runId, options) {
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash', runIdFactory: () => runId,
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
-    fetchImpl: fakeBoardResponses(),
-    plannerFactory: () => fakeBoardPlanner(),
-    ...options,
-  });
-  try {
-    const done = terminal(runtime);
-    runtime.startLab();
-    return await done;
-  } finally { await runtime.close(); }
-}
-
-test('AI invalid verdict is the board verdict even when the deterministic canary confirms', async () => {
-  const seen = [];
-  const run = await runBoardWithVerifier('ai-invalid-canary', { verifyAttackImpl: scriptedVerifier('not_reproduced', seen) });
-  assert.equal(run.report.probes.find(item => item.id === 'p-board').status, 'not_reproduced');
-  assert.equal(run.report.findings[0].status, 'not_reproduced');
-  assert.equal(seen.length, 1);
-});
-
-test('AI valid verdict cites the probe evidence id in the probe and finding', async () => {
-  const run = await runBoardWithVerifier('ai-valid-canary', { verifyAttackImpl: scriptedVerifier('confirmed') });
-  const comparison = run.report.evidence.find(item => item.kind === 'cross-user-delete-comparison');
-  const probe = run.report.probes.find(item => item.id === 'p-board');
-  assert.equal(probe.status, 'confirmed');
-  assert.deepEqual(probe.evidenceIds, [comparison.id]);
-  assert.equal(run.report.findings[0].status, 'confirmed');
-});
-
-test('verifier failure is recorded as inconclusive verifier_failed', async () => {
-  const run = await runBoardWithVerifier('verifier-throws-canary', {
-    verifyAttackImpl: async () => { throw new Error('model unavailable'); } });
-  assert.equal(run.status, 'completed');
-  assert.equal(run.report.findings[0].status, 'inconclusive');
-  assert.equal(run.events.find(item => item.stage === 'verify' && item.request?.probeId === 'p-board').response.reason,
-    'verifier_failed');
-});
-
-test('verification handoff is written per probe and the AttackRecord holds no cookie value', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'general-verification-'));
-  const seen = [];
-  const verifierModel = { async completeJson() {
-    return { value: { verdict: 'valid', reason: 'Alice removed the Bob-owned post.' }, metadata: { model: 'scripted' } };
-  } };
-  try {
-    const run = await runBoardWithVerifier('handoff-canary', {
-      verificationRoot: root, verifierModel,
-      verifyAttackImpl: async (record, options) => { seen.push(record); return verifyAttack(record, options); },
-    });
-    assert.equal(run.report.findings[0].status, 'confirmed');
-    assert.equal(seen.length, 1);
-    assert.equal(seen[0].id, 'p-board');
-    assert.equal(seen[0].kind, 'cross_user_delete');
-    assert.ok(seen[0].control && seen[0].followUp);
-    assert.doesNotMatch(JSON.stringify(seen[0]), /Secret123456/u);
-    const handoff = await readReportHandoff(join(root, 'p-board'));
-    assert.equal(handoff.schemaVersion, 'verification-handoff/1');
-    assert.equal(handoff.result.attackId, 'p-board');
-    assert.equal(handoff.result.status, 'confirmed');
-  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('denied control that removes the canary never proceeds to candidate deletion', async () => {
@@ -1300,4 +1225,38 @@ test('general runtime routes vulnerability workers through two daemon ports and 
   for (const endpoint of advertised.endpoints) {
     await assert.rejects(fetch(endpoint, { signal: AbortSignal.timeout(1000) }));
   }
+});
+
+const attackRecord = { schemaVersion: 'attack-record/1', id: 'p-any', kind: 'any',
+  target: { origin: 'https://example.com' }, info: { goal: 'any attack' },
+  request: { method: 'GET', url: 'https://example.com/x', headers: {}, body: null },
+  response: { status: 200, bodyText: '{}' } };
+
+test('judgeAttackRecord maps an AI verdict to a core verdict that cites the probe evidence and writes the handoff', async () => {
+  const outDir = mkdtempSync(join(tmpdir(), 'ca3p-judge-'));
+  const seen = [];
+  const verdict = await judgeAttackRecord(attackRecord, { evidenceId: 'ev-1', outDir, sessions: { alice: [] },
+    verify: async (record, options) => { seen.push({ record, options });
+      return { schemaVersion: 'verifier/1', attackId: record.id, status: 'confirmed', reason: 'effect shown', artifacts: [] }; } });
+  assert.deepEqual(verdict, { status: 'confirmed', completed: true, evidenceIds: ['ev-1'], reason: 'effect shown' });
+  assert.equal(seen[0].options.outDir, outDir);
+  assert.equal((await readReportHandoff(outDir)).result.attackId, 'p-any');
+});
+
+test('judgeAttackRecord keeps inconclusive results, fills an empty reason and caps a long one', async () => {
+  const inconclusive = await judgeAttackRecord(attackRecord, { evidenceId: 'ev-1',
+    verify: async () => ({ status: 'inconclusive', reason: '  ', artifacts: [] }) });
+  assert.deepEqual(inconclusive, { status: 'inconclusive', evidenceIds: ['ev-1'], reason: 'verifier_no_reason' });
+  const negative = await judgeAttackRecord(attackRecord, { evidenceId: 'ev-1',
+    verify: async () => ({ status: 'not_reproduced', reason: '가'.repeat(400), artifacts: [] }) });
+  assert.equal(negative.status, 'not_reproduced');
+  assert.ok(Buffer.byteLength(negative.reason) <= 500);
+});
+
+test('judgeAttackRecord turns verifier errors into inconclusive and lets cancellation through', async () => {
+  assert.deepEqual(await judgeAttackRecord(attackRecord, { evidenceId: 'ev-1',
+    verify: async () => { throw new Error('model down'); } }),
+  { status: 'inconclusive', evidenceIds: ['ev-1'], reason: 'verifier_failed' });
+  await assert.rejects(judgeAttackRecord(attackRecord, { evidenceId: 'ev-1',
+    verify: async () => { throw Object.assign(new Error('stop'), { name: 'AbortError' }); } }), { name: 'AbortError' });
 });
