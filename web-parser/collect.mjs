@@ -11,6 +11,7 @@ export const MAX_STRUCTURE_ITEMS = 500;
 export const MAX_HTML_LENGTH = 5_000_000;
 export const MAX_BODY_LENGTH = 5_000_000;
 export const MAX_PATHS = 2000;
+export const MAX_COOKIES = 50;
 // Applied inside the page before anything crosses CDP, so a hostile page can't blow up the host process (CONTRACT §3).
 export const MAX_TEXT_LENGTH = 10_000; // per string value in meta/structure/DOM probes
 export const MAX_SNAPSHOT_TEXT = 10_000_000; // all meta/structure strings of one document together
@@ -29,16 +30,35 @@ const WORLD_NAME = 'web-parser';
 const HTML_TYPE = /^(text\/html|application\/xhtml\+xml)$/i;
 const TEXT_TYPE = /^(text\/[\w.+-]+|application\/(json|xml|javascript|ecmascript|x-javascript)|[\w.-]+\/[\w.+-]+\+(json|xml))$/i;
 const XML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/; // RFC 6265 cookie-name = token
+// Chromium itself refuses a value with leading/trailing spaces or a name + value over 4096 bytes, but only after launch
+// and without naming the cookie: checked here instead.
+const COOKIE_VALUE = /^(?! )[^\x00-\x1f\x7f;]*(?<! )$/;
+const MAX_COOKIE_BYTES = 4096;
 
 function checkOptions(opts) {
   if (opts != null && typeof opts !== 'object') throw new Error('opts must be an object');
   if (opts != null && 'maxPages' in opts) throw new Error('maxPages: crawling removed: pass endpoints explicitly via collectEach');
-  const { timeoutMs = 30000, waitUntil = 'load', userAgent, ignoreHTTPSErrors = true } = opts ?? {};
+  const { timeoutMs = 30000, waitUntil = 'load', userAgent, ignoreHTTPSErrors = true, cookies = [], signal } = opts ?? {};
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMER_MS) throw new Error(`timeoutMs must be an integer in 1..${MAX_TIMER_MS}`);
   if (!WAIT_UNTIL.has(waitUntil)) throw new Error(`waitUntil must be one of: ${[...WAIT_UNTIL].join(', ')}`);
   if (typeof ignoreHTTPSErrors !== 'boolean') throw new Error('ignoreHTTPSErrors must be a boolean');
   if (userAgent !== undefined && typeof userAgent !== 'string') throw new Error('userAgent must be a string');
-  return { timeoutMs, waitUntil, userAgent, ignoreHTTPSErrors };
+  if (signal !== undefined && !(signal instanceof AbortSignal)) throw new Error('signal must be an AbortSignal');
+  if (!Array.isArray(cookies) || cookies.length > MAX_COOKIES) throw new Error(`cookies must be an array of at most ${MAX_COOKIES} { name, value }`);
+  for (const [i, c] of cookies.entries()) { // entries() visits holes too
+    if (typeof c?.name !== 'string' || !COOKIE_NAME.test(c.name)) throw new Error(`cookies[${i}].name must be a non-empty RFC 6265 token`);
+    if (typeof c.value !== 'string' || !COOKIE_VALUE.test(c.value)) {
+      throw new Error(`cookies[${i}].value must be a string without control characters, ';' or leading/trailing spaces`);
+    }
+    if (Buffer.byteLength(c.name + c.value) > MAX_COOKIE_BYTES) throw new Error(`cookies[${i}]: name + value must be at most ${MAX_COOKIE_BYTES} bytes`);
+  }
+  return { timeoutMs, waitUntil, userAgent, ignoreHTTPSErrors, cookies, signal };
+}
+
+// Node's own AbortError shape: name 'AbortError', the signal's reason as cause.
+function abortError(signal) {
+  return Object.assign(new Error('This operation was aborted', { cause: signal.reason }), { name: 'AbortError' });
 }
 
 // The Agent picks the endpoints (CONTRACT §2): one collect() per URL, in order, each in its own browser session.
@@ -46,12 +66,13 @@ export async function collectEach(targetURLs, opts) {
   if (!Array.isArray(targetURLs) || !targetURLs.length || !Array.from(targetURLs).every((u) => typeof u === 'string')) {
     throw new Error('targetURLs must be a non-empty array of URL strings');
   }
-  checkOptions(opts);
+  const { signal } = checkOptions(opts);
   const results = [];
   for (const url of targetURLs) {
     try {
       results.push({ url, ok: true, targetInfo: await collect(url, opts) });
     } catch (err) {
+      if (signal?.aborted) throw abortError(signal); // an abort rejects the whole call; the remaining URLs never start
       results.push({ url, ok: false, error: { message: err.message } });
     }
   }
@@ -61,7 +82,8 @@ export async function collectEach(targetURLs, opts) {
 // Collector of exactly one endpoint (it never clicks, types or submits itself; page JS runs as in a normal visit):
 // everything is passed through as received (CONTRACT §6, no redaction).
 export async function collect(url, opts) {
-  const { timeoutMs, waitUntil, userAgent, ignoreHTTPSErrors } = checkOptions(opts);
+  const { timeoutMs, waitUntil, userAgent, ignoreHTTPSErrors, cookies, signal } = checkOptions(opts);
+  if (signal?.aborted) throw abortError(signal);
   const start = new URL(url);
   if (start.protocol !== 'http:' && start.protocol !== 'https:') throw new Error(`unsupported protocol: ${start.protocol}`);
 
@@ -94,6 +116,11 @@ export async function collect(url, opts) {
   // Session isolation (CONTRACT §5): own Chromium process + throwaway profile per collect(), never a shared CDP endpoint.
   const profile = await mkdtemp(join(tmpdir(), PROFILE_PREFIX));
   let context;
+  let closing; // Playwright's second close() returns before the first finishes: everyone awaits this one
+  const close = () => (closing ??= context?.close().catch(() => {}));
+  // Abort (CONTRACT §2): closing the browser makes every pending browser call reject at once, so the running stage
+  // ends; the checks below turn that into an AbortError instead of a partial TargetInfo.
+  signal?.addEventListener('abort', close);
   try {
     context = await chromium.launchPersistentContext(profile, {
       headless: true,
@@ -101,6 +128,9 @@ export async function collect(url, opts) {
       userAgent,
       ignoreHTTPSErrors,
     });
+    signal?.throwIfAborted(); // aborted while the browser started
+    // Host-only cookies (no Domain attribute) on the requested host, path '/'.
+    if (cookies.length) await context.addCookies(cookies.map(({ name, value }) => ({ name, value, url: start.origin })));
     const answered = new WeakSet(); // a request aborted after its response is already recorded
     context.on('response', (r) => { answered.add(r.request()); pushResource(r.request().resourceType(), r.request(), r.status()); });
     context.on('requestfailed', (r) => { if (!answered.has(r)) pushResource(r.resourceType(), r, null); });
@@ -237,6 +267,7 @@ export async function collect(url, opts) {
     } catch (err) {
       info.errors.push({ stage: 'cookies', message: err.message });
     }
+    signal?.throwIfAborted(); // no matching for a collect that is already lost
     if (probes) {
       try {
         const { scripts } = info.structure;
@@ -255,9 +286,15 @@ export async function collect(url, opts) {
         info.errors.push({ stage: 'fingerprint', message: err.message });
       }
     }
+    // shortcut: an abort during matching waits for it (at most timeoutMs, usually ms); pass the signal into
+    // fingerprintWithin if aborts must cut matching short too.
+    signal?.throwIfAborted();
     return info;
+  } catch (err) {
+    throw signal?.aborted ? abortError(signal) : err;
   } finally {
-    await context?.close().catch(() => {});
+    signal?.removeEventListener('abort', close);
+    await close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5 }).catch(() => {});
   }
 }

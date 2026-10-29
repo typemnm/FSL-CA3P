@@ -1,6 +1,6 @@
 # web-parser — 모듈 계약 (초안)
 
-- 상태: 초안 v0.6 (P2.4: `paths` 통합 색인, 비 HTML 텍스트 `body`, robots/sitemap 경로, URL 출처 추가, `resources[].method`) · 2026-10-29 · 브랜치 `woohyun212/web-parser` (← develop `a7e62b3`)
+- 상태: 초안 v0.7 (P3.1: `signal`(취소)·`cookies`(요청 호스트에 심는 쿠키) 옵션) · 2026-10-29 · 브랜치 `woohyun212/web-parser` (← develop `998cf22`)
 - 소유: woohyun. **xss-parser를 대체**(xss-parser는 deprecated 예정).
 
 ## 1. 역할
@@ -21,7 +21,8 @@
   (URL마다 별도 격리 브라우저 세션, §5). 결과도 입력 순서:
   `{ url, ok:true, targetInfo } | { url, ok:false, error:{ message } }`. 한 URL의 실패(reject)는 배열 안에 담기고 나머지를
   멈추지 않는다. 배열·`opts` 검증 오류만 reject(방문 전에): 배열이 아니거나 비었거나, 문자열이 아닌 항목·빈 슬롯(희소 배열),
-  `opts`가 객체가 아님, `timeoutMs`·`waitUntil`·`ignoreHTTPSErrors`·`userAgent`(문자열) 오류, `maxPages`.
+  `opts`가 객체가 아님, `timeoutMs`·`waitUntil`·`ignoreHTTPSErrors`·`userAgent`(문자열)·`signal`·`cookies` 오류, `maxPages`.
+  예외로 `signal` abort는 **호출 전체를 reject**한다(아래 `signal`).
 - **필수**: `url` (http/https 임의 대상).
 - **선택** (`opts`는 생략·`null` 모두 `{}`로 취급):
   - `timeoutMs` (기본 30000, 1..2^31-1): **endpoint 1개의 예산(goto + 추출)**. 시점은 모두 goto 시작 기준: 탐색은 50%까지,
@@ -30,13 +31,27 @@
     절반까지**만 쓴다(§3). goto 이후 어떤 단계도 무한 대기하지 않는다 — 만료 시 `errors`에 `{stage, message:'<url>: timeout'}`
     (`cookies`·`fingerprint`는 접두어 없이 `'timeout'`)를 남기고 계속 진행하며,
     만료된 페이지 내 평가는 CDP `Runtime.evaluate`의 `timeout` + `Runtime.terminateExecution`으로 **실제로 종료**해 렌더러를
-    비운다. 종료 시 컨텍스트를 닫는다. 수집 후 `cookies` 읽기와 지문 매칭도 각각 `timeoutMs`로 제한.
+    비운다. 종료 시 컨텍스트를 닫는다. 수집 후 `cookies` 읽기와 Wappalyzer 분석도 각각 `timeoutMs`로 제한.
     전체 소요는 최대 대략 `3 × timeoutMs` + 브라우저 기동(보통은 `timeoutMs` 이내).
   - `maxPages`: **삭제됨**. 넘기면 reject `"maxPages: crawling removed: pass endpoints explicitly via collectEach"`.
   - `waitUntil` (`load`|`networkidle`, 기본 load), `userAgent`.
   - `ignoreHTTPSErrors` (기본 **true**): 자체서명·만료·스테이징 인증서도 받은 대로 수집(새 프로필이라 자격증명 없음).
     인증서 정보는 `navigation.securityDetails`에 기록. `false`면 인증서 오류 hop은 응답 없음으로 취급 — 그 전에 받은 3xx가
     없으면 reject, 있으면 그 3xx로 resolve + `navigate` 에러(§3 탐색 실패 정책). (TLS 동작은 테스트 없음, §9.)
+  - `signal` (`AbortSignal`; 모듈 API 전용, CLI 옵션 없음): 호출자의 취소·예산. **시작 전에 이미 abort**면 브라우저를 띄우지 않고
+    즉시 reject. **진행 중 abort**면 브라우저를 닫아(진행 중이던 브라우저 호출이 모두 즉시 실패) 하던 단계를 멈추고, 프로필을 지운
+    뒤 reject — 부분 `TargetInfo`는 반환하지 않는다. 에러는 `name === 'AbortError'`, `cause = signal.reason`. resolve된 뒤의 abort는
+    영향 없음(리스너는 종료 시 제거). `collectEach`에서는 abort가 **호출 전체를 reject**하고(URL별 실패 항목으로 기록하지 않음) 아직
+    시작하지 않은 URL은 실행하지 않는다. 알려진 한계: Wappalyzer 분석(Worker) 도중의 abort는 그 매칭이 끝난 뒤(최대 `timeoutMs`,
+    보통 수 ms) reject된다.
+  - `cookies` (`[{ name, value }]`, 기본 없음; 모듈 API 전용, CLI 옵션 없음): 탐색 **전에** 브라우저 컨텍스트에 심는 쿠키(예: 고정
+    실습 계정 세션). 대상은 **요청 URL의 호스트 하나뿐** — Playwright `context.addCookies`에 `url: <요청 URL의 origin>`을 줘서
+    `Domain` 속성 없는 host-only 쿠키(path `/`, https URL이면 `Secure`)로 심는다. 하위 도메인·다른 호스트(리다이렉트·서브리소스
+    포함)로는 보내지 않는다. 쿠키 규칙상 범위가 **host 단위**라 **포트는 구분되지 않는다**(같은 호스트의 다른 포트로는 보내진다).
+    검증(방문 전, 위반 시 어느 옵션·항목이 문제인지 담은 에러로 reject): 배열, 최대 `MAX_COOKIES`(50)개, `name`은 비어 있지 않은
+    문자열이며 RFC 6265 token 문자만(`=`·`;`·공백·제어문자 등 구분자 불가), `value`는 문자열(제어문자·`;` 불가, 빈 문자열 허용),
+    앞뒤 공백 없음, `name`+`value` UTF-8 4096바이트 이하(뒤 두 가지는 Chromium이 거부하는 쿠키라 기동 전에 걸러 낸다).
+    `name`·`value` 외 필드는 무시. 심은 쿠키는 `TargetInfo.cookies`(jar 전체, §3)에 그대로 나온다(별도 표시·가공 없음).
 - CLI: `web-parser (--url <URL> | --urls-file <file>)... [--out file] [--timeout-ms N] [--wait-until load|networkidle]
   [--user-agent UA] [--ignore-https-errors true|false]`. `--url`은 반복 가능, `--urls-file`은 단독으로도 되고 한 줄에 URL 하나
   (빈 줄과 **줄 전체가** `#`로 시작하는 주석만 무시 — 줄 끝 ` # note`는 URL에 남는다), 둘 다 주면 `--url` 먼저. URL이 **1개**면
@@ -111,7 +126,7 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   순서는 Chromium(CDP)이 보고한 순서이며 와이어 순서와 다를 수 있다. `navigation.contentType`은 Playwright의 헤더 맵 값이라
   `Content-Type` 줄이 둘 이상이면 `'값1\n값2'`로 이어 붙은 형태다(각 줄 원본은 `headers`에; HTML 판정은 `document.contentType`).
 - **cookies**: 수집 종료 시점의 **브라우저 cookie jar 전체**(Chromium/Playwright 정규화 결과) 그대로(partitioned 쿠키는
-  Playwright가 붙이는 `_crHasCrossSiteAncestor?`도 그대로) — SameSite 미지정은
+  Playwright가 붙이는 `_crHasCrossSiteAncestor?`도 그대로; `opts.cookies`로 심은 쿠키도 다른 쿠키와 똑같이 들어 있다, §2) — SameSite 미지정은
   `Lax`로 보이고, 브라우저가 거부한 쿠키는 없으며, 덮어쓰기 후 값만 남는다. **받은 그대로의 `Set-Cookie` 원문**은
   최종 문서의 `headers`와 각 HTTP 홉의 `headers`에 있다.
 - **script `href`**: `src`가 없으면 `href` 속성을 쓴다 — SVG `<script>`용이지만 **모든** `<script>`에 적용된다(HTML
@@ -153,7 +168,8 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   `load`다(응답을 받기 전에 타임아웃이면 받은 응답이 없으므로 아래 규칙대로 reject) — 3xx 뒤 대상이 응답하지 않아 아무것도 커밋되지 않은 경우도 `load`이며, 이때 추출은 진행 중 내비게이션을 멈추고
   (`pending navigation stopped`) `about:blank`를 읽으므로 `extracted document has no response (about:blank)`가 이어진다. 최종 문서 없이 3xx에서 끝났으면 `target.finalUrl`·status·
   headers는 **마지막으로 받은 3xx 응답**의 것, `redirectChain`은 그 앞 홉들. HTTP 4xx/5xx도 정상 resolve. **응답이 전혀 없을
-  때만 reject**(DNS 실패, 연결 거부, 3xx 없이 `ignoreHTTPSErrors:false`의 인증서 오류). **알려진 예외**: Chromium이 따르기를
+  때만 reject**(DNS 실패, 연결 거부, 3xx 없이 `ignoreHTTPSErrors:false`의 인증서 오류). 그 밖의 reject는 `signal` abort뿐이다
+  — 받은 응답이 있어도 `AbortError`로 reject(§2). **알려진 예외**: Chromium이 따르기를
   거부하는 Location(`file:`·`data:`·`chrome:` 등)의 3xx는 Playwright 응답 객체가 생기지 않는다. 그 3xx가 **첫 응답**이면
   `net::ERR_UNSAFE_REDIRECT`로 **reject**, 앞서 받은 3xx 홉이 있으면 그 3xx로 resolve + `navigate` 에러. 어느 쪽이든 그 unsafe
   3xx 자체의 status·헤더(`Set-Cookie` 포함)는 잃는다(미수정, §8).
@@ -171,7 +187,7 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   `MAX_TEXT_LENGTH`, JS 전역 값은 1000자. `resources`는 `MAX_RESOURCES`(500)개, `body`는 `MAX_BODY_LENGTH`(5,000,000자; 본문은
   Chromium 버퍼에서 받아 호스트에서 자른다), `paths`는 `MAX_PATHS`(2000)개. `truncated: true`는 **TargetInfo에 들어가는
   데이터가 잘렸을 때만**(위 html·meta·structure·resources·body·paths 상한). DOM probe·JS 전역 값 상한과 매처의 html/scripts 표본
-  (`MATCH_SAMPLE_LENGTH`)은 지문 매칭용 내부 입력만 자르므로 `truncated`를 세우지 않는다(기록도 없음).
+  (`MATCH_SAMPLE_LENGTH`)은 Wappalyzer 분석용 내부 입력만 자르므로 `truncated`를 세우지 않는다(기록도 없음).
 - **알려진 한계** (미수정):
   - html은 페이지 안에서 `outerHTML` 전체를 직렬화한 뒤 자른다. 직렬화가 텍스트보다 커지는 페이지(예: `&` 약 1억 개 →
     `&amp;`로 5배)는 그 읽기에서 렌더러가 죽고, 핵심 추출이 70% 시점까지 기다린 뒤 `extract: timeout`만 남는다(html·meta·
@@ -180,7 +196,7 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
     있으면 렌더러는 계속 바쁘고, 뒤 단계(DOM probe)도 `timeout`이 된다.
   - 문서가 되지 않는 메인 프레임 내비게이션(204/205 응답, 다운로드)도 문서 사이에 `kind:"client"` 홉으로 들어간다.
 - **html**: 추출한 커밋 문서의 `outerHTML`을 격리 world에서 받은 그대로(위 상한까지).
-- **technologies / libraries** (§7): 수집 후 지문 매칭. 매처 입력 = `url`(finalUrl), `headers`(원본 배열 → 어댑터가
+- **technologies / libraries** (§7): 수집 후 Wappalyzer 분석. 매처 입력 = `url`(finalUrl), `headers`(원본 배열 → 어댑터가
   `{소문자이름:[값...]}`로 변환, 출력 `headers`는 원본 유지), `cookies`(분석 문서 URL `finalUrl`에 적용되는 쿠키의 이름+값만;
   출력 `cookies`는 jar 전체), `meta`(name 없으면 property), `html`·`scripts`(`structure.scripts` 인라인을 이은 문자열) — 둘 다
   `MATCH_SAMPLE_LENGTH`(50,000자, 이 모듈 자체 상한: 데이터셋 패턴 `<[^>]{1,250}`의 페이지 통제 최악 비용(V5)을 묶기 위함) 초과 시
@@ -236,7 +252,7 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
 ## 5. 브라우저 세션 격리 (요구사항)
 - **다른 모듈/Agent와 같은 Chrome을 공유하지 않는다.** 매 수집마다 **자체 Chromium 인스턴스**를
   `chromium.launchPersistentContext(<mkdtemp 프로필>)`로 띄우고 **전용 임시 user-data-dir / context**를 쓴다.
-  공유 CDP 엔드포인트에 `connect`하지 않는다(격리 world용 CDP 세션은 자기 페이지에만 연다). 종료 시(성공·reject·타임아웃
+  공유 CDP 엔드포인트에 `connect`하지 않는다(격리 world용 CDP 세션은 자기 페이지에만 연다). 종료 시(성공·reject·타임아웃·abort
   모두) 컨텍스트·프로필 정리. `collectEach`도 URL마다 새 인스턴스·프로필(쿠키 등 상태가 다음 URL로 새지 않는다).
 
 ## 6. 원본 전달 원칙 (결정됨)
@@ -244,11 +260,11 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
 - **redaction은 web-parser의 역할이 아니다** — 쿠키·헤더·토큰도 받은 대로 담아 전달. 비밀 처리가 필요하면
   그건 전적으로 **다운스트림(영속화/전송 측) 책임**이며 이 모듈의 범위 밖. 모듈은 웹 정보 전달에만 집중.
 
-## 7. 지문(technologies) 소스
+## 7. Wappalyzer 분석(technologies) 소스
 - Wappalyzer를 활용(사용자 결정). 원본 npm `wappalyzer`는 deprecated, 본체는 상용 전환.
-  **살아있는 경로**: 커뮤니티 지문 데이터셋 포크(`enthec/webappanalyzer`, 동일 JSON 구조) + 매처 npm `wapalyzer-core@6.11.0`.
+  **살아있는 경로**: 커뮤니티 Wappalyzer 데이터셋 포크(`enthec/webappanalyzer`, 동일 JSON 구조) + 매처 npm `wapalyzer-core@6.11.0`.
   대상이 임의 외부 URL이므로 넓은 커버리지의 데이터셋 채용이 타당.
-- **데이터셋**: 지문 데이터셋은 레포에 포함하지 않고(`.gitignore`), 설치 시 `scripts/fetch-dataset.mjs`(`postinstall`·
+- **데이터셋**: Wappalyzer 데이터셋은 레포에 포함하지 않고(`.gitignore`), 설치 시 `scripts/fetch-dataset.mjs`(`postinstall`·
   `pretest`, 수동은 `npm run fetch-dataset`)가 `enthec/webappanalyzer` 커밋 `d91f7e510e93457041bea874e8a9ffb011e3e4fe`에서
   `src/categories.json`, `src/groups.json`, `src/technologies/{_,a..z}.json`을 내려받아 `data/webappanalyzer/`에 둔다
   (`src/` 접두어 제거). 출처(저장소·커밋·파일 목록)는 스크립트의 상수가 단일 기준. 파일이 모두 있고 JSON으로 파싱되면 네트워크
@@ -260,15 +276,17 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
 ## 8. 단계 계획
 - **P1 (모듈 단독, 의존성 없음)**: `collect()` + CLI + `TargetInfo` 출력 + 세션 격리 + 테스트
   (테스트 프로세스 안의 127.0.0.1 HTTP 픽스처). Agent 결선 없이 단독 테스트 통과.
-- **P2 (지문)**: Wappalyzer 데이터셋/매처 결합 → `technologies`/`libraries` 채움.
+- **P2 (Wappalyzer 분석)**: Wappalyzer 데이터셋/매처 결합 → `technologies`/`libraries` 채움.
 - **P2.1**: 크롤러 삭제(endpoint는 Agent가 정함) + `collectEach` + 통합 리뷰 지적(V0–V9) 수정.
 - **P2.2**: 최종 검증 W0–W5 수정(응답 없는 문서 미보고, 리다이렉트 재추출 예산, 진행 중 내비게이션 정지, probe 상한의
-  `truncated`, §1 문구) + JS 전역 우선, CLI 스트리밍, 검증 보강, 지문 Worker 재사용. 미수정: `ERR_UNSAFE_REDIRECT` 3xx 보존(§3).
+  `truncated`, §1 문구) + JS 전역 우선, CLI 스트리밍, 검증 보강, Wappalyzer 분석 Worker 재사용. 미수정: `ERR_UNSAFE_REDIRECT` 3xx 보존(§3).
 - **P2.3**: 데이터셋을 레포에서 빼고 설치 시 고정 커밋에서 다운로드(§7), §4 URL마다 요청 1회, 최종 게이트 G0–G6(착지 문서
   load 대기, 모든 렌더러 읽기의 내비게이션 정지, 결정적 Worker 검사, V8 예산 여유), `truncated` 범위(TargetInfo 데이터만),
   CLI `--out` 임시 파일, 테스트 신뢰성.
 - **P2.4**: `paths` 통합 색인(§3), 빠진 URL 출처(`<link>`·`<area>`·formaction·`<frame>`·`<embed>`·`<object>`·meta refresh·srcset)를
   structure에 추가, `resources[].method`, 비 HTML 텍스트 응답 `body`, robots.txt/sitemap 파싱. 동시 실행 상한은 넣지 않음(결정).
+- **P3.1**: `collect`·`collectEach`의 `signal`(시작 전·진행 중 abort → `AbortError` reject, 브라우저·프로필 정리)과 `cookies`(요청
+  URL 호스트 한정 host-only 쿠키) 옵션(§2). 범용 점검 런타임의 도구 결선(어댑터·도구 등록)은 다음 작업.
 - **P3 (Agent 연동, 1mn2147 조율)**: §4 결선과 Agent 쪽 시간·봉투 1MB 제약(§4), xss-parser 경로 대체·폐기,
   integration-manifest에서 모듈 id 교체.
 - **P4 (정리)**: xss-parser deprecate(매니페스트·어댑터·테스트 정리), 문서화.
@@ -290,6 +308,11 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   area → 1항목), `sameOrigin`, `params`(이름만, 폼 값이 색인에 없음), formaction의 method·필드 상속, 로드 시 POST fetch →
   `resources[].method`·`paths.methods`, 리다이렉트 홉, robots.txt(와일드카드 표시)·sitemap·sitemap index·JSON의 `body` 원본과 경로,
   나열된 경로를 요청하지 않음, 바이너리 `body:null`, `body`·`paths` 상한 시 `truncated`.
+- 옵션(P3.1): 이미 abort된 `signal` → 브라우저 기동 없이 `AbortError`(`cause` = reason, `collectEach`도), 응답하지 않는 서버로
+  탐색 중 abort → 2초 안에 `AbortError` + 그 호출의 Chromium 프로세스(`ps`에서 프로필 경로로 확인)·프로필 디렉터리 없음·리스너
+  제거, 성공 뒤 abort 무영향, `collectEach` 중 abort → 전체 reject·남은 URL 미실행, 쿠키가 요청 서버에 도달(`Cookie` 에코)·jar에
+  그대로, `localhost` 서브리소스·`localhost`로의 리다이렉트에는 쿠키 없음, 잘못된 `cookies`(배열 아님·51개·이름·값)와 `signal`은
+  브라우저 기동 전에 reject.
 - TLS(`ignoreHTTPSErrors` 기본 true의 자체서명 수용, `securityDetails`, false의 reject)는 **테스트 없음**.
 - 어댑터: dom 속성 버전, xhr(host+path), 3단계 `requires` 체인, `requiresCategory`, implies로만 충족되는 requirement, excludes,
   중복 detection confidence, 이름 정규화·`constructor`/`__proto__`(V6), html 표본(가운데는 버리고 끝은 매치), Worker 데드라인(V5),
