@@ -321,8 +321,6 @@
       "adapters": [
         "agent-dashboard/tests/casper-db-integration.test.mjs",
         "agent-dashboard/tests/guardrail-integration.test.mjs",
-        "agent-dashboard/tests/xss-gateway.test.mjs",
-        "agent-dashboard/tests/xss-parser-integration.test.mjs",
         "agent-dashboard/tests/pentest-db-integration.test.mjs",
         "agent-dashboard/tests/pentest-db-multitype.test.mjs"
       ],

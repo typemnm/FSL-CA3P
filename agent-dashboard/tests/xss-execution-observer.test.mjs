@@ -6,15 +6,15 @@ import {
   createStoredXssCanary,
   observeStoredXssExecution,
   storedXssCanaryContent,
-} from '../../packages/adapters/integrations/xss-parser.mjs';
+} from '../../packages/adapters/integrations/xss-execution.mjs';
 import { startLocalLab } from '../local-lab-gateway.mjs';
 
-const parserRequire = createRequire(new URL('../../xss-parser/package.json', import.meta.url));
+const browserRequire = createRequire(new URL('../../web-parser/package.json', import.meta.url));
 
 function browserInstalled() {
   try {
-    const { chromium } = parserRequire('playwright');
-    return existsSync(process.env.XSS_PARSER_BROWSER_PATH || chromium.executablePath());
+    const { chromium } = browserRequire('playwright');
+    return existsSync(process.env.WEB_PARSER_BROWSER_PATH || process.env.XSS_PARSER_BROWSER_PATH || chromium.executablePath());
   } catch { return false; }
 }
 

@@ -4,7 +4,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-const { chromium } = createRequire(new URL('../../xss-parser/package.json', import.meta.url))('playwright');
+const { chromium } = createRequire(new URL('../../web-parser/package.json', import.meta.url))('playwright');
 
 const event = { id: 'event-a', time: '2026-10-14T10:00:00Z', module: 'agent', type: 'info', title: 'plan', detail: 'test evidence', iteration: 1, correlationId: 'correlation-a', latency: null, request: {}, response: {}, agentInput: {}, agentOutput: {} };
 function snapshot(id, mode = 'core-fixture') {
