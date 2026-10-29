@@ -4,7 +4,6 @@ export const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 export const LIMITS = { summaryBytes: 2048, evidenceBytes: 4096, maxEvidence: 4, bodyTextBytes: 65536, detailBytes: 256 };
 export const STATUSES = ['confirmed', 'not_reproduced', 'inconclusive'];
 
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const SECRET_HEADERS = new Set(['cookie', 'set-cookie', 'authorization', 'proxy-authorization']);
 
 function fail(code, message) {
@@ -16,14 +15,11 @@ function fail(code, message) {
 const invalidRecord = message => fail('INVALID_ATTACK_RECORD', message);
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-export function loopbackOrigin(value) {
+export function httpOrigin(value) {
   let url;
   try { url = new URL(value); }
   catch { throw fail('INVALID_ORIGIN', 'origin must be an absolute URL'); }
-  if (!['http:', 'https:'].includes(url.protocol) || !LOOPBACK_HOSTS.has(url.hostname)
-    || url.username || url.password || url.pathname !== '/') {
-    throw fail('INVALID_ORIGIN', 'origin must be a loopback http(s) origin');
-  }
+  if (!['http:', 'https:'].includes(url.protocol)) throw fail('INVALID_ORIGIN', 'origin must be an http(s) URL');
   return url.origin;
 }
 
@@ -40,8 +36,8 @@ function redactExchange(part) {
 }
 
 function targetOrigin(value) {
-  try { return loopbackOrigin(value); }
-  catch { throw invalidRecord('target.origin must be a loopback origin'); }
+  try { return httpOrigin(value); }
+  catch { throw invalidRecord('target.origin must be an http(s) URL'); }
 }
 
 function parseUrl(value) {
@@ -55,10 +51,10 @@ export function validateAttackRecord(record) {
   if (record.kind !== undefined && (typeof record.kind !== 'string' || record.kind.length > 64)) {
     throw invalidRecord('kind must be a string of at most 64 characters');
   }
-  const origin = targetOrigin(record.target?.origin);
+  targetOrigin(record.target?.origin);
   const { request, response } = record;
   if (!isObject(request) || typeof request.method !== 'string') throw invalidRecord('request.method is required');
-  if (parseUrl(request.url).origin !== origin) throw invalidRecord('request.url must match target origin');
+  if (!['http:', 'https:'].includes(parseUrl(request.url).protocol)) throw invalidRecord('request.url must be an http(s) URL');
   if (!isObject(response) || !(Number.isInteger(response.status) || response.status === null)) {
     throw invalidRecord('response.status must be an integer or null');
   }

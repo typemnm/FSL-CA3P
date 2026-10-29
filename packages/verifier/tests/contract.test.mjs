@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ID, LIMITS, STATUSES, loopbackOrigin, redactHeaders, validateAttackRecord, evidenceItem, bodyDigest,
+  ID, LIMITS, STATUSES, httpOrigin, redactHeaders, validateAttackRecord, evidenceItem, bodyDigest,
 } from '../contract.mjs';
 
 function record(overrides = {}) {
@@ -24,13 +24,19 @@ test('exports the contract constants', () => {
   assert.deepEqual(STATUSES, ['confirmed', 'not_reproduced', 'inconclusive']);
 });
 
-test('loopbackOrigin accepts loopback http(s) origins and rejects others', () => {
-  assert.equal(loopbackOrigin('http://127.0.0.1:4174/?q=1#x'), 'http://127.0.0.1:4174');
-  assert.equal(loopbackOrigin('https://localhost'), 'https://localhost');
-  assert.equal(loopbackOrigin('http://[::1]:8080'), 'http://[::1]:8080');
-  for (const value of ['http://example.com', 'ftp://127.0.0.1', 'http://u:p@127.0.0.1', 'http://127.0.0.1/app', 'nope']) {
-    assert.throws(() => loopbackOrigin(value), error => error.code === 'INVALID_ORIGIN', value);
+test('httpOrigin accepts any http(s) URL and returns its origin', () => {
+  assert.equal(httpOrigin('http://127.0.0.1:4174/?q=1#x'), 'http://127.0.0.1:4174');
+  assert.equal(httpOrigin('https://example.com/app'), 'https://example.com');
+  assert.equal(httpOrigin('http://u:p@example.com'), 'http://example.com');
+  for (const value of ['ftp://127.0.0.1', 'nope']) {
+    assert.throws(() => httpOrigin(value), error => error.code === 'INVALID_ORIGIN', value);
   }
+});
+
+test('validateAttackRecord accepts external targets and requests to another origin', () => {
+  const copy = validateAttackRecord(record({ target: { origin: 'https://example.com' },
+    request: { method: 'POST', url: 'https://api.example.com/posts', headers: {}, body: null } }));
+  assert.equal(copy.request.url, 'https://api.example.com/posts');
 });
 
 test('redactHeaders masks secret headers case-insensitively without mutating input', () => {
@@ -54,8 +60,8 @@ test('validateAttackRecord returns a clone with headers redacted', () => {
 
 test('validateAttackRecord rejects invalid records', () => {
   const cases = [
-    record({ target: { origin: 'http://example.com' } }),
-    record({ request: { method: 'POST', url: 'http://127.0.0.1:9999/api/posts', headers: {}, body: null } }),
+    record({ target: { origin: 'ftp://example.com' } }),
+    record({ request: { method: 'POST', url: 'ftp://127.0.0.1/api/posts', headers: {}, body: null } }),
     record({ id: '-bad' }),
     record({ schemaVersion: 'attack-record/0' }),
     record({ kind: 'x'.repeat(65) }),

@@ -1,7 +1,7 @@
 /**
  * Sandboxed browser session for verifier checks. Same isolation as
  * observeStoredXssExecution (xss-parser) and openSandbox (report capture):
- * a fresh browser per call, same-origin GET/HEAD only, no WebSocket, no
+ * a fresh browser per call, GET/HEAD only (any origin), no WebSocket, no
  * service workers, no downloads, popups closed, dialogs dismissed.
  */
 
@@ -114,8 +114,8 @@ export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10
     await guard(context.route('**/*', async route => {
       const request = route.request();
       const method = request.method();
-      const reason = originOf(request.url()) !== allowedOrigin ? 'outside target origin'
-        : ['GET', 'HEAD'].includes(method) ? null : 'write blocked';
+      // Pages may load from any origin; only state-changing requests are stopped during verification.
+      const reason = ['GET', 'HEAD'].includes(method) ? null : 'write blocked';
       if (reason) {
         block(method, request.url(), reason);
         return route.abort('blockedbyclient');
@@ -149,7 +149,7 @@ export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10
     const goto = async (path, { readySelector } = {}) => {
       const response = await guard(page.goto(new URL(path, origin).href, { waitUntil: 'domcontentloaded', timeout: remaining() }).catch(() => null));
       const finalUrl = page.url();
-      let ready = originOf(finalUrl) === allowedOrigin;
+      let ready = response !== null;
       if (ready && readySelector) {
         ready = await page.waitForSelector(readySelector, { timeout: remaining() }).then(() => true, () => false);
       }

@@ -10,9 +10,9 @@ verifier는 공격 모듈이 실행한 공격 한 건이 실제로 먹혔는지 
 | `schemaVersion` | 고정값 `attack-record/1` |
 | `id` | `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` |
 | `kind` | 자유 라벨, 최대 64자. 생략하면 `unspecified`. 판정 분기에 쓰지 않는다 |
-| `target.origin` | loopback http(s) origin만 허용 |
+| `target.origin` | http(s) URL이면 대상 제한 없이 받는다(브라우저 경로의 기준) |
 | `info` | 공격 모듈이 받은 작업 정보(객체). 예: `session`, `victim`, `canary` |
-| `request` | `method`, `url`(origin 일치 필수), `headers`(cookie는 `[redacted]`), `body` |
+| `request` | `method`, `url`(http(s), 다른 origin이어도 된다), `headers`(cookie는 `[redacted]`), `body` |
 | `response` | `status`, `bodyText`, `bodyJson`, `error`, `elapsedMs` |
 | `control`, `followUp` | 선택. 같은 request/response 형태의 추가 교환 |
 
@@ -29,7 +29,7 @@ system prompt는 `VERIFIER_SYSTEM_PROMPT`(`index.mjs`)다.
 - `unknown` + `browser`: 브라우저 관찰 후 Round 2로 간다. `method: 'ai+browser'`.
 - `unknown`만: 끝. `status: 'inconclusive'`.
 
-`browser` 요청은 `{ path, role?, waitFor? }`다. `path`는 `/`로 시작하고 `//`이 아니어야 하는 같은 origin 경로다. `role`은 세션 쿠키 묶음의 키이고, `waitFor`는 CSS 선택자다.
+`browser` 요청은 `{ path, role?, waitFor? }`다. `path`는 `target.origin` 기준 경로(`/`로 시작, `//` 아님)이거나 절대 http(s) URL이다. `role`은 세션 쿠키 묶음의 키이고, `waitFor`는 CSS 선택자다.
 
 **Round 2** 입력: `{ round: 2, attack, browserRequest, browserObservation }`. 응답은 `valid` 또는 `invalid`다. `unknown`이면 `inconclusive`다.
 
@@ -37,7 +37,7 @@ system prompt는 `VERIFIER_SYSTEM_PROMPT`(`index.mjs`)다.
 
 ## 3. 브라우저 관찰 (`browserObservation`)
 
-샌드박스 Chromium을 매번 새로 띄운다. 대상 origin의 GET/HEAD만 허용하고 WebSocket, 서비스 워커, 다운로드는 막는다. 팝업은 닫고 dialog는 해제한다.
+샌드박스 Chromium을 매번 새로 띄운다. 페이지 로딩(GET/HEAD)은 origin과 관계없이 허용한다. 검증 중 상태를 바꾸는 요청(GET/HEAD 외), WebSocket, 서비스 워커, 다운로드는 막는다. 팝업은 닫고 dialog는 해제한다.
 
 | 필드 | 내용 |
 |---|---|

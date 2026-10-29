@@ -79,6 +79,17 @@ test('invalid attack is not_reproduced and completed', async () => {
   assert.equal(result.completed, true);
 });
 
+test('a browser request may name an absolute URL on another origin', async () => {
+  const { calls, factory } = fakeBrowser();
+  const model = scriptedModel([
+    { verdict: 'unknown', reason: 'page lives elsewhere', browser: { path: 'https://www.example.com/board' } },
+    { verdict: 'invalid', reason: 'nothing ran' },
+  ]);
+  const result = await verifyAttack(record(), { model, outDir: 'out', browserFactory: factory });
+  assert.deepEqual(calls.goto, [{ path: 'https://www.example.com/board', readySelector: undefined }]);
+  assert.equal(result.status, 'not_reproduced');
+});
+
 test('browser round trip sends the observation back, keeps the screenshot and closes the session', async () => {
   const { calls, factory } = fakeBrowser();
   const model = scriptedModel([
@@ -171,7 +182,7 @@ test('any kind label is accepted and an absent kind becomes unspecified', async 
 test('invalid records are rejected before the model is called', async () => {
   const model = scriptedModel([]);
   await assert.rejects(
-    verifyAttack(record({ target: { origin: 'http://example.com' } }), { model }),
+    verifyAttack(record({ target: { origin: 'ftp://example.com' } }), { model }),
     { code: 'INVALID_ATTACK_RECORD' },
   );
   assert.equal(model.payloads.length, 0);

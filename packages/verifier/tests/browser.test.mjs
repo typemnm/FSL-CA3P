@@ -91,14 +91,14 @@ test('binding, selfCheck, cookies and screenshot work on a real page', { skip: !
   }
 });
 
-test('writes and outside requests are blocked', { skip: !CHROMIUM_AVAILABLE }, async () => {
+test('writes are blocked while reads from other origins load', { skip: !CHROMIUM_AVAILABLE }, async () => {
   const session = await openVerifierBrowser(origin);
   try {
     await session.goto('/writes');
-    const recorded = await until(() => session.blocked.some(entry => entry.reason === 'write blocked')
-      && session.blocked.some(entry => entry.reason === 'outside target origin'), 3000);
+    const recorded = await until(() => session.blocked.some(entry => entry.reason === 'write blocked'), 3000);
     assert.equal(recorded, true);
     assert.equal(seen.writes, 0);
+    assert.equal(session.blocked.some(entry => entry.reason === 'outside target origin'), false);
   } finally {
     await session.close();
   }
