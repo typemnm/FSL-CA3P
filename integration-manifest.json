@@ -21,9 +21,13 @@
       "id": "xss-parser",
       "path": "xss-parser",
       "layer": "adapter",
-      "status": "active",
+      "status": "replaced",
       "sourceBranch": "Skirt/xss-parser",
-      "dependencies": []
+      "dependencies": [],
+      "replacement": [
+        "web-parser"
+      ],
+      "reason": "The single stored-XSS check that used it was retired; web-parser observes target pages and the remaining stored-XSS browser confirmation loads web-parser's Playwright. Stored runs keep their recorded parser events and manifests for history."
     },
     {
       "id": "web-parser",
@@ -101,7 +105,6 @@
       "status": "active",
       "dependencies": [
         "agent",
-        "xss-parser",
         "attack-module",
         "guardrail",
         "casper-db",
@@ -157,7 +160,6 @@
       "status": "active",
       "dependencies": [
         "agent",
-        "xss-parser",
         "web-parser",
         "attack-module",
         "guardrail",
@@ -302,7 +304,6 @@
       "allow": [
         "adapters",
         "agent",
-        "xss-parser",
         "web-parser",
         "attack-module",
         "guardrail",
@@ -321,8 +322,6 @@
       "adapters": [
         "agent-dashboard/tests/casper-db-integration.test.mjs",
         "agent-dashboard/tests/guardrail-integration.test.mjs",
-        "agent-dashboard/tests/xss-gateway.test.mjs",
-        "agent-dashboard/tests/xss-parser-integration.test.mjs",
         "agent-dashboard/tests/pentest-db-integration.test.mjs",
         "agent-dashboard/tests/pentest-db-multitype.test.mjs"
       ],
@@ -333,6 +332,7 @@
   },
   "migration": {
     "legacyComposition": "Compatibility wrappers remain in agent-dashboard; execution adapters and lab gateway live in packages/adapters.",
-    "pentestDb": "Replaced by casper-db attack_catalog namespace. Existing JSON run artifacts and legacy protocol aliases are retained for historical compatibility only."
+    "pentestDb": "Replaced by casper-db attack_catalog namespace. Existing JSON run artifacts and legacy protocol aliases are retained for historical compatibility only.",
+    "xssParser": "Replaced by web-parser. Run records created by the retired single checks (core-fixture, local-lab-rule/local-lab-deepseek stored XSS) stay readable; their parser events, manifest module entries and lock digests are kept as recorded."
   }
 }

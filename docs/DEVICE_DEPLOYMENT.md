@@ -34,7 +34,7 @@ tail -n 100 .runtime/macmini-dashboard.err.log
 배포는 다음 순서로 진행한다.
 
 1. SHA별 Git worktree와 독립 `.venv`를 만들고 활성 모듈의 lockfile 의존성·Chromium을 준비한다. controller는 별도 안정 경로에 설치돼 있어 릴리스 전환에 영향받지 않는다.
-2. SQLite backup API로 복제한 DB를 새 코드의 스키마로 이전하고, 별도 포트·별도 인증·빈 작업 DB에서 로그인·주요 API·core fixture를 검증한다. 실제 키를 비활성화하므로 배포 점검으로 유료 AI 호출을 하지 않는다.
+2. SQLite backup API로 복제한 DB를 새 코드의 스키마로 이전하고, 별도 포트·별도 인증·빈 작업 DB에서 로그인과 주요 API 읽기를 검증한다. 실행은 시작하지 않는다. 실제 키를 비활성화하므로 배포 점검으로 유료 AI 호출을 하지 않는다.
 3. 대학 실습은 SHA 태그 이미지로 미리 빌드한다. 활성 검사·대기 작업이 있으면 전환을 미루고, 전환 직전 유지보수 잠금으로 새 검사·검토 요청을 막는다.
 4. 대시보드·worker·대학 컨테이너를 정지하고 실행 DB·사례 DB·채팅 DB(`.runtime/chat.sqlite`)·인증 및 대학 실습 볼륨을 백업한다. 사례 DB를 이전하고, 동일한 Compose project/볼륨으로 새 이미지를 시작해 조회 검증한 뒤 `current`를 전환한다.
 5. 기존 관리자 계정으로 로그인·실행 SHA·API·인증 파일 보존을 확인한다. 실패하면 서비스를 다시 정지하고 DB·인증·실습 볼륨과 이전 이미지·릴리스를 복구한다. 도중 프로세스가 종료돼도 transaction journal을 바탕으로 다음 실행이 먼저 복구한다.
@@ -123,7 +123,7 @@ CASPER_DB_PYTHON="$PWD/.venv/bin/python" PORT=4174 npm run serve:external
 
 출력과 `.runtime/public-url.txt`에서 임시 HTTPS 주소를 확인한다. 서버·터널 로그는 `.runtime/server.log`, `.runtime/tunnel.log`에 저장된다. 주소는 터널 재시작 시 바뀔 수 있다. 이미 4174 포트의 Quick Tunnel이 실행 중이면 두 번째 인스턴스를 시작하지 않는다.
 
-기존 게시판 실습은 서버가 생성한 `vul-web-1`에서 실행한다. 모의 코어의 fixture 입력 URL은 표시용이며 접속하지 않는다. 게시판 실습 시작을 누를 때만 별도 브라우저와 게시판을 실행한다. DeepSeek 모델은 API 키를 별도로 설정한 경우에만 호출되며 비용이 발생할 수 있다. 아래 대학 실습은 별도로 실행 중인 컨테이너의 입력 원점에 접속한다.
+게시판 실습은 서버가 생성한 `vul-web-1`에서 범용 점검으로 실행한다. 실습 시작을 누를 때만 게시판을 실행한다. DeepSeek 모델은 API 키를 별도로 설정한 경우에만 호출되며 비용이 발생할 수 있다. 아래 대학 실습은 별도로 실행 중인 컨테이너의 입력 원점에 접속한다.
 
 ## 대학 사이트 실습 반영
 

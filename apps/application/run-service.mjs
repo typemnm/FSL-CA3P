@@ -150,36 +150,22 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
         { code: 'RETIRED_MODE' });
     }
     const general = mode === 'local-lab-general';
-    const modelId = body.modelId ?? (mode === 'local-lab-deepseek' || general ? 'deepseek-flash' : 'rule-baseline');
+    const modelId = body.modelId ?? (general ? 'deepseek-flash' : 'rule-baseline');
     if (idorOrigin && !general && (mode !== 'local-lab-rule' || modelId !== 'rule-baseline')) {
       throw fault(400, 'University fixtures support only the rule baseline known-record IDOR check.');
     }
     const model = listModels().find(item => item.id === modelId);
     if (!model) throw fault(400, 'Choose a registered model.');
     if (!model.available) throw fault(503, 'Selected model is unavailable. Configure server credentials before starting.');
-    if ((mode === 'core-fixture' || mode === 'local-lab-rule') && modelId !== 'rule-baseline') throw fault(400, 'Rule or fixture mode requires rule-baseline.');
-    if (mode === 'local-lab-deepseek' && modelId === 'rule-baseline') throw fault(400, 'DeepSeek mode requires a registered DeepSeek model.');
     if (general && model.provider !== 'deepseek') throw fault(400, 'General assessment requires a registered DeepSeek model.');
-    if (mode !== 'core-fixture' && !idorOrigin && body.target !== undefined) throw fault(400, 'The board lab does not accept a target URL.');
+    if (!idorOrigin && body.target !== undefined) throw fault(400, 'The board lab does not accept a target URL.');
     const delayMs = body.delayMs ?? defaultDelayMs;
     if (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 3000) throw fault(400, 'delayMs must be 0..3000.');
-    const testProfile = body.testProfile ?? (general ? 'general' : idorOrigin ? 'known_record_idor_read'
-      : mode === 'core-fixture' ? 'agent_cross_user_delete_canary' : 'stored_xss_canary');
-    if (general ? testProfile !== 'general'
-      : idorOrigin ? testProfile !== 'known_record_idor_read'
-      : !['stored_xss_canary', 'agent_cross_user_delete_canary'].includes(testProfile)
-        || (mode === 'core-fixture' && testProfile !== 'agent_cross_user_delete_canary')) throw fault(400, 'Unsupported fixture test profile.');
-    let target = idorOrigin ? validateUniversityOrigin(body.target === undefined ? idorOrigin : body.target) : 'https://demo.ca3p.local';
-    if (mode === 'core-fixture' && body.target !== undefined) {
-      try {
-        if (typeof body.target !== 'string' || body.target.length > 2048) throw new Error();
-        const url = new URL(body.target.trim());
-        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
-        target = url.href;
-      } catch { throw fault(400, 'Provide a valid HTTP(S) display URL without credentials.'); }
-    }
+    const testProfile = body.testProfile ?? (general ? 'general' : 'known_record_idor_read');
+    if (general ? testProfile !== 'general' : testProfile !== 'known_record_idor_read') throw fault(400, 'Unsupported fixture test profile.');
+    const target = idorOrigin ? validateUniversityOrigin(body.target === undefined ? idorOrigin : body.target) : 'https://demo.ca3p.local';
     const id = `run-${randomUUID()}`;
-    const options = { mode, modelId, target, delayMs: mode === 'core-fixture' ? delayMs : 0, testProfile, fixtureId };
+    const options = { mode, modelId, target, delayMs: 0, testProfile, fixtureId };
     if (general) {
       options.loopBudget = store.getGeneralLoopBudget();
       try { options.caseSnapshot = prepareCaseSnapshot({ runId: id, storePath: store.path, fixtureId, env }); }
@@ -187,8 +173,6 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
         if (failure.code !== 'CASE_SNAPSHOT_UNAVAILABLE') throw failure;
         options.unavailableInputs = ['casper-db'];
       }
-    } else if (mode !== 'core-fixture' && !idorOrigin) {
-      options.caseSnapshot = prepareCaseSnapshot({ runId: id, storePath: store.path, fixtureId, env });
     }
     const manifest = createRunManifest({ runId: id, mode, modelId, options, model, env });
     const experiment = store.experimentState();
@@ -204,8 +188,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     }
     const state = { ...emptyRun(), id, coreRunId: id, status: 'queued', mode, modelId,
       ...(general ? { assessmentMode: 'general' } : {}),
-      target: mode === 'core-fixture' || idorOrigin ? target : 'http://127.0.0.1/',
-      simulated: mode === 'core-fixture', testProfile, fixtureId, manifest };
+      target: idorOrigin ? target : 'http://127.0.0.1/',
+      simulated: false, testProfile, fixtureId, manifest };
     store.createRun({ id, mode, modelId, manifest, state, options });
     selectedRunId = id; ensureWorker(); publish(true);
     child?.send({ type: 'wake' });

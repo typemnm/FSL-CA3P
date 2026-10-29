@@ -23,7 +23,7 @@
 | `vul-web-1` | canary 게시글·삭제/수정·랜덤 쿠키·세션·메모리 | 매 run 새 임시 게시판/secret/process. worker 종료를 기다린 후 닫음. 신규 실행은 소유권 registry+토큰으로 crash 잔류를 추적하고, IPC 단절 시 게시판 종료 |
 | `vul-web2` | 대한/원창 SQLite volume, 게시물·조회수·요청·일정·설정·서버 세션, 프로세스와 파일 상태 | 로그인 probe는 finally 로그아웃. 전체 초기화는 운영자가 등록한 관리 훅이 DB·세션·프로세스·파일 복원을 확인해야 함. 미설정·실패 시 전체 초기화 차단 |
 | 외부 URL 읽기 관찰 | 등록된 `external-general` 경로는 비인증 GET/HEAD로 공개 페이지만 관찰 | 앱 소유 실행 기록·파일은 삭제한다. 대상 복원 훅은 요구하지 않으며 외부 사이트의 로그·조회 기록은 복원하지 않는다. 다른 미등록 외부 실행은 계속 차단 |
-| parser/관찰 브라우저 | 쿠키·local/session storage·IndexedDB·서비스워커·HTTP cache | `xss-parser/parser.mjs`와 보고서 capture는 새 browser/context를 만들고 finally close; 서비스워커 차단. 영구 사용자 profile 재사용 없음 |
+| parser/관찰 브라우저 | 쿠키·local/session storage·IndexedDB·서비스워커·HTTP cache | `web-parser/collect.mjs`는 수집마다 별도 Chromium과 임시 profile을 만들고 finally에서 닫은 뒤 profile을 삭제. 보고서 capture와 저장형 XSS 실행 확인 어댑터(`packages/adapters/integrations/xss-execution.mjs`)는 새 browser/context를 만들고 finally close; 서비스워커 차단. 영구 사용자 profile 재사용 없음 |
 | attack/guardrail/agent | gateway 쿠키, request budget, canary ID, 모델 messages/응답 | 실행별 closure/engine/child runtime 생성. 초기화 전 worker의 종료 확인으로 이전 메모리 제거 |
 | 대시보드 브라우저 | 앱 소유 localStorage fallback 이력, 상세·비교·검토 초안·진행 중 조회/SSE | 앱 실행 cache만 비우고 epoch로 늦은 응답을 거부. 같은 브라우저 탭은 storage event, 연결된 다른 브라우저는 SSE epoch로 폐기. 인증·사용자 설정 보존 |
 | 기준 입력 | 소스·ruleset·pentest catalog·검토된 사례·API 자격 증명 | 삭제하지 않음. 같은 조건을 재현할 연구 기준값이며 각 manifest에 digest 기록 |

@@ -6,19 +6,19 @@ Node.js 24와 Python 3.11 이상을 사용한다. `.nvmrc`와 모든 Node 모듈
 
 ```sh
 nvm use
-npm ci --prefix xss-parser
+npm ci --prefix web-parser
 npm ci --prefix packages/report/capture
 python3 -m venv .venv
 .venv/bin/python -m pip install -r casper-db/requirements-ci.lock
 .venv/bin/python -m pip install -r packages/report/requirements-ci.lock
 .venv/bin/python -m pip install --no-deps -e ./casper-db -e ./packages/report/py
-cd xss-parser
+cd web-parser
 npx playwright install --with-deps chromium
 cd ..
 CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run verify
 ```
 
-`scripts/ci.mjs`는 integration-manifest에 등록된 활성 모듈의 test/tests를 자동 탐색한다. 새 파일을 package.json에 매번 열거하지 않는다. 독립 테스트 디렉터리가 없는 활성 모듈은 manifest의 `ci.suiteAssignments`에서 실제 통합 테스트 파일의 소유 suite를 지정한다. `pentest-db`는 카탈로그 조회·저장 영속성·잘못된 입력 거부, `adapters`는 casper-db·guardrail·xss-parser·gateway 경계, `worker`는 별도 프로세스의 큐 실행·기록 재개·취소를 검증한다. 배정한 파일이 사라지거나 활성 모듈의 suite가 비면 CI는 실패하고 `completeSuite=false`를 기록한다. Node skip/todo/cancelled, pytest skip/error는 게이트 실패다. Chromium 실제 실행, curl, Python 의존성을 먼저 확인한다.
+`scripts/ci.mjs`는 integration-manifest에 등록된 활성 모듈의 test/tests를 자동 탐색한다. 새 파일을 package.json에 매번 열거하지 않는다. 독립 테스트 디렉터리가 없는 활성 모듈은 manifest의 `ci.suiteAssignments`에서 실제 통합 테스트 파일의 소유 suite를 지정한다. `pentest-db`는 카탈로그 조회·저장 영속성·잘못된 입력 거부, `adapters`는 casper-db·guardrail·pentest-db 연결 경계, `worker`는 별도 프로세스의 큐 실행·기록 재개·취소를 검증한다. 배정한 파일이 사라지거나 활성 모듈의 suite가 비면 CI는 실패하고 `completeSuite=false`를 기록한다. Node skip/todo/cancelled, pytest skip/error는 게이트 실패다. Chromium 실제 실행, curl, Python 의존성을 먼저 확인한다.
 
 `vul-web2`는 독립 fixture 모듈로 등록한다. Node suite는 사이트별 IDOR 검증기의 경계와 정책 및 대시보드 worker의 결과 영속화를 검사한다. `container-smoke`는 두 대학 사이트의 임시 기능 smoke, 별도 Compose의 health check, 지속 DB를 변경하지 않는 배포 검사 및 기존 `guardrail`·`attack-module`을 사용한 제한된 IDOR 조회를 실행한다. 대시보드 이미지는 대학 검증기 소스를 포함하며 대학 사이트는 별도 이미지로 실행한다. 대시보드도 Docker이면 `docker-compose.vul-web2.yml` overlay로 대학 네트워크에 연결한다. 대학 DB와 의존성 캐시는 대시보드 이미지에 포함하지 않는다.
 
@@ -90,6 +90,6 @@ docker compose -p ca3p -f docker-compose.deploy.yml up -d --wait
 
 develop은 모든 모듈 브랜치 tip을 포함한 baseline이다. 전체 장기 브랜치를 반복 머지하지 않고 `feature/<module>/<change>` PR을 develop에 넣는다. 모듈 담당자 리뷰를 유지하고 JSON 계약 변경은 소비자 검증을 함께 수행한다. main은 release 승격에 쓴다. CI 안정화 후 main을 공통 개발 기준으로 올리고 짧은 feature PR로 전환할 수 있다.
 
-manifest의 active/replaced는 Git ancestry와 별도로 관리한다. xss-fuzzer는 현재 parser/attack 실행 경로로 대체됐으며 원래 브랜치는 참고용이다. parser 내부의 중복 실습 웹을 제거하고 root vul-web-1 하나를 start·테스트에서 공동 사용한다.
+manifest의 active/replaced는 Git ancestry와 별도로 관리한다. xss-fuzzer는 현재 parser/attack 실행 경로로 대체됐으며 원래 브랜치는 참고용이다. xss-parser는 web-parser로 대체돼 `replaced`로 남고 디렉터리는 삭제했다. Chromium은 web-parser의 Playwright로 설치하며 report capture와 버전이 같다. parser 내부의 중복 실습 웹을 제거하고 root vul-web-1 하나를 start·테스트에서 공동 사용한다.
 
 경계 검사는 contracts, persistence/evaluation과 adapters의 선언된 의존, UI dist의 backend import 금지를 확인한다. 실행 어댑터와 local-lab-gateway 구현은 `packages/adapters`에 두고, 예전 dashboard 경로는 기존 테스트·호출자를 위한 호환 진입점으로 유지한다. 경로별 CI 최적화는 의존 그래프가 안정화된 뒤 적용한다. 현재는 모든 모듈을 매번 검증한다.

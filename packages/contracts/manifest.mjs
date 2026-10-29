@@ -2,7 +2,6 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, lstatSync, readlinkSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { digest, redact, CONTRACT_VERSIONS } from './index.mjs';
 import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from './general-loop-budget.mjs';
@@ -83,19 +82,16 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
   const general = mode === 'local-lab-general';
   const loopBudget = general ? validateGeneralLoopBudget(options.loopBudget ?? GENERAL_LOOP_BUDGET_DEFAULTS) : null;
   const universityOrigins = { 'vul-web2-daehan': 'http://127.0.0.1:4101', 'vul-web2-wonchang': 'http://127.0.0.1:4102' };
-  const universityLab = mode !== 'core-fixture' && Object.hasOwn(universityOrigins, fixtureId);
+  const universityLab = Object.hasOwn(universityOrigins, fixtureId);
+  if (!general && !universityLab) throw new TypeError('The single stored-XSS/BOLA check was retired.');
   const fixedUniversityProbe = universityLab && !general;
   const universityOrigin = universityLab ? options.target ?? universityOrigins[fixtureId] : null;
-  const testProfile = options.testProfile ?? (general ? 'general' : universityLab ? 'known_record_idor_read'
-    : mode === 'core-fixture' ? 'agent_cross_user_delete_canary' : 'stored_xss_canary');
+  const testProfile = options.testProfile ?? (general ? 'general' : 'known_record_idor_read');
   const moduleNames = general
     ? ['agent', universityLab ? 'vul-web2' : 'vul-web-1', 'casper-db',
       'attack-tool', 'attack-module', 'guardrail', 'packages/models', 'packages/adapters', 'web-parser',
       'packages/report', 'packages/run-store', 'apps/application', 'apps/worker']
-    : universityLab
-    ? ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker']
-    : ['agent', 'xss-parser', 'attack-module', 'guardrail', 'casper-db',
-      'packages/adapters', 'packages/history', 'packages/evaluation', 'packages/report', 'apps/application', 'apps/worker'];
+    : ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker'];
   const modules = Object.fromEntries(moduleNames
     .map(name => [name, { contentDigest: treeDigest(join(PROJECT_ROOT, name)),
       packageVersion: (() => { try { return JSON.parse(readFileSync(join(PROJECT_ROOT, name, 'package.json'), 'utf8')).version; } catch { return null; } })() }]));
@@ -106,30 +102,23 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       ciWorkflowRunId: process.env.GITHUB_RUN_ID ?? null, ciAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
     contracts: CONTRACT_VERSIONS, modules,
     shared: { contractDigest: treeDigest(join(PROJECT_ROOT, 'packages/contracts')),
-      lockDigest: universityLab || general ? null : treeDigest(join(PROJECT_ROOT, 'xss-parser/package-lock.json')),
+      lockDigest: null,
       modelRegistryDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')) },
-    execution: { mode, simulated: mode === 'core-fixture', maxIterations: loopBudget?.maxIterations ?? 1,
+    execution: { mode, simulated: false, maxIterations: loopBudget?.maxIterations ?? 1,
       ...(general ? { loopBudget } : {}), delayMs: options.delayMs ?? 0 },
     model: { id: modelId, provider: model.provider ?? (requestedModel ? 'deepseek' : 'rules'), requestedModel,
       reportedModel: null, snapshot: null, adapterDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')),
-      promptTemplateDigest: general ? treeDigest(join(PROJECT_ROOT, 'agent/src/general-model-planner.js'))
-        : fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'agent/src/deepseek-reasoning-engine.js')),
+      promptTemplateDigest: general ? treeDigest(join(PROJECT_ROOT, 'agent/src/general-model-planner.js')) : null,
       ...(fixedUniversityProbe ? { executionRole: 'not-used-fixed-probe' } : {}),
       settings: model.settings ?? {}, actualPromptDigests: [] },
     data: { logicalInputDigest: digest({ mode, fixtureId, testProfile,
       ...(general ? { loopBudget } : {}), ...(universityLab ? { origin: universityOrigin } : {}) }),
-      datasetDigest: treeDigest(join(PROJECT_ROOT, universityLab ? 'vul-web2'
-        : mode === 'core-fixture' ? 'apps/application/scripted-gateway.cjs' : 'vul-web-1')),
-      catalogDigest: general ? (options.caseSnapshot?.path ? attackCatalogSnapshot(options.caseSnapshot.path) : null)
-        : universityLab ? null : mode === 'core-fixture'
-        ? treeDigest(join(PROJECT_ROOT, 'apps/application/scripted-gateway.cjs'))
-        : attackCatalogSnapshot(options.caseSnapshot?.path ?? env.CASPER_DB_PATH ?? join(PROJECT_ROOT, 'casper-db/data/cases.sqlite3')),
+      datasetDigest: treeDigest(join(PROJECT_ROOT, universityLab ? 'vul-web2' : 'vul-web-1')),
+      catalogDigest: general && options.caseSnapshot?.path ? attackCatalogSnapshot(options.caseSnapshot.path) : null,
       catalogSeedDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')),
-      caseSnapshotDigest: general ? options.caseSnapshot?.contentDigest ?? null
-        : universityLab ? null : mode === 'core-fixture' ? treeDigest(join(PROJECT_ROOT, 'apps/application/scripted-gateway.cjs'))
-        : treeDigest(process.env.CASPER_DB_PATH ?? join(PROJECT_ROOT, 'casper-db/data/cases.sqlite3')),
+      caseSnapshotDigest: general ? options.caseSnapshot?.contentDigest ?? null : null,
       caseRevisions: [], ...(options.unavailableInputs ? { unavailableInputs: options.unavailableInputs } : {}) },
-    target: { fixtureId: mode === 'core-fixture' ? 'scripted-contract-fixture' : fixtureId,
+    target: { fixtureId,
       imageDigest: process.env.CA3P_FIXTURE_IMAGE_DIGEST ?? null,
       initialStateDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'vul-web-1/server.js')),
       ...(universityLab ? { origin: universityOrigin, stateCapture: 'running-fixture-not-snapshotted' } : {}),
@@ -137,22 +126,8 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
     policy: { rulesetDigest: general && !universityLab ? null : treeDigest(join(PROJECT_ROOT, 'guardrail/rules')),
       mutationRetry: 'never', recovery: 'interrupted-new-run-required', maxIterations: loopBudget?.maxIterations ?? 1 },
     environment: { nodeVersion: process.version,
-      pythonVersion: mode === 'core-fixture' || fixedUniversityProbe ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'), ['--version']),
-      browserVersion: mode === 'core-fixture' || universityLab || general ? 'not-applicable' : (() => {
-        try {
-          const require = createRequire(new URL('../../xss-parser/package.json', import.meta.url));
-          const path = env.XSS_PARSER_BROWSER_PATH ?? require('playwright').chromium.executablePath();
-          // Windows Chromium is a GUI executable and does not print --version.
-          // Read the installed binary's version resource for the same manifest.
-          if (process.platform === 'win32') return execFileSync('powershell.exe', [
-            '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
-            '(Get-Item -LiteralPath $env:CA3P_BROWSER_EXECUTABLE).VersionInfo.ProductVersion',
-          ], { env: { ...process.env, CA3P_BROWSER_EXECUTABLE: path }, encoding: 'utf8',
-            windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 }).trim() || null;
-          return runtimeVersion(path, ['--version']);
-        } catch { return null; }
-      })(),
-      playwrightVersion: universityLab || general ? 'not-applicable' : (() => { try { return JSON.parse(readFileSync(join(PROJECT_ROOT, 'xss-parser/node_modules/playwright/package.json'), 'utf8')).version; } catch { return null; } })(),
+      pythonVersion: fixedUniversityProbe ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'), ['--version']),
+      browserVersion: 'not-applicable', playwrightVersion: 'not-applicable',
       runnerImageDigest: process.env.CA3P_RUNNER_IMAGE_DIGEST ?? null },
     provenance: 'captured-before-execution', missingValuesMean: 'unavailable' };
 }

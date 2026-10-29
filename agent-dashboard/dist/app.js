@@ -167,7 +167,7 @@ const moduleDescriptions = {
   webpage: '입력 URL은 fixture 모드에서 표시용 메타데이터입니다.',
 };
 const labModuleDescriptions = {
-  parser: 'xss-parser가 입력 위치와 HTML 렌더링을 관찰하고, 시험 게시글의 마커가 Chromium에서 실행됐는지 확인합니다.',
+  parser: '이전 실행: xss-parser가 입력 위치와 HTML 렌더링을 관찰하고, 시험 게시글의 마커가 Chromium에서 실행됐는지 확인했습니다.',
   casper: 'casper-db가 파서 관찰값을 과거 XSS 사례와 대조해 참고 정보를 반환합니다.',
   attack: 'attack-module이 허용된 curl JSON으로 무해한 XSS 시험 게시글 한 건을 전송하고 HTTP 결과를 반환합니다.',
   guardrail: 'guardrail이 로컬 대상, 고정 시험 본문과 요청 횟수를 전송 전에 검사합니다.',
@@ -176,7 +176,7 @@ const labModuleDescriptions = {
   webpage: '서버가 만든 격리된 127.0.0.1 게시판입니다. 입력 URL은 사용하지 않습니다.',
 };
 const legacyLabModuleDescriptions = {
-  parser: 'xss-parser가 로컬 게시판을 삭제 전후로 관찰합니다.',
+  parser: '이전 실행: xss-parser가 로컬 게시판을 삭제 전후로 관찰했습니다.',
   casper: 'casper-db가 과거 XSS 사례를 참고 정보로 조회합니다.',
   attack: 'attack-module이 구조화된 curl JSON으로 제한된 게시글 삭제 요청을 전송합니다.',
   guardrail: 'guardrail이 교차 사용자 삭제 canary의 범위와 요청 예산을 검사합니다.',
@@ -189,7 +189,7 @@ const IDOR_FIXTURES = {
   'vul-web2-wonchang': { name: '원창대학교', port: 4102 },
 };
 const idorModuleDescriptions = {
-  parser: '이 IDOR 실습은 xss-parser와 브라우저를 사용하지 않습니다.',
+  parser: '이 IDOR 실습은 파서와 브라우저를 사용하지 않습니다.',
   casper: '이 IDOR 실습은 과거 XSS 사례 DB를 조회하지 않습니다.',
   attack: 'attack-module이 알려진 가상 레코드만 읽고, 본인·다른 담당자·학생 세션의 HTTP 결과를 비교합니다.',
   guardrail: 'guardrail이 고정된 로컬 원점, 레코드와 GET 요청 예산을 검사합니다.',

@@ -15,33 +15,35 @@ async function waitFor(check) {
   }
   assert.fail('worker state did not settle');
 }
-async function setup(t, { status = 'completed', mode = 'local-lab-rule', reportGenerator } = {}) {
+async function setup(t, { status = 'completed', reportGenerator } = {}) {
   const temporaryRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   mkdirSync(temporaryRoot, { recursive: true });
   const directory = mkdtempSync(join(temporaryRoot, 'rw-'));
   const storePath = join(directory, 'runs.sqlite');
   const id = 'worker-report-run';
+  const mode = 'local-lab-general';
   const store = createRunRepository({ path: storePath });
-  store.createRun({ id, mode, modelId: 'rule-baseline', manifest: { runId: id, modules: {}, shared: {} },
-    state: { id, mode, modelId: 'rule-baseline', status: 'queued', events: [], simulated: mode === 'core-fixture' }, options: { delayMs: 0 } });
+  store.createRun({ id, mode, modelId: 'deepseek-flash', manifest: { runId: id, modules: {}, shared: {} },
+    state: { id, mode, assessmentMode: 'general', modelId: 'deepseek-flash', status: 'queued', events: [] },
+    options: { mode, testProfile: 'general', fixtureId: 'vul-web-1', delayMs: 0 } });
   store.close();
   const board = { alive: false, closed: 0 };
-  const runtimeFactory = () => {
+  const generalRuntimeFactory = () => {
     let state; const listeners = new Set();
-    const start = () => {
-      board.alive = mode !== 'core-fixture';
-      state = { run: { id, mode, status, events: [], simulated: mode === 'core-fixture',
-        report: { schemaVersion: '1.0', runId: id, status: status === 'stopped' ? 'failed' : status,
-          finding: { status: status === 'completed' ? 'confirmed' : 'not_confirmed' } } } };
-      for (const listener of listeners) listener(structuredClone(state));
-      return state;
-    };
     return { subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-      start, startLab: async () => start(), getState: () => structuredClone(state), stop() {},
+      async startLab() {
+        board.alive = true;
+        state = { run: { id, mode, assessmentMode: 'general', status, events: [],
+          report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general', runId: id,
+            status: status === 'stopped' ? 'failed' : status,
+            findings: [{ id: 'finding:h1', status: 'confirmed', evidenceIds: ['e1'] }] } } };
+        for (const listener of listeners) listener(structuredClone(state));
+      },
+      getState: () => structuredClone(state), stop() {},
       async close() { board.alive = false; board.closed += 1; } };
   };
   const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10, envFile: null, env: {},
-    runtimeFactory, ...(reportGenerator ? { reportGenerator: input => reportGenerator(input, board, worker) } : {}) });
+    generalRuntimeFactory, ...(reportGenerator ? { reportGenerator: input => reportGenerator(input, board, worker) } : {}) });
   t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
   return { worker, board, id };
 }
@@ -51,21 +53,22 @@ test('report generation reads the persisted core JSON while the board and lease 
     assert.equal(target.alive, true);
     assert.equal(signal.aborted, false);
     const saved = currentWorker.store.getRun(run.id);
-    assert.equal(saved.report.finding.status, 'confirmed');
-    assert.equal(saved.reportDocument.status, 'generating');
+    assert.equal(saved.report.findings[0].status, 'confirmed');
+    assert.equal(saved.reportDocuments.status, 'generating');
     assert.equal(saved.status, 'running');
     return { status: 'ready', filename: 'report.hwpx', bytes: Buffer.from('PK\x03\x04synthetic'),
       previewMarkdown: '# 검사 보고서\n\n전체 본문',
       previewHtml: '<!doctype html><html><body><table><tr><td>전체 본문</td></tr></table></body></html>' };
   } });
   const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === 'completed' && !board.alive && value; });
-  assert.equal(run.reportDocument.status, 'ready');
-  assert.ok(run.reportDocument.artifactId);
-  assert.equal(worker.store.getArtifact(run.reportDocument.artifactId).kind, 'hwpx-report');
-  const preview = worker.store.getArtifact(run.reportDocument.previewArtifactId);
+  const [document] = run.reportDocuments.items;
+  assert.equal(run.reportDocuments.status, 'ready');
+  assert.equal(document.status, 'ready');
+  assert.equal(worker.store.getArtifact(document.artifactId).kind, 'hwpx-report');
+  const preview = worker.store.getArtifact(document.previewArtifactId);
   assert.equal(preview.kind, 'report-preview');
   assert.equal(readFileSync(preview.path, 'utf8'), '# 검사 보고서\n\n전체 본문');
-  const htmlPreview = worker.store.getArtifact(run.reportDocument.previewHtmlArtifactId);
+  const htmlPreview = worker.store.getArtifact(document.previewHtmlArtifactId);
   assert.equal(htmlPreview.kind, 'report-preview-html');
   assert.match(readFileSync(htmlPreview.path, 'utf8'), /<table>/);
   assert.equal(board.closed, 1);
@@ -77,21 +80,47 @@ test('failed inspections can produce documents; document failures do not fail su
       if (status === 'completed') throw new Error('PRIVATE RAW FAILURE');
       return { status: 'ready', filename: 'failed-inspection.hwpx', bytes: Buffer.from('PK\x03\x04synthetic') };
     } });
-    const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === status && !board.alive && value.reportDocument && value; });
-    assert.equal(run.reportDocument.status, status === 'completed' ? 'failed' : 'ready');
+    const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === status && !board.alive && value.reportDocuments && value; });
+    assert.equal(run.reportDocuments.status, status === 'completed' ? 'failed' : 'ready');
     assert.equal(run.report.status, status);
-    assert.doesNotMatch(JSON.stringify(run.reportDocument), /PRIVATE/);
+    assert.doesNotMatch(JSON.stringify(run.reportDocuments), /PRIVATE/);
   }
 });
 
-test('fixture and stopped inspections skip generation, missing settings are unavailable', async t => {
-  for (const options of [{ mode: 'core-fixture' }, { status: 'stopped' }, {}]) {
-    const skip = options.mode || options.status;
-    const { worker, board, id } = await setup(t, { ...options,
-      ...(skip ? { reportGenerator: () => assert.fail('skipped runs must not invoke the report agent') } : {}) });
-    const run = await waitFor(() => { const value = worker.store.getRun(id); return !board.alive && value.reportDocument && value; });
-    assert.equal(run.reportDocument.status, skip ? 'skipped' : 'unavailable');
-    assert.equal(run.status, options.status === 'stopped' ? 'cancelled' : 'completed');
+test('stopped inspections skip generation without invoking the report agent', async t => {
+  const { worker, board, id } = await setup(t, { status: 'stopped',
+    reportGenerator: () => assert.fail('skipped runs must not invoke the report agent') });
+  const run = await waitFor(() => { const value = worker.store.getRun(id); return !board.alive && value.reportDocuments?.completedAt && value; });
+  assert.equal(run.reportDocuments.status, 'skipped');
+  assert.equal(run.reportDocuments.errorCode, 'RUN_STOPPED');
+  assert.equal(run.status, 'cancelled');
+});
+
+test('runs queued in a retired single-check mode fail with RETIRED_MODE before any runtime or report work', async t => {
+  const temporaryRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
+  mkdirSync(temporaryRoot, { recursive: true });
+  const directory = mkdtempSync(join(temporaryRoot, 'rw-'));
+  const storePath = join(directory, 'runs.sqlite');
+  const retired = [['core-fixture', 'agent_cross_user_delete_canary'], ['local-lab-deepseek', 'stored_xss_canary'],
+    ['local-lab-rule', 'stored_xss_canary'], ['local-lab-rule', 'agent_cross_user_delete_canary']];
+  const store = createRunRepository({ path: storePath });
+  // A pre-upgrade manifest also froze the removed xss-parser lock; the retired code must still win.
+  for (const [index, [mode, testProfile]] of retired.entries()) store.createRun({ id: `retired-${index}`, mode,
+    modelId: 'rule-baseline', manifest: { runId: `retired-${index}`, modules: {}, shared: { lockDigest: 'stale-xss-parser-lock' } },
+    state: { id: `retired-${index}`, mode, modelId: 'rule-baseline', status: 'queued', events: [] },
+    options: { delayMs: 0, testProfile, fixtureId: 'vul-web-1' } });
+  store.close();
+  const unexpected = () => assert.fail('retired runs must not create a runtime');
+  const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10, envFile: null, env: {},
+    idorRuntimeFactory: unexpected, generalRuntimeFactory: unexpected, externalRuntimeFactory: unexpected,
+    reportGenerator: () => assert.fail('retired runs must not invoke the report agent') });
+  t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+  const runs = await waitFor(() => { const values = retired.map((_, index) => worker.store.getRun(`retired-${index}`));
+    return values.every(value => value.status === 'failed') && values; });
+  for (const run of runs) {
+    assert.match(run.error, /^RETIRED_MODE: /);
+    assert.equal(run.reportDocument, undefined);
+    assert.equal(run.reportDocuments, undefined);
   }
 });
 
@@ -99,10 +128,10 @@ test('cancelling document generation aborts it and cleans up without changing th
   const { worker, board, id } = await setup(t, { reportGenerator: ({ signal }) => new Promise(resolve => {
     signal.addEventListener('abort', () => resolve({ status: 'failed', errorCode: 'REPORT_CANCELLED', message: '취소됨' }), { once: true });
   }) });
-  await waitFor(() => worker.store.getRun(id).reportDocument?.status === 'generating');
+  await waitFor(() => worker.store.getRun(id).reportDocuments?.items[0]?.status === 'generating');
   worker.store.requestCancel(id);
   const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === 'completed' && !board.alive && value; });
-  assert.equal(run.report.finding.status, 'confirmed');
-  assert.equal(run.reportDocument.errorCode, 'REPORT_CANCELLED');
+  assert.equal(run.report.findings[0].status, 'confirmed');
+  assert.equal(run.reportDocuments.items[0].errorCode, 'REPORT_CANCELLED');
   assert.equal(board.closed, 1);
 });

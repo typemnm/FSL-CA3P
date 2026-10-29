@@ -15,14 +15,15 @@ for (const [command, args] of [
   if (result.error || result.status !== 0) throw new Error(`${command} preflight failed: ${result.error?.message || result.stderr}`);
   console.log(result.stdout.split('\n')[0]);
 }
-const parserRequire = createRequire(new URL('../xss-parser/package.json', import.meta.url));
+const parserRequire = createRequire(new URL('../web-parser/package.json', import.meta.url));
 const { chromium } = parserRequire('playwright');
 const captureRequire = createRequire(new URL('../packages/report/capture/package.json', import.meta.url));
 const capturePlaywright = captureRequire('playwright');
 if (parserRequire('playwright/package.json').version !== captureRequire('playwright/package.json').version) {
-  throw new Error('Parser and report capture must use the same pinned Playwright version.');
+  throw new Error('web-parser and report capture must use the same pinned Playwright version.');
 }
-const browser = await chromium.launch({ headless: true, ...(process.env.XSS_PARSER_BROWSER_PATH ? { executablePath: process.env.XSS_PARSER_BROWSER_PATH } : {}) });
+const browserPath = process.env.WEB_PARSER_BROWSER_PATH || process.env.XSS_PARSER_BROWSER_PATH;
+const browser = await chromium.launch({ headless: true, ...(browserPath ? { executablePath: browserPath } : {}) });
 try { console.log(`Chromium ready: ${browser.version()}`); } finally { await browser.close(); }
 const captureBrowser = await capturePlaywright.chromium.launch({ headless: true });
 try { console.log(`Report capture Chromium ready: ${captureBrowser.version()}`); } finally { await captureBrowser.close(); }

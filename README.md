@@ -44,13 +44,13 @@ docker compose -f docker-compose.yml -f docker-compose.vul-web2.yml up --build -
 프로젝트 루트에서 아래 명령을 실행합니다(Bash/macOS/Linux 기준). Node.js 24, Python 3.11+, `curl`이 필요하고, Linux의 Chromium 시스템 의존성 설치 방법은 [CI/CD 안내](docs/CI_CD.md)를 참고하세요.
 
 ```sh
-npm ci --prefix xss-parser
+npm ci --prefix web-parser
 npm ci --prefix packages/report/capture
 python3 -m venv .venv
 .venv/bin/python -m pip install -r casper-db/requirements-ci.lock
 .venv/bin/python -m pip install -r packages/report/requirements-ci.lock
 .venv/bin/python -m pip install --no-deps -e ./casper-db -e ./packages/report/py
-(cd xss-parser && npx playwright install chromium)
+(cd web-parser && npx playwright install chromium)
 CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run verify
 ```
 
@@ -76,9 +76,8 @@ CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm start
 
 첫 시작 때 생성되는 `.runtime/access.txt`의 `admin` 계정으로 로그인합니다(Docker에서는 `docker compose exec dashboard cat /app/.runtime/access.txt`). `viewer` 계정은 결과 조회만 할 수 있습니다. 다음 순서로 확인합니다.
 
-1. **코어 fixture 시작**: 입력 URL이 표시용으로만 저장되고 실제 대상 접속이나 취약점 확정이 없는지 확인합니다.
-2. **로컬 실습 시작**: 모델 목록에서 API 키가 필요 없는 규칙 baseline을 고릅니다. 서버가 생성한 격리 게시판 `vul-web-1`에서 실행이 완료되는지 확인합니다. DeepSeek 경로는 별도로 `agent/.env`에 키를 설정한 경우에만 선택하며 API 비용이 발생할 수 있습니다.
-3. **결과 확인**: **대시보드**의 모듈 노드에서 요청·응답과 Agent I/O를 보고, **실행 이력**에서 같은 run을 다시 엽니다. **리포트**에서 finding의 브라우저 증거와 실행 조건을 확인합니다. 두 번 실행한 뒤 **실행 비교**에서 모델·모듈 digest·finding·처리 지연 차이를 확인하고, **통합 테스트**에서 수집된 `develop` 전체 모듈 검증 결과를 봅니다. 입력·환경이 다른 실행은 동등한 조건의 성능 비교로 해석하지 않습니다.
+1. **실습 실행**: 서버가 생성한 격리 게시판 `vul-web-1`은 **범용 취약점 점검**으로 실행합니다. `agent/.env`에 DeepSeek 키가 필요하며 API 비용이 발생할 수 있습니다. 키 없이 확인하려면 대학 사이트를 시작한 뒤(위 `vul-web2` 안내) 대학 대상에서 **기존 IDOR 검사**와 규칙 기반 모델을 고릅니다. 실행이 완료되는지 확인합니다.
+2. **결과 확인**: **대시보드**의 모듈 노드에서 요청·응답과 Agent I/O를 보고, **실행 이력**에서 같은 run을 다시 엽니다. **리포트**에서 finding의 증거와 실행 조건을 확인합니다. 두 번 실행한 뒤 **실행 비교**에서 모델·모듈 digest·finding·처리 지연 차이를 확인하고, **통합 테스트**에서 수집된 `develop` 전체 모듈 검증 결과를 봅니다. 입력·환경이 다른 실행은 동등한 조건의 성능 비교로 해석하지 않습니다.
 
 ### Workspace AI 채팅
 
@@ -116,11 +115,11 @@ docker compose logs -f dashboard
 
 Windows에서 화면 코드를 수정한 뒤 실행 중인 대시보드에 반영하려면 `.\scripts\redeploy-local-dashboard.ps1`을 실행합니다. 스크립트는 이미지를 빌드하고 대시보드 컨테이너만 재생성한 뒤 이미지·화면 파일·HTTP 응답을 확인합니다. 처음으로 내부 사이트 네트워크를 연결할 때는 `-InternalSites` 옵션을 사용하며, 이후 재배포에서는 연결을 유지합니다. 이미지 삭제나 빌드만으로는 실행 중인 컨테이너가 교체되지 않으며, 저장된 계정·DB·보고서 볼륨은 유지됩니다.
 
-브라우저에서 [CA3P 로컬 대시보드](http://127.0.0.1:4173)를 엽니다. Compose는 호스트의 `127.0.0.1:4173`에만 포트를 공개합니다. 컨테이너 시작만으로 모델 API 호출이나 사이트 검사는 진행되지 않습니다. 화면에서 **코어 fixture 시작** 또는 **로컬 실습 시작**을 눌러 실행합니다.
+브라우저에서 [CA3P 로컬 대시보드](http://127.0.0.1:4173)를 엽니다. Compose는 호스트의 `127.0.0.1:4173`에만 포트를 공개합니다. 컨테이너 시작만으로 모델 API 호출이나 사이트 검사는 진행되지 않습니다. 화면에서 실습 대상과 검사 방식을 고른 뒤 실행합니다.
 
 시작 시 관리자(`admin`)와 조회 전용(`viewer`) 계정을 생성합니다. 로컬 접속 정보는 `.runtime/access.txt`에 저장되고 Docker에서는 `/app/.runtime/access.txt`에 있습니다. 이 파일은 Git과 이미지에 포함되지 않습니다. 로그인 후 모델을 선택하고 실행 이력·모듈·리포트·결과 비교를 확인합니다. 외부 공유 주소는 `DASHBOARD_PUBLIC_ORIGIN`을 해당 HTTPS origin으로 설정합니다.
 
-DeepSeek를 사용하는 로컬 실습에는 `agent/.env.example`을 참고해 `agent/.env`에 `DEEPSEEK_API_KEY`를 설정한 뒤 컨테이너를 시작하세요. 이 파일은 선택 사항이며 코어 fixture에는 필요하지 않습니다. 키는 Git이나 Docker 이미지에 포함하지 마세요. 로컬 실습은 저장소의 격리된 게시판만 대상으로 사용하며 모델 API 호출에는 과금이 발생할 수 있습니다.
+DeepSeek를 사용하는 로컬 실습에는 `agent/.env.example`을 참고해 `agent/.env`에 `DEEPSEEK_API_KEY`를 설정한 뒤 컨테이너를 시작하세요. 대학 IDOR 검사에는 이 파일이 필요하지 않습니다. 키는 Git이나 Docker 이미지에 포함하지 마세요. 로컬 실습은 저장소의 격리된 게시판만 대상으로 사용하며 모델 API 호출에는 과금이 발생할 수 있습니다.
 
 `casper-db`의 통합 SQLite 파일과 기존 실행 보고서는 Docker named volume에 보존됩니다. 컨테이너를 내렸다가 다시 올려도 이 데이터는 남습니다. 기존 호스트의 `casper-db/data/cases.sqlite3`와 `reports/`는 새 컨테이너에 자동으로 복사되지 않습니다. 기존 과거 사례 DB가 필요하면 실습을 실행하지 않는 상태에서 `docker compose cp casper-db/data/cases.sqlite3 dashboard:/app/casper-db/data/cases.sqlite3`로 가져올 수 있습니다. 개별 보고서는 대시보드의 JSON 내보내기로 저장할 수 있습니다.
 
@@ -132,10 +131,10 @@ docker compose down
 
 # 로컬 워크스페이스 실행
 
-통합 로컬 실습에는 Node.js 24, Python 3.11 이상과 `curl`이 필요합니다. 먼저 실제 `xss-parser` 브라우저와 `casper-db` 의존성을 준비합니다.
+통합 로컬 실습에는 Node.js 24, Python 3.11 이상과 `curl`이 필요합니다. 먼저 `web-parser`의 브라우저와 `casper-db` 의존성을 준비합니다.
 
 ```powershell
-cd xss-parser
+cd web-parser
 npm ci
 npx playwright install chromium
 cd ..
@@ -145,7 +144,7 @@ python -m pip install --no-deps -e .\packages\report\py
 npm ci --prefix packages/report/capture
 ```
 
-프로젝트 루트에서 다음 명령으로 대시보드를 시작합니다. 코어 fixture만 확인할 때는 위 설치가 필요하지 않습니다.
+프로젝트 루트에서 다음 명령으로 대시보드를 시작합니다.
 
 ```powershell
 npm start
@@ -170,13 +169,13 @@ node start.mjs --help
 
 ## 현재 시작 범위
 
-루트 시작 스크립트는 대시보드와 로컬 실행 서버를 엽니다. 화면의 **코어 fixture 시작**을 누르면 `agent/src/orchestrator.js`의 `runOnce()`가 규칙 기반 Reasoning Engine과 모의 모듈을 한 번 실행합니다. 입력한 URL은 이 모드에서 표시용이며 접속하지 않습니다.
+루트 시작 스크립트는 대시보드와 로컬 실행 서버를 엽니다. 실습 대상과 검사 방식을 고르고 실행하면 worker가 실행을 처리합니다.
 
-모델 선택에서 규칙 baseline 또는 등록된 DeepSeek 모델을 선택하고 **로컬 실습 시작**을 누르면 `vul-web-1` 게시판을 `127.0.0.1`의 임시 포트와 별도 데이터 파일로 시작합니다. 기본 실습은 `stored_xss_canary`의 단일 반복 저장형 XSS 검사입니다. `xss-parser`가 Chromium으로 입력 위치와 HTML 렌더링을 관찰하고 `casper-db`가 과거 사례와 대조하고 같은 SQLite DB의 버전된 공격 정보를 반환합니다. 과거 일치나 카탈로그만으로 현재 취약점을 확정하지 않습니다.
+`vul-web-1` 게시판을 고르면 서버가 게시판을 `127.0.0.1`의 임시 포트와 별도 데이터 파일로 시작하고 **범용 취약점 점검**을 실행합니다. DeepSeek 모델이 여러 가설을 제안하고, 런타임은 등록된 대상·경로·요청 예산 안에서 읽기 관측과 독립 확정 도구를 실행합니다. 범용 경로에는 브라우저 실행을 확인하는 도구가 없어서 브라우저 증거가 필요한 XSS는 확정하지 않습니다. 대학 대상(`vul-web2`)에서는 범용 점검이나 규칙 기반 **기존 IDOR 검사**를 고를 수 있습니다.
 
-Agent는 관찰한 입력 위치와 카탈로그 조언을 확인한 뒤 실행별 고유 마커를 가진 무해한 canary 게시글을 계획합니다. DeepSeek가 제안한 구조화된 curl JSON은 코어가 계산한 허용 `POST /api/posts` 요청과 정확히 일치해야 합니다. `guardrail`이 로컬 게시판·canary·요청 예산을 전송 직전에 평가하고, 허용된 한 번의 검사 POST를 `attack-module`이 실행합니다. 이어서 독립된 Chromium 관찰이 같은 게시글의 마커 콜백 실행 여부를 확인합니다. 코어의 결정론적 `reflect()`가 게시글 생성·표시·마커·브라우저 실행 증거를 묶어 finding을 판정하고 실행 기록 저장기에 이벤트와 보고서를 보존합니다. 각 요청·응답, guardrail 판정과 Agent 입출력은 실시간으로 표시합니다.
+기존 단일 검사는 폐기됐습니다. 여기에는 코어 fixture, 게시판 저장형 XSS `stored_xss_canary`, 교차 사용자 삭제 `agent_cross_user_delete_canary`가 포함됩니다. 이전에 저장된 실행은 실행 이력·리포트·비교에서 계속 읽습니다.
 
-규칙 baseline은 API key 없이 실제 브라우저 실습을 수행합니다. DeepSeek 모델을 선택할 때는 `agent/.env` 또는 환경변수의 `DEEPSEEK_API_KEY`가 필요하고 API 호출에 과금이 발생할 수 있습니다. `npm start` 자체로는 실습이나 모델 호출을 시작하지 않습니다. 대상은 서버가 만든 로컬 게시판으로 고정하며 입력한 임의 URL에는 접속하지 않습니다. 과거 사례가 비어 있으면 일치 결과도 없습니다. 기존 삭제 권한 검사는 레거시 프로필로 유지합니다.
+DeepSeek 모델을 선택할 때는 `agent/.env` 또는 환경변수의 `DEEPSEEK_API_KEY`가 필요하고 API 호출에 과금이 발생할 수 있습니다. `npm start` 자체로는 실습이나 모델 호출을 시작하지 않습니다. 게시판 대상은 서버가 만든 로컬 게시판으로 고정하며 입력한 임의 URL에는 접속하지 않습니다.
 
 | 모듈 | 현재 형태 | 루트 스크립트 동작 |
 | --- | --- | --- |
@@ -184,27 +183,27 @@ Agent는 관찰한 입력 위치와 카탈로그 조언을 확인한 뒤 실행�
 | `apps/api` | 인증·HTTP·SSE 및 플랫폼 상태 | 시작 |
 | `apps/application`, `apps/worker` | 실행 서비스·독립 실행 프로세스 | 실행 요청 때 worker 시작 |
 | `packages/contracts`, `run-store`, `evaluation`, `models` | 계약·SQLite 기록·비교·모델 선택 | API와 worker에서 사용 |
-| `packages/adapters`, `history` | parser·attack·guardrail·지식 DB 연결 및 검증 이력 동기화 | worker에서 사용 |
-| `agent` | 단일 반복 코어·Reasoning Engine | fixture 또는 로컬 실습 모드에서 실행 |
-| `xss-parser` | Chromium 기반 읽기 전용 관찰과 브라우저 실행 확인 | 검사 전 입력·sink 관찰, POST 후 별도 브라우저에서 canary 실행 확인 |
+| `packages/adapters`, `history` | web-parser·attack·guardrail·지식 DB 연결 및 검증 이력 동기화 | worker에서 사용 |
+| `agent` | 범용 판단 코어·DeepSeek 플래너 | 범용 점검에서 실행 |
+| `web-parser` | Chromium 기반 대상 페이지 읽기 전용 수집 | 범용 점검의 관측 단계에서 실행 |
 | `casper-db` | 사례·공개 권고·공격 정보·미래 템플릿의 통합 DB | 위치·제품 기반 조회와 버전·근거 제공 |
-| `attack-module` | JSON curl 요청의 검증·전송·성공/실패 JSON 응답 | 기본 실습에서 세션 GET과 제한된 검사 POST 실행 |
-| `guardrail` | canary 범위·요청 예산 정책 평가 | `attack-module` 전송 직전에 실행; 별도 상주 프로세스 없음 |
+| `attack-module` | JSON curl 요청의 검증·전송·성공/실패 JSON 응답 | 대학 IDOR 검사의 제한된 GET 실행 |
+| `guardrail` | 요청 범위·예산 정책 평가 | 대학 IDOR 검사의 `attack-module` 전송 직전에 실행; 별도 상주 프로세스 없음 |
 | `vul-web-1` | 독립 실습용 서버 | 로컬 실습 버튼을 누르면 격리된 임시 인스턴스 시작 |
 
-코어는 `maxIterations: 1`을 지원합니다. 중지는 진행 중인 게시판·모델 요청을 취소하며 일시정지는 지원하지 않습니다. 전체 검증은 `npm run verify`입니다. CI에서는 Chromium을 반드시 준비하고 필수 테스트 skip을 실패로 처리합니다. DeepSeek는 가짜 클라이언트로 대체해 모델 비용 없이 실행 계약과 브라우저 증거를 검증합니다.
+중지는 진행 중인 게시판·모델 요청을 취소하며 일시정지는 지원하지 않습니다. 전체 검증은 `npm run verify`입니다. CI에서는 Chromium을 반드시 준비하고 필수 테스트 skip을 실패로 처리합니다. DeepSeek는 가짜 클라이언트로 대체해 모델 비용 없이 실행 계약을 검증합니다.
 
 실행과 이벤트는 중앙 SQLite registry에 저장하고 서버 조회로 이력을 다시 엽니다. `CA3P_STORE_PATH`로 DB 위치를 설정하며 Docker는 `.runtime` named volume을 사용합니다. 기존 실습 이벤트·보고서는 `reports/pentest-db-runs/`에도 유지합니다. 결과 비교에서 기준·후보 run을 골라 모델, 모듈 digest와 finding 및 처리 지연 차이를 확인합니다. 입력·환경이 다른 실행은 동등한 조건의 실험과 구분합니다.
 
-`xss-fuzzer`는 현재 parser/attack 실행 경로로 대체됐습니다. 원래 브랜치는 참고용으로 유지하며 상태는 integration-manifest에 기록합니다.
+`xss-fuzzer`는 현재 parser/attack 실행 경로로 대체됐고, `xss-parser`는 `web-parser`로 대체되어 저장소에서 삭제됐습니다. 원래 브랜치는 참고용으로 유지하며 상태는 integration-manifest에 기록합니다.
 
 ## 실행 후 HWPX 보고서
 
 실제 로컬 실습의 검사 결과를 저장한 뒤 worker가 보고서 모듈을 자동 실행합니다. 범용 점검에서는 최종 `findings[]` 중 현재 검사 증거로 `confirmed` 판정을 받은 항목마다 HWPX 초안 한 개를 작성합니다. 다른 판정은 실행 JSON과 대시보드에 남으며, 확정 항목이 없으면 HWPX를 만들지 않습니다. 이번 문서 생성은 가설별 finding을 기준으로 하므로 같은 취약점을 설명하는 확정 가설이 둘이면 문서도 둘입니다. 보고서 작성이 끝날 때까지 해당 실습 게시판을 유지하며, 문서 생성 실패가 기존 finding을 바꾸지 않습니다.
 
-대시보드의 **리포트** 화면에 범용 점검의 finding별 문서 생성 상태와 다운로드 버튼이 표시됩니다. 기존 단일 검사에는 실행당 한 개의 다운로드 버튼이 표시됩니다. 로그인한 조회 계정도 내려받을 수 있고, 서버를 재시작하거나 **실행 이력**에서 해당 run을 열어도 파일이 유지됩니다. 기존 JSON 내보내기도 사용할 수 있습니다. 생성 전의 과거 이력에는 HWPX 파일이 없습니다.
+대시보드의 **리포트** 화면에 범용 점검의 finding별 문서 생성 상태와 다운로드 버튼이 표시됩니다. 저장된 과거 단일 검사에는 실행당 한 개의 다운로드 버튼이 표시됩니다. 로그인한 조회 계정도 내려받을 수 있고, 서버를 재시작하거나 **실행 이력**에서 해당 run을 열어도 파일이 유지됩니다. 기존 JSON 내보내기도 사용할 수 있습니다. 생성 전의 과거 이력에는 HWPX 파일이 없습니다.
 
-기존 단일 실습의 보고서 모델은 `agent/.env` 또는 프로세스의 `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL` 설정을 사용합니다. 원점과 모델의 기본값은 기존 Agent 설정을 따릅니다. **규칙 baseline 실습도 완료 후 보고서 작성에는 설정된 DeepSeek 모델을 호출하므로 API 비용이 발생할 수 있습니다.** 범용 점검의 HWPX는 저장된 확정 finding과 증거로 작성하므로 보고서 모델을 추가로 호출하지 않습니다. 범용 점검 자체의 Agent 모델 호출에는 비용이 발생할 수 있습니다. 코어 fixture와 취소된 실행은 보고서 생성을 건너뜁니다. 기존 단일 실습에서 보고서 모델 설정이 없으면 검사 결과는 보존하고 보고서는 설정 필요로 표시합니다.
+범용 점검의 HWPX는 저장된 확정 finding과 증거로 작성하므로 보고서 모델을 추가로 호출하지 않습니다. 범용 점검 자체의 Agent 모델 호출에는 비용이 발생할 수 있습니다. 취소된 실행은 보고서 생성을 건너뜁니다.
 
 Python은 `CA3P_REPORT_PYTHON`, `CASPER_DB_PYTHON`, 플랫폼 기본 Python 순서로 선택합니다. Windows의 프로젝트 가상환경을 사용한다면 실행 전에 아래처럼 지정하세요.
 

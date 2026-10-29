@@ -3,7 +3,6 @@
 const { createHash } = require('node:crypto');
 const { DeepSeekClient, MAX_PROMPT_BYTES } = require('./deepseek-client');
 const { resolveDeepSeekOptions } = require('./deepseek-config');
-const { sanitizeMetadata } = require('./deepseek-reasoning-engine');
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 const SENSITIVE_KEY = /^(?:(?:x[-_])?(?:api[-_]?key|auth[-_]?(?:key|token)|access[-_]?token|refresh[-_]?token|csrf[-_]?token|client[-_]?secret)|authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|password|passwd|secret|token|session(?:[-_]?id)?|credentials?|private[-_]?key)$/iu;
@@ -27,6 +26,35 @@ Keep rationales concise and evidence based. Do not output chain-of-thought or an
 
 function plannerError(code, message) {
   return Object.assign(new Error(message), { code });
+}
+
+const SUPPORTED_MODELS = new Set(require('./model-definitions').DEEPSEEK_MODELS);
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sanitizeMetadata(metadata) {
+  const safe = {
+    provider: 'deepseek',
+    model: null,
+    finishReason: null,
+    usage: null,
+  };
+  if (!isPlainObject(metadata)) return safe;
+  if (SUPPORTED_MODELS.has(metadata.model)) safe.model = metadata.model;
+  if (typeof metadata.reportedModel === 'string' && /^[a-zA-Z0-9._:/-]{1,128}$/.test(metadata.reportedModel)) safe.reportedModel = metadata.reportedModel;
+  if (metadata.finishReason === 'stop') safe.finishReason = metadata.finishReason;
+  if (isPlainObject(metadata.usage)) {
+    const usage = {};
+    for (const key of ['prompt_tokens', 'completion_tokens', 'total_tokens']) {
+      if (Number.isInteger(metadata.usage[key]) && metadata.usage[key] >= 0) {
+        usage[key] = metadata.usage[key];
+      }
+    }
+    if (Object.keys(usage).length > 0) safe.usage = usage;
+  }
+  return safe;
 }
 
 function isRecord(value) {

@@ -92,7 +92,6 @@ test('general worker uses its own runtime and model, persists the report, and wr
   };
   const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10,
     env: { DEEPSEEK_API_KEY: 'test-only' },
-    runtimeFactory: () => { legacyInvoked = true; throw new Error('legacy runtime called'); },
     idorRuntimeFactory: () => { legacyInvoked = true; throw new Error('IDOR runtime called'); },
     generalRuntimeFactory,
     reportGenerator: ({ findingId }) => {
