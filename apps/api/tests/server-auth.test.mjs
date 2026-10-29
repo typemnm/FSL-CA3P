@@ -17,9 +17,12 @@ async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBy
   const bytes = Buffer.from(artifactBytes ?? '{"runId":"run-a","evidence":"fixture"}');
   const artifactPath = join(directory, 'evidence.json'); await writeFile(artifactPath, bytes);
   const artifact = { id: sha256('artifact-id'), path: artifactPath, sha256: sha256(bytes), size: bytes.length };
-  const listeners = new Set(); const calls = { start: 0, startBodies: [], stop: 0, lab: [], experimentReset: [], historyClear: [] };
+  const listeners = new Set(); const calls = { start: 0, startBodies: [], stop: 0, lab: [], experimentReset: [], historyClear: [], loopBudget: [] };
+  let loopBudget = { maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 };
   const runtime = { getState: () => runtimeState, getRun: id => id === 'run-a' ? runtimeState.run : null,
     listRuns: () => [state.run], listModels: () => [], start: async body => { calls.start += 1; calls.startBodies.push(body); return state; },
+    getGeneralLoopBudget: () => loopBudget,
+    setGeneralLoopBudget: limits => { loopBudget = limits; calls.loopBudget.push(limits); return limits; },
     startLab: async body => { calls.lab.push(body); return state; }, stop: async () => { calls.stop += 1; return state; }, reset: () => state,
     experimentResetPreview: () => ({ status: 'ready', runCount: 1, canReset: true }),
     resetExperiment: async body => { calls.experimentReset.push(body); return { ...state, experimentReset: { status: 'completed', epoch: 1 } }; },
@@ -108,6 +111,35 @@ test('complete experiment reset requires operator permission, CSRF and exact exp
   assert.deepEqual(calls.experimentReset, [{ confirmed: true }]);
   assert.equal((await api(base, '/api/experiment-reset', { method: 'DELETE', headers: operator.headers })).status, 405);
   assert.equal((await api(base, '/api/experiment-reset', { method: 'POST', headers: { ...operator.headers, Origin: 'http://foreign.invalid' }, body: { confirmed: true } })).status, 403);
+});
+
+test('LLM loop budget requires administrator and CSRF, and rejects incomplete or out-of-cap settings', async t => {
+  const { base, calls } = await fixture(t);
+  const endpoint = '/api/modules/llm/loop-budget';
+  assert.equal((await api(base, endpoint)).status, 401);
+  const viewer = await login(base, 'viewer');
+  const defaults = await api(base, endpoint, { headers: viewer.headers });
+  assert.equal(defaults.status, 200);
+  assert.deepEqual(defaults.body.limits, { maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 });
+  assert.deepEqual(defaults.body.caps, { maxIterations: 32, maxProbes: 128, maxEvidenceItems: 256 });
+  const limits = { maxIterations: 12, maxProbes: 48, maxEvidenceItems: 200 };
+  const payload = { limits };
+  assert.equal((await api(base, endpoint, { method: 'PUT', headers: viewer.headers, body: payload })).status, 403);
+  const operator = await login(base, 'operator');
+  assert.equal((await api(base, endpoint, { method: 'PUT', headers: operator.headers, body: payload })).status, 403);
+  const admin = await login(base, 'admin');
+  assert.equal((await api(base, endpoint, { method: 'PUT', headers: { Cookie: admin.headers.Cookie }, body: payload })).status, 403);
+  for (const invalid of [{}, { limits: { maxIterations: 12 } },
+    { limits: { ...limits, extra: 1 } }, { limits: { ...limits, maxProbes: 129 } },
+    { limits: { ...limits, maxIterations: 1.5 } }, { limits, extra: true }]) {
+    assert.equal((await api(base, endpoint, { method: 'PUT', headers: admin.headers, body: invalid })).status, 400);
+  }
+  assert.equal(calls.loopBudget.length, 0);
+  const saved = await api(base, endpoint, { method: 'PUT', headers: admin.headers, body: payload });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.body.limits, limits);
+  assert.deepEqual(calls.loopBudget, [limits]);
+  assert.deepEqual((await api(base, endpoint, { headers: operator.headers })).body.limits, limits);
 });
 
 test('history clear requires operator permission, CSRF and exact explicit confirmation', async t => {

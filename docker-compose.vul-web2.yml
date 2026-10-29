@@ -6,6 +6,9 @@ services:
       - default
       - university-daehan
       - university-wonchang
+    environment:
+      CA3P_DAEHAN_ORIGIN: http://daehan:4101
+      CA3P_WONCHANG_ORIGIN: http://wonchang:4102
 
 networks:
   university-daehan:

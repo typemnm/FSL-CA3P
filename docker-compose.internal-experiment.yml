@@ -1,0 +1,12 @@
+# Use after vul-web2/compose.yaml and docker-compose.vul-web2.yml.
+# A separate Compose project gives this dashboard its own persistent volumes.
+services:
+  dashboard:
+    image: ca3p-dashboard:internal-experiment
+    ports: !override
+      - "127.0.0.1:4175:4175"
+    environment:
+      PORT: "4175"
+      DASHBOARD_PUBLIC_ORIGIN: ""
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4175/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]

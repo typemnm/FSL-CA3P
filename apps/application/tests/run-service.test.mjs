@@ -51,6 +51,10 @@ test('queued cancellation never reaches a worker; arbitrary lab targets are reje
 test('university fixtures queue their known-record IDOR check without a case database', async t => {
   const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
     env: { DEEPSEEK_API_KEY: '', CASPER_DB_PYTHON: 'unavailable-python-for-idor' } });
+  assert.deepEqual(service.getState().lab.targetOrigins, {
+    'vul-web2-daehan': 'http://127.0.0.1:4101',
+    'vul-web2-wonchang': 'http://127.0.0.1:4102',
+  });
   for (const [fixtureId, target] of [['vul-web2-daehan', 'http://127.0.0.1:4101'], ['vul-web2-wonchang', 'http://127.0.0.1:4102']]) {
     const state = await service.startLab({ fixtureId });
     assert.equal(state.run.status, 'queued');
@@ -67,6 +71,27 @@ test('university fixtures queue their known-record IDOR check without a case dat
     assert.equal(lease.options.caseSnapshot, undefined);
     service.store.finish(lease, 'completed');
   }
+});
+
+test('configured university origins become lab defaults while an explicit internal target still wins', async t => {
+  const { service, storePath } = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: '', CASPER_DB_PYTHON: 'unavailable-python-for-idor',
+      CA3P_DAEHAN_ORIGIN: 'http://daehan:4101', CA3P_WONCHANG_ORIGIN: 'http://wonchang:4102' } });
+  assert.deepEqual(service.getState().lab.targetOrigins, {
+    'vul-web2-daehan': 'http://daehan:4101', 'vul-web2-wonchang': 'http://wonchang:4102',
+  });
+  const defaultRun = await service.startLab({ fixtureId: 'vul-web2-daehan' });
+  assert.equal(defaultRun.run.target, 'http://daehan:4101');
+  const defaultLease = service.store.claimNext('configured-default-test');
+  assert.equal(defaultLease.options.target, 'http://daehan:4101');
+  service.store.finish(defaultLease, 'completed');
+  const explicitRun = await service.startLab({ fixtureId: 'vul-web2-wonchang', target: 'http://192.168.0.84:4102' });
+  assert.equal(explicitRun.run.target, 'http://192.168.0.84:4102');
+  const explicitLease = service.store.claimNext('explicit-origin-test');
+  assert.equal(explicitLease.options.target, 'http://192.168.0.84:4102');
+  service.store.finish(explicitLease, 'completed');
+  assert.throws(() => createRunService({ storePath, autoStartWorker: false,
+    env: { CA3P_DAEHAN_ORIGIN: 'https://public.example' } }), { status: 400 });
 });
 
 test('registered universities queue a model-backed general assessment without selecting an IDOR profile', async t => {
@@ -95,6 +120,23 @@ test('registered universities queue a model-backed general assessment without se
     assert.deepEqual(lease.options.unavailableInputs, ['casper-db']);
     service.store.finish(lease, 'completed');
   }
+});
+
+test('general run freezes configured loop limits in queued options and manifest', async t => {
+  const { service, reopen } = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: 'test-key', CASPER_DB_PYTHON: 'unavailable-python-for-general' } });
+  const limits = { maxIterations: 10, maxProbes: 40, maxEvidenceItems: 180 };
+  assert.deepEqual(service.setGeneralLoopBudget(limits), limits);
+  const state = await service.start({ mode: 'local-lab-general', modelId: 'deepseek-flash',
+    fixtureId: 'vul-web2-daehan' });
+  assert.deepEqual(state.run.manifest.execution.loopBudget, limits);
+  assert.equal(state.run.manifest.execution.maxIterations, 10);
+  assert.equal(state.run.manifest.policy.maxIterations, 10);
+  const lease = service.store.claimNext('budget-options-test');
+  assert.deepEqual(lease.options.loopBudget, limits);
+  service.store.finish(lease, 'completed');
+  await service.close();
+  assert.deepEqual(reopen().getGeneralLoopBudget(), limits);
 });
 
 test('general assessment requires a real configured model and registered target scope', async t => {

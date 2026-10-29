@@ -36,8 +36,11 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   const page = await browser.newPage(); const errors = []; const mutations = []; const reviews = []; const resets = [];
   page.on('pageerror', error => errors.push(error.message));
   let authenticated = false; let state = reportOptions.state ?? idle; let detailCalls = 0; let resetError = reportOptions.resetError; let serverEpoch = 0;
-  const stateEnvelope = () => ({ ...wrap(state), experiment: { epoch: serverEpoch,
-    status: reportOptions.experimentStatus ?? 'ready' } });
+  const stateEnvelope = () => {
+    const envelope = wrap(state);
+    return { ...envelope, lab: { ...envelope.lab, ...reportOptions.lab }, experiment: { epoch: serverEpoch,
+      status: reportOptions.experimentStatus ?? 'ready' } };
+  };
   const runs = [snapshot('candidate'), snapshot('baseline'), {
     id: 'legacy-record', mode: 'legacy-import', status: 'completed', startedAt: '2026-10-13T10:00:00Z',
     target: null, events: [{ module: 'parser', message: '<img src=x onerror=alert(1)>' }],
@@ -379,7 +382,7 @@ test('vul-web2 site selection forwards its private origin to the rule IDOR lab a
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'REAL LAB / IDOR');
   assert.deepEqual(mutations[0], { body: { mode: 'local-lab-rule', modelId: 'rule-baseline', fixtureId: 'vul-web2-wonchang', target: 'http://192.168.0.84:4102' }, csrf: 'csrf-live' });
-  assert.match(await page.locator('#run-context').textContent(), /원창대학교 IDOR/);
+  assert.match(await page.locator('#dashboard-mode').textContent(), /원창대학교 IDOR/);
   await page.locator('[data-view=sessions]').click();
   assert.match(await page.locator('#session-list').textContent(), /원창대학교 IDOR 실습/);
   await page.locator('[data-session=new-rule]').click();
@@ -401,6 +404,20 @@ test('vul-web2 site selection forwards its private origin to the rule IDOR lab a
   assert.match(await page.locator('#lab-check-scope').textContent(), /저장형 XSS canary 1회/);
   assert.match(await page.locator('#lab-run-label').textContent(), /저장형 XSS 검사 시작/);
   assert.equal(await page.locator('#lab-target-control').isHidden(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('Docker university origins prefill both sites while a validated manual origin remains usable', async t => {
+  const { page, mutations, errors } = await setup(t, 'operator', null, { lab: { available: true,
+    targetOrigins: { 'vul-web2-daehan': 'http://daehan:4101',
+      'vul-web2-wonchang': 'http://wonchang:4102' } } });
+  await page.locator('#fixture-select').selectOption('vul-web2-daehan');
+  assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://daehan:4101');
+  await page.locator('#fixture-select').selectOption('vul-web2-wonchang');
+  assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://wonchang:4102');
+  await page.locator('#lab-target-origin').fill('192.168.0.84:4102');
+  await page.locator('#lab-run-button').click();
+  assert.equal(mutations[0].body.target, 'http://192.168.0.84:4102');
   assert.deepEqual(errors, []);
 });
 

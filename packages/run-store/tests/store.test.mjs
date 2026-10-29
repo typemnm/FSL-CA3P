@@ -119,6 +119,20 @@ test('failed reset remains fenced across reopen and permits an explicit retry', 
   assert.equal(store.experimentState().epoch, 1); enqueue(store);
 });
 
+test('general loop budget is validated and survives repository reopen and experiment reset', t => {
+  const { store, reopen } = setup(t);
+  assert.deepEqual(store.getGeneralLoopBudget(), { maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 });
+  const limits = { maxIterations: 12, maxProbes: 48, maxEvidenceItems: 200 };
+  assert.deepEqual(store.setGeneralLoopBudget(limits), limits);
+  assert.throws(() => store.setGeneralLoopBudget({ ...limits, maxIterations: 33 }), { status: 400 });
+  assert.throws(() => store.setGeneralLoopBudget({ maxIterations: 10 }), { status: 400 });
+  const second = reopen();
+  assert.deepEqual(second.getGeneralLoopBudget(), limits);
+  store.beginExperimentReset('reset-budget');
+  store.completeExperimentReset('reset-budget');
+  assert.deepEqual(second.getGeneralLoopBudget(), limits);
+});
+
 test('history clear retains target reset obligations after deleting runs and across restart', t => {
   const { store, reopen } = setup(t);
   enqueue(store); const lease = store.claimNext('worker-a');
