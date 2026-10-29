@@ -54,6 +54,18 @@ test('protocol rejects old receiver names and forged attack evidence', async () 
   assert.match(response.payload.error.message, /curl result contract/);
 });
 
+test('the retired xss-parser receiver and parser.result type are rejected', () => {
+  assert.throws(() => createEnvelope({
+    runId: 'run-retired-parser', iteration: 0, sender: 'agent', receiver: 'xss-parser', type: 'module.request',
+    payload: { operation: 'parse_site', origin: TARGET_ORIGIN, phase: 'before' },
+  }), /known module names/);
+  assert.throws(() => parseEnvelope(JSON.stringify({
+    schemaVersion: '1.0', runId: 'run-retired-parser', iteration: 0, messageId: 'm-1', correlationId: 'm-1',
+    timestamp: new Date().toISOString(), sender: 'casper-db', receiver: 'agent', type: 'parser.result',
+    payload: {}, evidence: [], policyContext: {},
+  })), /Unsupported envelope type parser\.result/);
+});
+
 test('gateway timeouts and oversized outbound JSON are correlated failures', async () => {
   const request = createEnvelope({
     runId: 'run-transport', iteration: 1,
