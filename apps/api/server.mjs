@@ -13,6 +13,7 @@ import { reviewRunCheck } from '../../packages/history/check-sync.mjs';
 import { redact } from '../../packages/contracts/index.mjs';
 import { deploymentPaused, deploymentStatus } from './deployment.mjs';
 import { createWorkspaceChatRoutes } from './workspace-chat-routes.mjs';
+import { createAttackTemplateRoutes } from './attack-template-routes.mjs';
 
 const root = fileURLToPath(new URL('../../agent-dashboard/dist/', import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
@@ -24,9 +25,9 @@ const headers = {
 };
 
 function error(status, message) { return Object.assign(new Error(message), { status }); }
-function json(res, status, data, extra = {}) {
+function json(res, status, data, extra = {}, { preserveSource = false } = {}) {
   res.writeHead(status, { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra });
-  res.end(JSON.stringify(redact(data)));
+  res.end(JSON.stringify(preserveSource ? data : redact(data)));
 }
 
 function reportFilename(value) {
@@ -78,7 +79,8 @@ function readJson(req, maxBody = MAX_BODY) {
 
 export function createDashboardServer({ runtime = createLocalRuntime(), auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform, ciResults = null,
   maintenanceCheck = deploymentPaused, deploymentStatusProvider = deploymentStatus, moduleManagement = null,
-  dbManagement = null, targetPreflight = preflightExternalTarget, workspaceChat = null } = {}) {
+  dbManagement = null, targetPreflight = preflightExternalTarget, workspaceChat = null,
+  templateCatalog = undefined } = {}) {
   const configured = publicOrigins.map(value => new URL(value));
   if (configured.some(url => url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/')) throw new Error('Public origins must be plain HTTPS origins.');
   if (configured.length && !auth.enabled) throw new Error('External dashboard access requires authentication.');
@@ -86,6 +88,7 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
   const modules = moduleManagement ?? createModuleManagement({ runtime, platformProvider, dbManagement: db });
   const chatRoutes = createWorkspaceChatRoutes({ service: workspaceChat,
     runProvider: id => runtime.getRun?.(id), platformProvider });
+  const templateRoutes = createAttackTemplateRoutes({ catalog: templateCatalog });
   let dbInit;
   const ensureDb = () => dbInit ??= Promise.resolve().then(() => db.bootstrap?.()).catch(failure => {
     dbInit = null;
@@ -121,6 +124,7 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
         }
         if (pathname === '/api/deployment' && req.method === 'GET') return json(res, 200, await deploymentStatusProvider());
         if (await chatRoutes.handle({ req, res, pathname, origin: expectedOrigin, currentUser, json, readJson })) return;
+        if (await templateRoutes.handle({ req, res, pathname, origin: expectedOrigin, auth, json, readJson })) return;
         if (pathname === '/api/targets/preflight') {
           if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
           const body = await readJson(req);
