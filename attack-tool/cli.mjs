@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import guardrailPackage from '../guardrail/src/index.js';
 import { createAttackTool } from './server.mjs';
+import { createTemplateCatalog } from './template-catalog.mjs';
 
 try {
   const { values } = parseArgs({ options: { config: { type: 'string' } } });
@@ -13,10 +14,11 @@ try {
     throw new Error('Every agent requires a private token of at least 32 characters.');
   }
   const daemon = await createAttackTool({ host: config.host ?? '127.0.0.1', ports: config.ports ?? [4241, 4242],
+    ...(config.templateCatalogPath ? { catalog: createTemplateCatalog({ filePath: config.templateCatalogPath }) } : {}),
     principals: config.agents.map(agent => ({ agentId: agent.agentId, runId: agent.runId,
       token: agent.token, portIndex: agent.portIndex,
       guardrail: guardrailPackage.createAttackToolGuardrail({ targetOrigin: agent.targetOrigin,
-        maxRequests: agent.maxRequests ?? 16, allowedPaths: ['/api/search'] }) })) });
+        maxRequests: agent.maxRequests ?? 16, allowedPaths: agent.allowedPaths ?? ['/api/search'] }) })) });
   console.log(JSON.stringify({ service: 'attack-tool', endpoints: daemon.endpoints }));
   const stop = async () => { await daemon.close(); };
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
