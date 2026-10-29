@@ -80,7 +80,7 @@ console.log(MODULE_ID, result.moduleId); // web-parser web-parser
 | `evidence` | url-name-hint 또는 source-comment. 패키지 설치·정품·실행의 증명이 아님 |
 | `moduleReferences` | JS bare import 문자열. import map을 해석하지 못하므로 version=null, resolution=unresolved |
 | `relations` | 아래의 관찰 그래프. npm/Maven의 확정된 전이 의존 트리가 아님 |
-| `technologies` | 허용된 document 응답의 일부 헤더에서 찾은 자기신고. 원문 헤더·쿠키는 저장하지 않음 |
+| `technologies` | 허용된 document 응답 헤더의 자기신고 또는 외부 스타일시트 URL의 서비스 단서. 원문 헤더·쿠키는 저장하지 않음 |
 | `sources` | 명시적으로 제공한 로컬 의존성 파일만 저장. 기본은 빈 배열 |
 | `coverage.reasons` | 외부 자료 차단·해석 크기 제한·지원하지 않는 import·페이지 수집 제한 등 |
 | `vulnerabilityMatching` | not-performed. CVE DB 조회·취약점 판정 없음 |

@@ -75,6 +75,15 @@ export function createWebInventory(origin, displayUrl) {
     entry._evidence.set(JSON.stringify([kind, version]), { kind, version: version || null });
     relation(item.id, entry.id, 'library-indicator', 'heuristic');
   };
+  const stylesheetTechnology = (pageId, item) => {
+    if (!item || item.kind !== 'stylesheet') return;
+    const url = new URL(item._raw);
+    if (url.origin === origin || url.hostname !== 'fonts.googleapis.com' || !/^\/css2?$/.test(url.pathname)) return;
+    const key = 'Google Font API';
+    if (!technologies.has(key)) technologies.set(key, { name: key, version: null,
+      evidence: 'stylesheet-url-hint', host: url.hostname, pageIds: new Set() });
+    technologies.get(key).pageIds.add(pageId);
+  };
   const filenameIndicators = item => {
     if (item._inline) return;
     let pathname;
@@ -178,7 +187,10 @@ export function createWebInventory(origin, displayUrl) {
     mark: addReason,
     references(pageId, data) {
       if (data.truncated) addReason('dom-reference-limit');
-      for (const ref of data.items.slice(0, LIMITS.domReferences)) reference(pageId, ref.url, ref.kind, ref.relation, 'dom');
+      for (const ref of data.items.slice(0, LIMITS.domReferences)) {
+        const item = reference(pageId, ref.url, ref.kind, ref.relation, 'dom');
+        stylesheetTechnology(pageId, item);
+      }
     },
     response(pageId, raw, kind, status, body) {
       if (!['script', 'stylesheet'].includes(kind)) return;

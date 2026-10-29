@@ -112,6 +112,19 @@ test('Spring Boot response header is reported as an observed technology', () => 
   }]);
 });
 
+test('Google Fonts stylesheet reference is an external service hint, not a library', () => {
+  const data = inventory();
+  data.references('page-1', { items: [
+    { url: 'https://fonts.googleapis.com/css2?family=Inter', kind: 'stylesheet', relation: 'stylesheet-link' },
+    { url: 'https://fonts.googleapis.com.evil.test/css2', kind: 'stylesheet', relation: 'stylesheet-link' }
+  ] });
+  const result = data.snapshot();
+  assert.deepEqual(result.libraries, []);
+  assert.deepEqual(result.technologies, [{ name: 'Google Font API', version: null,
+    evidence: 'stylesheet-url-hint', host: 'fonts.googleapis.com', pageIds: ['page-1'] }]);
+  assert.equal(result.assets[0].state, 'blocked-origin');
+});
+
 test('malformed imports and unsupported syntax do not crash a scan', () => {
   const data = inventory();
   assert.doesNotThrow(() => data.response('page-1',origin + '/one.js','script',200,"import 'https://[';"));
