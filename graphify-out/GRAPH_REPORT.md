@@ -1,7 +1,7 @@
 # Graph Report - FSL-CA3P  (2026-10-29)
 
 ## Corpus Check
-- 403 files · ~314,394 words
+- 403 files · ~314,413 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 36 file(s) not represented in the graph (top: (none) 13, .njk 13, .css 4)
 
@@ -11,7 +11,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `c5e8a36b`
+- Built from commit: `802a1058`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -928,7 +928,7 @@ Nodes (6): createScriptedGateway(), attackResponse(), evidenceId(), exchange(), 
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `createRunRepository()` connect `createRunRepository` to `CaseStore`, `ref_node_assert`, `api/server.mjs`, `contracts/index.mjs`, `createRunService`, `module-management.mjs`?**
-  _High betweenness centrality (0.227) - this node is a cross-community bridge._
+  _High betweenness centrality (0.226) - this node is a cross-community bridge._
 - **Are the 21 inferred relationships involving `CaseStore` (e.g. with `_archive_case()` and `_case_detail()`) actually correct?**
   _`CaseStore` has 21 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `casper-case-db`, `ca3p-report`, `edu.wonchang:wonchang-university` to the rest of the system?**
@@ -936,8 +936,8 @@ _Questions this graph is uniquely positioned to answer:_
 - **Should `CaseStore` be split into smaller, more focused modules?**
   _Cohesion score 0.08291708291708291 - nodes in this community are weakly interconnected._
 - **Why does `2.2 수집기 (환경 의존 부분을 전부 여기에 모은다)` connect `CaseStore` to `createRunRepository`, `2. 입력과 출력`?**
-  _High betweenness centrality (0.226) - this node is a cross-community bridge._
+  _High betweenness centrality (0.225) - this node is a cross-community bridge._
 - **Should `ref_node_assert` be split into smaller, more focused modules?**
   _Cohesion score 0.05454545454545454 - nodes in this community are weakly interconnected._
 - **Why does `CaseStore` connect `CaseStore` to `ReportIntake`, `casper_db/cli.py`, `DeviceDatabaseTests`, `pathlib`, `3. 모듈 구조, 언어, 확장 방식`, `pathlib`, `digest`, `json`, `pytest`?**
-  _High betweenness centrality (0.176) - this node is a cross-community bridge._
+  _High betweenness centrality (0.174) - this node is a cross-community bridge._
