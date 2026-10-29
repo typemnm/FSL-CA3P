@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { collectWebInfo, fingerprintObservedResponse, summarizeTargetInfo, evidenceFromTargetInfo, MAX_SUMMARY_BYTES,
   EVIDENCE_SUMMARY_BYTES } from '../integrations/web-parser.mjs';
+import { htmlFingerprintInputs } from '../../../web-parser/html-fingerprint-inputs.mjs';
 
 function targetInfo(overrides = {}) {
   return {
@@ -57,6 +58,19 @@ test('model summary carries library versions and distinguishes indicator-only ev
   assert.doesNotMatch(JSON.stringify(summary.libraries), /PRIVATE/u);
   const overview = evidenceFromTargetInfo(info, evidenceOptions)[0].summary;
   assert.deepEqual(listIn(overview, 'libraries').items, [{ name: 'Axios', version: '1.6.8', source: 'indicator' }]);
+});
+
+test('web_info evidence keeps library indicators when technologies fill the byte budget', () => {
+  const info = targetInfo({
+    technologies: Array.from({ length: 20 }, (_, index) => ({
+      name: `Technology ${index} ${'x'.repeat(90)}`, categories: ['JavaScript libraries'], version: null,
+    })),
+    libraries: [{ name: 'Axios', version: '1.6.8', source: 'indicator' }],
+  });
+  const overview = evidenceFromTargetInfo(info, evidenceOptions)[0].summary;
+  assert.deepEqual(listIn(overview, 'libraries').items, [
+    { name: 'Axios', version: '1.6.8', source: 'indicator' },
+  ]);
 });
 
 test('a truncated section keeps { shown, total } so nothing is dropped silently', () => {
@@ -272,4 +286,28 @@ test('resource-like text inside scripts, styles and templates is not a library r
       + '<template><script src="/react-dom-18.2.0.min.js"></script></template>',
   });
   assert.equal(result.libraries.some(item => ['Axios', 'Moment.js', 'ReactDOM'].includes(item.name)), false);
+});
+
+test('external HTML treats textarea and nested templates as inert content', async () => {
+  const result = await fingerprintObservedResponse('https://example.org/page', {
+    headers: [], contentType: 'text/html',
+    body: '<textarea><link rel=modulepreload href=/axios-1.6.8.min.js></textarea>'
+      + '<template><template><script src=/moment-2.30.1.min.js></script></template></template>',
+  });
+  assert.equal(result.libraries.some(item => ['Axios', 'Moment.js'].includes(item.name)), false);
+});
+
+test('external HTML handles deeply nested markup within the response size limit', () => {
+  const body = '<div>'.repeat(10000) + '<script src="/jquery.js"></script>';
+  assert.deepEqual(htmlFingerprintInputs(body, 'https://example.org/page').scriptSrc,
+    ['https://example.org/jquery.js']);
+});
+
+test('external HTML resolves resource URLs against the first base href', async () => {
+  const result = await fingerprintObservedResponse('https://example.org/page', {
+    headers: [], contentType: 'text/html',
+    body: '<base href="/vendor/axios/"><script src="bundle.js"></script>',
+  });
+  assert.ok(result.libraries.some(item => item.name === 'Axios' && item.source === 'indicator'));
+  assert.ok(result.dependencies.assets.some(item => item.url === 'https://example.org/vendor/axios/bundle.js'));
 });

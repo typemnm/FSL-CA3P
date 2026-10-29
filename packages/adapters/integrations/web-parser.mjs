@@ -12,6 +12,7 @@
 
 import { collect as collectDefault } from '../../../web-parser/collect.mjs';
 import { fingerprintWithin } from '../../../web-parser/fingerprint.mjs';
+import { htmlFingerprintInputs } from '../../../web-parser/html-fingerprint-inputs.mjs';
 
 // Keep an abort that lands during Wappalyzer analysis bounded: the Worker match
 // finishes within timeoutMs before the call rejects (CONTRACT §2), so cap at 15s.
@@ -170,14 +171,14 @@ export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRol
     // A control character would JSON-escape to 6 bytes; drop them so the capped lead stays small.
     + (title ? `; title ${encode(title.slice(0, 100).replace(/[\u0000-\u001f\u007f]/gu, ' '))}` : '')
     + `; counts ${JSON.stringify(counts)}`, [
-    { label: 'redirects', items: list(navigation.redirectChain)
-      .map(hop => encode(compact({ kind: hop.kind, status: hop.status }))) },
-    { label: 'technologies', items: list(info.technologies).map(tech => encode(compact({
-      name: tech.name, version: tech.version, categories: tech.categories }))) },
-    { label: 'libraries', items: list(info.libraries).map(library => encode(compact({
-      name: library.name, version: library.version, source: library.source }))) },
     { label: 'error stages', items: [...new Set(list(info.errors).map(error => error.stage))]
       .map(stage => encode(stage)) },
+    { label: 'libraries', items: list(info.libraries).map(library => encode(compact({
+      name: library.name, version: library.version, source: library.source }))) },
+    { label: 'technologies', items: list(info.technologies).map(tech => encode(compact({
+      name: tech.name, version: tech.version, categories: tech.categories }))) },
+    { label: 'redirects', items: list(navigation.redirectChain)
+      .map(hop => encode(compact({ kind: hop.kind, status: hop.status }))) },
   ]);
   const paths = [...list(info.paths)].sort((a, b) => (b.sameOrigin === true) - (a.sameOrigin === true))
     .map(path => encode(compact({ url: relative(path.url), sources: path.sources,
@@ -219,56 +220,11 @@ export async function collectWebInfo(url, { cookies, signal, timeoutMs = DEFAULT
 const HTTP_BODY_BYTES = 64 * 1024;
 const HTTP_HEADER_COUNT = 80;
 const HTTP_HEADER_VALUE_LENGTH = 2048;
-const HTTP_SIGNAL_COUNT = 64;
 const HTTP_COMPONENT_COUNT = 40;
 const HTTP_FINGERPRINT_TIMEOUT_MS = 3000;
 const PRIVATE_HEADER = /^(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)$/iu;
 const EVIDENCE_FIELDS = new Set(['headers', 'meta', 'html', 'scriptSrc', 'stylesheetHref', 'resourceComment',
   'scripts', 'xhr', 'url', 'js', 'dom', 'cookies', 'implies']);
-
-function attributes(tag) {
-  const found = Object.create(null);
-  for (const match of tag.matchAll(/\b([a-z][a-z0-9:_-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>`=]+))/giu)) {
-    found[match[1].toLowerCase()] = match[2] ?? match[3] ?? match[4];
-  }
-  return found;
-}
-
-function htmlFingerprintInputs(body, url) {
-  const meta = [];
-  const scriptSrc = [];
-  const stylesheetHref = [];
-  // A script tag inside an HTML comment is text, not a loaded resource.
-  const activeMarkup = body.replace(/<!--[\s\S]*?(?:-->|$)/gu, '')
-    .replace(/<template\b[^>]*>[\s\S]*?(?:<\/template\s*>|$)/giu, '')
-    .replace(/(<script\b[^>]*>)[\s\S]*?(<\/script\s*>|$)/giu, '$1$2')
-    .replace(/<style\b[^>]*>[\s\S]*?(?:<\/style\s*>|$)/giu, '');
-  for (const match of activeMarkup.matchAll(/<(meta|script|link)\b([^>]{0,2048})>/giu)) {
-    const attrs = attributes(match[2]);
-    if (match[1].toLowerCase() === 'meta' && meta.length < HTTP_SIGNAL_COUNT) {
-      const name = attrs.name ?? attrs.property;
-      if (name && attrs.content !== undefined) meta.push({ name: name.slice(0, 128), content: attrs.content.slice(0, 2048) });
-    }
-    if (match[1].toLowerCase() === 'script' && attrs.src && scriptSrc.length < HTTP_SIGNAL_COUNT) {
-      try {
-        const src = new URL(attrs.src, url);
-        if (['http:', 'https:'].includes(src.protocol) && !src.username && !src.password) scriptSrc.push(src.href);
-      } catch { /* An invalid script URL cannot identify a library. */ }
-    }
-    if (match[1].toLowerCase() === 'link' && attrs.href) {
-      const rel = (attrs.rel ?? '').toLowerCase().split(/\s+/u);
-      const kind = rel.includes('stylesheet') ? 'stylesheet' : rel.includes('modulepreload') ? 'script' : null;
-      if (!kind) continue;
-      try {
-        const href = new URL(attrs.href, url);
-        if (!['http:', 'https:'].includes(href.protocol) || href.username || href.password) continue;
-        if (kind === 'stylesheet' && stylesheetHref.length < HTTP_SIGNAL_COUNT) stylesheetHref.push(href.href);
-        if (kind === 'script' && scriptSrc.length < HTTP_SIGNAL_COUNT) scriptSrc.push(href.href);
-      } catch { /* An invalid resource URL cannot identify a library. */ }
-    }
-  }
-  return { meta, scriptSrc, stylesheetHref };
-}
 
 function observedComponent(item, library = false) {
   if (!item || typeof item.name !== 'string' || !item.name.trim()) return null;
