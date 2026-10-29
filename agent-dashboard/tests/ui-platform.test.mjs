@@ -112,6 +112,8 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   await page.locator('#login-username').fill('test-user'); await page.locator('#login-password').fill('test-password'); await page.locator('#login-submit').click();
   await page.locator('#login-dialog').waitFor({ state: 'hidden' });
   await page.waitForFunction(() => document.querySelector('#connection-status').textContent.includes('연결됨'));
+  await page.locator('[data-view=assets]').click();
+  await page.locator('#view-assets').waitFor({ state: 'visible' });
   return { page, mutations, reviews, resets, errors, detailCalls: () => detailCalls,
     setResetError(value) { resetError = value; },
     advanceExperiment() { state = idle; runs.splice(0); serverEpoch += 1; },
@@ -330,6 +332,7 @@ test('authenticated workspace loads central runs, starts a selected rule lab, an
   await page.waitForFunction(() => document.querySelector('#model-select').value === 'rule-baseline');
   assert.equal(await page.locator('#lab-run-button').isEnabled(), true);
   await page.locator('#lab-run-button').click();
+  await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'REAL LAB / RULE');
   assert.deepEqual(mutations[0], { body: { mode: 'local-lab-rule', modelId: 'rule-baseline' }, csrf: 'csrf-live' });
   await page.locator('#history-review-panel [data-review-note]').fill('Synthetic evidence checked.');
@@ -373,6 +376,7 @@ test('vul-web2 site selection forwards its private origin to the rule IDOR lab a
     await page.screenshot({ path: process.env.CA3P_UI_SCREENSHOT_PATH });
   }
   await page.locator('#lab-run-button').click();
+  await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'REAL LAB / IDOR');
   assert.deepEqual(mutations[0], { body: { mode: 'local-lab-rule', modelId: 'rule-baseline', fixtureId: 'vul-web2-wonchang', target: 'http://192.168.0.84:4102' }, csrf: 'csrf-live' });
   assert.match(await page.locator('#run-context').textContent(), /원창대학교 IDOR/);
@@ -389,7 +393,7 @@ test('vul-web2 site selection forwards its private origin to the rule IDOR lab a
   assert.doesNotMatch(await page.locator('.report-document').textContent(), /과금/);
   assert.equal(await page.locator('#report-download-button').isDisabled(), true);
   assert.equal(await page.locator('#export-button').isEnabled(), true);
-  await page.locator('[data-view=dashboard]').click();
+  await page.locator('[data-view=assets]').click();
   await page.locator('#fixture-select').selectOption('vul-web-1');
   assert.equal(await page.locator('#model-select').isEnabled(), true);
   assert.match(await page.locator('#lab-title').textContent(), /vul-web-1 로컬 게시판/);

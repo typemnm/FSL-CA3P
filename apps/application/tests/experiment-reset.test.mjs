@@ -180,6 +180,69 @@ with sqlite3.connect(sys.argv[1]) as c:
   assert.equal(restarted.getState().experiment.status, 'failed');
 });
 
+test('a failed Daehan reset can use a newly configured management hook before another run', async t => {
+  const { service, open, directory } = setup(t, { experimentCleanupFactory: prepareExperimentCleanup });
+  const fixtureId = 'vul-web2-daehan';
+  const targetOrigin = 'http://127.0.0.1:4101';
+  const runId = 'daehan-before-reset';
+  const state = { id: runId, mode: 'local-lab-general', status: 'queued', simulated: false,
+    targetContacted: true, fixtureId, target: targetOrigin, coreTargetOrigin: targetOrigin, events: [] };
+  service.store.createRun({ id: runId, mode: state.mode, modelId: 'rule-baseline',
+    manifest: { runId, target: { fixtureId, origin: targetOrigin } }, state });
+  const lease = service.store.claimNext('test-worker');
+  service.store.saveState(lease, { ...state, status: 'completed' });
+  service.store.finish(lease, 'completed');
+
+  const targetDir = join(directory, 'mock-daehan');
+  mkdirSync(targetDir);
+  const resources = Object.fromEntries(['database', 'sessions', 'process', 'files']
+    .map(scope => [scope, join(targetDir, `${scope}.state`)]));
+  for (const path of Object.values(resources)) writeFileSync(path, 'experiment-changed');
+  const unrelated = join(targetDir, 'operator-owned.state');
+  writeFileSync(unrelated, 'preserve');
+
+  await assert.rejects(service.resetExperiment({ confirmed: true }), error =>
+    error.status === 409 && /vul-web2-daehan.*관리 훅/.test(error.message));
+  assert.equal(service.getState().experiment.status, 'failed');
+  assert.equal(service.listRuns().total, 1);
+  await assert.rejects(service.start({ mode: 'core-fixture' }), { status: 409 });
+  for (const path of Object.values(resources)) assert.equal(readFileSync(path, 'utf8'), 'experiment-changed');
+
+  await service.close();
+  const token = 'daehan-test-reset-token-'.repeat(2);
+  const managementOrigin = 'http://127.0.0.1:54101';
+  const env = { ...process.env, DEEPSEEK_API_KEY: '', CASPER_DB_PATH: join(directory, 'absent-cases.sqlite3'),
+    CA3P_EXPERIMENT_RESET_TARGETS: JSON.stringify({ [fixtureId]: { origin: managementOrigin, targetOrigin, token } }) };
+  const restarted = open({ env });
+  assert.equal(restarted.getState().experiment.status, 'failed');
+  await assert.rejects(restarted.start({ mode: 'core-fixture' }), { status: 409 });
+
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, options });
+    for (const [scope, path] of Object.entries(resources)) writeFileSync(path, `clean-${scope}`);
+    return new Response(JSON.stringify({ status: 'clean', fixtureId, targetOrigin,
+      scopes: ['database', 'sessions', 'process', 'files'] }),
+    { headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const result = await restarted.resetExperiment({ confirmed: true });
+    assert.equal(result.experimentReset.status, 'completed');
+    assert.equal(result.experiment.status, 'ready');
+    assert.equal(restarted.listRuns().total, 0);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, `${managementOrigin}/_ca3p/experiment-reset`);
+    assert.equal(requests[0].options.headers.Authorization, `Bearer ${token}`);
+    assert.deepEqual(JSON.parse(requests[0].options.body),
+      { confirmation: 'reset-experiment-target', fixtureId, targetOrigin });
+    for (const [scope, path] of Object.entries(resources)) assert.equal(readFileSync(path, 'utf8'), `clean-${scope}`);
+    assert.equal(readFileSync(unrelated, 'utf8'), 'preserve');
+    const next = await restarted.start({ mode: 'core-fixture' });
+    assert.equal(next.run.manifest.experiment.epoch, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test('history clear of isolated runs advances the epoch and permits another run', async t => {
   const { service } = setup(t);
   const first = await service.start({ mode: 'core-fixture' }); service.stop(first.run.id);

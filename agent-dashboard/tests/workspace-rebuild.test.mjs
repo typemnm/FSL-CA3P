@@ -80,7 +80,12 @@ test('workspace navigation, external target preflight and report preview use the
   await page.waitForFunction(() => document.querySelector('#connection-status')?.textContent.includes('연결됨'));
   if (process.env.CA3P_UI_PREVIEW) await page.screenshot({ path: process.env.CA3P_UI_PREVIEW.replace(/\.png$/i, '-attack.png'), fullPage: true });
   assert.deepEqual(await page.locator('.sidebar .primary-nav .nav-item').allTextContents().then(values => values.map(value => value.trim())),
-    ['공격1', '보고서', 'DB', 'Attack Module', 'Web Parser', 'Guardrail', 'LLM', 'DB']);
+    ['자산', '공격1', '보고서', 'DB', 'Attack Module', 'Web Parser', 'Guardrail', 'LLM', 'DB']);
+  assert.equal(await page.locator('.external-target-panel').isHidden(), true);
+  await page.locator('[data-view=assets]').click();
+  assert.equal(new URL(page.url()).hash, '#workspace/assets');
+  await page.reload();
+  await page.locator('#view-assets').waitFor({ state: 'visible' });
   await page.locator('#target-kind-external').click();
   await page.locator('#external-url').fill('https://example.org/start');
   await page.locator('#external-authorization').check();
@@ -88,6 +93,7 @@ test('workspace navigation, external target preflight and report preview use the
   await page.locator('#external-run-button').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#external-run-button').isEnabled(), true);
   await page.locator('#external-run-button').click();
+  await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   assert.deepEqual(requests.filter(item => ['/api/targets/preflight','/api/runs'].includes(item.path)), [
     { path: '/api/targets/preflight', body: { target: 'https://example.org/start', scope: { pathPrefix: '/' }, authorizationConfirmed: true } },
     { path: '/api/runs', body: { mode: 'external-general', target: 'https://example.org/start', scope: { pathPrefix: '/' },
@@ -124,7 +130,7 @@ test('workspace navigation, external target preflight and report preview use the
   role = 'viewer';
   await page.reload();
   await page.waitForFunction(() => document.querySelector('#connection-status')?.textContent.includes('연결됨'));
-  await page.locator('[data-view=dashboard]').click();
+  await page.locator('[data-view=assets]').click();
   await page.locator('#target-kind-external').click();
   assert.equal(await page.locator('#external-preflight-button').isDisabled(), true);
   await page.locator('[data-view=db]').click();

@@ -215,7 +215,8 @@ function describeModule(id, item = currentRun()) { if (isGeneralAssessment(item)
   return isLab(item) && !isAiLab(item) ? text.replace('DeepSeek의 제한된 POST 선택', '규칙 엔진의 제한된 POST 선택') : text; }
 function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : isGeneralAssessment(item) ? '범용 점검 · 증거 기반 결과' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
 const viewMeta = {
-  dashboard: ['공격', '공격 <span>작업공간</span>', '대상을 지정하고 점검 과정과 기록을 확인합니다.'],
+  assets: ['자산', '점검 <span>자산</span>', '등록 실습 대상과 외부 URL을 선택하고 점검을 시작합니다.'],
+  dashboard: ['공격', '공격 <span>작업공간</span>', '선택한 대상의 점검 과정과 기록을 확인합니다.'],
   sessions: ['실행 이력', 'Every run. <span>Remembered.</span>', '중앙에 저장된 실행과 모듈별 증거를 다시 살펴보세요.'],
   compare: ['실행 비교', 'Inspect the <span>difference.</span>', '코드·모델·입력 조건과 결과 차이를 함께 확인하세요.'],
   ci: ['통합 테스트', 'Verify the <span>merge.</span>', 'develop 전체 모듈 테스트와 이전 병합 결과를 비교하세요.'],
@@ -230,6 +231,7 @@ const viewMeta = {
   'module-db': ['DB Module', 'DB <span>Module</span>', 'DB 모듈의 상태와 작업 로그를 확인합니다.'],
 };
 const routeToView = {
+  'workspace/assets': 'assets',
   'workspace/attack': 'dashboard', 'workspace/attack/history': 'sessions', 'workspace/attack/compare': 'compare',
   'workspace/reports': 'reports', 'workspace/db': 'db',
   modules: 'modules', 'modules/ci': 'ci', 'modules/platform': 'platform',
@@ -336,7 +338,7 @@ function navigate(view) {
   $('module-tabs').hidden = !moduleOverview;
   const navKey = attackView ? 'attack' : moduleOverview ? 'modules' : view === 'reports' ? 'reports' : view === 'db' ? 'db' : view;
   document.querySelectorAll('[data-nav]').forEach((el) => el.classList.toggle('current-group', el.dataset.nav === navKey));
-  $('breadcrumb-group').textContent = attackView || view === 'reports' || view === 'db' ? 'Workspace' : 'Modules';
+  $('breadcrumb-group').textContent = attackView || ['assets', 'reports', 'db'].includes(view) ? 'Workspace' : 'Modules';
   $('breadcrumb-title').textContent = viewMeta[view][0];
   $('page-title').innerHTML = viewMeta[view][1];
   $('page-subtitle').textContent = viewMeta[view][2];
@@ -402,6 +404,10 @@ function renderStats() {
   $('stop-button').disabled = !canOperate() || !!inspectedRun || !connected || controlPending || !['queued','preparing','running'].includes(run.status);
   $('run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked;
   const idor = selectedIdorFixture();
+  $('asset-summary-detail').textContent = targetKind === 'external'
+    ? `외부 URL · ${$('external-url').value.trim() || '아직 지정하지 않음'}${externalPreflight?.ready ? ' · 사전 점검 완료' : ''}`
+    : idor ? `등록 실습 · vul-web2 ${idor.name} · ${$('lab-target-origin').value.trim()}`
+      : '등록 실습 · vul-web-1 로컬 게시판';
   const generalOption = $('assessment-mode').querySelector('option[value="general"]');
   generalOption.disabled = !labReadiness.generalSupported;
   generalOption.textContent = labReadiness.generalSupported ? '범용 취약점 점검 · 실제 모델' : '범용 취약점 점검 · 서버 연결 전';
@@ -429,7 +435,7 @@ function renderStats() {
   $('experiment-reset-button').disabled = !canOperate() || !connected || controlPending || active || !!pendingModelChange;
   $('model-reset-warning').hidden = !modelChangeUnreset;
   $('lab-title').textContent = idor ? `실습 대상 · vul-web2 ${idor.name}` : '실습 대상 · vul-web-1 로컬 게시판';
-  $('lab-description').textContent = idor ? `${idor.name}의 실습 IP와 포트를 아래에 입력하세요. vul-web2 Compose를 먼저 시작해야 하며 기본 포트는 ${idor.port}입니다. 위 DISPLAY URL은 사용하지 않습니다.` : '서버가 격리된 로컬 게시판을 임시 포트로 시작합니다. 위 입력 URL은 사용하지 않습니다.';
+  $('lab-description').textContent = idor ? `${idor.name}의 실습 IP와 포트를 아래에 입력하세요. vul-web2 Compose를 먼저 시작해야 하며 기본 포트는 ${idor.port}입니다. 모의 실행 표시 URL은 사용하지 않습니다.` : '서버가 격리된 로컬 게시판을 임시 포트로 시작합니다. 모의 실행 표시 URL은 사용하지 않습니다.';
   $('lab-check-scope').textContent = launchGeneral ? '현재 실행 검사: 유형을 미리 한정하지 않고 발견한 공격면과 사용 가능한 증거에서 가설을 세웁니다. 지원되지 않는 검사는 미점검 사유로 기록합니다.' : idor ? '현재 실행 검사: 알려진 가상 레코드의 IDOR 읽기 권한 비교만 수행합니다.' : '현재 실행 검사: 저장형 XSS canary 1회. 게시글의 브라우저 실행 증거를 확인합니다.';
   $('lab-run-label').textContent = launchGeneral ? '범용 취약점 점검 시작' : idor ? 'IDOR 읽기 검사 시작' : '저장형 XSS 검사 시작';
   $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : launchGeneral && !labReadiness.generalSupported ? '범용 점검 서버 경로가 연결되지 않았습니다.' : launchGeneral && !labReadiness.generalAvailable ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 설정을 확인하세요.' : model?.available ? `${launchGeneral ? '범용 점검 · ' : idor ? '규칙 기반 IDOR · ' : ''}${model.name || model.id} · 실행 준비됨` : '선택한 엔진을 사용할 수 없습니다. 서버 실행 환경과 모델 설정을 확인하세요.';
@@ -688,7 +694,9 @@ function render() {
 
 document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view)));
 document.querySelectorAll('[data-route-view]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.routeView)));
+$('asset-settings-button').addEventListener('click', () => navigate('assets'));
 window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
+function showAttackProgress() { navigate('dashboard'); window.scrollTo(0, 0); }
 async function submitControl(action) {
   if (!canOperate() || controlPending || connection !== 'connected') return;
   controlPending = true;
@@ -705,8 +713,7 @@ function setTargetKind(kind) {
   $('target-kind-lab').setAttribute('aria-pressed', String(targetKind === 'lab'));
   $('target-kind-external').setAttribute('aria-pressed', String(targetKind === 'external'));
   $('external-target-form').hidden = targetKind !== 'external';
-  $('target-form').hidden = targetKind === 'external';
-  $('runtime-scope').hidden = targetKind === 'external';
+  $('asset-mock-run').hidden = targetKind === 'external';
   document.querySelector('.lab-launch').hidden = targetKind === 'external';
   renderStats();
 }
@@ -760,6 +767,7 @@ $('external-run-button').addEventListener('click', async () => {
     externalPreflight = null;
     $('external-authorization').checked = false;
     $('external-preflight-status').textContent = '외부 대상 관찰을 시작했습니다. 재실행하려면 사전 점검을 다시 수행하세요.';
+    showAttackProgress();
     notify('외부 URL의 공개 페이지 읽기 관찰을 시작했습니다.');
   });
 });
@@ -776,6 +784,7 @@ $('target-form').addEventListener('submit', async (event) => {
     inspectedRun = null;
     selectedEventId = null;
     $('target-url').value = validated.url;
+    showAttackProgress();
     notify('실제 코어와 fixture gateway 실행을 시작했습니다. URL은 표시용이며 접속하지 않습니다.');
   });
 });
@@ -804,6 +813,7 @@ $('lab-run-button').addEventListener('click', async () => {
     await runtime.startLab(model.id, generalLaunch ? 'local-lab-general' : model.mode, selectedFixture(), target);
     inspectedRun = null;
     selectedEventId = null;
+    showAttackProgress();
     notify(generalLaunch ? `${selectedIdorFixture()?.name || '로컬 게시판'} 범용 점검을 시작했습니다.` : selectedIdorFixture() ? `${selectedIdorFixture().name} IDOR 실습을 시작했습니다.` : `${model.name || model.id}로 실제 격리 실습을 시작했습니다.`);
   });
 });
@@ -874,10 +884,11 @@ $('new-session-button').addEventListener('click', async () => {
     inspectedRun = null;
     selectedEventId = null;
     $('target-url').value = ''; $('url-error').hidden = true; $('target-url').removeAttribute('aria-invalid');
-    navigate('dashboard');
-    notify('표시용 URL을 입력해 새 로컬 코어 실행을 시작하세요.');
+    navigate('assets');
+    window.scrollTo(0, 0);
+    notify('자산 메뉴에서 점검 대상을 확인하고 새 실행을 시작하세요.');
   });
-  if (run.status === 'idle') $('target-url').focus();
+  if (run.status === 'idle') (targetKind === 'external' ? $('external-url') : $('fixture-select')).focus();
 });
 function chooseModule(id, eventId = null) {
   selectedModule = id;
@@ -969,8 +980,8 @@ $('speed-setting').addEventListener('change', (event) => { settings.speed = Numb
 $('settings-dialog').addEventListener('click', (event) => { if (event.target === $('settings-dialog')) { const rect = $('settings-dialog').getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) $('settings-dialog').close(); } });
 $('notifications-button').addEventListener('click', () => { $('notification-popover').hidden = !$('notification-popover').hidden; $('notifications-button').setAttribute('aria-expanded', String(!$('notification-popover').hidden)); renderNotifications(); });
 $('menu-button').addEventListener('click', () => { $('sidebar').classList.toggle('open'); $('menu-button').setAttribute('aria-expanded', String($('sidebar').classList.contains('open'))); });
-document.addEventListener('click', (event) => { if (!event.target.closest('#notification-popover') && !event.target.closest('#notifications-button')) { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); } if (innerWidth <= 760 && !event.target.closest('#sidebar') && !event.target.closest('#menu-button')) { $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
-document.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); navigate('dashboard'); $('target-url').focus(); $('target-url').select(); } if (event.key === 'Escape') { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
+document.addEventListener('click', (event) => { if (!event.target.closest('#notification-popover') && !event.target.closest('#notifications-button')) { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); } if (innerWidth <= 900 && !event.target.closest('#sidebar') && !event.target.closest('#menu-button')) { $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
+document.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); navigate('assets'); const field = targetKind === 'external' ? $('external-url') : $('target-url'); field.focus(); field.select(); } if (event.key === 'Escape') { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
 function runModelName(item) {
   if (isGeneralAssessment(item)) {
     const call = generalReport(item)?.modelCalls?.find?.(entry => entry && typeof entry === 'object');

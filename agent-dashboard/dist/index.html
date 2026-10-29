@@ -19,6 +19,7 @@
       <div class="workspace-switch"><span class="workspace-logo">C</span><div><strong>Security workspace</strong><small>취약점 점검 작업공간</small></div><span data-icon="chevrons" class="muted"></span></div>
       <div class="nav-caption">WORKSPACE</div>
       <nav class="primary-nav" aria-label="주 메뉴">
+        <button class="nav-item" data-view="assets" data-nav="assets"><span data-icon="layers"></span><span>자산</span></button>
         <button class="nav-item active" data-view="dashboard" data-nav="attack"><span data-icon="globe"></span><span>공격</span><span class="nav-count" id="history-count">0</span></button>
         <button class="nav-item" data-view="reports" data-nav="reports"><span data-icon="file"></span><span>보고서</span></button>
         <button class="nav-item" data-view="db" data-nav="db"><span data-icon="database"></span><span>DB</span></button>
@@ -57,9 +58,9 @@
         <div class="history-banner" id="history-banner" hidden><span><span data-icon="layers"></span>저장된 실행을 보고 있습니다.</span><button class="text-button" id="return-current-button">현재 실행으로 돌아가기<span data-icon="exchange"></span></button></div>
         <div class="runtime-notice" id="connection-notice" role="status">런타임 연결 중입니다.</div>
         <p class="runtime-error" id="runtime-error" role="alert" hidden></p>
-        <nav class="workspace-tabs" id="attack-tabs" aria-label="공격 작업공간" hidden><button data-route-view="dashboard">새 점검 · 진행</button><button data-route-view="sessions">실행 이력</button><button data-route-view="compare">실행 비교</button></nav>
+        <nav class="workspace-tabs" id="attack-tabs" aria-label="공격 작업공간" hidden><button data-route-view="dashboard">진행 상황</button><button data-route-view="sessions">실행 이력</button><button data-route-view="compare">실행 비교</button></nav>
         <nav class="workspace-tabs" id="module-tabs" aria-label="모듈 통합 상태" hidden><button data-route-view="modules">모듈 개요</button><button data-route-view="ci">통합 테스트</button><button data-route-view="platform">통합 상태</button></nav>
-        <section class="view" id="view-dashboard">
+        <section class="view" id="view-assets" hidden>
           <section class="panel external-target-panel" aria-labelledby="external-target-title">
             <div class="panel-heading"><div><h2 id="external-target-title"><span data-icon="globe"></span>점검 대상 지정</h2><span class="panel-subtitle">등록 실습 대상 또는 외부 URL을 선택합니다.</span></div></div>
             <div class="target-kind-switch" role="group" aria-label="대상 유형"><button type="button" class="active" id="target-kind-lab" aria-pressed="true">등록 실습 대상</button><button type="button" id="target-kind-external" aria-pressed="false">외부 URL</button></div>
@@ -73,14 +74,6 @@
               <button class="button primary" id="external-run-button" type="button" disabled>외부 대상 점검 시작</button>
             </form>
           </section>
-          <form class="target-panel" id="target-form" novalidate>
-            <div class="target-label"><span data-icon="globe"></span><label for="target-url">DISPLAY URL</label></div>
-            <div class="target-input-wrap"><input id="target-url" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false" aria-describedby="target-help runtime-scope url-error"><span class="input-shortcut">Ctrl K</span></div>
-            <span class="target-mode" id="target-help">표시용 · 접속 없음</span>
-            <button type="submit" class="button run-button" id="run-button" disabled><span data-icon="play"></span><span>모의 코어 시작</span></button>
-            <p class="url-error" id="url-error" role="alert" hidden></p>
-          </form>
-          <p class="runtime-scope" id="runtime-scope">이 모의 실행은 실제 RunOnce + RuleReasoningEngine을 사용합니다. 외부 모듈은 scripted fixture gateway이며, 입력 URL은 기록의 표시용 메타데이터입니다. 이 모드에서는 LLM·파서·fuzzer·대상 사이트에 연결하지 않습니다.</p>
           <div class="lab-launch">
             <div class="lab-launch-copy">
               <strong id="lab-title">실습 대상 · vul-web-1 로컬 게시판</strong>
@@ -99,6 +92,25 @@
             <div class="lab-origin-control" id="lab-target-control" hidden><label for="lab-target-origin">에이전트에서 접근할 실습 원점 · IP와 포트</label><input id="lab-target-origin" type="text" value="http://127.0.0.1:4101" placeholder="http://192.168.0.84:4101" autocomplete="off" spellcheck="false" aria-describedby="lab-target-help"><small id="lab-target-help">Mac에서 직접 실행하면 127.0.0.1을 사용합니다. Docker에서는 host.docker.internal 또는 같은 네트워크의 daehan / wonchang을 사용하세요. 등록된 vul-web2 실습의 사설망 HTTP 원점만 허용합니다.</small></div>
             <button type="button" class="button lab-run-button" id="lab-run-button" disabled><span data-icon="play"></span><span id="lab-run-label">실습 실행 준비 중</span></button>
           </div>
+          <section class="asset-mock-run" id="asset-mock-run" aria-labelledby="asset-mock-title">
+            <h2 id="asset-mock-title">모의 코어 실행</h2>
+            <p>표시용 URL로 코어와 fixture gateway 흐름을 확인합니다. 실제 대상에는 접속하지 않습니다.</p>
+            <form class="target-panel" id="target-form" novalidate>
+              <div class="target-label"><span data-icon="globe"></span><label for="target-url">DISPLAY URL</label></div>
+              <div class="target-input-wrap"><input id="target-url" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false" aria-describedby="target-help runtime-scope url-error"><span class="input-shortcut">Ctrl K</span></div>
+              <span class="target-mode" id="target-help">표시용 · 접속 없음</span>
+              <button type="submit" class="button run-button" id="run-button" disabled><span data-icon="play"></span><span>모의 코어 시작</span></button>
+              <p class="url-error" id="url-error" role="alert" hidden></p>
+            </form>
+            <p class="runtime-scope" id="runtime-scope">이 모의 실행은 실제 RunOnce + RuleReasoningEngine을 사용합니다. 외부 모듈은 scripted fixture gateway이며, 입력 URL은 기록의 표시용 메타데이터입니다. 이 모드에서는 LLM·파서·fuzzer·대상 사이트에 연결하지 않습니다.</p>
+          </section>
+        </section>
+
+        <section class="view" id="view-dashboard">
+          <section class="panel asset-summary" aria-labelledby="asset-summary-heading">
+            <div class="asset-summary-copy"><div class="eyebrow">CURRENT ASSET</div><h2 id="asset-summary-heading">다음 점검 대상</h2><p id="asset-summary-detail">자산 메뉴에서 대상을 선택하고 점검을 시작합니다.</p></div>
+            <button class="button secondary" id="asset-settings-button" type="button"><span data-icon="layers"></span>자산에서 대상 지정</button>
+          </section>
 
           <div class="stats-grid">
             <div class="stat-card"><div class="stat-label">루프 상태<span data-icon="pulse"></span></div><div class="stat-value status-stat"><span class="status-orb stopped" id="status-orb"></span><span id="run-status">대기 중</span></div><div class="stat-foot" id="run-context">서버 상태 수신 대기</div></div>
