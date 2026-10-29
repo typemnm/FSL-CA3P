@@ -28,6 +28,9 @@ CASE_REQUIRED_TABLES = {"cases", "checks", "case_versions"}
 # These namespaces share the versioned Case database, but are created only when
 # their owning feature is used. Keep legacy Case stores valid rollback targets.
 CASE_OPTIONAL_COLUMNS = {
+    "report_knowledge_records": {"case_id", "target_id", "source_sha", "draft_sha",
+                                 "validation_sha", "revision", "snapshot", "updated_at"},
+    "report_knowledge_versions": {"case_id", "revision", "snapshot"},
     "attack_catalog_metadata": {"key", "value"},
     "attack_catalog_sources": {"source_ref", "content_sha256", "schema_version", "snapshot", "imported_at"},
     "attack_patterns": {"pattern_id", "revision", "content_sha256", "vulnerability_type", "application",
