@@ -65,6 +65,10 @@ test('general run renders and supported targets launch the bounded model assessm
     }
     if (path === '/api/runs' && request.method() === 'POST') return json({ instanceId: 'general-ui-test', mode: run.mode, run,
       lab: { available: true, generalSupported: true, generalAvailable: true } });
+    if (path === '/api/targets/preflight') return json({ ready: true, allowed: true,
+      normalizedUrl: 'https://example.org/start', token: 'external-token',
+      scope: { origin: 'https://example.org', pathPrefix: '/start', maxRequests: 8 },
+      message: '공개 페이지에 연결할 수 있습니다.' });
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs: [run], total: 1 });
     if (path === '/api/models') return json({ models: [
       { id: 'rule-baseline', name: 'Rule baseline', provider: 'local', mode: 'local-lab-rule', available: true },
@@ -126,6 +130,23 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.equal(await page.locator('#model-select').isEnabled(), true);
   assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-test');
   assert.equal(posts.length, 1);
+  await page.locator('#target-kind-external').click();
+  assert.equal(await page.locator('#external-model-select option[value="rule-baseline"]').count(), 1);
+  assert.equal(await page.locator('#external-model-select option[value="deepseek-test"]').count(), 1);
+  await page.locator('#external-model-select').selectOption('deepseek-test');
+  assert.match(await page.locator('#external-model-scope').textContent(), /독립 검증기가 없어 확정 취약점은 보고하지 않으며/);
+  await page.locator('#external-url').fill('https://example.org/start');
+  await page.locator('#external-path').fill('/start');
+  const preflight = page.waitForResponse(response => response.url().endsWith('/api/targets/preflight'));
+  await page.locator('#external-preflight-button').click();
+  await preflight;
+  assert.equal(await page.locator('#external-run-button').isEnabled(), true);
+  const externalLaunch = page.waitForResponse(response => response.url().endsWith('/api/runs') && response.request().method() === 'POST');
+  await page.locator('#external-run-button').click();
+  await externalLaunch;
+  assert.deepEqual(posts.at(-1), { path: '/api/runs', body: { mode: 'external-general',
+    target: 'https://example.org/start', scope: { pathPrefix: '/start' }, preflightToken: 'external-token',
+    authorizationConfirmed: true, modelId: 'deepseek-test' } });
   await page.locator('[data-view=dashboard]').click();
 
   const originalEvents = run.events;

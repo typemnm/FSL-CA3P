@@ -1,7 +1,7 @@
 import { MODULES, validateTarget, formatElapsed } from './telemetry-view.js';
 import { initStarfield } from './starfield.js';
 import { createRuntimeClient } from './runtime-client.js';
-import { generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun, renderGeneralReport } from './general-results.js';
+import { generalObservedProbeCount, generalReport, generalSummary, isExternalModelLoop, isGeneralAssessment, normalizeGeneralRun, renderGeneralReport } from './general-results.js';
 import { createOperationsPages } from './operations-pages.js';
 import { createWorkspaceChat } from './workspace-chat.js';
 
@@ -204,6 +204,8 @@ function canOperate() { return authSession && (!authSession.authRequired || auth
 function selectedFixture() { return $('fixture-select').value || 'vul-web-1'; }
 function selectedIdorFixture() { return IDOR_FIXTURES[selectedFixture()]; }
 function selectedModel() { return models.find(item => item.id === $('model-select').value); }
+function selectedExternalModelId() { return $('external-model-select').value || 'rule-baseline'; }
+function externalModelAvailable() { const id = selectedExternalModelId(); return id === 'rule-baseline' || models.some(item => item.id === id && item.available); }
 function isXssLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile) === 'stored_xss_canary'; }
 function isIdorLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile ?? item.manifest?.target?.testProfile) === 'known_record_idor_read'; }
 function idorFixture(item) { return IDOR_FIXTURES[item.fixtureId ?? item.manifest?.target?.fixtureId ?? item.report?.fixtureId]; }
@@ -211,7 +213,7 @@ function describeModule(id, item = currentRun()) { if (isGeneralAssessment(item)
   const text = (isIdorLab(item) ? idorModuleDescriptions : isXssLab(item) ? labModuleDescriptions
   : isLab(item) ? legacyLabModuleDescriptions : moduleDescriptions)[id] || '이전 실행의 코어 이벤트입니다.';
   return isLab(item) && !isAiLab(item) ? text.replace('DeepSeek의 제한된 POST 선택', '규칙 엔진의 제한된 POST 선택') : text; }
-function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : isGeneralAssessment(item) ? '범용 점검 · 증거 기반 결과' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
+function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isExternalModelLoop(item) ? '외부 URL · AI 읽기 전용 탐색' : isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : isGeneralAssessment(item) ? '범용 점검 · 증거 기반 결과' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
 const viewMeta = {
   chat: ['AI 채팅', 'AI <span>채팅</span>', '모델과 대화하며 실행 결과와 로컬 코드를 함께 살펴봅니다.'],
   assets: ['자산', '점검 <span>자산</span>', '등록 실습 대상과 외부 URL을 선택하고 점검을 시작합니다.'],
@@ -366,8 +368,8 @@ function renderStats() {
   const connected = connection === 'connected';
   const connectionLabel = { connecting: '런타임 연결 중', connected: connectionTransport === 'polling' ? '1초 간격 상태 연결됨' : 'SSE 연결됨', disconnected: '연결 끊김 · 자동 재연결 중' }[connection];
   $('history-banner').hidden = !inspectedRun || !['dashboard', 'sessions', 'compare', 'reports'].includes(activeView);
-  $('execution-label').textContent = activeView === 'chat' ? 'WORKSPACE / AI CHAT' : !item.id ? 'WORKSPACE / READY' : isExternalRun(item) ? 'EXTERNAL / READ ONLY' : general ? 'GENERAL / EVIDENCE' : isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
-  $('dashboard-mode').textContent = !item.id ? '점검 대기 · 자산에서 대상을 선택하세요' : isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : general ? '범용 점검 결과 · 지원된 관측 범위' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
+  $('execution-label').textContent = activeView === 'chat' ? 'WORKSPACE / AI CHAT' : !item.id ? 'WORKSPACE / READY' : isExternalModelLoop(item) ? 'EXTERNAL / READ ONLY AI' : isExternalRun(item) ? 'EXTERNAL / READ ONLY' : general ? 'GENERAL / EVIDENCE' : isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
+  $('dashboard-mode').textContent = !item.id ? '점검 대기 · 자산에서 대상을 선택하세요' : isExternalModelLoop(item) ? '외부 URL · AI 읽기 전용 탐색' : isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : general ? '범용 점검 결과 · 지원된 관측 범위' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
   $('progress-label').textContent = !item.id ? '점검 대기' : general
     ? generalCounts ? `가설 ${generalCounts.totalHypotheses}건 · ${statusNames[item.status] || item.status}`
       : `결과 대기 · ${statusNames[item.status] || item.status}`
@@ -391,7 +393,12 @@ function renderStats() {
   const model = selectedModel();
   $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || !labReadiness.generalSupported || !labReadiness.generalAvailable;
   $('external-preflight-button').disabled = !canOperate() || !connected || active || externalPreflightPending;
-  $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || !externalPreflight?.ready;
+  $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !externalPreflight?.ready || !externalModelAvailable();
+  $('external-model-select').disabled = controlPending || active || !canOperate();
+  $('external-model-scope').textContent = selectedExternalModelId() === 'rule-baseline'
+    ? '인증 없는 공개 GET 요청으로 페이지만 관찰합니다. 취약점 검증 결과는 생성하지 않습니다.'
+    : 'DeepSeek가 가설과 추가 공개 GET 관찰을 제안합니다. 독립 검증기가 없어 확정 취약점은 보고하지 않으며 모델 API 비용이 발생할 수 있습니다.';
+  $('external-run-button').textContent = selectedExternalModelId() === 'rule-baseline' ? '외부 공개 페이지 관찰 시작' : '외부 AI 읽기 전용 탐색 시작';
   $('fixture-select').disabled = controlPending || active || !canOperate();
   $('lab-target-origin').disabled = controlPending || active || !canOperate();
   $('lab-target-control').hidden = !idor;
@@ -661,6 +668,7 @@ $('target-kind-lab').addEventListener('click', () => setTargetKind('lab'));
 $('target-kind-external').addEventListener('click', () => setTargetKind('external'));
 $('external-url').addEventListener('input', invalidateExternalPreflight);
 $('external-path').addEventListener('input', invalidateExternalPreflight);
+$('external-model-select').addEventListener('change', renderStats);
 $('external-target-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (!canOperate() || connection !== 'connected') return;
@@ -690,17 +698,18 @@ $('external-target-form').addEventListener('submit', async event => {
   }
 });
 $('external-run-button').addEventListener('click', async () => {
-  if (!externalPreflight?.ready) return;
+  if (!externalPreflight?.ready || !externalModelAvailable()) return;
   if (['queued','preparing','running','stopping'].includes(run.status)) return;
+  const modelId = selectedExternalModelId();
   await submitControl(async () => {
     await runtime.startExternal({ target: externalPreflight.normalizedUrl,
-      pathPrefix: externalPreflight.scope.pathPrefix, preflightToken: externalPreflight.token });
+      pathPrefix: externalPreflight.scope.pathPrefix, preflightToken: externalPreflight.token, modelId });
     inspectedRun = null;
     selectedEventId = null;
     externalPreflight = null;
-    $('external-preflight-status').textContent = '외부 대상 관찰을 시작했습니다. 재실행하려면 사전 점검을 다시 수행하세요.';
+    $('external-preflight-status').textContent = '외부 대상 읽기 전용 점검을 시작했습니다. 재실행하려면 사전 점검을 다시 수행하세요.';
     showAttackProgress();
-    notify('외부 URL의 공개 페이지 읽기 관찰을 시작했습니다.');
+    notify(modelId === 'rule-baseline' ? '외부 URL의 공개 페이지 읽기 관찰을 시작했습니다.' : '외부 URL의 AI 읽기 전용 탐색을 시작했습니다.');
   });
 });
 $('lab-run-button').addEventListener('click', async () => {
@@ -929,9 +938,14 @@ async function loadWorkspace() {
     const payload = await runtime.getModels();
     if (generation !== workspaceGeneration) return;
     const previous = $('model-select').value;
+    const previousExternal = selectedExternalModelId();
     models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string' && item.provider === 'deepseek' && item.mode === 'local-lab-deepseek') : [];
     $('model-select').innerHTML = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
     $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
+    $('external-model-select').innerHTML = '<option value="rule-baseline">공개 페이지 관찰 · 규칙 기반 1회</option>'
+      + models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>AI 읽기 전용 탐색 · ${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('');
+    $('external-model-select').value = previousExternal === 'rule-baseline' || models.some(item => item.id === previousExternal && item.available)
+      ? previousExternal : 'rule-baseline';
     renderStats();
     acceptedModelId = $('model-select').value;
   })().catch(error => showRuntimeError(error.message)), (async () => {

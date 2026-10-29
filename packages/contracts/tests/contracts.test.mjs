@@ -72,6 +72,34 @@ test('the existing local board manifest keeps its browser and agent execution co
   assert.equal(manifest.modules['vul-web2'], undefined);
 });
 
+test('external manifests distinguish passive observation from the bounded model loop', () => {
+  const scope = { origin: 'https://8.8.8.8', pathPrefix: '/', methods: ['GET', 'HEAD'],
+    maxRequests: 8, maxResponseBytes: 65536, requestTimeoutMs: 5000, maxDurationMs: 30000 };
+  const options = { target: 'https://8.8.8.8/', scope };
+  const passive = createRunManifest({ runId: 'external-passive', mode: 'external-general',
+    modelId: 'rule-baseline', options });
+  assert.equal(passive.execution.inspectionMode, 'external-read-only');
+  assert.equal(passive.execution.maxIterations, 1);
+  assert.equal(passive.model.executionRole, 'not-used-read-only-observation');
+  assert.equal(passive.shared.modelRegistryDigest, null);
+
+  const loopBudget = { maxIterations: 6, maxProbes: 7, maxEvidenceItems: 128 };
+  const modelLoop = createRunManifest({ runId: 'external-model', mode: 'external-general',
+    modelId: 'deepseek-flash', model: { provider: 'deepseek' },
+    options: { ...options, testProfile: 'external-general-read-only', loopBudget } });
+  assert.equal(modelLoop.execution.inspectionMode, 'external-general-read-only');
+  assert.deepEqual(modelLoop.execution.loopBudget, loopBudget);
+  assert.equal(modelLoop.model.provider, 'deepseek');
+  assert.equal(modelLoop.model.requestedModel, 'deepseek-flash');
+  assert.ok(modelLoop.model.promptTemplateDigest);
+  assert.ok(modelLoop.shared.modelRegistryDigest);
+  assert.ok(modelLoop.modules.agent.contentDigest);
+  assert.equal(modelLoop.target.testProfile, 'external-general-read-only');
+  assert.throws(() => createRunManifest({ runId: 'external-unbounded', mode: 'external-general',
+    modelId: 'deepseek-flash', options: { ...options,
+      loopBudget: { maxIterations: 6, maxProbes: 8, maxEvidenceItems: 128 } } }), TypeError);
+});
+
 test('general university manifests record model execution and omit deferred XSS browser conditions', () => {
   assert.ok(RUN_MODES.includes('local-lab-general'));
   const manifest = createRunManifest({ runId: 'general-university', mode: 'local-lab-general',

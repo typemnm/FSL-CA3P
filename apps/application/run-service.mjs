@@ -108,23 +108,34 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       if (body.fixtureId !== undefined || body.testProfile !== undefined || body.delayMs !== undefined
         || body.authorizationConfirmed !== true) throw fault(400, 'Confirm the external target and use the external profile.');
       const modelId = body.modelId ?? 'rule-baseline';
-      if (modelId !== 'rule-baseline') throw fault(400, 'Initial external observation requires rule-baseline.');
+      const model = listModels().find(item => item.id === modelId);
+      if (!model || modelId !== 'rule-baseline' && model.provider !== 'deepseek') {
+        throw fault(400, 'Choose rule-baseline or a registered DeepSeek model for external inspection.');
+      }
+      if (!model.available) throw fault(503, 'Selected model is unavailable. Configure server credentials before starting.');
+      const modelLoop = model.provider === 'deepseek';
       const { normalizedUrl, scope } = normalizeExternalTarget(body);
       if (!verifyExternalPreflightToken(body.preflightToken, normalizedUrl, scope)) {
         throw fault(400, 'External target preflight expired or changed. Check the target again.');
       }
       await resolvePublicAddresses(new URL(normalizedUrl).hostname);
       const id = `run-${randomUUID()}`;
+      const testProfile = modelLoop ? 'external-general-read-only' : 'external-read-only';
       const options = { mode: body.mode, modelId, target: normalizedUrl, scope,
-        testProfile: 'external-read-only', fixtureId: null, delayMs: 0 };
+        testProfile, fixtureId: null, delayMs: 0 };
+      if (modelLoop) {
+        const configured = store.getGeneralLoopBudget();
+        options.loopBudget = { ...configured, maxIterations: Math.min(configured.maxIterations, scope.maxRequests),
+          maxProbes: Math.min(configured.maxProbes, scope.maxRequests - 1) };
+      }
       const manifest = createRunManifest({ runId: id, mode: body.mode, modelId, options,
-        model: listModels().find(item => item.id === modelId), env });
+        model, env });
       const experiment = store.experimentState();
       manifest.experiment = { epoch: experiment.epoch, lastResetAt: experiment.lastResetAt,
         previousRunCount: store.listRuns({ limit: 1 }).total };
       const state = { ...emptyRun(), id, coreRunId: id, status: 'queued', mode: body.mode, modelId,
         assessmentMode: 'general', target: redact(normalizedUrl), targetKind: 'external',
-        targetContacted: false, simulated: false, testProfile: 'external-read-only', fixtureId: null, manifest };
+        targetContacted: false, simulated: false, testProfile, fixtureId: null, manifest };
       store.createRun({ id, mode: body.mode, modelId, manifest, state, options });
       selectedRunId = id; ensureWorker(); publish(true); child?.send({ type: 'wake' });
       return getState();

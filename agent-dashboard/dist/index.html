@@ -70,6 +70,8 @@
               <label for="external-url">시작 URL <input id="external-url" type="url" placeholder="https://example.org/" autocomplete="off" required></label>
               <label for="external-path">허용 경로 <input id="external-path" type="text" value="/" placeholder="/" autocomplete="off"></label>
               <div class="external-scope-note">동일 원점의 공개 페이지를 읽기 전용으로 관찰합니다. 실습 전용 검증기와 계정은 외부 대상에서 사용하지 않습니다.</div>
+              <label class="model-control" for="external-model-select">점검 방식 / AI 모델 <select id="external-model-select" aria-describedby="external-model-scope"><option value="rule-baseline">공개 페이지 관찰 · 규칙 기반 1회</option></select></label>
+              <small class="lab-cost" id="external-model-scope">인증 없는 공개 GET 요청으로 페이지만 관찰합니다. 취약점 검증 결과는 생성하지 않습니다.</small>
               <button class="button secondary" id="external-preflight-button" type="submit">대상 사전 점검</button>
               <div id="external-preflight-status" role="status" aria-live="polite">URL을 입력하고 사전 점검을 시작하세요.</div>
               <button class="button primary" id="external-run-button" type="button" disabled>외부 대상 점검 시작</button>

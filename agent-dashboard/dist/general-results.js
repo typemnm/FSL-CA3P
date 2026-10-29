@@ -125,6 +125,15 @@ export function generalReport(item) {
 export function isGeneralAssessment(item) { return object(item)
   && (item.mode === 'local-lab-general' || item.mode === 'external-general' || item.assessmentMode === 'general' || generalReport(item) !== null); }
 
+export function isExternalModelLoop(item) {
+  if (!object(item)) return false;
+  const report = generalReport(item);
+  return (item.mode === 'external-general' || report?.target?.kind === 'external')
+    && (item.testProfile === 'external-general-read-only'
+      || report?.inspectionMode === 'external-general-read-only'
+      || typeof item.modelId === 'string' && item.modelId !== 'rule-baseline');
+}
+
 function normalizeEvent(event, index, fallbackTime, runId) {
   const source = object(event) ? event : {};
   const time = Number.isFinite(Date.parse(source.time)) ? source.time : fallbackTime;
@@ -203,11 +212,16 @@ export function renderGeneralOverview(item) {
   const summary = generalSummary(item);
   if (!summary) {
     const stage = text(list(item?.events).at(-1)?.stage) || text(item?.status) || '실행 대기';
+    if (isExternalModelLoop(item)) return `<section class="general-overview" aria-label="외부 AI 읽기 전용 탐색 진행"><div class="eyebrow">EXTERNAL / READ ONLY AI</div><h3>가설과 추가 관찰 준비 중</h3><p>현재 단계: <strong>${escape(stage)}</strong></p><p class="muted">공개 GET 요청만 수행합니다. 독립 검증기가 없어 확정 취약점을 보고하지 않습니다.</p></section>`;
     return `<section class="general-overview" aria-label="범용 점검 진행"><div class="eyebrow">GENERAL ASSESSMENT</div><h3>점검 결과 대기</h3><p>현재 단계: <strong>${escape(stage)}</strong></p><p class="muted">관측과 검증이 끝나면 근거가 있는 결과와 미점검 사유를 표시합니다.</p></section>`;
   }
   const last = list(item.events).at(-1);
   const stage = text(item.stage) || text(summary.report.stage) || text(last?.stage) || '실행 상태 수신 대기';
   const stopped = text(summary.report.stopReason);
+  if (isExternalModelLoop(item)) {
+    const coverage = object(summary.report.coverage) ? summary.report.coverage : {};
+    return `<section class="general-overview" aria-label="외부 AI 읽기 전용 탐색 진행"><div class="eyebrow">EXTERNAL / READ ONLY AI</div><h3>가설과 공개 페이지 추가 관찰${summary.partial ? ' · 부분 결과' : ''}</h3><p>현재 단계: <strong>${escape(stage)}</strong></p><div class="general-overview-counts"><span>가설 <strong>${summary.totalHypotheses}</strong></span><span>검사 <strong>${summary.probes}</strong></span><span>판정 불가 <strong>${summary.inconclusive}</strong></span><span>미점검 <strong>${summary.notTested}</strong></span><span>요청 <strong>${count(coverage.requestsUsed) ?? 0}</strong></span></div><p class="muted">인증 없는 공개 GET 관찰만 수행합니다. 독립 검증기가 없어 확정 취약점을 보고하지 않습니다.</p>${stopped ? `<p>종료 사유: ${escape(stopped)}</p>` : ''}</section>`;
+  }
   if (item.mode === 'external-general') {
     const coverage = object(summary.report.coverage) ? summary.report.coverage : {};
     return `<section class="general-overview" aria-label="외부 대상 관찰 진행"><div class="eyebrow">EXTERNAL / READ ONLY</div><h3>공개 페이지 관찰${summary.partial ? ' · 부분 결과' : ''}</h3><p>현재 단계: <strong>${escape(stage)}</strong></p><div class="general-overview-counts"><span>요청 <strong>${count(coverage.requestsUsed) ?? 0}</strong></span><span>응답 페이지 <strong>${count(coverage.observedPages) ?? 0}</strong></span><span>거부 후보 <strong>${count(coverage.rejectedCandidates) ?? 0}</strong></span></div><p class="muted">비인증 읽기 요청만 수행합니다. 독립 검증기가 없어 취약점 확정을 수행하지 않습니다.</p>${stopped ? `<p>종료 사유: ${escape(stopped)}</p>` : ''}</section>`;
@@ -218,6 +232,7 @@ export function renderGeneralOverview(item) {
 /** A verify event is a probe observation, not a persisted finding. */
 export function renderGeneralLiveResults(item) {
   const summary = generalSummary(item);
+  const externalModel = isExternalModelLoop(item);
   if (!summary) {
     const events = list(item?.events).filter(object);
     const progress = latestProgress(events);
@@ -231,7 +246,8 @@ export function renderGeneralLiveResults(item) {
       const request = eventRequest(event);
       const verdict = text(response.status) || text(event.detail);
       const label = phase === 'policy' ? '정책 차단'
-        : STATUSES.has(verdict) && verdict !== 'not_tested' ? STATUS_LABELS[verdict] : '상태 미확인';
+        : externalModel ? verdict === 'inconclusive' ? '판정 불가' : '독립 검증 전 관찰'
+          : STATUSES.has(verdict) && verdict !== 'not_tested' ? STATUS_LABELS[verdict] : '상태 미확인';
       const probeId = probeIdFor(event);
       const link = links.get(probeId);
       const hypothesisId = safeId(request.hypothesisId) || link?.hypothesisId;
@@ -256,20 +272,24 @@ export function renderGeneralLiveResults(item) {
         + evidenceDescriptions
         + (reason ? '<small>사유: ' + escape(reason) + '</small>' : '') + '</li>';
     }).join('');
-    return '<div class="general-live-body"><p>최종 보고서 전의 검사 이벤트입니다. 취약점 확정 건수로 집계하지 않습니다.</p>'
-      + progressCounts(progress, [
-        ['가설', 'hypothesisCount'], ['실행 검사', 'probeCount'], ['수집 증거', 'evidenceCount'],
-        ['확정 판정 검사', 'confirmedProbeCount'], ['정책 차단 검사', 'blockedProbeCount'],
-      ])
+    return '<div class="general-live-body"><p>' + (externalModel
+      ? '외부 공개 페이지의 가설과 추가 읽기 관찰입니다. 독립 검증 전의 취약점 판정이 아닙니다.'
+      : '최종 보고서 전의 검사 이벤트입니다. 취약점 확정 건수로 집계하지 않습니다.') + '</p>'
+      + progressCounts(progress, externalModel
+        ? [['가설', 'hypothesisCount'], ['실행 검사', 'probeCount'], ['수집 증거', 'evidenceCount'], ['정책 차단 검사', 'blockedProbeCount']]
+        : [['가설', 'hypothesisCount'], ['실행 검사', 'probeCount'], ['수집 증거', 'evidenceCount'],
+          ['확정 판정 검사', 'confirmedProbeCount'], ['정책 차단 검사', 'blockedProbeCount']])
       + renderLiveMetadata(metadata)
       + (rows ? '<ul class="general-live-result-list">' + rows + '</ul>'
-        : '<p class="general-live-empty">독립 검증 이벤트를 기다리는 중입니다.</p>')
+        : `<p class="general-live-empty">${externalModel ? '추가 관찰 결과를 기다리는 중입니다.' : '독립 검증 이벤트를 기다리는 중입니다.'}</p>`)
       + '<p class="general-live-note">가설 분류·자산과 증거 종류·자산은 잠정 메타데이터입니다. 원문 근거와 최종 finding 수는 보고서 저장 후 표시됩니다. 메타데이터가 없는 이전 기록은 ID만 표시합니다.</p></div>';
   }
   const evidence = new Map(list(summary.report.evidence)
     .filter(value => object(value) && text(value.id)).map(value => [value.id, value]));
   const rows = summary.findings.map(finding => {
-    const status = STATUSES.has(finding.status) ? finding.status : 'inconclusive';
+    const status = externalModel
+      ? finding.status === 'not_tested' ? 'not_tested' : 'inconclusive'
+      : STATUSES.has(finding.status) ? finding.status : 'inconclusive';
     const references = list(finding.evidenceIds).filter(id => typeof id === 'string');
     const details = references.map(id => {
       const row = evidence.get(id);
@@ -285,23 +305,24 @@ export function renderGeneralLiveResults(item) {
       + (details ? '<ul class="general-live-evidence">' + details + '</ul>' : '') + '</li>';
   }).join('');
   return '<div class="general-live-body"><div class="general-overview-counts">'
-    + '<span>확정 <strong>' + summary.confirmed + '</strong></span>'
-    + '<span>재현 안 됨 <strong>' + summary.notReproduced + '</strong></span>'
+    + (externalModel ? '' : '<span>확정 <strong>' + summary.confirmed + '</strong></span>'
+      + '<span>재현 안 됨 <strong>' + summary.notReproduced + '</strong></span>')
     + '<span>판정 불가 <strong>' + summary.inconclusive + '</strong></span>'
     + '<span>미점검 <strong>' + summary.notTested + '</strong></span></div>'
     + (rows ? '<ul class="general-live-result-list">' + rows + '</ul>'
       : '<p class="general-live-empty">기록된 결과가 없습니다.</p>')
-    + '<p class="general-live-note">발견한 가설 기준입니다. 미점검과 판정 불가는 안전 판정이 아닙니다.</p></div>';
+    + `<p class="general-live-note">${externalModel ? '외부 읽기 관찰만 수행했습니다. 독립 검증기가 없어 확정 취약점을 보고하지 않습니다. ' : ''}발견한 가설 기준입니다. 미점검과 판정 불가는 안전 판정이 아닙니다.</p></div>`;
 }
 
 export function renderGeneralReport(item) {
   const summary = generalSummary(item);
   if (!summary) return '';
+  const externalModel = isExternalModelLoop(item);
   const { report, findings, hypotheses } = summary;
   const evidence = new Map(list(report.evidence).filter(value => object(value) && text(value.id)).map(value => [value.id, value]));
   const unresolved = hypotheses.filter(value => value.status === 'not_tested' || value.status === 'inconclusive');
   const target = displayTarget(item.target) || displayTarget(report.target) || '대상 미기록';
-  if (item.mode === 'external-general' || report.inspectionMode === 'external-read-only') {
+  if (!externalModel && (item.mode === 'external-general' || report.inspectionMode === 'external-read-only')) {
     const coverage = object(report.coverage) ? report.coverage : {};
     const scope = object(report.scope) ? report.scope : {};
     const pages = list(report.inventory?.pages).filter(object);
@@ -314,15 +335,30 @@ export function renderGeneralReport(item) {
       <section class="panel general-coverage"><h3>범위 정책과 관찰 오류</h3>${rejected.length ? `<ul>${rejected.map(([reason, value]) => `<li>${escape(reason)} ${escape(value)}건</li>`).join('')}</ul>` : '<p>거부된 링크 후보가 없습니다.</p>'}${errors.length ? `<ul>${errors.map(row => `<li>${escape(text(row.code) || 'REQUEST_FAILED')} · ${escape(text(row.url) || 'URL 미기록')}</li>`).join('')}</ul>` : ''}</section>`;
   }
   const findingCards = findings.map((finding, index) => {
-    const status = STATUSES.has(finding.status) ? finding.status : 'inconclusive';
+    const status = externalModel
+      ? finding.status === 'not_tested' ? 'not_tested' : 'inconclusive'
+      : STATUSES.has(finding.status) ? finding.status : 'inconclusive';
     const evidenceRefs = list(finding.evidenceIds).filter(id => typeof id === 'string');
     const evidenceText = evidenceRefs.map(id => {
       const entry = evidence.get(id);
       return `<li><span class="mono">${escape(id)}</span>${entry ? ` · ${escape(text(entry.source) || '출처 미기록')} · ${escape(text(entry.summary) || text(entry.kind) || '증거 내용 미기록')}` : ' · 증거 상세 미제공'}</li>`;
     }).join('');
-    return `<article class="panel report-item general-finding"><span class="review-tag">${escape(STATUS_LABELS[status])}</span><h3>${escape(text(finding.category) || '분류 미기록')} · ${escape(text(finding.asset) || '위치 미기록')}</h3><p>${escape(text(finding.rationale) || text(finding.reason) || '설명 미기록')}</p><small>가설 ${escape(text(finding.hypothesisId) || '미기록')} · 결과 ${index + 1}</small>${evidenceRefs.length ? `<div class="evidence-box"><strong>연결된 증거</strong><ul>${evidenceText}</ul></div>` : '<div class="evidence-box"><strong>연결된 증거 없음</strong></div>'}${text(finding.reason) && text(finding.rationale) ? `<p>판정 사유: ${escape(finding.reason)}</p>` : ''}</article>`;
+    return `<article class="panel report-item general-finding"><span class="review-tag">${escape(STATUS_LABELS[status])}</span><h3>${escape(text(finding.category) || '분류 미기록')} · ${escape(text(finding.asset) || '위치 미기록')}</h3><p>${escape(text(finding.rationale) || text(finding.reason) || '설명 미기록')}</p><small>${externalModel ? '독립 검증되지 않은 가설' : '가설'} ${escape(text(finding.hypothesisId) || '미기록')} · ${externalModel ? '후보' : '결과'} ${index + 1}</small>${evidenceRefs.length ? `<div class="evidence-box"><strong>연결된 증거</strong><ul>${evidenceText}</ul></div>` : '<div class="evidence-box"><strong>연결된 증거 없음</strong></div>'}${text(finding.reason) && text(finding.rationale) ? `<p>판정 사유: ${escape(finding.reason)}</p>` : ''}</article>`;
   }).join('');
   const unresolvedMarkup = unresolved.length ? `<section class="panel general-unresolved"><h3>미완료 가설</h3><ul>${unresolved.map(hypothesis => `<li>${escape(text(hypothesis.category) || '분류 미기록')} · ${escape(text(hypothesis.asset) || '위치 미기록')} · ${escape(STATUS_LABELS[hypothesis.status] || '판정 불가')}${text(hypothesis.reason) ? ` · ${escape(hypothesis.reason)}` : ''}</li>`).join('')}</ul></section>` : '';
   const rejectedMarkup = summary.rejectedProposals.length ? `<section class="panel general-unresolved"><h3>실행하지 않은 모델 제안 ${summary.rejectedProposals.length}건</h3><ul>${summary.rejectedProposals.map(row => `<li>반복 ${count(row.iteration) ?? '?'}${count(row.index) === null ? '' : ` · 제안 ${row.index + 1}`} · ${escape(text(row.reason) || '사유 미기록')}</li>`).join('')}</ul></section>` : '';
+  if (externalModel) {
+    const scope = object(report.scope) ? report.scope : {};
+    const coverage = object(report.coverage) ? report.coverage : {};
+    const pages = list(report.inventory?.pages).filter(object);
+    const probeRows = list(report.probes).filter(object).map(probe => `<li><span class="mono">${escape(text(probe.id) || 'ID 미기록')}</span> · ${escape(text(probe.tool) || '도구 미기록')} · ${escape(text(probe.status) || '상태 미기록')}${text(probe.hypothesisId) ? ` · 가설 ${escape(probe.hypothesisId)}` : ''}${list(probe.evidenceIds).length ? ` · 증거 ${list(probe.evidenceIds).map(escape).join(', ')}` : ''}</li>`).join('');
+    const evidenceRows = list(report.evidence).filter(object).map(row => `<li><span class="mono">${escape(text(row.id) || 'ID 미기록')}</span> · ${escape(text(row.source) || '출처 미기록')} · ${escape(text(row.summary) || text(row.kind) || '요약 미기록')}</li>`).join('');
+    return `<section class="panel report-top general-report-top"><div><div class="eyebrow">EXTERNAL / READ ONLY AI</div><h2>외부 AI 읽기 전용 탐색 결과${summary.partial ? ' · 부분 결과' : ''}</h2><p>${escape(target)}</p><small>반복 ${summary.iteration}회 · 가설 ${summary.totalHypotheses}건 · 검사 ${summary.probes}건 · 모델 호출 ${summary.modelCalls}건${summary.tokenUsage === null ? ' · 토큰 사용량 미기록' : ` · 기록된 토큰 ${summary.tokenUsage}`}</small></div><div class="report-count"><strong>${summary.totalHypotheses}</strong><span>기록된 가설</span></div></section>
+      <section class="panel general-coverage"><h3>읽기 전용 탐색 범위</h3><div class="general-overview-counts"><span>요청 <strong>${count(coverage.requestsUsed) ?? 0}</strong></span><span>응답 페이지 <strong>${count(coverage.observedPages) ?? pages.length}</strong></span><span>판정 불가 <strong>${summary.inconclusive}</strong></span><span>미점검 <strong>${summary.notTested}</strong></span></div><p>허용 범위 ${escape(scope.origin || '—')}${escape(scope.pathPrefix || '/')} · 공개 GET 읽기 요청만 수행했습니다. 모델 가설과 관찰 결과는 독립 검증된 취약점이 아닙니다. 관찰하지 못한 페이지는 안전 판정이 아닙니다.</p>${text(report.stopReason) ? `<p>종료 사유: ${escape(report.stopReason)}</p>` : ''}</section>
+      <div class="report-items general-report-items">${findingCards || '<section class="panel empty-state"><h3>기록된 가설 없음</h3><p>관찰된 근거에서 모델이 가설을 만들지 않았습니다.</p></section>'}</div>${unresolvedMarkup}
+      <section class="panel general-coverage"><h3>추가 관찰 ${list(report.probes).length}건</h3>${probeRows ? `<ul>${probeRows}</ul>` : '<p>추가 관찰 요청이 없습니다.</p>'}</section>
+      <section class="panel general-coverage"><h3>관찰 증거 ${list(report.evidence).length}건</h3>${evidenceRows ? `<ul>${evidenceRows}</ul>` : '<p>기록된 증거가 없습니다.</p>'}</section>
+      <section class="panel general-coverage"><h3>응답 페이지 ${pages.length}건</h3>${pages.length ? `<ul>${pages.map(page => `<li>${escape(text(page.url) || 'URL 미기록')} · HTTP ${escape(page.status ?? '—')} · ${escape(text(page.contentType) || '형식 미기록')}</li>`).join('')}</ul>` : '<p>응답 페이지가 없습니다.</p>'}</section>${rejectedMarkup}`;
+  }
   return `<section class="panel report-top general-report-top"><div><div class="eyebrow">GENERAL ASSESSMENT / AVAILABLE EVIDENCE</div><h2>범용 점검 결과${summary.partial ? ' · 부분 결과' : ''}</h2><p>${escape(target)}</p><small>반복 ${summary.iteration}회 · 가설 ${summary.totalHypotheses}건 · 검사 ${summary.probes}건 · 거부 제안 ${summary.rejectedProposals.length}건 · 모델 호출 ${summary.modelCalls}건${summary.tokenUsage === null ? ' · 토큰 사용량 미기록' : ` · 기록된 토큰 ${summary.tokenUsage}`}</small></div><div class="report-count"><strong>${findings.length}</strong><span>기록된 결과</span></div></section><section class="panel general-coverage"><h3>점검 범위</h3><div class="general-overview-counts"><span>확정 <strong>${summary.confirmed}</strong></span><span>재현 안 됨 <strong>${summary.notReproduced}</strong></span><span>판정 불가 <strong>${summary.inconclusive}</strong></span><span>미점검 <strong>${summary.notTested}</strong></span></div><p>발견한 가설 기준입니다. 미점검과 판정 불가는 안전하다는 뜻이 아닙니다.</p>${summary.partial ? '<p>부분 결과입니다. 일부 제안이 실행되지 않았으며 남은 공격면은 점검되지 않았습니다.</p>' : ''}${text(report.stopReason) ? `<p>종료 사유: ${escape(report.stopReason)}</p>` : ''}</section><div class="report-items general-report-items">${findingCards || '<section class="panel empty-state"><h3>기록된 결과 없음</h3><p>검사가 끝나기 전이거나 증거가 부족합니다.</p></section>'}</div>${unresolvedMarkup}${rejectedMarkup}`;
 }

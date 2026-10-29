@@ -33,6 +33,16 @@ test('remote deployment polls state and submits general assessments with CSRF an
   const general = calls.filter(call => call.path === '/api/runs').at(-1);
   assert.deepEqual(JSON.parse(general.options.body), { mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.84:4101' });
   assert.equal(general.options.headers['X-CSRF-Token'], 'csrf-a');
+  await client.startExternal({ target: 'https://example.org/start', pathPrefix: '/start', preflightToken: 'token-a' });
+  assert.deepEqual(JSON.parse(calls.filter(call => call.path === '/api/runs').at(-1).options.body), {
+    mode: 'external-general', target: 'https://example.org/start', scope: { pathPrefix: '/start' },
+    preflightToken: 'token-a', authorizationConfirmed: true, modelId: 'rule-baseline',
+  });
+  await client.startExternal({ target: 'https://example.org/start', pathPrefix: '/start', preflightToken: 'token-b', modelId: 'deepseek-flash' });
+  assert.deepEqual(JSON.parse(calls.filter(call => call.path === '/api/runs').at(-1).options.body), {
+    mode: 'external-general', target: 'https://example.org/start', scope: { pathPrefix: '/start' },
+    preflightToken: 'token-b', authorizationConfirmed: true, modelId: 'deepseek-flash',
+  });
   await client.compare('baseline /?', 'candidate #');
   assert.equal(client.reportDownloadUrl('run /?#'), '/api/runs/run%20%2F%3F%23/report.hwpx');
   assert.equal(client.findingReportDownloadUrl('run /?#', 'artifact /?#'),

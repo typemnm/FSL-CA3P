@@ -67,6 +67,22 @@ test('general planner uses the full sourced context as untrusted JSON and return
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE_MODEL_RESPONSE|PRIVATE_PASSWORD|PRIVATE_TOKEN/u);
 });
 
+test('external planner context limits model proposals to public read-only observation', async () => {
+  const client = fakeClient({ done: true, hypotheses: [], probes: [] });
+  await createGeneralModelPlanner({ client, assessmentContext: 'external-read-only' })
+    .propose(assessmentInput());
+  assert.match(client.calls[0].systemPrompt, /read-only observation of a public external website/u);
+  assert.match(client.calls[0].systemPrompt, /only permitted network action is a public GET/u);
+  assert.doesNotMatch(client.calls[0].systemPrompt, /bounded local security assessment/u);
+  assert.equal(client.calls[0].userPayload.task, 'propose_external_read_only_checks');
+  assert.throws(() => createGeneralModelPlanner({ client, assessmentContext: 'unknown' }),
+    /Unsupported general planner assessment context/u);
+  const configured = createGeneralModelPlannerFromEnv({ envFile: false,
+    env: { DEEPSEEK_API_KEY: 'test-only-key', DEEPSEEK_MODEL: 'deepseek-flash' },
+    assessmentContext: 'external-read-only' });
+  assert.match(configured.systemPrompt, /only permitted network action is a public GET/u);
+});
+
 test('general planner rejects invented evidence and extra response fields', async () => {
   const invalid = [
     { ...modelPlan(), hypotheses: [{ ...modelPlan().hypotheses[0], evidenceIds: ['invented'] }] },

@@ -8,6 +8,7 @@ import { createGeneralRuntime } from '../application/general-runtime.mjs';
 import { createExternalRuntime } from '../application/external-runtime.mjs';
 import { createModelReasoning } from '../../packages/models/registry.mjs';
 import { digest } from '../../packages/contracts/index.mjs';
+import { validateGeneralLoopBudget } from '../../packages/contracts/general-loop-budget.mjs';
 import { startLocalLab } from '../../packages/adapters/local-lab-gateway.mjs';
 import { syncRunChecks } from '../../packages/history/check-sync.mjs';
 import { PROJECT_ROOT, treeDigest } from '../../packages/contracts/manifest.mjs';
@@ -81,15 +82,27 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       const controller = new AbortController();
       activeController = controller;
       const externalRun = lease.mode === 'external-general';
+      const externalModelLoop = externalRun && lease.modelId !== 'rule-baseline';
       const generalLab = lease.mode === 'local-lab-general' || externalRun;
       const idorLab = lease.options.testProfile === 'known_record_idor_read';
       if (lease.mode === 'local-lab-general'
         && (lease.options.testProfile !== 'general' || lease.modelId === 'rule-baseline')) {
         throw Object.assign(new Error('General assessment requires its own profile and a registered model.'), { code: 'INVALID_GENERAL_RUN' });
       }
-      if (externalRun && (lease.options.testProfile !== 'external-read-only' || lease.modelId !== 'rule-baseline'
-        || lease.options.fixtureId !== null)) {
-        throw Object.assign(new Error('External observation requires its read-only profile.'), { code: 'INVALID_EXTERNAL_RUN' });
+      if (externalRun && (lease.options.testProfile !== (externalModelLoop
+        ? 'external-general-read-only' : 'external-read-only') || lease.options.fixtureId !== null
+        || externalModelLoop && !lease.options.loopBudget)) {
+        throw Object.assign(new Error('External inspection requires its matching read-only profile.'), { code: 'INVALID_EXTERNAL_RUN' });
+      }
+      if (externalModelLoop) {
+        let budget;
+        try { budget = validateGeneralLoopBudget(lease.options.loopBudget); }
+        catch { throw Object.assign(new Error('External model loop budget is invalid.'), { code: 'INVALID_EXTERNAL_RUN' }); }
+        if (!Number.isSafeInteger(lease.options.scope?.maxRequests)
+          || budget.maxProbes > lease.options.scope.maxRequests - 1
+          || budget.maxIterations > lease.options.scope.maxRequests) {
+          throw Object.assign(new Error('External model loop exceeds the read-only request budget.'), { code: 'INVALID_EXTERNAL_RUN' });
+        }
       }
       const engine = idorLab || generalLab ? null : await createModelReasoning(lease.modelId, { signal: controller.signal,
         env,
@@ -118,7 +131,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
           ...(externalRequestImpl ? { requestImpl: externalRequestImpl } : {}) } : {}),
         caseSnapshot: lease.options.caseSnapshot,
         unavailableInputs: lease.options.unavailableInputs ?? [],
-        ...(generalLab && !externalRun ? { limits: lease.options.loopBudget } : {}),
+        ...(generalLab ? { limits: lease.options.loopBudget } : {}),
         historyProvider,
         cleanupRegistryPath: join(dirname(store.path), 'lab-sessions'),
         ...(generalPlannerFactory ? { plannerFactory: generalPlannerFactory } : {}),

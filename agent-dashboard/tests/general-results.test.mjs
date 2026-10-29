@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun,
+  generalObservedProbeCount, generalReport, generalSummary, isExternalModelLoop, isGeneralAssessment, normalizeGeneralRun,
   renderGeneralLiveResults, renderGeneralOverview, renderGeneralReport,
 } from '../dist/general-results.js';
 
@@ -79,6 +79,44 @@ test('external report displays observed scope, rejections and response receipt s
   assert.match(html, /query_link 2건/);
   assert.match(html, /본문 제한으로 일부만 수신/);
   assert.doesNotMatch(html, /모델 제안|가설 기준/);
+});
+
+test('external model loop displays provisional hypotheses, probes and escaped evidence', () => {
+  const pending = { mode: 'external-general', modelId: 'deepseek-test',
+    testProfile: 'external-general-read-only', events: [], status: 'queued' };
+  assert.equal(isExternalModelLoop(pending), true);
+  assert.match(renderGeneralOverview(pending), /가설과 추가 관찰 준비 중/);
+  const run = normalizeGeneralRun({ ...pending, status: 'completed', target: 'https://example.org/start',
+    report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
+      inspectionMode: 'external-general-read-only', target: { kind: 'external', origin: 'https://example.org' },
+      scope: { origin: 'https://example.org', pathPrefix: '/start', maxRequests: 8 },
+      inventory: { pages: [{ url: 'https://example.org/start', status: 200, contentType: 'text/html' }] },
+      hypotheses: [{ id: 'h-1', category: '<script>alert(1)</script>', asset: '/start', status: 'inconclusive' }],
+      probes: [{ id: 'p-1', hypothesisId: 'h-1', tool: 'http_get', status: 'inconclusive', evidenceIds: ['e-1'] }],
+      evidence: [{ id: 'e-1', source: 'http/public', kind: 'observed-page', summary: '<img src=x onerror=alert(1)>' }],
+      findings: [{ id: 'f-1', hypothesisId: 'h-1', category: '<script>alert(1)</script>',
+        asset: '/start', status: 'inconclusive', evidenceIds: ['e-1'] }],
+      modelCalls: [{ usage: { prompt_tokens: 10, completion_tokens: 5 } }],
+      coverage: { totalHypotheses: 1, inconclusive: 1, notTested: 0, requestsUsed: 2, observedPages: 1 },
+      stopReason: 'planner_done' },
+  });
+  assert.match(renderGeneralOverview(run), /가설과 공개 페이지 추가 관찰/);
+  const live = renderGeneralLiveResults(run);
+  assert.match(live, /독립 검증기가 없어 확정 취약점을 보고하지 않습니다/);
+  assert.doesNotMatch(live, /확정 <strong>/);
+  const html = renderGeneralReport(run);
+  assert.match(html, /외부 AI 읽기 전용 탐색 결과/);
+  assert.match(html, /추가 관찰 1건/);
+  assert.match(html, /관찰 증거 1건/);
+  assert.match(html, /모델 호출 1건/);
+  assert.match(html, /독립 검증되지 않은 가설 h-1/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(html, /<script>|<img src/);
+  assert.doesNotMatch(html, /확정 <strong>/);
+  const unexpectedVerdict = structuredClone(run);
+  unexpectedVerdict.report.findings[0].status = 'confirmed';
+  assert.doesNotMatch(renderGeneralReport(unexpectedVerdict), /<span class="review-tag">확정<\/span>/);
 });
 
 test('general report shows evidence, incomplete coverage, model usage and escapes untrusted text', () => {

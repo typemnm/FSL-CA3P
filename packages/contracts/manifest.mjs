@@ -46,7 +46,14 @@ function attackCatalogSnapshot(path) {
 }
 export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
   if (mode === 'external-general') {
-    const moduleNames = ['apps/application', 'apps/worker', 'packages/contracts', 'packages/run-store'];
+    const modelLoop = modelId !== 'rule-baseline';
+    const loopBudget = modelLoop ? validateGeneralLoopBudget(options.loopBudget) : null;
+    if (loopBudget && loopBudget.maxProbes > options.scope.maxRequests - 1) {
+      throw new TypeError('External model probes exceed the read-only request budget.');
+    }
+    const inspectionMode = modelLoop ? 'external-general-read-only' : 'external-read-only';
+    const moduleNames = ['apps/application', 'apps/worker', 'packages/contracts', 'packages/run-store',
+      ...(modelLoop ? ['agent', 'packages/models'] : [])];
     const modules = Object.fromEntries(moduleNames.map(name => [name,
       { contentDigest: treeDigest(join(PROJECT_ROOT, name)), packageVersion: null }]));
     return { schemaVersion: CONTRACT_VERSIONS.runManifest, runId, createdAt: new Date().toISOString(),
@@ -55,25 +62,31 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
         ciWorkflowRunId: process.env.GITHUB_RUN_ID ?? null, ciAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
       contracts: CONTRACT_VERSIONS, modules,
       shared: { contractDigest: treeDigest(join(PROJECT_ROOT, 'packages/contracts')),
-        lockDigest: null, modelRegistryDigest: null },
-      execution: { mode, simulated: false, maxIterations: 1, delayMs: 0,
+        lockDigest: null, modelRegistryDigest: modelLoop ? treeDigest(join(PROJECT_ROOT, 'packages/models')) : null },
+      execution: { mode, simulated: false, maxIterations: loopBudget?.maxIterations ?? 1,
+        ...(loopBudget ? { loopBudget } : {}), delayMs: 0,
         maxRequests: options.scope.maxRequests, maxDurationMs: options.scope.maxDurationMs,
-        inspectionMode: 'external-read-only' },
-      model: { id: modelId, provider: 'rules', requestedModel: null, reportedModel: null,
-        snapshot: null, adapterDigest: null, promptTemplateDigest: null, settings: model.settings ?? {},
-        actualPromptDigests: [], executionRole: 'not-used-read-only-observation' },
-      data: { logicalInputDigest: digest({ mode, target: options.target, scope: options.scope }),
+        inspectionMode },
+      model: { id: modelId, provider: modelLoop ? 'deepseek' : 'rules', requestedModel: modelLoop ? modelId : null,
+        reportedModel: null, snapshot: null,
+        adapterDigest: modelLoop ? treeDigest(join(PROJECT_ROOT, 'packages/models')) : null,
+        promptTemplateDigest: modelLoop ? treeDigest(join(PROJECT_ROOT, 'agent/src/general-model-planner.js')) : null,
+        settings: model.settings ?? {}, actualPromptDigests: [],
+        ...(modelLoop ? {} : { executionRole: 'not-used-read-only-observation' }) },
+      data: { logicalInputDigest: digest({ mode, modelId, target: options.target, scope: options.scope,
+          ...(loopBudget ? { loopBudget } : {}) }),
         datasetDigest: null, catalogDigest: null, caseSnapshotDigest: null, caseRevisions: [],
         unavailableInputs: ['casper-db', 'authenticated-sessions', 'independent-verifiers'] },
       target: { kind: 'external', fixtureId: null, entryUrl: redact(options.target),
         origin: options.scope.origin, scope: options.scope, initialStateDigest: null,
-        stateCapture: 'external-live-state-not-snapshotted', testProfile: 'external-read-only' },
+        stateCapture: 'external-live-state-not-snapshotted', testProfile: inspectionMode },
       policy: { rulesetDigest: treeDigest(join(PROJECT_ROOT, 'apps/application/external-target.mjs')),
         methods: ['GET', 'HEAD'], maxRequests: options.scope.maxRequests,
         maxResponseBytes: options.scope.maxResponseBytes, requestTimeoutMs: options.scope.requestTimeoutMs,
         maxDurationMs: options.scope.maxDurationMs,
         redirects: 'manual-no-follow', mutationRetry: 'never', targetReset: 'not-required-read-only',
-        recovery: 'interrupted-new-run-required', maxIterations: 1 },
+        recovery: 'interrupted-new-run-required', maxIterations: loopBudget?.maxIterations ?? 1,
+        ...(loopBudget ? { maxProbes: loopBudget.maxProbes } : {}) },
       environment: { nodeVersion: process.version, pythonVersion: 'not-applicable',
         browserVersion: 'not-applicable', playwrightVersion: 'not-applicable',
         runnerImageDigest: process.env.CA3P_RUNNER_IMAGE_DIGEST ?? null },

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ca3p.local/contracts/run-request/1.0",
-  "title": "CA3P lab or external observation request",
+  "title": "CA3P lab or external read-only assessment request",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -27,7 +27,8 @@
       "else": {"properties": {"testProfile": {"not": {"const": "general"}}}}},
     {"if": {"properties": {"mode": {"const": "external-general"}}, "required": ["mode"]},
       "then": {"required": ["target", "preflightToken", "authorizationConfirmed"],
-        "properties": {"modelId": {"const": "rule-baseline"}, "authorizationConfirmed": {"const": true}},
+        "properties": {"modelId": {"enum": ["rule-baseline", "deepseek-flash", "deepseek-v4-pro"]},
+          "authorizationConfirmed": {"const": true}},
         "not": {"anyOf": [{"required": ["fixtureId"]}, {"required": ["testProfile"]}, {"required": ["delayMs"]}]}},
       "else": {"not": {"anyOf": [{"required": ["scope"]}, {"required": ["preflightToken"]},
         {"required": ["authorizationConfirmed"]}]}}}

@@ -230,3 +230,38 @@ test('run service persists an external run only after bound preflight and confir
     assert.equal(service.getRun(state.run.id).target, checked.normalizedUrl);
   } finally { await service.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('external model loop requires a configured DeepSeek model and freezes the read-only budget', async () => {
+  const checked = await preflightExternalTarget({ target: 'https://8.8.8.8/start' },
+    { request: async () => ({ status: 200 }) });
+  const directory = mkdtempSync(join(tmpdir(), 'ca3p-external-model-'));
+  const body = { mode: 'external-general', modelId: 'deepseek-flash',
+    target: checked.normalizedUrl, scope: { pathPrefix: '/' },
+    preflightToken: checked.token, authorizationConfirmed: true };
+  const unavailable = createRunService({ storePath: join(directory, 'unavailable.sqlite3'),
+    autoStartWorker: false, importLegacy: false, env: {}, envFile: join(directory, 'missing.env') });
+  const configured = createRunService({ storePath: join(directory, 'configured.sqlite3'),
+    autoStartWorker: false, importLegacy: false, env: { DEEPSEEK_API_KEY: 'test-key' },
+    envFile: join(directory, 'missing.env') });
+  try {
+    await assert.rejects(unavailable.start(body), { status: 503 });
+    await assert.rejects(configured.start({ ...body, modelId: 'unknown-model' }), { status: 400 });
+    await assert.rejects(configured.start({ ...body, authorizationConfirmed: false }), { status: 400 });
+    await assert.rejects(configured.start({ ...body, target: 'https://8.8.8.8/changed' }), { status: 400 });
+    configured.setGeneralLoopBudget({ maxIterations: 10, maxProbes: 40, maxEvidenceItems: 180 });
+    const state = await configured.start(body);
+    assert.equal(state.run.testProfile, 'external-general-read-only');
+    assert.equal(state.run.manifest.execution.inspectionMode, 'external-general-read-only');
+    assert.equal(state.run.manifest.model.provider, 'deepseek');
+    assert.ok(state.run.manifest.modules.agent.contentDigest);
+    assert.deepEqual(state.run.manifest.execution.loopBudget,
+      { maxIterations: 8, maxProbes: 7, maxEvidenceItems: 180 });
+    const lease = configured.store.claimNext('external-model-options-test');
+    assert.equal(lease.options.testProfile, 'external-general-read-only');
+    assert.deepEqual(lease.options.loopBudget, state.run.manifest.execution.loopBudget);
+    configured.store.finish(lease, 'completed');
+  } finally {
+    await Promise.all([unavailable.close(), configured.close()]);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
