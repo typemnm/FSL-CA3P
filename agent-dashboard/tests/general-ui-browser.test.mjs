@@ -71,10 +71,9 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.equal(await page.locator('#loop-graph').isHidden(), true);
   assert.equal(await page.locator('#general-run-summary').isVisible(), true);
   assert.equal(await page.locator('.general-loop-phase.is-observed').count(), 2);
-  assert.equal(await page.locator('#general-live-results-panel').isVisible(), true);
-  assert.equal(await page.locator('#general-live-results-panel').evaluate(
-    element => element.previousElementSibling?.classList.contains('activity-panel')), true);
-  assert.match(await page.locator('#general-live-results-panel').textContent(), /owner mismatch observed/);
+  assert.equal(await page.locator('#general-live-results-panel').count(), 0);
+  assert.equal(await page.locator('#view-dashboard .activity-panel').count(), 0);
+  assert.equal(await page.locator('#view-dashboard .stat-card').count(), 0);
   await page.locator('.general-loop-phase.is-observed').first().click();
   assert.match(await page.locator('#trace-code').textContent(), /probe.observe/);
   assert.match(await page.locator('#progress-number').textContent(), /4 events · 검사 1건/);
@@ -165,15 +164,7 @@ test('general run renders and supported targets launch the bounded model assessm
   await page.waitForFunction(() => document.querySelector('#execution-label')?.textContent === 'GENERAL / EVIDENCE');
   assert.match(await page.locator('#progress-label').textContent(), /결과 대기/);
   assert.match(await page.locator('#progress-number').textContent(), /기록된 검사 ID 1개/);
-  assert.match(await page.locator('#general-live-results-panel').textContent(), /검사 p1/);
   assert.match(await page.locator('#general-run-summary').textContent(), /실행 검사 1/);
-  assert.match(await page.locator('#general-live-results-panel').textContent(), /가설 h1 · 도구 known_record_idor_read/);
-  assert.match(await page.locator('#general-live-results-panel').textContent(), /가설 내용: access_control · \/api\/item\/:id/);
-  assert.match(await page.locator('#general-live-results-panel').textContent(), /증거 ID: e1/);
-  assert.match(await page.locator('#general-live-results-panel').textContent(), /증거 e1: role-comparison · \/api\/item\/:id/);
-  assert.match(await page.locator('#general-live-results-panel').textContent(), /확정 판정 검사 1/);
-  assert.match(await page.locator('#general-live-results-panel').textContent(), /최종 보고서 전의 검사 이벤트/);
-  assert.doesNotMatch(await page.locator('#general-live-results-panel').textContent(), /\/records\/1/);
   await page.locator('[data-general-event=verified]').click();
   assert.match(await page.locator('#trace-code').textContent(), /"stage": "verify"/);
   assert.match(await page.locator('#trace-code').textContent(), /"probeId": "p1"/);
@@ -181,7 +172,7 @@ test('general run renders and supported targets launch the bounded model assessm
   run.iterations = 2; run.events = originalEvents;
   await page.reload();
   await page.waitForFunction(() => document.querySelector('#execution-label')?.textContent === 'GENERAL / EVIDENCE');
-  assert.match(await page.locator('#general-live-results-panel').textContent(), /owner mismatch observed/);
+  assert.equal(await page.locator('#general-live-results-panel').count(), 0);
   await page.locator('[data-view=reports]').click();
   assert.match(await page.locator('#report-document-status').textContent(), /저장된 HWPX 보고서 없음/);
   assert.match(await page.locator('.report-document').textContent(), /화면의 가설별 결과와 JSON 내보내기/);
@@ -233,9 +224,14 @@ test('confirmed general findings have separate HWPX downloads and partial failur
   await page.goto('http://ca3p.invalid/#dashboard');
   await page.locator('[data-view=reports]').click();
   assert.match(await page.locator('#report-document-status').textContent(), /HWPX 2건 준비됨/);
+  assert.equal(await page.locator('.report-document-item').count(), 2);
   assert.equal(await page.locator('.report-document-download[href]').count(), 2);
   assert.equal(await page.locator('.report-document-download[href]').first().getAttribute('href'),
     `/api/runs/${documentRun.id}/reports/${firstArtifact}.hwpx`);
+  assert.equal(await page.locator('.report-document-download[href]').last().getAttribute('href'),
+    `/api/runs/${documentRun.id}/reports/${secondArtifact}.hwpx`);
+  assert.deepEqual(await page.locator('.report-document-download[href]').evaluateAll(links =>
+    links.map(link => link.getAttribute('download'))), ['첫 번째.hwpx', '두 번째.hwpx']);
   assert.equal(await page.locator('#report-content img').count(), 0);
   assert.equal(await page.locator('#report-content script').count(), 0);
   await page.locator('[data-view=sessions]').click();

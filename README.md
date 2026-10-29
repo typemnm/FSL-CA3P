@@ -29,6 +29,14 @@ docker compose -f vul-web2/compose.yaml up --build -d
 docker compose -f docker-compose.yml -f docker-compose.vul-web2.yml up --build -d
 ```
 
+기존 `127.0.0.1:4173` 대시보드와 실행 이력을 유지하면서 별도 내부 사이트 실험 환경을 준비하려면 Windows PowerShell에서 다음 스크립트를 실행합니다. 대학 사이트를 시작하고, 전용 Compose 프로젝트·볼륨을 사용하는 대시보드를 `127.0.0.1:4175`에 띄운 뒤 두 사이트의 컨테이너 내부 접속과 HTTP 상태를 검증합니다. 기존 4173 컨테이너는 재생성하지 않습니다.
+
+```powershell
+.\scripts\start-local-internal-experiment.ps1
+```
+
+스크립트가 출력하는 명령으로 **4175 실험 대시보드의 별도 관리자 계정**을 확인하세요. 실습 대상을 선택하면 대한대학교 `http://daehan:4101`, 원창대학교 `http://wonchang:4102`가 기본 주소로 입력됩니다. 범용 루프 실행에는 `agent/.env`의 모델 API 설정이 필요합니다.
+
 # CI/CD 및 대시보드 테스트 가이드
 
 ## 1. 변경 전 로컬 검증
@@ -91,6 +99,8 @@ Docker Engine과 Docker Compose v2.24 이상이 필요합니다. 프로젝트 �
 docker compose up --build -d
 docker compose logs -f dashboard
 ```
+
+Windows에서 화면 코드를 수정한 뒤 실행 중인 대시보드에 반영하려면 `.\scripts\redeploy-local-dashboard.ps1`을 실행합니다. 스크립트는 이미지를 빌드하고 대시보드 컨테이너만 재생성한 뒤 이미지·화면 파일·HTTP 응답을 확인합니다. 처음으로 내부 사이트 네트워크를 연결할 때는 `-InternalSites` 옵션을 사용하며, 이후 재배포에서는 연결을 유지합니다. 이미지 삭제나 빌드만으로는 실행 중인 컨테이너가 교체되지 않으며, 저장된 계정·DB·보고서 볼륨은 유지됩니다.
 
 브라우저에서 [CA3P 로컬 대시보드](http://127.0.0.1:4173)를 엽니다. Compose는 호스트의 `127.0.0.1:4173`에만 포트를 공개합니다. 컨테이너 시작만으로 모델 API 호출이나 사이트 검사는 진행되지 않습니다. 화면에서 **코어 fixture 시작** 또는 **로컬 실습 시작**을 눌러 실행합니다.
 

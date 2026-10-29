@@ -79,6 +79,42 @@ test('general planner rejects invented evidence and extra response fields', asyn
   }
 });
 
+test('general planner retries one schema-invalid response without replaying model output', async () => {
+  const calls = [];
+  const values = [
+    { ...modelPlan(), hypotheses: [{ ...modelPlan().hypotheses[0], rawModelSecret: 'PRIVATE_MODEL_RESPONSE' }] },
+    modelPlan(),
+  ];
+  const client = { async completeJson(request) {
+    calls.push(request);
+    return { value: values.shift(), metadata: { provider: 'deepseek', model: 'deepseek-flash',
+      finishReason: 'stop', usage: { prompt_tokens: 20, completion_tokens: 12 } } };
+  } };
+  const plan = await createGeneralModelPlanner({ client }).propose(assessmentInput());
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].userPayload, calls[0].userPayload);
+  assert.equal(calls[1].signal, calls[0].signal);
+  assert.match(calls[1].systemPrompt, /hypotheses\[0\] contains missing or unexpected fields/u);
+  assert.doesNotMatch(JSON.stringify(calls[1]), /PRIVATE_MODEL_RESPONSE/u);
+  assert.deepEqual(plan.probes, modelPlan().probes);
+  assert.deepEqual(plan.modelAttempts.map(item => item.status), ['failed', 'completed']);
+  assert.equal(plan.modelAttempts[0].validationError, 'hypotheses[0] contains missing or unexpected fields');
+  assert.equal(plan.modelAttempts[1].validationError, undefined);
+  assert.doesNotMatch(JSON.stringify(plan), /PRIVATE_MODEL_RESPONSE/u);
+});
+
+test('general planner stops after one schema correction attempt and reports both attempts safely', async () => {
+  const client = fakeClient({ ...modelPlan(), extra: 'PRIVATE_MODEL_RESPONSE' });
+  await assert.rejects(createGeneralModelPlanner({ client }).propose(assessmentInput()), error => {
+    assert.equal(error.code, 'GENERAL_PLANNER_SCHEMA_ERROR');
+    assert.equal(error.modelAttempts.length, 2);
+    assert.deepEqual(error.modelAttempts.map(item => item.status), ['failed', 'failed']);
+    assert.doesNotMatch(JSON.stringify(error.modelAttempts), /PRIVATE_MODEL_RESPONSE/u);
+    return true;
+  });
+  assert.equal(client.calls.length, 2);
+});
+
 test('general planner discards invalid probes without returning their inputs for execution', async () => {
   const invalid = [
     [{ ...modelPlan().probes[0], hypothesisId: 'unknown' }, 'unknown_hypothesis_id'],

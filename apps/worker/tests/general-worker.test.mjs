@@ -17,7 +17,7 @@ async function waitFor(check, timeoutMs = 5000) {
   assert.fail('general worker state did not settle');
 }
 
-async function setup(modelId = 'deepseek-flash') {
+async function setup(modelId = 'deepseek-flash', loopBudget) {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   mkdirSync(runtimeRoot, { recursive: true });
   const directory = mkdtempSync(join(runtimeRoot, 'general-worker-'));
@@ -29,7 +29,7 @@ async function setup(modelId = 'deepseek-flash') {
     state: { id, mode: 'local-lab-general', assessmentMode: 'general', modelId,
       status: 'queued', events: [] },
     options: { mode: 'local-lab-general', testProfile: 'general', fixtureId: 'vul-web2-daehan',
-      target: 'http://127.0.0.1:4101', delayMs: 0 } });
+      target: 'http://127.0.0.1:4101', delayMs: 0, ...(loopBudget ? { loopBudget } : {}) } });
   store.close();
   return { id, storePath, directory };
 }
@@ -60,7 +60,8 @@ async function runWithFindings(t, { findings, status = 'completed', reportGenera
 }
 
 test('general worker uses its own runtime and model, persists the report, and writes one confirmed HWPX', async t => {
-  const { id, storePath, directory } = await setup();
+  const loopBudget = { maxIterations: 10, maxProbes: 40, maxEvidenceItems: 180 };
+  const { id, storePath, directory } = await setup('deepseek-flash', loopBudget);
   let legacyInvoked = false; let closed = false; let factoryOptions;
   const report = { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
     status: 'completed', findings: [{ id: 'f1', category: 'access_control', status: 'confirmed', evidenceIds: ['e1'] }],
@@ -104,6 +105,7 @@ test('general worker uses its own runtime and model, persists the report, and wr
   assert.equal(factoryOptions.modelId, 'deepseek-flash');
   assert.equal(factoryOptions.fixtureId, 'vul-web2-daehan');
   assert.equal(factoryOptions.targetOrigin, 'http://127.0.0.1:4101');
+  assert.deepEqual(factoryOptions.limits, loopBudget);
   assert.equal(final.report.schemaVersion, 'general-assessment/1');
   assert.equal(final.report.findings.length, 1);
   assert.equal(final.historyWrite.status, 'skipped');

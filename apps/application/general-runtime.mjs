@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { emptyRun, assertIdentifier } from '../../packages/contracts/index.mjs';
+import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../packages/contracts/general-loop-budget.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
@@ -13,9 +14,9 @@ const { runGeneralAssessment } = generalCore;
 const { createGeneralModelPlannerFromEnv } = generalPlanner;
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 const MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
-const LIMITS = Object.freeze({ maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 });
 // Planner prompt cap 65,536 − 8,192 margin − 39,894 measured worst non-web_info context (daehan inventory 13,859,
 // initial evidence 3,833, 40 hypotheses 19,867, system/rest/probe IDs 2,335) − 24 one-line overviews × 441 = 6,866.
+// Measured with the default loop budget (maxProbes 24); a larger maxProbes shrinks the headroom the core prompt has.
 const WEB_INFO_EVIDENCE_BUDGET_BYTES = 6800;
 const MAX_BODY_BYTES = 24 * 1024;
 const MAX_INITIAL_PAGES = 14;
@@ -112,7 +113,7 @@ function eventMetadataText(value, maxBytes, { asset = false } = {}) {
   }
   return utf8Prefix(safeSourceExcerpt(text), maxBytes) || undefined;
 }
-function projectGeneralEvent(event) {
+function projectGeneralEvent(event, limits) {
   const stage = eventIdentifier(event.stage) ?? 'unknown';
   const request = {};
   const response = {};
@@ -120,7 +121,7 @@ function projectGeneralEvent(event) {
     const value = eventIdentifier(event[key]);
     if (value) request[key] = value;
   }
-  for (const [key, limit] of [['hypothesisIds', 128], ['probeIds', LIMITS.maxProbes]]) {
+  for (const [key, limit] of [['hypothesisIds', 128], ['probeIds', limits.maxProbes]]) {
     const values = eventIdentifiers(event[key], limit);
     if (values) request[key] = values;
   }
@@ -131,7 +132,7 @@ function projectGeneralEvent(event) {
       asset: eventMetadataText(item.asset, 256, { asset: true }) }))
     .filter(item => item.id && item.category && item.asset);
   if (Array.isArray(event.probeLinks)) request.probeLinks = event.probeLinks
-    .slice(0, LIMITS.maxProbes)
+    .slice(0, limits.maxProbes)
     .map(link => ({ probeId: eventIdentifier(link?.probeId),
       hypothesisId: eventIdentifier(link?.hypothesisId), tool: eventIdentifier(link?.tool) }))
     .filter(link => link.probeId && link.hypothesisId && link.tool);
@@ -140,10 +141,10 @@ function projectGeneralEvent(event) {
     const value = eventIdentifier(event[key]);
     if (value) response[key] = value;
   }
-  const evidenceIds = eventIdentifiers(event.evidenceIds, LIMITS.maxEvidenceItems);
+  const evidenceIds = eventIdentifiers(event.evidenceIds, limits.maxEvidenceItems);
   if (evidenceIds) response.evidenceIds = evidenceIds;
   if (Array.isArray(event.evidenceSummaries)) response.evidenceSummaries = event.evidenceSummaries
-    .slice(0, LIMITS.maxEvidenceItems).filter(record)
+    .slice(0, limits.maxEvidenceItems).filter(record)
     .map(item => ({ id: eventIdentifier(item.id), kind: eventMetadataText(item.kind, 128),
       asset: eventMetadataText(item.asset, 256, { asset: true }) }))
     .filter(item => item.id && item.kind)
@@ -295,7 +296,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   signal, onModelCall, beforeProbe, afterProbe, caseSnapshot, unavailableInputs = [],
   historyProvider, plannerFactory, boardFactory, cleanupRegistryPath, fetchImpl = fetch,
   idorProbe = probeSite, catalogReader = readKnowledgeCatalogReadOnly,
-  webParserCollect = collectWebInfo, limits = LIMITS } = {}) {
+  webParserCollect = collectWebInfo, limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!MODELS.has(modelId)) throw new TypeError('A registered DeepSeek model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
@@ -306,11 +307,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   for (const callback of [onModelCall, beforeProbe, afterProbe, historyProvider, plannerFactory, boardFactory]) {
     if (callback !== undefined && typeof callback !== 'function') throw new TypeError('Invalid general runtime callback.');
   }
+  limits = validateGeneralLoopBudget(limits);
   const config = FIXTURES[fixtureId];
   const origin = config.siteKey ? validateUniversityOrigin(targetOrigin ?? config.origin) : null;
-  if (config.siteKey && new URL(origin).port !== new URL(config.origin).port) {
-    throw new TypeError('The selected university fixture must use its registered lab port.');
-  }
   const instanceId = randomUUID();
   const listeners = new Set();
   const initial = () => ({ ...emptyRun(), mode: 'local-lab-general', assessmentMode: 'general',
@@ -842,7 +841,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const sessionRole = probe.input.sessionRole;
         const cookie = sessionRole === undefined ? null : sessionCookies.get(sessionRole);
         // The core ends the run when one execution returns more evidence than it has room for.
-        const remaining = (limits.maxEvidenceItems ?? LIMITS.maxEvidenceItems) - evidenceCount;
+        const remaining = limits.maxEvidenceItems - evidenceCount;
         // A page can reflect a fixed session value (header, URL) or carry URL userinfo; keep both out.
         const evidenceText = value => [...sessionCookies.values()].reduce(
           (text, pair) => text.replaceAll(pair.slice(pair.indexOf('=') + 1), '[redacted]'),
@@ -1001,6 +1000,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       let plan;
       try { plan = await planner.propose(context); }
       catch (error) {
+        const attempts = planner instanceof generalPlanner.GeneralModelPlanner
+          && Array.isArray(error?.modelAttempts) ? error.modelAttempts : [];
+        for (const attempt of attempts) {
+          failedModelCalls.push(attempt);
+          await onModelCall?.(attempt);
+        }
+        if (attempts.length && error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR') throw error;
         const failed = { provider: 'deepseek', requestedModel: modelId,
           status: 'failed', iteration: context.iteration };
         if (planner instanceof generalPlanner.GeneralModelPlanner
@@ -1018,7 +1024,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         await onModelCall?.(failed);
         throw error;
       }
-      if (plan?.modelMetadata) await onModelCall?.(plan.modelMetadata);
+      const trustedPlanner = planner instanceof generalPlanner.GeneralModelPlanner;
+      const attempts = trustedPlanner && Array.isArray(plan?.modelAttempts)
+        ? plan.modelAttempts : [plan?.modelMetadata];
+      for (const attempt of attempts) if (attempt) await onModelCall?.(attempt);
+      if (!trustedPlanner && plan && typeof plan === 'object' && Object.hasOwn(plan, 'modelAttempts')) {
+        plan = { ...plan };
+        delete plan.modelAttempts;
+      }
       return plan;
     } };
     const availableTools = ['http_get', 'web_info', 'repository_read',
@@ -1031,7 +1044,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         evidenceCount = event.progress?.evidenceCount ?? evidenceCount;
         const iteration = eventCount(event.iteration) ?? run.iterations;
         run.iterations = Math.max(run.iterations, iteration);
-        appendEvent({ ...projectGeneralEvent(event), iteration });
+        appendEvent({ ...projectGeneralEvent(event, limits), iteration });
       },
     });
     report.runId = run.id;

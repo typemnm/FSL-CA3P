@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { assertIdentifier, redact, digest, TERMINAL_STATUSES, ACTIVE_STATUSES } from '../contracts/index.mjs';
+import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../contracts/general-loop-budget.mjs';
 
 export const DEFAULT_STORE_PATH = resolve(process.env.CA3P_STORE_PATH ?? fileURLToPath(new URL('../../.runtime/runs.sqlite', import.meta.url)));
 const now = () => new Date().toISOString();
@@ -53,7 +54,11 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
     CREATE TABLE IF NOT EXISTS pending_target_resets (
       id INTEGER PRIMARY KEY CHECK(id=1), obligations_json TEXT NOT NULL);
     INSERT OR IGNORE INTO pending_target_resets(id,obligations_json) VALUES (1,'[]');
+    CREATE TABLE IF NOT EXISTS general_loop_budget (
+      id INTEGER PRIMARY KEY CHECK(id=1), limits_json TEXT NOT NULL, updated_at TEXT NOT NULL);
     PRAGMA user_version=1;`);
+  db.prepare('INSERT OR IGNORE INTO general_loop_budget(id,limits_json,updated_at) VALUES (1,?,?)')
+    .run(JSON.stringify(GENERAL_LOOP_BUDGET_DEFAULTS), now());
   let closed = false;
   function transaction(fn) {
     db.exec('BEGIN IMMEDIATE');
@@ -81,6 +86,14 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
     const value = parse(db.prepare('SELECT obligations_json FROM pending_target_resets WHERE id=1').get().obligations_json);
     if (!Array.isArray(value)) throw fault('INVALID_RESET_OBLIGATIONS', 'Stored target reset obligations are invalid.', 503);
     return value;
+  }
+  function getGeneralLoopBudget() {
+    try {
+      const row = db.prepare('SELECT limits_json FROM general_loop_budget WHERE id=1').get();
+      return validateGeneralLoopBudget(parse(row?.limits_json));
+    } catch {
+      throw fault('INVALID_GENERAL_LOOP_BUDGET_STORE', 'Stored general loop budget is invalid.', 503);
+    }
   }
   function deleteRunRecords() {
     const counts = {};
@@ -136,6 +149,15 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
     path: storePath,
     experimentState,
     pendingTargetResets,
+    getGeneralLoopBudget,
+    setGeneralLoopBudget(limits) {
+      const validated = validateGeneralLoopBudget(limits);
+      return transaction(() => {
+        db.prepare('UPDATE general_loop_budget SET limits_json=?,updated_at=? WHERE id=1')
+          .run(JSON.stringify(validated), now());
+        return getGeneralLoopBudget();
+      });
+    },
     activeRunCount,
     recoverAbandonedExperimentOperation() {
       return transaction(() => {
