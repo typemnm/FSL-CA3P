@@ -126,7 +126,6 @@ let centralHistoryLoaded = false;
 let historyRefreshPending = false;
 let models = [];
 let acceptedModelId = '';
-let acceptedFixtureId = 'vul-web2-daehan';
 let pendingModelChange = null;
 let modelChangeUnreset = storedSettings?.modelChangeUnreset === true;
 let experimentEpoch = readJSON(EXPERIMENT_EPOCH, null);
@@ -151,10 +150,10 @@ let selectedModule = 'parser';
 let selectedEventId = null;
 let activeTab = 'request';
 let activeView = 'dashboard';
-let targetKind = 'lab';
-let externalPreflight = null;
-let externalPreflightPending = false;
-let externalPreflightGeneration = 0;
+let parserPreview = null;
+let previewPending = false;
+let previewGeneration = 0;
+let previewExpiryTimer = null;
 let reportPreviewGeneration = 0;
 let toastTimer;
 let stars;
@@ -203,8 +202,6 @@ function isLab(item) { return ['local-lab-rule', 'local-lab-deepseek', 'local-la
 function isExternalRun(item) { return item?.mode === 'external-general'; }
 function isAiLab(item) { return item?.mode === 'local-lab-deepseek' || isGeneralAssessment(item) && !isExternalRun(item); }
 function canOperate() { return authSession && (!authSession.authRequired || authSession.authenticated) && authSession.user?.role !== 'viewer'; }
-function selectedFixture() { return $('fixture-select').value || 'vul-web2-daehan'; }
-function selectedIdorFixture() { return IDOR_FIXTURES[selectedFixture()]; }
 function selectedModel() { return models.find(item => item.id === $('model-select').value); }
 function isXssLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile) === 'stored_xss_canary'; }
 function isIdorLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile ?? item.manifest?.target?.testProfile) === 'known_record_idor_read'; }
@@ -216,7 +213,7 @@ function describeModule(id, item = currentRun()) { if (isGeneralAssessment(item)
 function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : isGeneralAssessment(item) ? '범용 점검 · 증거 기반 결과' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
 const viewMeta = {
   chat: ['AI 채팅', 'AI <span>채팅</span>', '모델과 대화하며 실행 결과와 로컬 코드를 함께 살펴봅니다.'],
-  assets: ['자산', '점검 <span>자산</span>', '등록 실습 대상과 외부 URL을 선택하고 점검을 시작합니다.'],
+  assets: ['자산', '점검 <span>자산</span>', 'URL별 파싱 결과를 확인한 뒤 판단 엔진을 선택합니다.'],
   dashboard: ['공격', '공격 <span>작업공간</span>', '선택한 대상의 점검 과정과 기록을 확인합니다.'],
   sessions: ['실행 이력', 'Every run. <span>Remembered.</span>', '중앙에 저장된 실행과 모듈별 증거를 다시 살펴보세요.'],
   compare: ['실행 비교', 'Inspect the <span>difference.</span>', '코드·모델·입력 조건과 결과 차이를 함께 확인하세요.'],
@@ -387,28 +384,30 @@ function renderStats() {
   $('connection-notice').hidden = connected;
   $('connection-notice').textContent = `${connectionLabel}. 표시된 상태를 보존하고 실행 제어를 잠급니다.`;
   $('stop-button').disabled = !canOperate() || !!inspectedRun || !connected || controlPending || !['queued','preparing','running'].includes(run.status);
-  const idor = selectedIdorFixture();
-  $('asset-summary-detail').textContent = targetKind === 'external'
-    ? `외부 URL · ${$('external-url').value.trim() || '아직 지정하지 않음'}${externalPreflight?.ready ? ' · 사전 점검 완료' : ''}`
-    : `등록 실습 · vul-web2 ${idor.name} · ${$('lab-target-origin').value.trim()}`;
+  const ready = previewReady();
+  $('asset-summary-detail').textContent = parserPreview
+    ? `${parserPreview.entryUrl} · 파싱 결과 ${parserPreview.pages?.length || 0}개`
+    : `시작 URL · ${$('start-url').value.trim() || '아직 지정하지 않음'}`;
   const model = selectedModel();
-  $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || !labReadiness.generalSupported || !labReadiness.generalAvailable;
-  $('external-preflight-button').disabled = !canOperate() || !connected || active || externalPreflightPending;
-  $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || !externalPreflight?.ready;
-  $('fixture-select').disabled = controlPending || active || !canOperate();
-  $('lab-target-origin').disabled = controlPending || active || !canOperate();
-  $('lab-target-control').hidden = false;
-  $('model-select').disabled = controlPending || active || !canOperate();
+  $('engine-step').hidden = !previewAvailable();
+  $('lab-run-button').disabled = !ready || !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || (parserPreview.targetKind === 'lab' && model.provider === 'deepseek' && (!labReadiness.generalSupported || !labReadiness.generalAvailable));
+  $('parse-start-button').disabled = !canOperate() || !connected || controlPending || active || previewPending;
+  $('add-path-button').disabled = !parserPreview || Date.parse(parserPreview.expiresAt) <= Date.now() || !canOperate() || !connected || controlPending || active || previewPending;
+  $('model-select').disabled = !ready || controlPending || active || !canOperate() || parserPreview?.targetKind === 'external';
   $('model-reset-toggle').checked = settings.confirmModelReset;
   $('model-reset-toggle').disabled = controlPending || !!pendingModelChange;
   $('experiment-reset-button').disabled = !canOperate() || !connected || controlPending || active || !!pendingModelChange;
   $('model-reset-warning').hidden = !modelChangeUnreset;
-  $('lab-title').textContent = `실습 대상 · vul-web2 ${idor.name}`;
-  $('lab-description').textContent = `${idor.name}의 실습 IP와 포트를 아래에 입력하세요. vul-web2 Compose를 먼저 시작해야 하며 기본 포트는 ${idor.port}입니다.`;
-  $('lab-check-scope').textContent = '발견한 공격면과 사용 가능한 증거에서 가설을 세우고, 실행 예산 안에서 반복 점검합니다. 지원되지 않는 검사는 미점검 사유로 기록합니다.';
-  $('lab-run-label').textContent = '범용 취약점 점검 시작';
-  $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : !labReadiness.generalSupported ? '범용 점검 서버 경로가 연결되지 않았습니다.' : !labReadiness.generalAvailable ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 설정을 확인하세요.' : model?.available ? `${model.name || model.id} · 범용 점검 준비됨` : '사용 가능한 범용 점검 모델이 없습니다. 서버의 모델 설정을 확인하세요.';
-  $('model-scope').textContent = '실제 모델을 호출합니다. 허용된 대상과 사용 가능한 도구 범위에서 검사하며 API 비용이 발생할 수 있습니다.';
+  $('lab-title').textContent = '2. 판단 엔진 선택';
+  $('lab-description').textContent = parserPreview?.targetKind === 'external' ? '외부 URL의 공개 페이지 관찰은 현재 규칙 엔진으로 실행합니다.' : '파싱 결과를 확인한 뒤 판단 엔진을 선택하세요.';
+  $('lab-check-scope').textContent = parserPreview?.targetKind === 'external' ? '외부 URL은 읽기 전용으로 관찰합니다.' : '등록된 실습 대상의 파싱 결과를 확인하고 점검합니다.';
+  $('lab-run-label').textContent = '점검 시작';
+  $('lab-readiness').textContent = !ready ? '파싱 결과를 먼저 확인하세요.' : authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : model?.available ? `${model.name || model.id} · 점검 준비됨` : '사용 가능한 판단 엔진이 없습니다.';
+  $('model-scope').textContent = parserPreview?.targetKind === 'external'
+    ? '규칙 엔진이 공개 HTTP 응답을 읽기 전용으로 관찰합니다. 사전 파싱한 경로를 방문 후보에 반영합니다.'
+    : model?.provider === 'deepseek'
+      ? '사전 파싱한 페이지를 초기 관찰에 반영합니다. AI 모델 호출에는 API 비용이 발생할 수 있습니다.'
+      : '규칙 엔진은 기존 고정 IDOR 검사를 수행합니다. 파싱 결과는 기록에 저장되지만 IDOR 판정 입력에는 사용하지 않습니다.';
   $('new-session-button').disabled = !canOperate() || !connected || controlPending || active;
   $('export-button').disabled = item.events.length === 0 && !general;
 
@@ -580,6 +579,17 @@ function renderReportPicker() {
   if (entries.some(item => item.id === selected)) $('report-run-select').value = selected;
   $('report-json-download').disabled = !currentRun().id;
 }
+function parserPreviewMarkup(preview) {
+  if (!Array.isArray(preview?.pages) || !preview.pages.length) return '';
+  const label = items => (items || []).map(item => `${item.name || ''}${item.version ? ' ' + item.version : ''}`).filter(Boolean).join(', ') || '없음';
+  const forms = page => (page.forms || []).map(form => `${form.method || 'GET'} ${form.action || ''} (${(form.fields || []).map(field => field.name || field.type).join(', ')})`).join(', ') || '없음';
+  const paths = page => (page.paths || []).map(path => path.url || path).filter(Boolean);
+  const pathLabel = url => { try { return new URL(url).pathname; } catch { return String(url); } };
+  const pathSummary = page => { const values = paths(page); return `${values.length}개${values.length ? ' · ' + values.slice(0, 3).map(pathLabel).join(', ') + (values.length > 3 ? ' 외' : '') : ''}`; };
+  const pathDetails = page => paths(page).length > 3 ? `<details class="parser-report-paths"><summary>전체 발견 경로 보기</summary><ul>${paths(page).map(url => `<li>${escape(url)}</li>`).join('')}</ul></details>` : '';
+  const row = (name, value) => `<div class="parser-preview-row"><strong>${name}</strong><span>${escape(value)}</span></div>`;
+  return `<section class="panel parser-saved-preview"><h2>점검 전에 확인한 URL별 파싱 결과</h2><p>이 결과는 점검을 시작하기 전에 수집했습니다.</p><div class="parser-preview-pages">${preview.pages.map(page => `<article class="parser-preview-card"><h3>${escape(page.url)}</h3><p>HTTP ${escape(page.status ?? '응답 없음')} · ${escape(page.contentType || '콘텐츠 유형 미확인')} · ${escape(page.title || '제목 없음')} · ${page.mode === 'browser' ? '브라우저 관찰' : 'HTTP 응답 분석'}</p>${row('기술', label(page.technologies))}${row('외부 라이브러리', label(page.libraries))}${row('폼', forms(page))}${row('발견 경로', pathSummary(page))}${pathDetails(page)}${page.errors?.length ? `<p class="parser-preview-warning">수집 오류: ${escape(page.errors.map(error => error.code || String(error)).join(', '))}</p>` : ''}${page.truncated ? '<p class="parser-preview-warning">부분 결과</p>' : ''}${page.mode === 'http-response' ? '<p class="parser-preview-note">외부 URL은 HTTP 응답을 분석했습니다. 브라우저 DOM과 실행 후 JavaScript 상태, 폼은 수집하지 않았습니다.</p>' : ''}</article>`).join('')}</div></section>`;
+}
 function renderReports() {
   const item = currentRun();
   if (isLegacyRun(item)) {
@@ -592,10 +602,12 @@ function renderReports() {
         : '관측과 검증이 진행 중입니다. 결과가 저장되면 가설별 근거와 미점검 사유를 표시합니다.';
       $('report-content').innerHTML = `<section class="panel empty-state" role="status"><h2>범용 점검 결과 대기</h2><p>${message}</p></section>`;
       if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
+      if (item.parserPreview) $('report-content').insertAdjacentHTML('beforeend', parserPreviewMarkup(item.parserPreview));
       return;
     }
     $('report-content').innerHTML = `${reportDocumentMarkup(item)}${renderGeneralReport(item)}${jsonSection('범용 점검 결과 원문', generalReport(item))}`;
     if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
+    if (item.report?.parserPreview || item.parserPreview) $('report-content').insertAdjacentHTML('beforeend', parserPreviewMarkup(item.report?.parserPreview ?? item.parserPreview));
     if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
     hydrateIcons($('report-content'));
     return;
@@ -611,6 +623,7 @@ function renderReports() {
   $('report-content').insertAdjacentHTML('afterbegin', reportDocumentMarkup(item));
   hydrateIcons($('report-content'));
   if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
+  if (item.report?.parserPreview || item.parserPreview) $('report-content').insertAdjacentHTML('beforeend', parserPreviewMarkup(item.report?.parserPreview ?? item.parserPreview));
   if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
 }
 function renderNotifications() {
@@ -644,109 +657,179 @@ async function submitControl(action) {
   catch (error) { showRuntimeError(error.message); notify('로컬 런타임 요청에 실패했습니다. 오류 내용을 확인하세요.'); }
   finally { controlPending = false; render(); }
 }
-function setTargetKind(kind) {
-  targetKind = kind === 'external' ? 'external' : 'lab';
-  $('target-kind-lab').classList.toggle('active', targetKind === 'lab');
-  $('target-kind-external').classList.toggle('active', targetKind === 'external');
-  $('target-kind-lab').setAttribute('aria-pressed', String(targetKind === 'lab'));
-  $('target-kind-external').setAttribute('aria-pressed', String(targetKind === 'external'));
-  $('external-target-form').hidden = targetKind !== 'external';
-  document.querySelector('.lab-launch').hidden = targetKind === 'external';
+function previewAvailable() {
+  return !!parserPreview && Date.parse(parserPreview.expiresAt) > Date.now()
+    && Array.isArray(parserPreview.pages) && parserPreview.pages.some(page => page.status >= 200
+      && page.status < (parserPreview.targetKind === 'external' ? 300 : 400))
+    && $('start-url').value.trim() === parserPreview.entryUrl;
+}
+function previewReady() {
+  return previewAvailable() && !previewPending && !$('additional-path').value.trim();
+}
+function renderModelChoices() {
+  const previous = $('model-select').value;
+  const visible = !previewAvailable() ? [] : models.filter(item => item && typeof item.id === 'string' &&
+    (parserPreview.targetKind === 'external'
+      ? item.id === 'rule-baseline'
+      : item.id === 'rule-baseline' || item.provider === 'deepseek' && item.mode === 'local-lab-general'));
+  $('model-select').innerHTML = visible.length ? visible.map(item =>
+    `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('')
+    : '<option value="">파싱 후 판단 엔진 표시</option>';
+  $('model-select').value = visible.find(item => item.id === previous && item.available)?.id
+    || visible.find(item => item.available)?.id || '';
+  acceptedModelId = $('model-select').value;
   renderStats();
 }
-function invalidateExternalPreflight() {
-  externalPreflightGeneration += 1;
-  externalPreflight = null;
-  $('external-preflight-status').textContent = 'URL 또는 범위가 바뀌었습니다. 다시 사전 점검하세요.';
-  renderStats();
+function renderPreview() {
+  const preview = parserPreview;
+  const pathLabel = url => { try { const parsed = new URL(url); return `${parsed.pathname}${parsed.search}` || '/'; } catch { return String(url); } };
+  const staticAsset = url => /\.(?:css|m?js|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|pdf|zip|mp4|webm)$/iu.test(pathLabel(url));
+  $('target-preview-results').hidden = !preview;
+  if (!preview) {
+    $('target-preview-pages').replaceChildren();
+    $('discovered-paths').replaceChildren();
+    renderModelChoices();
+    return;
+  }
+  $('target-preview-pages').innerHTML = (preview.pages || []).map((page, index) => {
+    const tech = (page.technologies || []).map(item => `${item.name || ''}${item.version ? ' ' + item.version : ''}`);
+    const libs = (page.libraries || []).map(item => `${item.name || ''}${item.version ? ' ' + item.version : ''}`);
+    const forms = (page.forms || []).map(form => `${form.method || 'GET'} ${form.action || ''} (${(form.fields || []).map(field => field.name || field.type).join(', ')})`);
+    const paths = (page.paths || []).map(path => path.url || path).filter(Boolean);
+    const htmlPaths = paths.filter(url => !staticAsset(url));
+    const errors = (page.errors || []).map(error => error.code || String(error));
+    const row = (label, values) => `<div class="parser-preview-row"><strong>${label}</strong><span>${escape(values.length ? values.join(', ') : '없음')}</span></div>`;
+    return `<article class="parser-preview-card" data-preview-page="${index}">
+      <h3>${escape(page.url)}</h3>
+      <p class="parser-preview-meta">HTTP ${escape(page.status ?? '응답 없음')} · ${escape(page.contentType || '콘텐츠 유형 미확인')} · ${page.mode === 'browser' ? '브라우저 관찰' : 'HTTP 응답 분석'}</p>
+      <p>${escape(page.title || '제목 없음')}</p>
+      ${row('기술', tech)}${row('외부 라이브러리', libs)}${row('폼', forms)}
+      <div class="parser-preview-row"><strong>발견 경로</strong><span>${escape(`${paths.length}개 · 페이지 후보 ${htmlPaths.length}개${htmlPaths.length ? ' · ' + htmlPaths.slice(0, 3).map(pathLabel).join(', ') + (htmlPaths.length > 3 ? ' 외' : '') : ''}`)}</span></div>
+      ${errors.length ? `<p class="parser-preview-warning">수집 오류: ${escape(errors.join(', '))}</p>` : ''}
+      ${page.truncated ? '<p class="parser-preview-warning">수집 제한에 도달하여 부분 결과입니다.</p>' : ''}
+      ${page.mode === 'http-response' ? '<p class="parser-preview-note">외부 URL은 HTTP 응답을 분석했습니다. 브라우저 DOM과 실행 후 JavaScript 상태, 폼은 수집하지 않았습니다.</p>' : ''}
+    </article>`;
+  }).join('');
+  const observed = new Set((preview.pages || []).map(page => page.url));
+  const discovered = (preview.discoveredPaths || []).filter(url => !observed.has(url));
+  const htmlCandidates = discovered.filter(url => !staticAsset(url));
+  const staticCandidates = discovered.filter(staticAsset);
+  const pathButton = url => `<button type="button" class="button secondary" data-preview-url="${escape(url)}" title="${escape(url)}">${escape(pathLabel(url))}</button>`;
+  $('discovered-paths').innerHTML = discovered.length
+    ? `<strong>발견된 페이지 경로 ${htmlCandidates.length}개 · 선택해서 추가 파싱</strong><div class="parser-path-buttons">${htmlCandidates.map(pathButton).join('') || '<span>페이지 경로 후보가 없습니다.</span>'}</div>${staticCandidates.length ? `<details class="parser-static-paths"><summary>정적 파일 경로 ${staticCandidates.length}개</summary><div class="parser-path-buttons">${staticCandidates.map(pathButton).join('')}</div></details>` : ''}`
+    : '<span>추가로 파싱할 발견 경로가 없습니다.</span>';
+  renderModelChoices();
 }
-$('target-kind-lab').addEventListener('click', () => setTargetKind('lab'));
-$('target-kind-external').addEventListener('click', () => setTargetKind('external'));
-$('external-url').addEventListener('input', invalidateExternalPreflight);
-$('external-path').addEventListener('input', invalidateExternalPreflight);
-$('external-target-form').addEventListener('submit', async event => {
+function invalidatePreview(message = '시작 URL이 바뀌었습니다. 새 URL을 다시 파싱하세요.') {
+  previewGeneration += 1;
+  if (previewExpiryTimer) clearTimeout(previewExpiryTimer);
+  previewExpiryTimer = null;
+  parserPreview = null;
+  previewPending = false;
+  acceptedModelId = '';
+  $('target-preview-status').textContent = message;
+  renderPreview();
+}
+function acceptPreview(result) {
+  parserPreview = result;
+  if (result.entryUrl) $('start-url').value = result.entryUrl;
+  const externalRedirect = result.targetKind === 'external' && (result.pages || []).some(page => page.status >= 300 && page.status < 400)
+    && !(result.pages || []).some(page => page.status >= 200 && page.status < 300);
+  $('target-preview-status').textContent = externalRedirect
+    ? '외부 URL이 이동 응답(3xx)을 반환했습니다. 이동한 주소를 시작 URL에 직접 입력해 다시 파싱하세요.'
+    : $('additional-path').value.trim()
+    ? '입력한 추가 경로는 아직 파싱되지 않았습니다. 이 경로를 파싱하거나 입력을 지우세요.'
+    : `${result.pages?.length || 0}개 URL의 결과를 확인하세요. 수집 오류와 부분 결과는 URL별로 표시됩니다.`;
+  if (previewExpiryTimer) clearTimeout(previewExpiryTimer);
+  const remaining = Date.parse(result.expiresAt) - Date.now();
+  if (Number.isFinite(remaining)) previewExpiryTimer = setTimeout(() => invalidatePreview('파싱 결과가 만료됐습니다. 다시 파싱하세요.'), Math.max(0, Math.min(remaining, 2147483647)));
+  renderPreview();
+}
+$('start-url').addEventListener('input', () => invalidatePreview());
+$('additional-path').addEventListener('input', () => {
+  $('target-preview-status').textContent = $('additional-path').value.trim()
+    ? '입력한 경로는 아직 파싱되지 않았습니다. 이 경로를 파싱하거나 입력을 지우세요.'
+    : parserPreview ? '파싱된 URL별 결과를 확인한 뒤 판단 엔진을 선택하세요.' : '시작 URL을 파싱하세요.';
+  renderStats();
+});
+$('target-preview-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (!canOperate() || connection !== 'connected') return;
-  const target = $('external-url').value.trim();
-  const pathPrefix = $('external-path').value.trim() || '/';
-  const generation = ++externalPreflightGeneration;
-  externalPreflightPending = true;
-  $('external-preflight-status').textContent = '대상 DNS·연결·범위를 확인하고 있습니다.';
-  externalPreflight = null;
+  if (!canOperate() || connection !== 'connected' || previewPending) return;
+  const url = $('start-url').value.trim();
+  const generation = ++previewGeneration;
+  previewPending = true;
+  $('target-preview-status').textContent = '시작 URL을 파싱하고 있습니다.';
   renderStats();
   try {
-    const result = await runtime.preflightExternal(target, pathPrefix);
-    if (generation !== externalPreflightGeneration || $('external-url').value.trim() !== target || ($('external-path').value.trim() || '/') !== pathPrefix) return;
-    externalPreflight = result.ready && result.allowed && result.token ? result : null;
-    $('external-preflight-status').textContent = result.ready
-      ? `${result.normalizedUrl} · ${result.scope?.pathPrefix || '/'} · GET/HEAD 읽기 관찰 · 최대 ${result.scope?.maxRequests ?? '설정된'}요청. ${result.message || ''}`
-      : result.message || '이 대상은 현재 점검할 수 없습니다.';
-    if (result.normalizedUrl) $('external-url').value = result.normalizedUrl;
-    if (result.scope?.pathPrefix) $('external-path').value = result.scope.pathPrefix;
+    const result = await runtime.previewTarget({ url });
+    if (generation !== previewGeneration || $('start-url').value.trim() !== url) return;
+    acceptPreview(result);
   } catch (error) {
-    if (generation !== externalPreflightGeneration) return;
-    $('external-preflight-status').textContent = error.message;
-    externalPreflight = null;
+    if (generation === previewGeneration) $('target-preview-status').textContent = `파싱 실패: ${error.message}`;
   } finally {
-    externalPreflightPending = false;
-    renderStats();
+    if (generation === previewGeneration) { previewPending = false; renderStats(); }
   }
 });
-$('external-run-button').addEventListener('click', async () => {
-  if (!externalPreflight?.ready) return;
-  if (['queued','preparing','running','stopping'].includes(run.status)) return;
-  await submitControl(async () => {
-    await runtime.startExternal({ target: externalPreflight.normalizedUrl,
-      pathPrefix: externalPreflight.scope.pathPrefix, preflightToken: externalPreflight.token });
-    inspectedRun = null;
-    selectedEventId = null;
-    externalPreflight = null;
-    $('external-preflight-status').textContent = '외부 대상 관찰을 시작했습니다. 재실행하려면 사전 점검을 다시 수행하세요.';
-    showAttackProgress();
-    notify('외부 URL의 공개 페이지 읽기 관찰을 시작했습니다.');
-  });
+async function addPreviewUrl(rawUrl, fromInput = false) {
+  if (!parserPreview || previewPending || !canOperate() || connection !== 'connected') return;
+  let url;
+  try {
+    url = new URL(rawUrl, parserPreview.origin);
+    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== parserPreview.origin || url.username || url.password || url.hash) throw new Error();
+  } catch {
+    $('target-preview-status').textContent = '같은 원점의 URL 또는 경로만 추가할 수 있습니다.';
+    return;
+  }
+  const generation = ++previewGeneration;
+  const previewId = parserPreview.previewId;
+  previewPending = true;
+  $('target-preview-status').textContent = `${url.href} 파싱 중입니다.`;
+  renderStats();
+  try {
+    const result = await runtime.previewTarget({ url: url.href, previewId });
+    if (generation !== previewGeneration || parserPreview?.previewId !== previewId) return;
+    if (fromInput && $('additional-path').value.trim() === rawUrl) $('additional-path').value = '';
+    acceptPreview(result);
+  } catch (error) {
+    if (generation === previewGeneration) $('target-preview-status').textContent = `추가 경로 파싱 실패: ${error.message}`;
+  } finally {
+    if (generation === previewGeneration) { previewPending = false; renderStats(); }
+  }
+}
+$('additional-path-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const value = $('additional-path').value.trim();
+  if (value) void addPreviewUrl(value, true);
+});
+$('discovered-paths').addEventListener('click', event => {
+  const button = event.target.closest('[data-preview-url]');
+  if (button) void addPreviewUrl(button.dataset.previewUrl);
 });
 $('lab-run-button').addEventListener('click', async () => {
-  if (browserResetError || ['failed', 'resetting'].includes(experimentStatus) || pendingModelChange) return;
+  if (!previewReady() || browserResetError || ['failed', 'resetting'].includes(experimentStatus) || pendingModelChange) return;
   const model = selectedModel();
-  if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available
-    || !labReadiness.generalSupported || !labReadiness.generalAvailable || model.provider !== 'deepseek') return;
-  let target;
-  try {
-    const input = $('lab-target-origin').value.trim();
-    const url = new URL(input.includes('://') ? input : `http://${input}`);
-    if (url.protocol !== 'http:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error();
-    target = url.origin;
-    $('lab-target-origin').value = target;
-    $('lab-target-origin').removeAttribute('aria-invalid');
-  } catch {
-    $('lab-target-origin').setAttribute('aria-invalid', 'true');
-    showRuntimeError('실습 대상의 HTTP 원점(IP와 포트)만 입력하세요. 경로, 쿼리와 로그인 정보는 포함할 수 없습니다.');
-    $('lab-target-origin').focus(); return;
-  }
+  if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available) return;
+  const preview = parserPreview;
   await submitControl(async () => {
-    await runtime.startAssessment(model.id, selectedFixture(), target);
+    try {
+      if (preview.targetKind === 'external') {
+        const preflight = await runtime.preflightExternal(preview.entryUrl, '/');
+        if (!preflight?.ready || !preflight?.token) throw new Error(preflight?.message || '외부 URL 사전 점검에 실패했습니다.');
+        await runtime.startExternal({ target: preview.entryUrl, pathPrefix: preflight.scope?.pathPrefix || '/',
+          preflightToken: preflight.token, previewId: preview.previewId });
+      } else {
+        await runtime.startAssessment(model.id, preview.fixtureId, preview.origin, preview.previewId);
+      }
+    } catch (error) {
+      if ([400, 409].includes(error.status) && /preview|파싱|만료|expired/i.test(`${error.message} ${error.code || ''}`))
+        invalidatePreview('파싱 결과가 만료됐거나 유효하지 않습니다. 다시 파싱하세요.');
+      throw error;
+    }
     inspectedRun = null;
     selectedEventId = null;
     showAttackProgress();
-    notify(`${selectedIdorFixture().name} 범용 점검을 시작했습니다.`);
+    notify('점검을 시작했습니다.');
   });
-});
-function commitFixture(id) {
-  $('fixture-select').value = id;
-  acceptedFixtureId = id;
-  const fixture = selectedIdorFixture();
-  if (fixture) $('lab-target-origin').value = labReadiness.targetOrigins?.[id] || `http://127.0.0.1:${fixture.port}`;
-  $('lab-target-origin').removeAttribute('aria-invalid');
-  renderStats();
-}
-$('fixture-select').addEventListener('change', () => {
-  const targetFixtureId = $('fixture-select').value;
-  if (pendingModelChange || controlPending || !canOperate()
-    || ['queued','preparing','running','stopping'].includes(run.status)) {
-    $('fixture-select').value = acceptedFixtureId; return;
-  }
-  commitFixture(targetFixtureId);
 });
 $('stop-button').addEventListener('click', async () => {
   if (inspectedRun || !['queued','preparing','running'].includes(run.status)) return;
@@ -762,7 +845,7 @@ $('new-session-button').addEventListener('click', async () => {
     window.scrollTo(0, 0);
     notify('자산 메뉴에서 점검 대상을 확인하고 새 실행을 시작하세요.');
   });
-  if (run.status === 'idle') (targetKind === 'external' ? $('external-url') : $('fixture-select')).focus();
+  if (run.status === 'idle') $('start-url').focus();
 });
 function chooseModule(id, eventId = null) {
   selectedModule = id;
@@ -842,7 +925,7 @@ $('settings-button').addEventListener('click', () => { $('motion-setting').check
 document.addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault(); navigate('assets');
-    const field = targetKind === 'external' ? $('external-url') : $('fixture-select');
+    const field = $('start-url');
     field.focus(); field.select?.();
   }
   if (event.key === 'Escape') {
@@ -930,12 +1013,8 @@ async function loadWorkspace() {
   await Promise.allSettled([refreshHistory(), refreshCiResults(), (async () => {
     const payload = await runtime.getModels();
     if (generation !== workspaceGeneration) return;
-    const previous = $('model-select').value;
-    models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string' && item.provider === 'deepseek' && item.mode === 'local-lab-general') : [];
-    $('model-select').innerHTML = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
-    $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
-    renderStats();
-    acceptedModelId = $('model-select').value;
+    models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string') : [];
+    renderModelChoices();
   })().catch(error => showRuntimeError(error.message)), (async () => {
     const payload = await runtime.getPlatform();
     if (generation !== workspaceGeneration) return;

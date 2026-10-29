@@ -19,6 +19,10 @@ const report = {
     { id: 'f2', hypothesisId: 'h2', category: '<script>alert(1)</script>', asset: '/posts', status: 'not_tested', evidenceIds: [], reason: 'observer_unavailable' }],
   coverage: { totalHypotheses: 2, confirmed: 1, notReproduced: 0, inconclusive: 0, notTested: 1 },
   modelCalls: [{ requestedModel: 'deepseek-test', usage: { prompt_tokens: 8, completion_tokens: 4 } }],
+  parserPreview: { pages: [{ url: 'http://127.0.0.1:4101/about', status: 200, contentType: 'text/html',
+    title: '소개', mode: 'browser', technologies: [{ name: 'Bootstrap', version: '5' }],
+    libraries: [{ name: 'jQuery', version: '3' }], forms: [{ method: 'GET', action: '/search', fields: [{ name: 'q', type: 'text' }] }],
+    paths: [{ url: 'http://127.0.0.1:4101/search' }], errors: [{ code: '<img src=x onerror=alert(1)>' }], truncated: true }] },
 };
 const run = { id: 'general-run', mode: 'local-lab-general', assessmentMode: 'general', status: 'completed',
   target: 'http://127.0.0.1:4101', startedAt: '2026-10-26T00:00:00Z', elapsedMs: 4100,
@@ -65,6 +69,18 @@ test('general run renders and supported targets launch the bounded model assessm
     }
     if (path === '/api/runs' && request.method() === 'POST') return json({ instanceId: 'general-ui-test', mode: run.mode, run,
       lab: { available: true, generalSupported: true, generalAvailable: true } });
+    if (path === '/api/targets/preview' && request.method() === 'POST') {
+      const body = request.postDataJSON();
+      const extra = !!body.previewId;
+      return json({ previewId: 'preview-ui', targetKind: 'lab', fixtureId: 'vul-web2-daehan',
+        origin: 'http://127.0.0.1:4101', entryUrl: 'http://127.0.0.1:4101/', expiresAt: '2099-01-01T00:00:00Z',
+        pages: [{ url: 'http://127.0.0.1:4101/', status: 200, contentType: 'text/html', title: '대한대학교',
+          technologies: [{ name: 'Bootstrap', version: '5' }], libraries: [{ name: 'jQuery', version: '3' }],
+          forms: [], paths: [{ url: 'http://127.0.0.1:4101/about', sources: ['link'] }], errors: [], truncated: false, mode: 'browser' },
+          ...(extra ? [{ url: 'http://127.0.0.1:4101/about', status: 200, contentType: 'text/html', title: '소개',
+            technologies: [{ name: 'Vue' }], libraries: [], forms: [], paths: [], errors: [], truncated: false, mode: 'browser' }] : [])],
+        discoveredPaths: extra ? [] : ['http://127.0.0.1:4101/about'] });
+    }
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs: [run], total: 1 });
     if (path === '/api/models') return json({ models: [
       { id: 'rule-baseline', name: 'Rule baseline', provider: 'local', mode: 'local-lab-rule', available: true },
@@ -92,6 +108,8 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.match(await page.locator('#report-content').textContent(), /owner mismatch observed/);
   assert.match(await page.locator('#report-content').textContent(), /observer_unavailable/);
   assert.match(await page.locator('#report-content').textContent(), /모델 호출 1건/);
+  assert.match(await page.locator('.parser-saved-preview').textContent(), /Bootstrap 5.*jQuery 3.*GET \/search.*\/search.*부분 결과/s);
+  assert.equal(await page.locator('.parser-saved-preview img').count(), 0);
   assert.equal(await page.locator('#report-content script').count(), 0);
   assert.match(await page.locator('#report-content').textContent(), /미점검과 판정 불가는 안전하다는 뜻이 아닙니다/);
   assert.match(await page.locator('#report-document-status').textContent(), /범용 HWPX 미지원/);
@@ -104,30 +122,41 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.equal(await page.locator('#history-banner').isVisible(), true);
   await page.locator('[data-view=assets]').click();
   assert.equal(await page.locator('#view-assets').isVisible(), true);
-  assert.equal(await page.locator('#fixture-select option').allTextContents().then(values => values.some(value => /XSS|IDOR/.test(value))), false);
+  assert.equal(await page.locator('#engine-step').isHidden(), true);
+  assert.equal(await page.locator('#model-select').isVisible(), false);
   assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #target-form').count(), 0);
-  assert.deepEqual(await page.locator('#fixture-select option').evaluateAll(options => options.map(option => option.value)),
-    ['vul-web2-daehan', 'vul-web2-wonchang']);
-  assert.match(await page.locator('#lab-title').textContent(), /vul-web2 대한대학교/);
-  assert.doesNotMatch(await page.locator('#lab-title').textContent(), /XSS|IDOR/);
-  assert.match(await page.locator('#lab-check-scope').textContent(), /반복 점검/);
-  assert.match(await page.locator('#lab-run-label').textContent(), /범용 취약점 점검 시작/);
-  await page.locator('#fixture-select').selectOption('vul-web2-daehan');
-  assert.match(await page.locator('#lab-title').textContent(), /vul-web2 대한대학교/);
-  assert.doesNotMatch(await page.locator('#lab-title').textContent(), /XSS|IDOR/);
+  assert.equal(await page.locator('#fixture-select').count(), 0);
+  await page.locator('#start-url').fill('http://127.0.0.1:4101/');
+  await page.locator('#parse-start-button').click();
+  await page.locator('#target-preview-pages .parser-preview-card').first().waitFor();
+  assert.match(await page.locator('#target-preview-pages .parser-preview-card').first().textContent(), /대한대학교.*Bootstrap 5.*jQuery 3/s);
+  assert.equal(await page.locator('#engine-step').isVisible(), true);
+  await page.locator('[data-preview-url="http://127.0.0.1:4101/about"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('#target-preview-pages .parser-preview-card').length === 2);
+  assert.match(await page.locator('#target-preview-pages .parser-preview-card').last().textContent(), /소개.*Vue/s);
+  await page.locator('#additional-path').fill('/unparsed');
+  assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
+  await page.locator('#additional-path').fill('');
+  await page.locator('#start-url').fill('http://127.0.0.1:4102/');
+  assert.equal(await page.locator('#engine-step').isHidden(), true);
+  assert.equal(await page.locator('#target-preview-pages .parser-preview-card').count(), 0);
+  await page.locator('#start-url').fill('http://127.0.0.1:4101/');
+  await page.locator('#parse-start-button').click();
+  await page.locator('#target-preview-pages .parser-preview-card').first().waitFor();
   assert.equal(await page.locator('#model-select').isEnabled(), true);
-  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-test');
+  await page.locator('#model-select').selectOption('deepseek-test');
+  await page.locator('#model-reset-no').click();
   const launch = page.waitForResponse(response => response.url().endsWith('/api/runs') && response.request().method() === 'POST');
   await page.locator('#lab-run-button').click();
   await launch;
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   assert.deepEqual(posts.at(-1), { path: '/api/runs', body: { mode: 'local-lab-general', modelId: 'deepseek-test',
-    fixtureId: 'vul-web2-daehan', target: 'http://127.0.0.1:4101' } });
+    fixtureId: 'vul-web2-daehan', target: 'http://127.0.0.1:4101', previewId: 'preview-ui' } });
   await page.locator('[data-view=assets]').click();
-  assert.equal(await page.locator('#model-select option[value="rule-baseline"]').count(), 0);
+  assert.equal(await page.locator('#model-select option[value="rule-baseline"]').count(), 1);
   assert.equal(await page.locator('#model-select').isEnabled(), true);
   assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-test');
-  assert.equal(posts.length, 1);
+  assert.equal(posts.filter(item => item.path === '/api/runs').length, 1);
   await page.locator('[data-view=dashboard]').click();
 
   const originalEvents = run.events;

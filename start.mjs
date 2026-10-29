@@ -12,9 +12,10 @@ Options:
   --port, -p  Local dashboard port (1-65535, default: PORT or 4173)
   --help, -h  Show this help
 
-The dashboard binds to 127.0.0.1 by default. The fixture run uses scripted modules.
-The separate local lab action starts an isolated board and may call DeepSeek.
-Stop it with Ctrl+C. Arbitrary target URLs are not used by the lab.`;
+The dashboard binds to 127.0.0.1 by default. Enter a URL and review its parser
+results before choosing a supported judgment engine. Registered university lab
+checks may call DeepSeek; external URLs use read-only HTTP observation.
+Stop the dashboard with Ctrl+C.`;
 
 function resolveOptions(args) {
   let port = process.env.PORT ?? '4173';

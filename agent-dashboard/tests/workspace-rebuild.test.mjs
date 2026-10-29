@@ -53,6 +53,11 @@ test('workspace navigation, external target preflight and report preview use the
     if (path === '/api/ci-results') return json({ runs: [] });
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs: [run], total: 1 });
     if (path === '/api/runs/stored-report') return json({ run });
+    if (path === '/api/targets/preview') return json({ previewId: 'preview-external', targetKind: 'external', fixtureId: null,
+      origin: 'https://example.org', entryUrl: 'https://example.org/start', expiresAt: '2099-01-01T00:00:00Z',
+      pages: [{ url: 'https://example.org/start', status: 200, contentType: 'text/html', title: 'External site',
+        technologies: [{ name: 'Bootstrap' }], libraries: [{ name: 'jQuery' }], forms: [], paths: [], errors: [],
+        truncated: false, mode: 'http-response' }], discoveredPaths: [] });
     if (path === '/api/targets/preflight') {
       await new Promise(resolve => setTimeout(resolve, 100));
       return json({ ready: true, allowed: true, normalizedUrl: 'https://example.org/start',
@@ -103,19 +108,22 @@ test('workspace navigation, external target preflight and report preview use the
   assert.equal(new URL(page.url()).hash, '#workspace/assets');
   await page.reload();
   await page.locator('#view-assets').waitFor({ state: 'visible' });
-  await page.locator('#target-kind-external').click();
-  await page.locator('#external-url').fill('https://example.org/start');
-  assert.equal(await page.locator('#external-authorization').count(), 0);
-  await page.locator('#external-preflight-button').click();
-  // The button is visible while preflight is pending; wait for its result.
-  await page.waitForFunction(() => document.querySelector('#external-run-button')?.disabled === false);
-  assert.equal(await page.locator('#external-run-button').isEnabled(), true);
-  await page.locator('#external-run-button').click();
+  assert.equal(await page.locator('#engine-step').isHidden(), true);
+  await page.locator('#start-url').fill('https://example.org/start');
+  await page.locator('#parse-start-button').click();
+  await page.locator('.parser-preview-card').first().waitFor();
+  assert.match(await page.locator('.parser-preview-card').first().textContent(), /Bootstrap.*jQuery/s);
+  assert.match(await page.locator('.parser-preview-card').first().textContent(), /브라우저 DOM과 실행 후 JavaScript 상태/);
+  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
+  assert.equal(await page.locator('#model-select').isDisabled(), true);
+  assert.equal(await page.locator('#lab-run-button').isEnabled(), true);
+  await page.locator('#lab-run-button').click();
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
-  assert.deepEqual(requests.filter(item => ['/api/targets/preflight','/api/runs'].includes(item.path)), [
+  assert.deepEqual(requests.filter(item => ['/api/targets/preview','/api/targets/preflight','/api/runs'].includes(item.path)), [
+    { path: '/api/targets/preview', body: { url: 'https://example.org/start', authorizationConfirmed: true } },
     { path: '/api/targets/preflight', body: { target: 'https://example.org/start', scope: { pathPrefix: '/' }, authorizationConfirmed: true } },
     { path: '/api/runs', body: { mode: 'external-general', target: 'https://example.org/start', scope: { pathPrefix: '/' },
-      preflightToken: 'token-1', authorizationConfirmed: true, modelId: 'rule-baseline' } },
+      preflightToken: 'token-1', authorizationConfirmed: true, modelId: 'rule-baseline', previewId: 'preview-external' } },
   ]);
   await page.locator('[data-view=reports]').click();
   await page.locator('#report-run-select').selectOption('stored-report');
@@ -181,8 +189,7 @@ test('workspace navigation, external target preflight and report preview use the
   await page.reload();
   await page.waitForFunction(() => document.querySelector('#connection-status')?.textContent.includes('연결됨'));
   await page.locator('[data-view=assets]').click();
-  await page.locator('#target-kind-external').click();
-  assert.equal(await page.locator('#external-preflight-button').isDisabled(), true);
+  assert.equal(await page.locator('#parse-start-button').isDisabled(), true);
   await page.locator('[data-view=db]').click();
   await page.locator('[data-case-id=case-1]').click();
   assert.equal(await page.locator('#case-edit-form button[type=submit]').isDisabled(), true);

@@ -61,6 +61,15 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
     if (path === '/api/state') return json(stateEnvelope());
     if (path === '/api/events') return route.fulfill({ contentType: 'text/event-stream', body: `event: state\ndata: ${JSON.stringify(stateEnvelope())}\n\n` });
     if (path === '/api/models') return json({ models: reportOptions.models ?? resetModels });
+    if (path === '/api/targets/preview') {
+      const url = new URL(request.postDataJSON().url);
+      const fixtureId = url.origin === 'http://127.0.0.1:4102' ? 'vul-web2-wonchang'
+        : url.origin === 'http://127.0.0.1:4101' ? 'vul-web2-daehan' : null;
+      return json({ previewId: 'preview-test', targetKind: fixtureId ? 'lab' : 'external', fixtureId, origin: url.origin,
+        entryUrl: url.href, expiresAt: '2099-01-01T00:00:00Z', discoveredPaths: [],
+        pages: [{ url: url.href, status: 200, contentType: 'text/html', title: '실습 페이지', technologies: [], libraries: [],
+          forms: [], paths: [], errors: [], truncated: false, mode: 'browser' }] });
+    }
     if (path === '/api/experiment-reset' && request.method() === 'POST') {
       resets.push({ body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] });
       if (resetError) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: resetError }) });
@@ -124,6 +133,11 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   await page.waitForFunction(() => document.querySelector('#connection-status').textContent.includes('연결됨'));
   await page.locator('[data-view=assets]').click();
   await page.locator('#view-assets').waitFor({ state: 'visible' });
+  if (role !== 'viewer' && !['queued','preparing','running','stopping'].includes(reportOptions.state?.status)) {
+    await page.locator('#start-url').fill('http://127.0.0.1:4101/');
+    await page.locator('#parse-start-button').click();
+    await page.locator('#engine-step').waitFor({ state: 'visible' });
+  }
   return { page, mutations, reviews, resets, errors, detailCalls: () => detailCalls,
     setResetError(value) { resetError = value; },
     advanceExperiment() { state = idle; runs.splice(0); serverEpoch += 1; },
@@ -258,36 +272,38 @@ test('browser cache deletion failure blocks model switching and execution after 
   assert.deepEqual(errors, []);
 });
 
-test('changing a registered target keeps the selected general model without forcing a rule engine', async t => {
+test('changing the start URL invalidates its parsed result and previous model choice', async t => {
   const { page, resets, errors } = await setup(t, 'operator', null, { models: resetModels });
   await page.locator('#model-reset-toggle').uncheck();
   await page.locator('#model-select').selectOption('deepseek-flash');
   await page.locator('#model-reset-toggle').check();
-  for (const fixture of ['vul-web2-daehan', 'vul-web2-wonchang']) {
-    await page.locator('#fixture-select').selectOption(fixture);
-    assert.equal(await page.locator('#fixture-select').inputValue(), fixture);
-    assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-flash');
-    assert.equal(await page.locator('#model-reset-dialog').isVisible(), false);
-    assert.equal(await page.locator('#model-select').isEnabled(), true);
-  }
+  await page.locator('#start-url').fill('http://127.0.0.1:4102/');
+  assert.equal(await page.locator('#engine-step').isHidden(), true);
+  assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
+  await page.locator('#parse-start-button').click();
+  await page.locator('#engine-step').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-primary');
+  assert.equal(await page.locator('#model-reset-dialog').isVisible(), false);
+  assert.equal(await page.locator('#model-select').isEnabled(), true);
   assert.equal(resets.length, 0);
   assert.deepEqual(errors, []);
 });
 
-test('unavailable general assessment stays blocked instead of falling back to a single-check model', async t => {
-  for (const [lab, message] of [
-    [{ generalSupported: false, generalAvailable: false }, /서버 경로가 연결되지 않았습니다/],
-    [{ generalSupported: true, generalAvailable: false }, /실제 모델을 사용할 수 없습니다/],
+test('rule baseline remains selectable when the AI model is unavailable', async t => {
+  for (const lab of [
+    { generalSupported: false, generalAvailable: false },
+    { generalSupported: true, generalAvailable: false },
   ]) {
     const { page, mutations, errors } = await setup(t, 'operator', null, { lab, models: [
       { id: 'rule-baseline', name: 'Available rule engine', provider: 'local', mode: 'local-lab-rule', available: true },
       { ...resetModels[0], available: false },
     ] });
-    assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
-    assert.match(await page.locator('#lab-readiness').textContent(), message);
-    assert.equal(await page.locator('#model-select option[value="rule-baseline"]').count(), 0);
+    assert.equal(await page.locator('#lab-run-button').isEnabled(), true);
+    assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
+    assert.notEqual(await page.locator('#model-select option[value="deepseek-primary"]').getAttribute('disabled'), null);
     assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #run-button').count(), 0);
-    assert.equal(mutations.length, 0);
+    await page.locator('#lab-run-button').click();
+    assert.equal(mutations[0].body.mode, 'local-lab-rule');
     assert.deepEqual(errors, []);
   }
 });
@@ -354,7 +370,7 @@ test('authenticated workspace starts a general assessment and safely renders com
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'GENERAL / EVIDENCE');
   assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary',
-    fixtureId: 'vul-web2-daehan', target: 'http://127.0.0.1:4101' }, csrf: 'csrf-live' });
+    fixtureId: 'vul-web2-daehan', target: 'http://127.0.0.1:4101', previewId: 'preview-test' }, csrf: 'csrf-live' });
   await page.locator('#history-review-panel [data-review-note]').fill('Synthetic evidence checked.');
   await page.locator('#history-review-panel [data-review-form] button').click();
   await page.locator('#history-review-panel .review-complete').waitFor();
@@ -376,20 +392,15 @@ test('authenticated workspace starts a general assessment and safely renders com
   assert.deepEqual(errors, []);
 });
 
-test('registered universities launch general assessments with their selected origin', async t => {
+test('registered universities launch general assessments from parsed URL', async t => {
   const { page, mutations, errors } = await setup(t);
-  await page.locator('#fixture-select').selectOption('vul-web2-daehan');
-  assert.match(await page.locator('#lab-title').textContent(), /vul-web2 대한대학교/);
-  assert.doesNotMatch(await page.locator('#lab-title').textContent(), /XSS|IDOR/);
-  assert.match(await page.locator('#lab-check-scope').textContent(), /반복 점검/);
-  assert.match(await page.locator('#lab-run-label').textContent(), /범용 취약점 점검 시작/);
-  assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://127.0.0.1:4101');
-  assert.match(await page.locator('#lab-description').textContent(), /Compose/);
-  assert.equal(await page.locator('#model-select').isEnabled(), true);
+  assert.match(await page.locator('.parser-preview-card').first().textContent(), /실습 페이지/);
   assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-primary');
-  await page.locator('#fixture-select').selectOption('vul-web2-wonchang');
-  assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://127.0.0.1:4102');
-  await page.locator('#lab-target-origin').fill('192.168.0.84:4102');
+  await page.locator('#start-url').fill('http://127.0.0.1:4102/about');
+  assert.equal(await page.locator('#engine-step').isHidden(), true);
+  await page.locator('#parse-start-button').click();
+  await page.locator('#engine-step').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#start-url').inputValue(), 'http://127.0.0.1:4102/about');
   if (process.env.CA3P_UI_SCREENSHOT_PATH) {
     await page.setViewportSize({ width: 1440, height: 1100 });
     await page.screenshot({ path: process.env.CA3P_UI_SCREENSHOT_PATH });
@@ -397,12 +408,10 @@ test('registered universities launch general assessments with their selected ori
   await page.locator('#lab-run-button').click();
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary',
-    fixtureId: 'vul-web2-wonchang', target: 'http://192.168.0.84:4102' }, csrf: 'csrf-live' });
+    fixtureId: 'vul-web2-wonchang', target: 'http://127.0.0.1:4102', previewId: 'preview-test' }, csrf: 'csrf-live' });
   await page.locator('[data-view=assets]').click();
-  assert.deepEqual(await page.locator('#fixture-select option').evaluateAll(options => options.map(option => option.value)),
-    ['vul-web2-daehan', 'vul-web2-wonchang']);
-  assert.equal(await page.locator('#model-select').isEnabled(), true);
-  assert.equal(await page.locator('#lab-target-control').isVisible(), true);
+  assert.equal(await page.locator('#fixture-select').count(), 0);
+  assert.equal(await page.locator('#engine-step').isVisible(), true);
   assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #target-form, #settings-speed').count(), 0);
   assert.deepEqual(errors, []);
 });
@@ -427,30 +436,29 @@ test('saved IDOR evidence remains readable after single-check launch controls ar
   assert.deepEqual(errors, []);
 });
 
-test('Docker university origins prefill both sites while a validated manual origin remains usable', async t => {
-  const { page, mutations, errors } = await setup(t, 'operator', null, { lab: { available: true,
-    targetOrigins: { 'vul-web2-daehan': 'http://daehan:4101',
-      'vul-web2-wonchang': 'http://wonchang:4102' } } });
-  await page.locator('#fixture-select').selectOption('vul-web2-daehan');
-  assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://daehan:4101');
-  await page.locator('#fixture-select').selectOption('vul-web2-wonchang');
-  assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://wonchang:4102');
-  await page.locator('#lab-target-origin').fill('192.168.0.84:4102');
+test('URL-only input accepts registered university paths and binds the parsed origin', async t => {
+  const { page, mutations, errors } = await setup(t, 'operator', null, { lab: { available: true } });
+  await page.locator('#start-url').fill('http://127.0.0.1:4102/private');
+  assert.equal(await page.locator('#engine-step').isHidden(), true);
+  assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
+  await page.locator('#parse-start-button').click();
+  await page.locator('#engine-step').waitFor({ state: 'visible' });
+  assert.match(await page.locator('.parser-preview-card').first().textContent(), /private/);
   await page.locator('#lab-run-button').click();
-  assert.equal(mutations[0].body.target, 'http://192.168.0.84:4102');
+  assert.equal(mutations[0].body.target, 'http://127.0.0.1:4102');
+  assert.equal(mutations[0].body.previewId, 'preview-test');
   assert.deepEqual(errors, []);
 });
 
-test('registered target launch rejects paths and credentials before submitting a run', async t => {
+test('changing the URL does not start a run until it is parsed again', async t => {
   const { page, mutations, errors } = await setup(t);
-  await page.locator('#fixture-select').selectOption('vul-web2-daehan');
-  for (const origin of ['http://127.0.0.1:4101/private', 'http://user:password@127.0.0.1:4101', 'https://127.0.0.1:4101']) {
-    await page.locator('#lab-target-origin').fill(origin);
-    await page.locator('#lab-run-button').click();
-    assert.equal(await page.locator('#lab-target-origin').getAttribute('aria-invalid'), 'true');
-    assert.match(await page.locator('#runtime-error').textContent(), /HTTP 원점/);
-  }
+  await page.locator('#start-url').fill('http://127.0.0.1:4101/private');
+  assert.equal(await page.locator('#engine-step').isHidden(), true);
+  assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
   assert.equal(mutations.length, 0);
+  await page.locator('#parse-start-button').click();
+  await page.locator('#engine-step').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#lab-run-button').isEnabled(), true);
   assert.deepEqual(errors, []);
 });
 
@@ -523,8 +531,7 @@ test('CI view distinguishes missing test totals from an actual zero-test result'
 
 test('viewer session can inspect evidence while all mutation controls remain disabled', async t => {
   const { page, errors } = await setup(t, 'viewer');
-  await page.waitForFunction(() => document.querySelector('#model-select').options.length > 1);
-  for (const id of ['lab-run-button', 'new-session-button', 'stop-button', 'model-select', 'fixture-select']) assert.equal(await page.locator(`#${id}`).isDisabled(), true, id);
+  for (const id of ['parse-start-button', 'lab-run-button', 'new-session-button', 'stop-button', 'model-select']) assert.equal(await page.locator(`#${id}`).isDisabled(), true, id);
   await page.locator('[data-view=sessions]').click(); await page.locator('[data-session=candidate]').click();
   await page.waitForFunction(() => !document.querySelector('#history-banner').hidden);
   assert.equal(await page.locator('.loop-panel, #loop-graph, #general-run-summary').count(), 0);

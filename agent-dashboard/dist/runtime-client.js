@@ -131,18 +131,26 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       session = { ...session, authenticated: false, user: null, csrfToken: null };
       onSession(session); onAuthRequired(); onConnection('disconnected', transport);
     },
-    async startAssessment(modelId, fixtureId, target) {
+    previewTarget({ url, previewId } = {}) {
+      if (typeof url !== 'string' || !url.trim()) throw new TypeError('A URL is required for parser preview.');
+      return api('/api/targets/preview', { method: 'POST', body: {
+        url, authorizationConfirmed: true, ...(previewId ? { previewId } : {}),
+      } });
+    },
+    async startAssessment(modelId, fixtureId, target, previewId) {
       if (!['vul-web2-daehan', 'vul-web2-wonchang'].includes(fixtureId)) throw new TypeError('A registered university fixture is required.');
       if (typeof target !== 'string' || !target.trim()) throw new TypeError('A registered university origin is required.');
-      const value = await request('/api/runs', { mode: 'local-lab-general', modelId,
-        fixtureId, target });
+      if (typeof previewId !== 'string' || !previewId) throw new TypeError('A parser preview is required before assessment.');
+      const value = await request('/api/runs', { mode: modelId === 'rule-baseline' ? 'local-lab-rule' : 'local-lab-general', modelId,
+        fixtureId, target, previewId });
       receive(value); return value;
     },
     preflightExternal(target, pathPrefix = '/') { return api('/api/targets/preflight', { method: 'POST', body: { target, scope: { pathPrefix }, authorizationConfirmed: true } }); },
-    async startExternal({ target, pathPrefix, preflightToken }) {
+    async startExternal({ target, pathPrefix, preflightToken, previewId }) {
+      if (typeof previewId !== 'string' || !previewId) throw new TypeError('A parser preview is required before assessment.');
       const value = await api('/api/runs', { method: 'POST', body: {
         mode: 'external-general', target, scope: { pathPrefix }, preflightToken,
-        authorizationConfirmed: true, modelId: 'rule-baseline',
+        authorizationConfirmed: true, modelId: 'rule-baseline', previewId,
       } });
       receive(value); return value;
     },

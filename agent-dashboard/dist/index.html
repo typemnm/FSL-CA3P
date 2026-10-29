@@ -64,23 +64,27 @@
         <nav class="workspace-tabs" id="module-tabs" aria-label="모듈 통합 상태" hidden><button data-route-view="modules">모듈 개요</button><button data-route-view="ci">통합 테스트</button><button data-route-view="platform">통합 상태</button></nav>
         <section class="view" id="view-chat" hidden><div id="workspace-chat-root"></div></section>
         <section class="view" id="view-assets" hidden>
-          <section class="panel external-target-panel" aria-labelledby="external-target-title">
-            <div class="panel-heading"><div><h2 id="external-target-title"><span data-icon="globe"></span>점검 대상 지정</h2><span class="panel-subtitle">등록 실습 대상 또는 외부 URL을 선택합니다.</span></div></div>
-            <div class="target-kind-switch" role="group" aria-label="대상 유형"><button type="button" class="active" id="target-kind-lab" aria-pressed="true">등록 실습 대상</button><button type="button" id="target-kind-external" aria-pressed="false">외부 URL</button></div>
-            <form id="external-target-form" class="external-target-form" hidden>
-              <label for="external-url">시작 URL <input id="external-url" type="url" placeholder="https://example.org/" autocomplete="off" required></label>
-              <label for="external-path">허용 경로 <input id="external-path" type="text" value="/" placeholder="/" autocomplete="off"></label>
-              <div class="external-scope-note">동일 원점의 공개 페이지를 읽기 전용으로 관찰합니다. 실습 전용 검증기와 계정은 외부 대상에서 사용하지 않습니다.</div>
-              <button class="button secondary" id="external-preflight-button" type="submit">대상 사전 점검</button>
-              <div id="external-preflight-status" role="status" aria-live="polite">URL을 입력하고 사전 점검을 시작하세요.</div>
-              <button class="button primary" id="external-run-button" type="button" disabled>외부 대상 점검 시작</button>
+          <section class="panel external-target-panel" aria-labelledby="target-preview-title">
+            <div class="panel-heading"><div><h2 id="target-preview-title"><span data-icon="globe"></span>1. URL별 파싱</h2><span class="panel-subtitle">시작 URL을 파싱한 뒤 발견한 경로를 하나씩 추가할 수 있습니다.</span></div></div>
+            <form id="target-preview-form" class="parser-url-form">
+              <label for="start-url">시작 URL <input id="start-url" type="url" placeholder="http://127.0.0.1:4101/ 또는 https://example.org/" autocomplete="off" required></label>
+              <button class="button secondary" id="parse-start-button" type="submit">시작 URL 파싱</button>
             </form>
+            <p class="external-scope-note">파싱은 판단 엔진 호출 전에 실행됩니다. 외부 URL은 동일 원점의 공개 HTTP 응답만 읽습니다.</p>
+            <div id="target-preview-status" role="status" aria-live="polite">URL을 입력하고 파싱 결과를 확인하세요.</div>
+            <div id="target-preview-results" hidden>
+              <div id="target-preview-pages" class="parser-preview-pages"></div>
+              <form id="additional-path-form" class="parser-url-form">
+                <label for="additional-path">추가 경로 또는 같은 원점의 URL <input id="additional-path" type="text" placeholder="/about" autocomplete="off"></label>
+                <button class="button secondary" id="add-path-button" type="submit">이 경로 파싱</button>
+              </form>
+              <div id="discovered-paths" class="parser-discovered-paths"></div>
+            </div>
           </section>
-          <div class="lab-launch">
+          <div class="lab-launch" id="engine-step" hidden>
             <div class="lab-launch-copy">
-              <strong id="lab-title">실습 대상 · vul-web2 대한대학교</strong>
-              <p id="lab-description">대한대학교 실습 IP와 포트를 입력하세요. vul-web2 Compose를 먼저 시작해야 합니다.</p>
-              <label class="model-control" for="fixture-select">실습 대상 <select id="fixture-select" aria-describedby="lab-description lab-check-scope"><option value="vul-web2-daehan">vul-web2 · 대한대학교</option><option value="vul-web2-wonchang">vul-web2 · 원창대학교</option></select></label>
+              <strong id="lab-title">2. 판단 엔진 선택</strong>
+              <p id="lab-description">파싱 결과를 확인한 뒤 사용 가능한 판단 엔진을 선택하세요.</p>
               <small class="lab-cost" id="lab-check-scope">범용 취약점 점검과 모델 가용성을 확인하는 중입니다.</small>
               <label class="model-control" for="model-select">판단 엔진 / AI 모델 <select id="model-select" aria-describedby="lab-check-scope model-scope"><option value="">모델 목록 수신 중</option></select></label>
               <label class="experiment-reset-toggle" for="model-reset-toggle"><input id="model-reset-toggle" type="checkbox" role="switch" checked aria-describedby="model-reset-help"><span>모델 변경 시 실험 초기화 확인</span></label>
@@ -90,7 +94,6 @@
               <small class="lab-cost" id="model-scope">선택한 모델로 범용 취약점 점검을 수행합니다. 모델 API 호출에는 비용이 발생할 수 있습니다.</small>
               <small id="lab-readiness" aria-live="polite">실행 환경을 확인하는 중입니다.</small>
             </div>
-            <div class="lab-origin-control" id="lab-target-control" hidden><label for="lab-target-origin">에이전트에서 접근할 실습 원점 · IP와 포트</label><input id="lab-target-origin" type="text" value="http://127.0.0.1:4101" placeholder="http://192.168.0.84:4101" autocomplete="off" spellcheck="false" aria-describedby="lab-target-help"><small id="lab-target-help">Mac에서 직접 실행하면 127.0.0.1을 사용합니다. Docker에서는 host.docker.internal 또는 같은 네트워크의 daehan / wonchang을 사용하세요. 등록된 vul-web2 실습의 사설망 HTTP 원점만 허용합니다.</small></div>
             <button type="button" class="button lab-run-button" id="lab-run-button" disabled><span data-icon="play"></span><span id="lab-run-label">실습 실행 준비 중</span></button>
           </div>
 

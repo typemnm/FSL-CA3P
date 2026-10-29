@@ -28,13 +28,16 @@ test('remote deployment polls state and submits general assessments with CSRF an
   assert.equal(client.start, undefined, 'the retired core-fixture start must not be reachable');
   await assert.rejects(client.startAssessment('deepseek-flash', 'unknown-fixture', 'http://192.168.0.84:4101'), /registered university fixture/);
   await assert.rejects(client.startAssessment('deepseek-flash', 'vul-web2-daehan'), /registered university origin/);
-  await client.startAssessment('deepseek-flash', 'vul-web2-daehan', 'http://192.168.0.84:4101');
+  await client.previewTarget({ url: 'http://192.168.0.84:4101/' });
+  const preview = calls.find(call => call.path === '/api/targets/preview');
+  assert.deepEqual(JSON.parse(preview.options.body), { url: 'http://192.168.0.84:4101/', authorizationConfirmed: true });
+  await client.startAssessment('deepseek-flash', 'vul-web2-daehan', 'http://192.168.0.84:4101', 'preview-a');
   const start = calls.find(call => call.path === '/api/runs');
-  assert.deepEqual(JSON.parse(start.options.body), { mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.84:4101' });
+  assert.deepEqual(JSON.parse(start.options.body), { mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.84:4101', previewId: 'preview-a' });
   assert.equal(start.options.headers['X-CSRF-Token'], 'csrf-a');
-  await client.startAssessment('deepseek-flash', 'vul-web2-daehan', 'http://192.168.0.84:4101');
+  await client.startAssessment('rule-baseline', 'vul-web2-daehan', 'http://192.168.0.84:4101', 'preview-a');
   const general = calls.filter(call => call.path === '/api/runs').at(-1);
-  assert.deepEqual(JSON.parse(general.options.body), { mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.84:4101' });
+  assert.deepEqual(JSON.parse(general.options.body), { mode: 'local-lab-rule', modelId: 'rule-baseline', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.84:4101', previewId: 'preview-a' });
   assert.equal(general.options.headers['X-CSRF-Token'], 'csrf-a');
   await client.compare('baseline /?', 'candidate #');
   assert.equal(client.reportDownloadUrl('run /?#'), '/api/runs/run%20%2F%3F%23/report.hwpx');
@@ -77,7 +80,7 @@ test('anonymous session shows login without polling; login obtains the rotated C
   });
   t.after(() => client.close());
   await client.connect(); assert.equal(authRequests, 1); assert.equal(calls.length, 1);
-  await client.login('operator', 'test-password'); await client.startAssessment('deepseek-flash', 'vul-web2-daehan', 'http://192.168.0.84:4101');
+  await client.login('operator', 'test-password'); await client.startAssessment('deepseek-flash', 'vul-web2-daehan', 'http://192.168.0.84:4101', 'preview-a');
   const start = calls.find(call => call.path === '/api/runs'); assert.equal(start.options.headers['X-CSRF-Token'], 'csrf-a');
 });
 
