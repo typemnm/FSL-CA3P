@@ -30,8 +30,8 @@ export async function main(args = process.argv.slice(2)) {
   }
   if ((await stat(reportPath)).size > 8_000_000) throw new TypeError('Parser report exceeds 8 MB.');
   const report = JSON.parse((await readFile(reportPath, 'utf8')).replace(/^\uFEFF/u, ''));
-  if (!['3.4', 'structure-1.0'].includes(report.schemaVersion)) throw new TypeError('Expected web-parser 3.4 or structure-1.0 output.');
-  const origin = new URL(report.startUrl ?? report.site?.origin).origin;
+  if (!['3.4', 'structure-1.0', 'web-parser-1'].includes(report.schemaVersion)) throw new TypeError('Expected parser 3.4, structure-1.0 or web-parser-1 output.');
+  const origin = new URL(report.target?.origin ?? report.startUrl ?? report.site?.origin).origin;
   const result = await syncParserAdvisories({ report, origin,
     targetId: options['--target'], databasePath: resolve(options['--db']) });
   const body = JSON.stringify(result, null, 2) + '\n';

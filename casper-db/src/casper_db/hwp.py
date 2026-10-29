@@ -229,6 +229,7 @@ def parse_report(
     source_kind="imported",
     local_ocr=False,
     ocr_language="ko",
+    local_llm=False,
 ):
     """Read a local report and retain its explicitly assigned provenance."""
     if source_kind not in {"imported", "synthetic"}:
@@ -255,4 +256,8 @@ def parse_report(
 
         bundle = extract_local_ocr(Path(path), report, language=ocr_language)
         report = apply_ocr_evidence(report, bundle)
+    if local_llm:
+        from .report_semantic import enrich_report
+
+        report = enrich_report(Path(path), report)
     return report

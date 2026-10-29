@@ -18,7 +18,7 @@ export CASPER_DB_PYTHON="$PWD/.venv/bin/python"
 export CASPER_DB_TESSERACT="$(brew --prefix)/bin/tesseract"
 ```
 
-Tesseract는 이미지 속 글자를 읽는 도구입니다. `tesseract-lang`은 한국어 등의 언어 데이터입니다. 설치 때 다운로드하는 것과 보고서 처리 중 외부 전송은 별개입니다. HWP/HWPX 읽기와 OCR은 로컬에서 동작합니다. 로컬 LLM을 호출하는 기능은 현재 포함하지 않습니다.
+Tesseract는 이미지 속 글자를 읽는 도구입니다. `tesseract-lang`은 한국어 등의 언어 데이터입니다. 설치 때 다운로드하는 것과 보고서 처리 중 외부 전송은 별개입니다. HWP/HWPX 읽기와 OCR은 로컬에서 동작합니다. 기본 접수에는 LLM이 필요하지 않습니다. 로컬 모델 분석은 대시보드의 선택 기능이며, 사용하는 경우 [연결 안내](DASHBOARD.ko.md#로컬-llm으로-문맥-추출과-원문-대조)를 따릅니다.
 
 ## 실행 환경 확인
 
@@ -106,4 +106,4 @@ export CASPER_DB_INTAKE_WORKSPACE="$PWD/casper-db/data/server-workspace"
 
 ## Docker를 사용하는 경우
 
-macOS 직접 실행과 Linux 컨테이너 실행은 별도로 확인합니다. Dockerfile은 HWP 리더, Tesseract, 한국어 언어 데이터와 운영 의존성을 설치합니다. 현재 PC에서는 Docker 데몬이 실행 중이지 않아 이미지 빌드는 확인하지 못했습니다. Apple Silicon의 네이티브 설치 결과만으로 컨테이너 동작을 판단하지 않습니다.
+macOS 직접 실행과 Linux 컨테이너 실행은 별도로 확인합니다. Dockerfile은 HWP 리더, Tesseract, 한국어 언어 데이터와 운영 의존성을 설치하고 UTF-8 로케일을 사용합니다. [대시보드 사용 안내](DASHBOARD.ko.md)의 Docker 절차로 접수부터 조회·재시작까지 확인합니다. Linux x86_64 이미지 검증을 Apple Silicon 또는 Mac 네이티브 검증으로 간주하지 않습니다.

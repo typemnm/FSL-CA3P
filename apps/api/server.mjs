@@ -90,6 +90,7 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
     runProvider: id => runtime.getRun?.(id), platformProvider });
   const templateRoutes = createAttackTemplateRoutes({ catalog: templateCatalog });
   let dbInit;
+  let advisorySyncActive = false;
   const ensureDb = () => dbInit ??= Promise.resolve().then(() => db.bootstrap?.()).catch(failure => {
     dbInit = null;
     throw failure;
@@ -147,14 +148,72 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
           try { return json(res, 200, await targetPreflight(body)); }
           finally { quota.active = false; }
         }
+        if (pathname === '/api/db/status' && req.method === 'GET') {
+          await ensureDb();
+          return json(res, 200, await db.status());
+        }
+        if (pathname === '/api/db/settings') {
+          await ensureDb();
+          if (req.method === 'GET') return json(res, 200, await db.getSettings());
+          if (req.method !== 'PATCH') return json(res, 405, { error: 'Use GET or PATCH.' }, { Allow: 'GET, PATCH' });
+          auth.requireUser(req, { mutate: true, admin: true });
+          const body = await readJson(req);
+          if (!body || Array.isArray(body) || !body.settings || !Number.isInteger(body.expectedRevision)
+            || Object.keys(body).some(key => !['settings', 'expectedRevision'].includes(key))) throw error(400, 'Invalid DB settings.');
+          return json(res, 200, await db.saveSettings(body, currentUser.user.name));
+        }
+        if (['/api/db/advisories', '/api/db/advisories/matches'].includes(pathname) && req.method === 'GET') {
+          await ensureDb();
+          const params = new URL(req.url, expectedOrigin).searchParams;
+          const query = Object.fromEntries(params);
+          if (pathname.endsWith('/matches')) {
+            if (Object.keys(query).some(key => !['targetId', 'ecosystem', 'package', 'version', 'cpe'].includes(key))) throw error(400, 'Invalid product query.');
+            return json(res, 200, await db.queryAdvisories(query));
+          }
+          if (Object.keys(query).some(key => !['q', 'source', 'limit', 'offset'].includes(key))) throw error(400, 'Invalid advisory filters.');
+          query.limit = params.has('limit') ? Number(params.get('limit')) : 50;
+          query.offset = params.has('offset') ? Number(params.get('offset')) : 0;
+          return json(res, 200, await db.listAdvisories(query));
+        }
+        if (pathname === '/api/db/advisories/sync') {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
+          auth.requireUser(req, { mutate: true, admin: true });
+          if (advisorySyncActive) throw error(409, '외부 취약점 정보를 수집 중입니다. 완료 후 다시 시도하세요.');
+          const body = await readJson(req);
+          if (!body || Array.isArray(body) || Object.keys(body).some(key => !['targetId', 'ecosystem', 'package', 'version', 'cpe'].includes(key))) throw error(400, 'Invalid product query.');
+          await ensureDb();
+          advisorySyncActive = true;
+          try { return json(res, 200, await db.syncAdvisories(body, currentUser.user.name)); }
+          finally { advisorySyncActive = false; }
+        }
         if (pathname === '/api/db/intakes') {
           await ensureDb();
-          if (req.method === 'GET') return json(res, 200, await db.listIntakes());
+          if (req.method === 'GET') {
+            const params = new URL(req.url, expectedOrigin).searchParams;
+            const filters = Object.fromEntries(['q', 'status', 'sort'].filter(key => params.has(key)).map(key => [key, params.get(key)]));
+            filters.limit = params.has('limit') ? Number(params.get('limit')) : 50;
+            filters.offset = params.has('offset') ? Number(params.get('offset')) : 0;
+            return json(res, 200, await db.listIntakes(filters));
+          }
           if (req.method === 'POST') {
             auth.requireUser(req, { mutate: true, admin: true });
             return json(res, 201, await db.stageUpload(req, { actor: currentUser.user.name }));
           }
           return json(res, 405, { error: 'Use GET or POST.' }, { Allow: 'GET, POST' });
+        }
+        const intakeAnalysis = /^\/api\/db\/intakes\/([a-f0-9]{64})\/analyze-local$/.exec(pathname);
+        if (intakeAnalysis) {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
+          auth.requireUser(req, { mutate: true, admin: true });
+          await ensureDb();
+          const body = await readJson(req);
+          if (!body || typeof body !== 'object' || Array.isArray(body)
+            || !/^[a-f0-9]{64}$/.test(body.expectedValidationSha)
+            || Object.keys(body).some(key => key !== 'expectedValidationSha')) {
+            throw error(400, 'Provide the current validation hash.');
+          }
+          return json(res, 200, await db.analyzeIntake(intakeAnalysis[1], body.expectedValidationSha,
+            currentUser.user.name));
         }
         const intakePublish = /^\/api\/db\/intakes\/([a-f0-9]{64})\/publish$/.exec(pathname);
         if (intakePublish) {
@@ -447,7 +506,8 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
       if (res.destroyed) return;
       if (res.headersSent) return res.end();
       const status = failure.status ?? (['ENOENT', 'EISDIR'].includes(failure.code) ? 404 : 400);
-      json(res, status, { error: failure.status ? failure.message : status === 404 ? 'Not found.' : 'Invalid request.' });
+      json(res, status, { error: failure.status ? failure.message : status === 404 ? 'Not found.' : 'Invalid request.',
+        ...(failure.details && typeof failure.code === 'string' ? { code: failure.code, details: failure.details } : {}) });
     }
   });
   let runtimeCloseTask;

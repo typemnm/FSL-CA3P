@@ -1,0 +1,21 @@
+const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+export function readProduct(form) {
+  const values = Object.fromEntries(new FormData(form));
+  return Object.fromEntries(['targetId', 'ecosystem', 'package', 'version', 'cpe'].map(key => [key, String(values[key] || '').trim()]));
+}
+
+export function renderAdvisories(state, canEdit) {
+  const product = state.product || {};
+  const result = state.result;
+  const candidates = state.matches;
+  const entries = candidates || state.records.map(record => ({ record }));
+  return `<section class="panel ops-panel"><h2>외부 취약점 정보</h2><p>NVD·GitHub의 공개 권고입니다. 제품과 관련된 후보이며 현재 대상에서 재현된 취약점 판정은 아닙니다.</p>
+    <form id="advisory-product-form" class="ops-edit-grid"><label>대상 ID<input name="targetId" value="${escape(product.targetId)}" required></label><label>패키지 생태계<select name="ecosystem">${['npm', 'pip', 'maven', 'go', 'rubygems', 'composer', 'nuget', 'other'].map(value => `<option${product.ecosystem === value ? ' selected' : ''}>${value}</option>`).join('')}</select></label><label>제품·패키지명<input name="package" value="${escape(product.package)}" placeholder="예: jinja2" required></label><label>버전<input name="version" value="${escape(product.version)}" placeholder="예: 3.1.4"></label><label>CPE · 알고 있는 경우만<input name="cpe" value="${escape(product.cpe)}" placeholder="cpe:2.3:..."></label><div class="ops-form-actions"><button class="button secondary" type="submit" ${state.busy ? 'disabled' : ''}>저장된 권고에서 조회</button><button class="button primary" type="submit" name="action" value="sync" ${canEdit && !state.busy ? '' : 'disabled'}>공식 API에서 수집·저장</button></div><small>직접 입력한 제품 정보는 사용자 제공 정보로 기록합니다. CVE 번호는 필요하지 않습니다.</small></form>
+    ${state.busy ? '<p role="status">공식 API에서 수집 중입니다. 일부 제공처의 실패·요청 제한은 결과에 표시됩니다.</p>' : ''}
+    ${result ? `<div class="ops-notice" role="status">수집 ${escape(result.status)} · 요청 ${escape(result.request_count || 0)}회 · DB 저장 ${result.database_written ? '있음' : '없음'} · 오류 ${(result.errors || []).length}건<details><summary>제공처별 처리 결과</summary><pre>${escape(JSON.stringify({ jobs: result.jobs, errors: result.errors, coverage: result.coverage }, null, 2))}</pre></details></div>` : ''}
+    <form id="advisory-search-form" class="ops-filters"><label>저장된 전체 권고 검색<input id="advisory-query" type="search" value="${escape(state.q)}" placeholder="CVE, GHSA, 제품명"></label><label>출처<select id="advisory-source">${[['all', '전체'], ['github', 'GitHub Advisory'], ['nvd', 'NVD']].map(([value, label]) => `<option value="${value}"${state.source === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label><button class="button secondary" type="submit">목록 조회</button></form>
+    <p>${candidates ? `제품 관련 후보 ${entries.length}건${state.truncated ? ' · 결과 제한에 도달했습니다.' : ''}` : `저장된 권고 ${state.total}건`}</p>
+    <div class="ops-advisory-list">${entries.map(({ record, assessment, match_reasons: reasons }) => `<details class="ops-subpanel"><summary><strong>${escape(record.cve_id || record.advisory_id)}</strong> · ${escape(record.source)} · ${escape(record.severity || '심각도 미기록')}${record.withdrawn ? ' · 철회됨' : ''}</summary><p>${escape(record.description)}</p>${assessment ? `<p>${escape(assessment.reason)} <span class="state-chip">${escape(assessment.decision)}</span></p>` : ''}<p>수정일 ${escape(record.modified_at || '미기록')}</p><details><summary>영향 범위와 조회 근거</summary><pre>${escape(JSON.stringify({ affected: record.affected, assessment, match_reasons: reasons, references: record.references }, null, 2))}</pre></details></details>`).join('') || '<p class="ops-empty">관련 권고가 없습니다. 수집하지 않은 상태나 조회 조건도 확인하세요.</p>'}</div>
+    ${candidates ? '<button class="button secondary" data-action="advisory-all">저장된 전체 목록 보기</button>' : `<div class="ops-pagination"><button class="button secondary" data-action="advisory-prev" ${state.offset <= 0 ? 'disabled' : ''}>이전</button><span>${state.total ? state.offset + 1 : 0}–${Math.min(state.total, state.offset + state.records.length)} / ${state.total}</span><button class="button secondary" data-action="advisory-next" ${state.offset + state.records.length >= state.total ? 'disabled' : ''}>다음</button></div>`}</section>`;
+}

@@ -42,7 +42,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     if (!response.ok) {
       if (response.status === 401) { closed = true; disconnect(); onConnection('disconnected', transport); onAuthRequired(); }
       const message = typeof payload?.error === 'string' ? payload.error : typeof payload?.message === 'string' ? payload.message : `요청 실패 (${response.status})`;
-      throw Object.assign(new Error(message), { status: response.status });
+      throw Object.assign(new Error(message), { status: response.status, code: payload?.code, details: payload?.details });
     }
     return payload;
   }

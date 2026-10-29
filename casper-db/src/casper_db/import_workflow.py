@@ -108,6 +108,7 @@ def prepare_import(
     review: ReportReview | None = None,
     *,
     target_id: str | None = None,
+    validation_time: datetime | None = None,
 ) -> ImportPackage:
     review = review or review_template(report)
     if review.report_sha256 != report.source["sha256"] or review.draft_sha256 != digest(report):
@@ -168,7 +169,7 @@ def prepare_import(
             if review.reviewed_at is None:
                 raise ValueError("missing")
             reviewed_at = utc_timestamp(review.reviewed_at)
-            if datetime.fromisoformat(reviewed_at) > datetime.now(UTC):
+            if datetime.fromisoformat(reviewed_at) > (validation_time or datetime.now(UTC)):
                 raise ValueError("future")
         except ValueError:
             problems.append(
@@ -215,6 +216,7 @@ def prepare_import(
                 "image_text_not_processed",
                 "unreviewed_image_transcript",
                 "unreviewed_local_ocr",
+                "unreviewed_local_llm",
             }
         }
         if required_ack - set(item.acknowledged_issue_codes):

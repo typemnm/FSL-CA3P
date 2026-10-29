@@ -339,7 +339,10 @@ def _validate_destination(connection: sqlite3.Connection) -> None:
         connection.execute("SELECT case_id, revision FROM cases LIMIT 0")
         connection.execute("SELECT case_id, revision, snapshot FROM case_versions LIMIT 0")
         connection.execute("SELECT check_id, case_id, case_revision FROM checks LIMIT 0")
-        if names - EXTERNAL_TABLES - ATTACK_TABLES - {"cases", "case_versions", "checks"}:
+        dashboard_tables = {"dashboard_case_state", "dashboard_case_audit"}
+        report_tables = {"report_knowledge_records", "report_knowledge_versions"}
+        allowed = EXTERNAL_TABLES | ATTACK_TABLES | dashboard_tables | report_tables
+        if names - allowed - {"cases", "case_versions", "checks"}:
             raise ValueError("refusing external import into unrelated database tables")
     elif names and ("external_metadata" not in names or names - EXTERNAL_TABLES):
         raise ValueError("external import requires an owned Case or advisory database")

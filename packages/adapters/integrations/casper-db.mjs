@@ -3,6 +3,7 @@ import { access, mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inventoryFromParser, knowledgeContextDigest } from './parser-inventory.mjs';
+import { knowledgeParserReport } from './parser-report.mjs';
 export { inventoryFromParser } from './parser-inventory.mjs';
 
 const ROOT = fileURLToPath(new URL('../../../casper-db/', import.meta.url));
@@ -65,11 +66,10 @@ for item in request.get('unresolvedRequests', []):
     context['unresolved_requests'].append({**item, 'related_cases':related})
 result = {'targetId': target_id, 'readyCaseCount': len(cases), 'assessments': assessments,
     'referenceContext':context}
-if request.get('softwareInventory') is not None:
-    result['knowledgeContext'] = query_knowledge(db, {
-        'target_id':target_id, 'observations':request['observations'],
-        'inventory':request['softwareInventory']},
-        external_database=Path(request['externalDatabase']) if request.get('externalDatabase') else None)
+result['knowledgeContext'] = query_knowledge(db, {
+    'target_id':target_id, 'observations':request['observations'],
+    **({'inventory':request['softwareInventory']} if request.get('softwareInventory') is not None else {})},
+    external_database=Path(request['externalDatabase']) if request.get('externalDatabase') else None)
 json.dump(result, sys.stdout, ensure_ascii=False)
 `;
 
@@ -83,6 +83,7 @@ function absoluteDatabasePath(value) {
 
 /** Translate only explicit parser API hints to historical-case lookup locations. */
 export function parserReferenceLocations(report, { targetId = 'vul-web-1', origin, locationHints = [] } = {}) {
+  report = knowledgeParserReport(report, { origin });
   if (!report || !Array.isArray(report.pages) || typeof origin !== 'string') {
     throw new TypeError('A parser report and exact target origin are required.');
   }

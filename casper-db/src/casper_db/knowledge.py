@@ -45,6 +45,7 @@ def query_knowledge(
         "automatic_execution_allowed": False,
         "database_written": False,
         "history": {"status": "unavailable", "cases": [], "assessments": []},
+        "report_knowledge": {"status": "not_configured", "records": []},
         "external": {"status": "not_requested", "candidates": []},
         "attack_catalog": {"status": "not_configured", "pattern_count": 0, "results": []},
     }
@@ -61,6 +62,27 @@ def query_knowledge(
             "truncated": len(relevant) > query.limit,
             "assessments": [item.model_dump(mode="json") for item in assessments],
         }
+        from .report_knowledge import available, target_records
+
+        with store._connect() as connection:
+            if available(connection):
+                records = target_records(connection, query.target_id, query.limit)
+                result['report_knowledge'] = {
+                    'status': 'ok', 'truncated': len(records) > query.limit,
+                    'records': [
+                        {
+                            **{key: value for key, value in record.items()
+                               if key not in {'field_evidence', 'payload_variants', 'resolutions'}},
+                            'runtime_observations': [
+                                {**item.model_dump(mode='json'), 'method_source': 'web_parser',
+                                 'automatic_execution_allowed': False}
+                                for item in query.observations
+                                if item.endpoint == record.get('endpoint')
+                            ],
+                        }
+                        for record in records[:query.limit]
+                    ],
+                }
     except (OSError, ValueError, sqlite3.Error) as exc:
         result["history"]["reason"] = type(exc).__name__
     if query.inventory is not None:

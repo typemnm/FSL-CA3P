@@ -10,6 +10,13 @@ def knowledge_identity(connection: sqlite3.Connection, cases: list, checks: list
         row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     value = {"cases": cases, "checks": checks}
+    if "report_knowledge_records" in tables:
+        records = [tuple(row) for row in connection.execute(
+            "SELECT case_id, revision, validation_sha FROM report_knowledge_records "
+            "ORDER BY case_id"
+        )]
+        if records:
+            value["report_knowledge_records"] = records
     for table, columns in (
         ("external_records", "record_id, content_sha256"),
         ("attack_patterns", "pattern_id, revision, content_sha256"),

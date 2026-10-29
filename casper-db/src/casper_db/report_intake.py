@@ -6,8 +6,9 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import tempfile
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,6 +27,18 @@ from .repository import COLUMNS, CaseStore, ConflictError, NotFoundError, initia
 
 INTAKE_APP_ID = 0x43415051
 CASE_APP_ID = 0x43415043
+
+
+class ReportTargetConflict(ValueError):
+    """An uploaded source already belongs to a different report target or origin."""
+
+    def __init__(self, *, target_id, source_kind, draft_sha):
+        super().__init__("the same report must keep its target and source_kind")
+        self.target_id = target_id
+        self.source_kind = source_kind
+        self.draft_sha = draft_sha
+
+
 SCHEMA = """
 CREATE TABLE metadata (workspace_id TEXT PRIMARY KEY);
 CREATE TABLE sources (
@@ -71,7 +84,8 @@ class ReportIntake:
         self.state_path = self._owned_path("intake.sqlite3")
         self.case_path = (
             Path(manifest["case_path"]).expanduser().resolve(strict=True)
-            if self.attached else self._owned_path("cases.sqlite3")
+            if self.attached
+            else self._owned_path("cases.sqlite3")
         )
         self._verify_database(self.state_path, INTAKE_APP_ID)
         if self.attached:
@@ -136,8 +150,14 @@ class ReportIntake:
         finally:
             connection.close()
         with (root / "workspace.json").open("x", encoding="utf-8") as stream:
-            json.dump({"schema_version": "report-db-workspace-2", "workspace_id": workspace_id,
-                       "case_path": str(case_path)}, stream)
+            json.dump(
+                {
+                    "schema_version": "report-db-workspace-2",
+                    "workspace_id": workspace_id,
+                    "case_path": str(case_path),
+                },
+                stream,
+            )
         return cls(root)
 
     def _owned_path(self, filename):
@@ -232,6 +252,21 @@ class ReportIntake:
             raise ValueError("stored report has no active validation")
         package = ImportPackage.model_validate_json(row["snapshot"])
         expected = prepare_import(report, package.review, target_id=target_id)
+        # Old browser-clock reviews could be rejected as future-dated when saved,
+        # then produce a different validation after time passed. Rebuild the same
+        # rejection before the claimed time; retain its sealed blocked result.
+        # A new explicit review (server timestamp) is required before registration.
+        if expected != package and package.review.reviewed_at and any(
+            '실제 검토 시각이 필요합니다.' in reason
+            for item in package.blocked for reason in item['reasons']
+        ):
+            historical = prepare_import(
+                report, package.review, target_id=target_id,
+                validation_time=datetime.fromisoformat(package.review.reviewed_at)
+                - timedelta(microseconds=1),
+            )
+            if historical == package:
+                expected = historical
         if expected != package or expected.package_sha256 != row["validation_sha"]:
             raise ValueError("validation is stale or altered; inspect and submit a review again")
         return expected
@@ -245,6 +280,7 @@ class ReportIntake:
         local_ocr=False,
         ocr_language="ko",
         managed_source=False,
+        local_llm=False,
     ):
         report = parse_report(
             source,
@@ -252,6 +288,7 @@ class ReportIntake:
             source_kind=source_kind,
             local_ocr=local_ocr,
             ocr_language=ocr_language,
+            local_llm=local_llm,
         )
         if managed_source:
             reference = f"intake:{report.source['sha256']}"
@@ -261,16 +298,17 @@ class ReportIntake:
         raw = Path(source).read_bytes()
         if hashlib.sha256(raw).hexdigest() != report.source["sha256"]:
             raise ValueError("source changed during extraction")
-        key = digest(
-            {
+        identity = {
                 "source": report.source["sha256"],
                 "target": target_id,
                 "kind": source_kind,
                 "extractor": report.extractor_version,
                 "narrative": NARRATIVE_VERSION,
                 "ocr": report.document.get("local_ocr", {}).get("fingerprint"),
-            }
-        )
+        }
+        if report.document.get('local_llm'):
+            identity['local_llm'] = report.document['local_llm']['fingerprint']
+        key = digest(identity)
         with self._connect(write=True) as connection:
             existing = connection.execute(
                 "SELECT * FROM sources WHERE source_sha = ?", (report.source["sha256"],)
@@ -278,7 +316,15 @@ class ReportIntake:
             if existing and (
                 existing["target_id"] != target_id or existing["source_kind"] != source_kind
             ):
-                raise ValueError("the same report must keep its target and source_kind")
+                latest = connection.execute(
+                    "SELECT draft_sha FROM drafts WHERE source_sha=? ORDER BY rowid DESC LIMIT 1",
+                    (report.source["sha256"],),
+                ).fetchone()
+                raise ReportTargetConflict(
+                    target_id=existing["target_id"],
+                    source_kind=existing["source_kind"],
+                    draft_sha=latest[0] if latest else None,
+                )
             duplicate = connection.execute(
                 "SELECT draft_sha FROM drafts WHERE extraction_key = ?", (key,)
             ).fetchone()
@@ -312,6 +358,23 @@ class ReportIntake:
             "reused": bool(duplicate),
         }
 
+    def analyze_local(self, draft_sha, *, expected_validation_sha):
+        """Keep original source/review and produce a new pending extraction version."""
+        with self._connect() as connection:
+            report, source = self._load(connection, draft_sha)
+            package = self._active(connection, report, source['target_id'])
+            if package.package_sha256 != expected_validation_sha:
+                raise ConflictError('review changed since it was opened')
+        with tempfile.TemporaryDirectory(prefix='ca3p-local-report-') as temporary:
+            path = Path(temporary) / Path(source['filename']).name
+            path.write_bytes(source['raw'])
+            return self.stage(
+                path, target_id=source['target_id'], source_kind=source['source_kind'],
+                managed_source=report.source['path'].startswith('intake:'),
+                local_ocr=True, ocr_language=report.document.get('local_ocr', {}).get(
+                    'bundle', {}).get('language', 'kor+eng'), local_llm=True,
+            )
+
     def export(self, draft_sha):
         with self._connect() as connection:
             report, _ = self._load(connection, draft_sha)
@@ -336,8 +399,9 @@ class ReportIntake:
             "review_file": str(folder / "report.review.json"),
         }
 
-    def submit_review(self, draft_sha: str, review: ReportReview,
-                      *, expected_validation_sha: str | None = None):
+    def submit_review(
+        self, draft_sha: str, review: ReportReview, *, expected_validation_sha: str | None = None
+    ):
         with self._connect(write=True) as connection:
             report, source = self._load(connection, draft_sha)
             if expected_validation_sha is not None:
@@ -372,14 +436,28 @@ class ReportIntake:
             ),
         )
 
-    def publish(self, draft_sha: str, *, apply=False, ready_only=False,
-                expected_validation_sha: str | None = None):
+    def publish(
+        self,
+        draft_sha: str,
+        *,
+        apply=False,
+        ready_only=False,
+        expected_validation_sha: str | None = None,
+        include_incomplete=False,
+    ):
+        if include_incomplete:
+            return self._publish_knowledge(
+                draft_sha, apply=apply, expected_validation_sha=expected_validation_sha
+            )
         # Lock the active review until Case commit and receipt are complete. If a process
         # dies between the two DB commits, add_many's unchanged result repairs the receipt.
         with self._connect(write=apply) as connection:
             report, source = self._load(connection, draft_sha)
             package = self._active(connection, report, source["target_id"])
-            if expected_validation_sha is not None and package.package_sha256 != expected_validation_sha:
+            if (
+                expected_validation_sha is not None
+                and package.package_sha256 != expected_validation_sha
+            ):
                 raise ConflictError("review changed since it was opened")
             eligible = package.cases if ready_only or not package.blocked else []
             result = {
@@ -411,7 +489,64 @@ class ReportIntake:
             )
             return result
 
+    def _publish_knowledge(self, draft_sha, *, apply, expected_validation_sha):
+        from .report_knowledge import registration_records, write_records
+
+        with self._connect(write=apply) as connection:
+            report, source = self._load(connection, draft_sha)
+            package = self._active(connection, report, source['target_id'])
+            if expected_validation_sha is not None and (
+                package.package_sha256 != expected_validation_sha
+            ):
+                raise ConflictError('review changed since it was opened')
+            candidates = registration_records(report, package, source['target_id'])
+            accepted = {item['draft_id'] for item in candidates}
+            pending = [item for item in package.blocked if item['draft_id'] not in accepted]
+            result = {
+                'draft_sha256': draft_sha, 'mode': 'apply' if apply else 'dry_run',
+                'eligible_cases': len(candidates), 'blocked': pending,
+                'reproduction_blocked': package.blocked,
+                'incomplete_cases': sum(r['reproduction_status'] == 'incomplete'
+                                        for r in candidates),
+                'ready_cases': len(package.cases), 'case_database_written': False,
+                'created': 0, 'unchanged': 0, 'updated': 0, 'registered_case_ids': [],
+                'status': 'ready' if candidates else 'needs_review',
+            }
+            if not candidates or not apply:
+                return result
+            store = self._case_store()
+            with store._connect(write=True) as case_connection:
+                existing = {item['case_id'] for item in candidates if case_connection.execute(
+                    'SELECT 1 FROM cases WHERE case_id=?', (item['case_id'],)
+                ).fetchone()}
+                ready = (store.add_many(package.cases, _connection=case_connection)
+                         if package.cases else {'created': [], 'unchanged': []})
+                knowledge = write_records(case_connection, candidates)
+            for outcome, records in ready.items():
+                for record in records:
+                    self._write_receipt(connection, draft_sha, package, record, outcome)
+            ready_ids = {case.case_id for case in package.cases}
+            for outcome, records in knowledge.items():
+                for record in records:
+                    if record['case_id'] not in ready_ids:
+                        connection.execute(
+                            'INSERT OR IGNORE INTO receipts VALUES (?,?,?,?,?,?)',
+                            (draft_sha, package.package_sha256, record['case_id'], digest(record),
+                             outcome, datetime.now(UTC).isoformat()),
+                        )
+            created = {item['case_id'] for item in knowledge['created']} - existing
+            result.update(
+                status='applied_subset' if pending else 'applied',
+                created=len(created), updated=len(knowledge['updated']),
+                unchanged=len(candidates) - len(created) - len(knowledge['updated']),
+                registered_case_ids=[item['case_id'] for item in candidates],
+                case_database_written=True,
+            )
+            return result
+
     def show(self, draft_sha: str | None = None):
+        from .report_knowledge import get_record, registration_records
+
         reports = []
         store = self._case_store()
         with self._connect() as connection:
@@ -429,6 +564,8 @@ class ReportIntake:
                 blocked = {entry["draft_id"]: entry for entry in package.blocked}
                 excluded = {entry["draft_id"] for entry in package.excluded}
                 ready = {case.case_id: case for case in package.cases}
+                registration = {item['case_id'] for item in
+                                registration_records(report, package, source['target_id'])}
                 findings = []
                 for finding in report.findings:
                     case_id = assigned_case_id(report, finding.source_ref)
@@ -471,6 +608,20 @@ class ReportIntake:
                         ),
                         "case_record": record.model_dump(mode="json") if record else None,
                     }
+                    with store._connect() as case_connection:
+                        knowledge = get_record(case_connection, case_id)
+                    current = bool(knowledge and knowledge['validation_sha256'] ==
+                                   package.package_sha256)
+                    if knowledge and not record:
+                        entry['state'] = ('registered_incomplete' if current else
+                                          'registered_previous_review')
+                    entry.update(
+                        knowledge_record=knowledge,
+                        registered_record=entry['case_record'] or knowledge,
+                        registration_eligible=case_id in registration,
+                        registration_current=current or entry['state'] == 'published',
+                        reproduction_ready=case_id in ready,
+                    )
                     if draft_sha:
                         entry["finding"] = finding.model_dump(mode="json")
                     findings.append(entry)
@@ -502,8 +653,10 @@ class ReportIntake:
 
     def delete_draft(self, draft_sha: str):
         """Remove only an unpublished intake; published Case evidence is immutable."""
-        if not isinstance(draft_sha, str) or len(draft_sha) != 64 or any(
-            char not in "0123456789abcdef" for char in draft_sha
+        if (
+            not isinstance(draft_sha, str)
+            or len(draft_sha) != 64
+            or any(char not in "0123456789abcdef" for char in draft_sha)
         ):
             raise ValueError("invalid draft SHA-256")
         store = self._case_store()
@@ -515,6 +668,13 @@ class ReportIntake:
             if receipt:
                 raise ValueError("published intake cannot be deleted")
             for finding in report.findings:
+                from .report_knowledge import get_record
+
+                with store._connect() as case_connection:
+                    if get_record(case_connection, assigned_case_id(report, finding.source_ref)):
+                        raise ValueError(
+                            'intake has registered report knowledge and cannot be deleted'
+                        )
                 try:
                     store.get(assigned_case_id(report, finding.source_ref))
                 except NotFoundError:
@@ -523,14 +683,17 @@ class ReportIntake:
             connection.execute("DELETE FROM active_validations WHERE draft_sha = ?", (draft_sha,))
             connection.execute(
                 "DELETE FROM validations WHERE review_sha IN "
-                "(SELECT review_sha FROM reviews WHERE draft_sha = ?)", (draft_sha,)
+                "(SELECT review_sha FROM reviews WHERE draft_sha = ?)",
+                (draft_sha,),
             )
             connection.execute("DELETE FROM reviews WHERE draft_sha = ?", (draft_sha,))
             connection.execute("DELETE FROM drafts WHERE draft_sha = ?", (draft_sha,))
             if not connection.execute(
                 "SELECT 1 FROM drafts WHERE source_sha = ? LIMIT 1", (source["source_sha"],)
             ).fetchone():
-                connection.execute("DELETE FROM sources WHERE source_sha = ?", (source["source_sha"],))
+                connection.execute(
+                    "DELETE FROM sources WHERE source_sha = ?", (source["source_sha"],)
+                )
         folder = (self.root / "exports" / draft_sha).resolve()
         if folder.is_relative_to(self.root) and folder.is_dir():
             shutil.rmtree(folder)

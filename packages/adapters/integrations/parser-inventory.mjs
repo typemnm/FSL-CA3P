@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
+import { knowledgeParserReport } from './parser-report.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const text = value => typeof value === 'string' && value.trim() ? value.trim() : null;
 
 /** Translate web-parser evidence without promoting indicators or declarations to installed software. */
 export function inventoryFromParser(report, { targetId, observedAt = new Date().toISOString(), limit = 20 } = {}) {
+  report = knowledgeParserReport(report);
   if (!report || !Array.isArray(report.pages) || !text(targetId)) throw new TypeError('A parser report and target ID are required.');
   if (report.softwareInventory) {
     if (report.softwareInventory.target_id !== targetId) throw new TypeError('Software inventory target differs from this run.');
@@ -53,9 +55,11 @@ export function inventoryFromParser(report, { targetId, observedAt = new Date().
     }
   }
   for (const technology of dependencies?.technologies ?? []) {
+    const fingerprint = technology.evidence === 'web-parser-fingerprint-indicator';
     add({ ecosystem: 'cpe', package: text(technology.name), version: text(technology.version),
-      identification: 'indicator', version_status: 'response-header-claim',
-      source_refs: [`web-parser:header:${technology.header}:pages:${(technology.pageIds ?? []).join(',')}`],
+      identification: 'indicator', version_status: fingerprint ? 'fingerprint-indicator' : 'response-header-claim',
+      source_refs: [fingerprint ? `web-parser:target-info:${technology.header}`
+        : `web-parser:header:${technology.header}:pages:${(technology.pageIds ?? []).join(',')}`],
       evidence: [{ kind: technology.evidence, header: technology.header, page_ids: technology.pageIds ?? [] }],
     });
   }
@@ -75,6 +79,10 @@ export function inventoryFromParser(report, { targetId, observedAt = new Date().
 /** Stable comparison of the data actually returned; local ports and collection times are not inputs. */
 export function knowledgeContextDigest(context, inventory, coverage, collection) {
   return hash({
+    ...(context?.report_knowledge?.records?.length ? { report_knowledge:
+      context.report_knowledge.records.map(item => ({ case_id: item.case_id,
+        revision: item.revision, validation_sha256: item.validation_sha256 }))
+        .sort((a, b) => a.case_id.localeCompare(b.case_id)) } : {}),
     components: inventory?.components.map(({ ecosystem, package: name, version, cpe, identification, version_status }) =>
       ({ ecosystem, package: name, version, cpe: cpe ?? null, identification: identification ?? 'observed', version_status: version_status ?? null })) ?? [],
     candidates: (context?.external?.candidates ?? []).map(item => ({
