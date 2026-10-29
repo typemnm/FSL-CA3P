@@ -25,7 +25,7 @@ def _handoff(directory: Path, **overrides) -> Path:
     document = {
         "schemaVersion": "verification-handoff/1",
         "result": {"status": "confirmed"},
-        "images": [{"file": "shot.png", "sha256": _digest(PNG), "bytes": len(PNG), "label": "XSS"}],
+        "images": [{"file": "images/shot.png", "sha256": _digest(PNG), "bytes": len(PNG), "label": "XSS"}],
     }
     document.update(overrides)
     (directory / "verification.json").write_text(json.dumps(document), encoding="utf-8")

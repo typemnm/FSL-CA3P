@@ -24,10 +24,10 @@ def _image_path(directory: Path, name: object) -> Path:
     if not isinstance(name, str) or not name:
         raise VerificationHandoffError("image file must be a non-empty string")
     relative = Path(name)
-    if relative.is_absolute() or ".." in relative.parts:
+    if relative.is_absolute() or ".." in relative.parts or relative.parts[:1] != ("images",):
         raise VerificationHandoffError("image file escapes images/")
     images = directory / "images"
-    candidate = images / relative
+    candidate = directory / relative
     if candidate.is_symlink() or not candidate.is_file():
         raise VerificationHandoffError("image file is missing or a symbolic link")
     if not candidate.resolve().is_relative_to(images.resolve()):
