@@ -8,10 +8,8 @@ const {
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL,
   DEFAULT_TIMEOUT_MS,
-  DeepSeekClient,
   DeepSeekError,
 } = require('./deepseek-client');
-const { DeepSeekReasoningEngine } = require('./deepseek-reasoning-engine');
 
 const DEFAULT_ENV_FILE = path.resolve(__dirname, '..', '.env');
 const SUPPORTED_MODELS = new Set(require('./model-definitions').DEEPSEEK_MODELS);
@@ -162,23 +160,8 @@ function resolveDeepSeekOptions({
   });
 }
 
-function createDeepSeekReasoningEngineFromEnv({
-  env,
-  envFile,
-  readFileSync,
-  fetchImpl,
-  sleep,
-  ruleEngine,
-  curlMode,
-} = {}) {
-  const options = resolveDeepSeekOptions({ env, envFile, readFileSync });
-  const client = new DeepSeekClient({ ...options, fetchImpl, sleep });
-  return new DeepSeekReasoningEngine({ client, ruleEngine, curlMode });
-}
-
 module.exports = {
   DEFAULT_ENV_FILE,
-  createDeepSeekReasoningEngineFromEnv,
   parseEnvText,
   resolveDeepSeekOptions,
 };

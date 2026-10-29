@@ -60,16 +60,12 @@ test('university manifests identify the real fixture and omit unused XSS, histor
   assert.notEqual(privateHost.data.logicalInputDigest, manifests[0].data.logicalInputDigest);
 });
 
-test('the existing local board manifest keeps its browser and agent execution conditions', () => {
-  const manifest = createRunManifest({ runId: 'manifest-vul-web-1', mode: 'local-lab-rule', modelId: 'rule-baseline',
-    options: { fixtureId: 'vul-web-1', testProfile: 'stored_xss_canary' }, env: { CASPER_DB_PYTHON: 'unavailable-python-for-manifest' } });
-  assert.equal(manifest.target.fixtureId, 'vul-web-1');
-  assert.equal(manifest.target.testProfile, 'stored_xss_canary');
-  assert.ok(manifest.modules.agent.contentDigest);
-  assert.ok(manifest.modules['xss-parser'].contentDigest);
-  assert.ok(manifest.shared.lockDigest);
-  assert.ok(manifest.model.adapterDigest);
-  assert.equal(manifest.modules['vul-web2'], undefined);
+test('retired single stored-XSS/BOLA checks no longer produce a run manifest', () => {
+  for (const [mode, testProfile] of [['local-lab-rule', 'stored_xss_canary'], ['core-fixture', 'agent_cross_user_delete_canary'],
+    ['local-lab-deepseek', 'stored_xss_canary']]) {
+    assert.throws(() => createRunManifest({ runId: `manifest-${mode}`, mode, modelId: 'rule-baseline',
+      options: { fixtureId: 'vul-web-1', testProfile } }), /retired/);
+  }
 });
 
 test('general university manifests record model execution and omit deferred XSS browser conditions', () => {

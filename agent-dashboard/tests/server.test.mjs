@@ -2,11 +2,66 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { request } from 'node:http';
-import { createLocalRuntime } from '../local-runtime.mjs';
 import { createDashboardServer } from '../local-server.mjs';
 
+const STEPS = 6;
+
+// In-memory runtime with the run-service surface the HTTP layer uses; it never contacts a target.
+function createStubRuntime({ delayMs = 0 } = {}) {
+  const fail = (status, message) => Object.assign(new Error(message), { status });
+  const listeners = new Set();
+  const idle = () => ({ id: null, status: 'idle', target: null, targetContacted: false, events: [] });
+  let run = idle(); let timer = null; let closed = false; let count = 0; let settled = Promise.resolve();
+  const getState = () => structuredClone({ run, mode: 'stub', instanceId: 'stub-instance' });
+  const publish = () => { for (const listener of listeners) listener(getState()); };
+  const active = () => ['running', 'stopping'].includes(run.status);
+  function step() {
+    timer = null;
+    if (run.status !== 'running') return;
+    run.events.push({ id: `${run.id}:event-${run.events.length + 1}`, module: 'agent', stage: 'loop.act' });
+    if (run.events.length === STEPS) { run.status = 'completed'; run.report = { status: 'completed' }; }
+    else timer = setTimeout(step, delayMs);
+    publish();
+  }
+  function start(options = {}) {
+    if (closed) throw fail(503, 'Runtime is closed.');
+    if (active()) throw fail(409, 'A run is already active.');
+    if (Object.keys(options).some(key => !['target', 'delayMs'].includes(key))) throw fail(400, 'Only target and delayMs are accepted.');
+    let target;
+    try { target = new URL(options.target).href; } catch { throw fail(400, 'Provide a valid URL.'); }
+    if (options.delayMs !== undefined && (!Number.isInteger(options.delayMs) || options.delayMs < 0)) throw fail(400, 'Invalid delayMs.');
+    run = { id: `stub-${count += 1}`, status: 'running', target, targetContacted: false, events: [] };
+    timer = setTimeout(step, delayMs);
+    publish();
+    return getState();
+  }
+  function stop(id) {
+    if (id !== run.id) throw fail(404, 'Run not found.');
+    if (run.status === 'running') {
+      run.status = 'stopping'; clearTimeout(timer); timer = null; publish();
+      // Cancellation finishes later, so a server that did not await close() would still see 'stopping'.
+      settled = new Promise(resolve => setTimeout(() => {
+        run.status = 'stopped'; run.report = { status: 'failed' }; publish(); resolve();
+      }, 20));
+    }
+    return getState();
+  }
+  function reset() {
+    if (active()) throw fail(409, 'Stop the active run before resetting.');
+    run = idle(); publish(); return getState();
+  }
+  async function close() {
+    closed = true;
+    if (run.status === 'running') stop(run.id);
+    await settled;
+    listeners.clear();
+  }
+  return { getState, start, stop, reset, close,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+}
+
 async function serve(t, { delayMs = 0 } = {}) {
-  const runtime = createLocalRuntime({ defaultDelayMs: delayMs });
+  const runtime = createStubRuntime({ delayMs });
   const server = createDashboardServer({ runtime });
   assert.equal(server.listening, false, 'Creating the server must have no listen side effect');
   server.listen(0, '127.0.0.1');
@@ -103,8 +158,8 @@ test('the local API serves static UI and exposes the same runtime state envelope
   assert.equal(response.headers.get('access-control-allow-origin'), null);
   assert.deepEqual(body, runtime.getState());
   const started = await getJson(`${base}/api/runs`, jsonPost({ target: 'https://metadata-only.invalid', delayMs: 0 }));
-  assert.equal(started.response.ok, true);
-  assert.equal(started.body.mode, 'core-fixture');
+  assert.equal(started.response.status, 201);
+  assert.equal(started.body.run.status, 'running');
   assert.equal(started.body.run.target, 'https://metadata-only.invalid/');
   assert.equal(started.body.run.targetContacted, false);
 });
@@ -174,7 +229,7 @@ test('SSE sends an initial snapshot and live core events through completion', as
   for (let index = 0; index < 100; index += 1) {
     const state = await nextState();
     assert.equal(state.instanceId, started.body.instanceId);
-    assert.equal(state.mode, 'core-fixture');
+    assert.equal(state.mode, 'stub');
     seen.push(state);
     if (['completed', 'failed'].includes(state.run?.status)) {
       final = state;
@@ -183,7 +238,7 @@ test('SSE sends an initial snapshot and live core events through completion', as
   }
   assert.ok(final, 'The stream must deliver a terminal state');
   assert.equal(final.run.status, 'completed');
-  assert.equal(final.run.events.length, 25);
+  assert.equal(final.run.events.length, STEPS);
   assert.equal(final.run.targetContacted, false);
   assert.ok(seen.some(state => state.run?.status === 'running' && state.run.events.length > 0));
   assert.deepEqual(final, runtime.getState());
@@ -205,7 +260,7 @@ test('API stop cancels an active run, while active replacement and reset return 
   assert.ok(['stopping', 'stopped'].includes(stopped.body.run.status));
   await waitForStopped(runtime);
   assert.equal(runtime.getState().run.status, 'stopped');
-  assert.ok(runtime.getState().run.events.length < 25);
+  assert.ok(runtime.getState().run.events.length < STEPS);
   const reset = await getJson(`${base}/api/reset`, jsonPost({}));
   assert.equal(reset.response.ok, true);
   assert.ok(!reset.body.run || reset.body.run.status === 'idle');
@@ -246,7 +301,7 @@ test('shutdown ends an active SSE stream and awaits cancellation before closing 
   const final = runtime.getState();
   assert.equal(final.run.status, 'stopped');
   assert.ok(final.run.events.length > 0);
-  assert.ok(final.run.events.length < 19);
+  assert.ok(final.run.events.length < STEPS);
   assert.equal(final.run.targetContacted, false);
   assert.equal(final.run.report.status, 'failed');
   assert.throws(() => runtime.start({ target: 'https://metadata-only.invalid' }), error => error.status === 503);

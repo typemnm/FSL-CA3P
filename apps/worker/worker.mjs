@@ -2,13 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../packages/run-store/index.mjs';
-import { createLocalRuntime } from '../application/local-runtime.mjs';
 import { createIdorRuntime } from '../application/idor-runtime.mjs';
 import { createGeneralRuntime } from '../application/general-runtime.mjs';
 import { createExternalRuntime } from '../application/external-runtime.mjs';
-import { createModelReasoning } from '../../packages/models/registry.mjs';
 import { digest } from '../../packages/contracts/index.mjs';
-import { startLocalLab } from '../../packages/adapters/local-lab-gateway.mjs';
 import { syncRunChecks } from '../../packages/history/check-sync.mjs';
 import { PROJECT_ROOT, treeDigest } from '../../packages/contracts/manifest.mjs';
 import { join } from 'node:path';
@@ -45,7 +42,7 @@ function storeReportPreviews(store, runId, document, findingId) {
 
 export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
   pollMs = 150, leaseMs = 15_000, heartbeatMs = 1000, envFile, env = process.env,
-  reportGenerator = generateReportDocument, runtimeFactory = createLocalRuntime,
+  reportGenerator = generateReportDocument,
   idorRuntimeFactory = createIdorRuntime, generalRuntimeFactory = createGeneralRuntime,
   externalRuntimeFactory = createExternalRuntime, externalRequestImpl,
   generalPlannerFactory, generalFetchImpl, generalIdorProbe, generalBoardFactory } = {}) {
@@ -64,13 +61,20 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       lease = store.claimNext(owner, { leaseMs });
       if (!lease) return;
       activeLease = lease;
+      const externalRun = lease.mode === 'external-general';
+      const generalLab = lease.mode === 'local-lab-general' || externalRun;
+      const idorLab = lease.options.testProfile === 'known_record_idor_read';
+      // Runs queued before the single stored-XSS/BOLA check was retired have no runtime left.
+      if (!generalLab && !(lease.mode === 'local-lab-rule' && idorLab)) {
+        throw Object.assign(new Error('This run mode was retired. Start a general assessment instead.'), { code: 'RETIRED_MODE' });
+      }
       const frozen = store.getRun(lease.runId).manifest;
       for (const [name, value] of Object.entries(frozen.modules ?? {})) {
         if (treeDigest(join(PROJECT_ROOT, name)) !== value.contentDigest) {
           throw Object.assign(new Error('Module content changed after this run was queued. Create a new run.'), { code: 'CONDITION_CHANGED' });
         }
       }
-      for (const [field, path] of [['contractDigest', 'packages/contracts'], ['lockDigest', 'xss-parser/package-lock.json'], ['modelRegistryDigest', 'packages/models']]) {
+      for (const [field, path] of [['contractDigest', 'packages/contracts'], ['modelRegistryDigest', 'packages/models']]) {
         if (frozen.shared?.[field] && treeDigest(join(PROJECT_ROOT, path)) !== frozen.shared[field]) {
           throw Object.assign(new Error('Shared execution conditions changed after this run was queued.'), { code: 'CONDITION_CHANGED' });
         }
@@ -80,9 +84,6 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       }
       const controller = new AbortController();
       activeController = controller;
-      const externalRun = lease.mode === 'external-general';
-      const generalLab = lease.mode === 'local-lab-general' || externalRun;
-      const idorLab = lease.options.testProfile === 'known_record_idor_read';
       if (lease.mode === 'local-lab-general'
         && (lease.options.testProfile !== 'general' || lease.modelId === 'rule-baseline')) {
         throw Object.assign(new Error('General assessment requires its own profile and a registered model.'), { code: 'INVALID_GENERAL_RUN' });
@@ -91,11 +92,6 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         || lease.options.fixtureId !== null)) {
         throw Object.assign(new Error('External observation requires its read-only profile.'), { code: 'INVALID_EXTERNAL_RUN' });
       }
-      const engine = idorLab || generalLab ? null : await createModelReasoning(lease.modelId, { signal: controller.signal,
-        env,
-        ...(envFile ? { envFile } : {}), onModelCall(metadata) {
-          store.recordModelCall(lease, metadata); notify();
-        } });
       let persistenceError = null;
       const historyProvider = () => store.listRuns({ limit: 50 }).items
         .filter(item => item.id !== lease.runId && (externalRun
@@ -111,8 +107,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
                 ? finding.evidenceIds.length : null })) };
         });
       runtime = (externalRun ? externalRuntimeFactory : generalLab ? generalRuntimeFactory
-        : idorLab ? idorRuntimeFactory : runtimeFactory)({ defaultDelayMs: lease.options.delayMs,
-        fixtureId: lease.options.fixtureId,
+        : idorRuntimeFactory)({ fixtureId: lease.options.fixtureId,
         targetOrigin: lease.options.target,
         ...(externalRun ? { targetUrl: lease.options.target, scope: lease.options.scope,
           ...(externalRequestImpl ? { requestImpl: externalRequestImpl } : {}) } : {}),
@@ -128,30 +123,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         modelId: lease.modelId,
         env, ...(envFile ? { envFile } : {}), signal: controller.signal,
         onModelCall(metadata) { store.recordModelCall(lease, metadata); notify(); },
-        runIdFactory: () => lease.runId, labMode: lease.mode,
-        labTestProfile: lease.options.testProfile,
-        labConfigProvider: () => ({ provider: lease.modelId === 'rule-baseline' ? 'rules' : 'deepseek', model: lease.modelId }),
-        labReasoningFactory: () => engine,
-        labFactory: options => startLocalLab({ ...options, casperDatabasePath: lease.options.caseSnapshot?.path,
-          casperSourceDatabasePath: lease.options.caseSnapshot?.sourcePath,
-          cleanupRegistryPath: join(dirname(store.path), 'lab-sessions') }),
-        async beforeExchange(request) {
-          store.assertLease(lease, { allowCancelled: request.type === 'storage.request'
-            && ['casper-db', 'pentest-db'].includes(request.receiver)
-            && request.payload.operation === 'finalize' });
-          if (request.receiver === 'attack-module' && ['POST', 'DELETE'].includes(request.payload.curl?.method)) {
-            const command = request.payload.curl;
-            const target = new URL(command.url);
-            const actionId = digest({ iteration: request.iteration, session: request.payload.session,
-              method: command.method, path: target.pathname });
-            store.reserveAction(lease, { actionId, request });
-            return actionId;
-          }
-        },
-        async afterExchange(request, response, reservation) {
-          store.assertLease(lease, { allowCancelled: true });
-          if (reservation) store.completeAction(lease, reservation, response);
-        },
+        runIdFactory: () => lease.runId,
         async beforeProbe(probe) {
           store.assertLease(lease);
           const method = String(probe?.method || 'GET').toUpperCase();
@@ -191,8 +163,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         }
       }, heartbeatMs);
       try {
-        if (lease.mode === 'core-fixture') runtime.start({ target: lease.options.target, delayMs: lease.options.delayMs });
-        else await runtime.startLab();
+        await runtime.startLab();
         await terminal;
         if (persistenceError) throw persistenceError;
         const final = runtime.getState().run;
@@ -289,7 +260,6 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
           let document;
           try {
             if (idorLab) document = { status: 'skipped', errorCode: 'IDOR_DOCUMENT_UNSUPPORTED', message: 'IDOR 실습은 실행 이력과 JSON 보고서를 제공합니다. HWPX 생성과 모델 API 호출은 수행하지 않습니다.' };
-            else if (lease.mode === 'core-fixture') document = { status: 'skipped', errorCode: 'FIXTURE_SKIPPED', message: '코어 fixture는 HWPX 보고서를 생성하지 않습니다.' };
             else if (status === 'cancelled' || !final.report) document = { status: 'skipped', errorCode: 'RUN_STOPPED', message: '중지했거나 최종 보고서가 없어 문서를 생성하지 않습니다.' };
             else document = await reportGenerator({ run: finalState, storePath: store.path,
               historyPath: lease.options.caseSnapshot?.sourcePath, envFile, env, signal: controller.signal });

@@ -7,7 +7,6 @@ const MAX_MESSAGE_BYTES = 1_000_000;
 const DEFAULT_GATEWAY_TIMEOUT_MS = 10_000;
 const MODULE_NAMES = new Set([
   'agent',
-  'xss-parser',
   'attack-module',
   'casper-db',
   'pentest-db',
@@ -15,7 +14,6 @@ const MODULE_NAMES = new Set([
 const MESSAGE_TYPES = new Set([
   'module.request',
   'module.error',
-  'parser.result',
   'attack.result',
   'history.result',
   'storage.request',
@@ -30,11 +28,6 @@ function isObject(value) {
 
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.length > 0;
-}
-
-function urlHasOrigin(raw, origin) {
-  try { return new URL(raw).origin === origin; }
-  catch { return false; }
 }
 
 function createEnvelope({
@@ -155,9 +148,7 @@ function validateResponseContract(request, response) {
   }
 
   let expectedType;
-  if (request.receiver === 'xss-parser' && request.type === 'module.request') {
-    expectedType = 'parser.result';
-  } else if (request.receiver === 'attack-module' && request.type === 'module.request') {
+  if (request.receiver === 'attack-module' && request.type === 'module.request') {
     expectedType = 'attack.result';
   } else if (request.receiver === 'casper-db' && request.type === 'module.request') {
     expectedType = 'history.result';
@@ -171,52 +162,6 @@ function validateResponseContract(request, response) {
     throw new Error(`Expected ${expectedType} response, received ${response.type}`);
   }
 
-  if (expectedType === 'parser.result') {
-    const payload = response.payload;
-    if (request.payload.operation === 'verify_stored_xss') {
-      const execution = payload.execution;
-      if (payload.operation !== 'verify_stored_xss'
-        || payload.phase !== 'after'
-        || !isObject(execution)
-        || execution.marker !== request.payload.marker
-        || execution.postId !== request.payload.postId
-        || !urlHasOrigin(execution.pageUrl, request.payload.origin)
-        || typeof execution.executed !== 'boolean'
-        || typeof execution.postVisible !== 'boolean'
-        || typeof execution.payloadPresent !== 'boolean'
-        || typeof execution.bindingCalled !== 'boolean'
-        || !Array.isArray(execution.errors)
-        || !execution.errors.every(error => typeof error === 'string')
-        || !isNonEmptyString(payload.evidenceId)) {
-        throw new Error('parser.result payload does not satisfy the browser execution contract');
-      }
-      return response;
-    }
-    const parserOrigin = (() => {
-      try { return new URL(payload.report?.startUrl).origin; }
-      catch { return null; }
-    })();
-    if (request.payload.operation !== 'parse_site'
-      || payload.operation !== 'parse_site'
-      || payload.phase !== request.payload.phase
-      || !['before', 'after'].includes(payload.phase)
-      || parserOrigin !== request.payload.origin
-      || payload.report?.schemaVersion !== '3.4'
-      || !Array.isArray(payload.report.pages)
-      || !payload.report.pages.every(page => isObject(page)
-        && urlHasOrigin(page.url, request.payload.origin))
-      || !Array.isArray(payload.observedPosts)
-      || !payload.observedPosts.every(post => isObject(post)
-        && (post.id === null || typeof post.id === 'string')
-        && (post.title === null || typeof post.title === 'string')
-        && (post.author === null || typeof post.author === 'string')
-        && urlHasOrigin(post.pageUrl, request.payload.origin))
-      || !Array.isArray(payload.errors)
-      || typeof payload.truncated !== 'boolean'
-      || !isNonEmptyString(payload.evidenceId)) {
-      throw new Error('parser.result payload does not satisfy the site observation contract');
-    }
-  }
   if (expectedType === 'attack.result') {
     const payload = response.payload;
     const httpResponse = payload.response;

@@ -1,7 +1,7 @@
 /**
- * Read-only bridge from this repository's xss-parser to the local agent loop.
+ * Read-only stored-XSS execution check that drives web-parser's Playwright.
  * The returned page data is an untrusted browser observation, not an API or
- * ownership assertion. In particular, `author` is only a displayed name.
+ * ownership assertion.
  */
 
 import { createRequire } from 'node:module';
@@ -13,16 +13,16 @@ export { createStoredXssCanary, storedXssCanaryContent };
 const VERIFY_TIMEOUT_MS = 10_000;
 const BINDING_WAIT_MS = 1_500;
 const MAX_OBSERVATION_ERRORS = 8;
-const requireParserDependency = createRequire(new URL('../../../xss-parser/package.json', import.meta.url));
+const requireBrowserDependency = createRequire(new URL('../../../web-parser/package.json', import.meta.url));
 
 function localOrigin(value) {
   let url;
   try { url = new URL(value); }
-  catch { throw new TypeError('xss-parser requires a valid local target origin.'); }
+  catch { throw new TypeError('Stored-XSS observation requires a valid local target origin.'); }
   if (!['http:', 'https:'].includes(url.protocol)
     || !['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname)
     || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
-    throw new TypeError('xss-parser accepts only an HTTP(S) loopback origin.');
+    throw new TypeError('Stored-XSS observation accepts only an HTTP(S) loopback origin.');
   }
   return url.origin;
 }
@@ -31,103 +31,6 @@ function parserFailure(message, cause) {
   const error = new Error(message, { cause });
   error.code = 'XSS_PARSER_FAILED';
   return error;
-}
-
-async function loadScan() {
-  try {
-    const { scan } = await import('../../../xss-parser/parser.mjs');
-    if (typeof scan !== 'function') throw new TypeError('scan export is missing');
-    return scan;
-  } catch (cause) {
-    const error = new Error(
-      'xss-parser is unavailable. Install its dependencies in xss-parser with npm install, '
-      + 'then install Playwright Chromium with npx playwright install chromium.',
-      { cause },
-    );
-    error.code = 'XSS_PARSER_UNAVAILABLE';
-    throw error;
-  }
-}
-
-function normalizeReport(report, origin) {
-  if (!report || report.schemaVersion !== '3.4' || !Array.isArray(report.pages)
-    || report.summary?.scope !== 'visited-client-pages'
-    || typeof report.summary.truncated !== 'boolean') {
-    throw parserFailure('xss-parser returned an unsupported report schema.');
-  }
-  let reportOrigin;
-  try { reportOrigin = new URL(report.startUrl).origin; }
-  catch { throw parserFailure('xss-parser returned an invalid start URL.'); }
-  if (reportOrigin !== origin) throw parserFailure('xss-parser report changed target origin.');
-
-  const observedPosts = [];
-  const errors = [];
-  for (const page of report.pages) {
-    if (!page || typeof page.url !== 'string') {
-      throw parserFailure('xss-parser returned a page without a URL.');
-    }
-    let pageOrigin;
-    try { pageOrigin = new URL(page.url).origin; }
-    catch { throw parserFailure('xss-parser returned an invalid page URL.'); }
-    if (pageOrigin !== origin) throw parserFailure('xss-parser report contains a page from another origin.');
-    if (page.error) {
-      errors.push({ url: page.url, message: String(page.error) });
-      continue;
-    }
-    if (page.posts !== undefined && !Array.isArray(page.posts)) {
-      throw parserFailure('xss-parser returned invalid post observations.');
-    }
-    for (const post of page.posts ?? []) {
-      if (!post || (post.id !== null && typeof post.id !== 'string')
-        || (post.title !== null && typeof post.title !== 'string')
-        || (post.author !== null && typeof post.author !== 'string')) {
-        throw parserFailure('xss-parser returned an invalid visible post.');
-      }
-      observedPosts.push({
-        id: post.id,
-        idSource: post.idSource ?? null,
-        title: post.title,
-        author: post.author,
-        pageUrl: page.url,
-      });
-    }
-  }
-  return {
-    report,
-    observedPosts,
-    errors,
-    truncated: report.summary.truncated,
-  };
-}
-
-/**
- * Scan one page of the isolated local target. `scanImpl` is injectable for
- * protocol tests; the default is the real Playwright-backed xss-parser.
- */
-export async function parseLocalSite(originInput, { scanImpl, signal } = {}) {
-  const origin = localOrigin(originInput);
-  const scan = scanImpl ?? await loadScan();
-  if (typeof scan !== 'function') throw new TypeError('scanImpl must be a function.');
-  let report;
-  try {
-    report = await scan(`${origin}/`, {
-      maxPages: 1,
-      hideBody: true,
-      waitMs: 0,
-      // The local board renders its posts after the initial API read.
-      readySelector: '#post-list[aria-busy="false"]',
-      signal,
-    });
-  } catch (cause) {
-    if (signal?.aborted) throw cause;
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    throw parserFailure(
-      `xss-parser could not scan the local target: ${detail}. `
-      + 'Ensure Chrome/Chromium is installed (npx playwright install chromium).',
-      cause,
-    );
-  }
-  return normalizeReport(report, origin);
 }
 
 function abortError(signal) {
@@ -152,13 +55,13 @@ function validateObservation(postId, marker, signal) {
 
 function loadChromium() {
   try {
-    const { chromium } = requireParserDependency('playwright');
+    const { chromium } = requireBrowserDependency('playwright');
     if (!chromium?.launch) throw new TypeError('Playwright Chromium is missing.');
     return chromium;
   } catch (cause) {
     const error = new Error(
-      'Playwright is unavailable. Install xss-parser dependencies and Chromium with '
-      + 'npm install and npx playwright install chromium in xss-parser.',
+      'web-parser Playwright is unavailable. Install web-parser dependencies and Chromium with '
+      + 'npm install and npx playwright install chromium in web-parser.',
       { cause },
     );
     error.code = 'XSS_PARSER_UNAVAILABLE';
@@ -218,7 +121,8 @@ export async function observeStoredXssExecution(originInput, { postId, marker, s
   const deadlineTimer = setTimeout(() => { timedOut = true; closeBrowser(); }, VERIFY_TIMEOUT_MS);
 
   try {
-    const executablePath = process.env.XSS_PARSER_BROWSER_PATH;
+    // XSS_PARSER_BROWSER_PATH is the old name, kept as an alias.
+    const executablePath = process.env.WEB_PARSER_BROWSER_PATH || process.env.XSS_PARSER_BROWSER_PATH;
     browser = await chromium.launch({
       headless: true,
       timeout: remaining(),
