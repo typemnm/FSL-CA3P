@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "attack-tool-template-1",
+  "type": "object",
+  "required": ["templateId","attackType","dependency","target","request","blanks","verify","executor","trust"],
+  "properties": {
+    "templateId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "attackType": {
+      "type": "object", "required": ["name","cwe"],
+      "properties": { "name": { "type": "string" }, "cwe": { "type": "string", "pattern": "^CWE-[0-9]+$" } }
+    },
+    "dependency": {
+      "type": "object",
+      "properties": {
+        "runtime": { "type": "string" }, "framework": { "type": "string" },
+        "library": { "type": "string" }, "scope": { "enum": ["generic"] }
+      }
+    },
+    "target": {
+      "type": "object", "required": ["method","endpoint","application"],
+      "properties": { "method": { "type": "string" }, "endpoint": { "type": "string" }, "application": { "type": "string" } }
+    },
+    "request": { "type": "object", "required": ["curl"], "properties": { "curl": { "type": "string" } } },
+    "blanks": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object", "required": ["required","type","desc"],
+        "properties": {
+          "required": { "type": "boolean" }, "type": { "type": "string" },
+          "desc": { "type": "string" }, "example": { "type": "string" }, "pickFrom": { "type": "string" }
+        }
+      }
+    },
+    "payloads": { "type": "array", "items": { "type": "string" } },
+    "verify": { "type": "object", "required": ["mode"], "properties": { "mode": { "enum": ["resultCount","fieldsPresent","statusChain","idorDelete","browser","manual"] } } },
+    "executor": { "enum": ["repeater","intruder","browser","manual"] },
+    "mutating": { "type": "boolean" },
+    "origin": { "enum": ["imported","human_authored","ai_generated"] },
+    "source": { "type": "string" },
+    "trust": { "enum": ["unverified","confirmed","rejected"] }
+  }
+}

