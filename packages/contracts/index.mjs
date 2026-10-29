@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 
 export const CONTRACT_VERSIONS = Object.freeze({ envelope: '1.0', parserReport: '3.4',
   catalog: 'casper-attack-catalog-1', caseStoreMigration: 7, runManifest: '1.0', runEvent: '1.0' });
-export const RUN_MODES = Object.freeze(['core-fixture', 'local-lab-rule', 'local-lab-deepseek', 'local-lab-general', 'external-general']);
+export const RUN_MODES = Object.freeze(['local-lab-rule', 'local-lab-general', 'external-general']);
+// Stored runs of these modes stay readable; new runs can no longer start them.
+export const RETIRED_RUN_MODES = Object.freeze(['core-fixture', 'local-lab-deepseek']);
 export const TERMINAL_STATUSES = Object.freeze(['completed', 'failed', 'cancelled', 'interrupted']);
 export const ACTIVE_STATUSES = Object.freeze(['queued', 'preparing', 'running', 'stopping']);
 export const digest = value => createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value)

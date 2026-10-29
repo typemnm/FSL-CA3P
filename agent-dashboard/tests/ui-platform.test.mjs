@@ -12,8 +12,8 @@ function snapshot(id, mode = 'core-fixture') {
 }
 const idle = { ...snapshot('', 'core-fixture'), id: null, status: 'idle', events: [], snapshots: {}, totalSteps: 19, step: 0 };
 const wrap = run => ({ instanceId: 'test-server', mode: run.mode, run, lab: { available: false } });
-const resetModels = [{ id: 'deepseek-primary', name: 'DeepSeek Primary', provider: 'deepseek', mode: 'local-lab-deepseek', available: true },
-  { id: 'deepseek-flash', name: 'DeepSeek Flash', provider: 'deepseek', mode: 'local-lab-deepseek', available: true }];
+const resetModels = [{ id: 'deepseek-primary', name: 'DeepSeek Primary', provider: 'deepseek', mode: 'local-lab-general', available: true },
+  { id: 'deepseek-flash', name: 'DeepSeek Flash', provider: 'deepseek', mode: 'local-lab-general', available: true }];
 async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   const server = http.createServer(async (req, res) => {
     try {
@@ -552,22 +552,46 @@ test('dashboard reads and compares two actual persisted worker runs through the 
   const { createRunService } = await import('../../apps/application/run-service.mjs');
   const { createDashboardServer } = await import('../../apps/api/server.mjs');
   const { createAuthentication, hashAccount } = await import('../../apps/api/auth.mjs');
+  const { emptyRun } = await import('../../packages/contracts/index.mjs');
   const directory = await mkdtemp(join(tmpdir(), 'ca3p-ui-e2e-'));
+  // Credential-free private-origin stand-in for the fixed daehan IDOR read.
+  const university = http.createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/login') {
+      let body = ''; for await (const chunk of req) body += chunk;
+      res.writeHead(302, { location: '/mypage', 'set-cookie': `sid=${new URLSearchParams(body).get('username')}; HttpOnly; Path=/` });
+      return res.end();
+    }
+    const match = /^\/api\/admissions\/partner\/applications\/(1|3)$/.exec(req.url);
+    if (req.method !== 'GET' || !match) { res.writeHead(404); return res.end(); }
+    const id = Number(match[1]);
+    res.writeHead(req.headers.cookie === 'sid=student1' ? 403 : 200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ id, partner_user_id: id === 1 ? 4 : 5 }));
+  });
+  university.listen(0, '127.0.0.1'); await once(university, 'listening');
   const service = createRunService({ storePath: join(directory, 'runs.sqlite'), envFile: false, defaultDelayMs: 0 });
   const server = createDashboardServer({ runtime: service, auth: createAuthentication({ users: [hashAccount('ui-operator', 'local-test-password', 'operator')] }) });
   let browser;
-  t.after(async () => { await browser?.close(); await server.shutdown(); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { await browser?.close(); await server.shutdown(); university.closeAllConnections(); university.close(); await rm(directory, { recursive: true, force: true }); });
+  // A run stored before the single-check modes were retired must stay readable next to new runs.
+  const stored = 'stored-core-fixture-run';
+  service.store.createRun({ id: stored, mode: 'core-fixture', modelId: 'rule-baseline', manifest: { runId: stored },
+    state: { ...emptyRun(), id: stored, coreRunId: stored, status: 'queued', modelId: 'rule-baseline' }, options: { delayMs: 0 } });
+  const lease = service.store.claimNext('ui-stored-history');
+  service.store.saveState(lease, { ...service.getRun(stored), status: 'completed', report: { runId: stored, finding: { status: 'confirmed' } } });
+  service.store.finish(lease, 'completed');
   const finish = async () => {
-    const state = await service.start({ mode: 'core-fixture', target: 'https://metadata-only.invalid', delayMs: 0 });
+    const state = await service.startLab({ fixtureId: 'vul-web2-daehan', target: `http://127.0.0.1:${university.address().port}` });
     const end = Date.now() + 15000;
     while (Date.now() < end) {
       const run = service.getRun(state.run.id);
       if (['completed', 'failed', 'interrupted'].includes(run.status)) { assert.equal(run.status, 'completed', run.error); return run; }
       await new Promise(resolve => setTimeout(resolve, 20));
     }
-    assert.fail('Actual fixture worker did not complete');
+    assert.fail('Actual lab worker did not complete');
   };
   const baseline = await finish(); const candidate = await finish();
+  // IDOR manifests leave the case snapshot and initial state unrecorded, so the server must report a condition gap.
+  assert.equal(service.compareRuns(baseline.id, candidate.id).comparable, false);
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   browser = await chromium.launch({ headless: true,
     executablePath: process.env.CA3P_PLAYWRIGHT_EXECUTABLE || undefined });
@@ -579,11 +603,14 @@ test('dashboard reads and compares two actual persisted worker runs through the 
   await page.locator('#login-dialog').waitFor({ state: 'hidden' });
   await page.locator('[data-view=sessions]').click();
   await page.locator(`[data-session="${baseline.id}"]`).waitFor();
+  await page.locator(`[data-session="${stored}"]`).click();
+  await page.locator('#history-banner').waitFor({ state: 'visible' });
   await page.locator('[data-view=compare]').click();
   await page.locator('#baseline-select').selectOption(baseline.id); await page.locator('#candidate-select').selectOption(candidate.id); await page.locator('#compare-button').click();
   await page.locator('.comparison-summary').waitFor();
   assert.match(await page.locator('#comparison-content').textContent(), /Finding/);
   assert.match(await page.locator('#comparison-content').textContent(), /실행 지표 차이/);
-  assert.match(await page.locator('#comparison-content').textContent(), /동일 조건 비교 가능/);
+  assert.match(await page.locator('#comparison-content').textContent(), /조건 차이 확인 필요/);
+  assert.match(await page.locator('.comparison-table').first().textContent(), /caseSnapshot/);
   assert.deepEqual(errors, []);
 });

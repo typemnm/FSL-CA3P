@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { redact, validateDisplayTarget, RUN_MODES } from '../index.mjs';
+import { redact, validateDisplayTarget, RUN_MODES, RETIRED_RUN_MODES } from '../index.mjs';
 import { createRunManifest, PROJECT_ROOT, treeDigest } from '../manifest.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -74,6 +74,8 @@ test('the existing local board manifest keeps its browser and agent execution co
 
 test('general university manifests record model execution and omit deferred XSS browser conditions', () => {
   assert.ok(RUN_MODES.includes('local-lab-general'));
+  assert.deepEqual(RETIRED_RUN_MODES, ['core-fixture', 'local-lab-deepseek']);
+  assert.ok(RETIRED_RUN_MODES.every(mode => !RUN_MODES.includes(mode)));
   const manifest = createRunManifest({ runId: 'general-university', mode: 'local-lab-general',
     modelId: 'deepseek-flash', model: { provider: 'deepseek' },
     options: { fixtureId: 'vul-web2-daehan', testProfile: 'general', target: 'http://192.168.0.20:4101' } });

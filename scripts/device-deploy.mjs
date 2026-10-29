@@ -275,30 +275,19 @@ async function waitHealth(base, ready = true, timeoutMs = 30_000) {
   throw new Error(`Dashboard did not become ${ready ? 'healthy' : 'stopped'}.`);
 }
 
-async function checkApplication(base, credentials, expectedSha, { fixture = false } = {}) {
+async function checkApplication(base, credentials, expectedSha) {
   await waitHealth(base);
   const session = await localRequest(base, '/api/auth/login', { body: credentials });
   const auth = { cookie: session.cookie, csrfToken: session.value.csrfToken };
   if (!session.value.authenticated || !session.cookie) throw new Error('Authenticated deployment check failed.');
   const platform = (await localRequest(base, '/api/platform', auth)).value;
   if (platform.source?.commitSha !== expectedSha || platform.source?.dirty) throw new Error('Serving source does not match the verified release.');
+  // Read-only smoke: the isolated probe has no model key or lab target, so it never starts a run.
   for (const path of ['/api/models', '/api/runs?limit=1', '/api/state']) await localRequest(base, path, auth);
   if (platform.modules?.some(module => module.id === 'chat-store' && module.status === 'active')) {
     const models = (await localRequest(base, '/api/chat/models', auth)).value;
     const sessions = (await localRequest(base, '/api/chat/sessions', auth)).value;
     if (!Array.isArray(models.models) || !Array.isArray(sessions.sessions)) throw new Error('Workspace chat health check failed.');
-  }
-  if (fixture) {
-    const started = (await localRequest(base, '/api/runs', { ...auth, body: { mode: 'core-fixture', modelId: 'rule-baseline', delayMs: 0 } })).value;
-    const id = started.run?.id;
-    if (!id) throw new Error('Isolated deployment fixture did not start.');
-    const deadline = Date.now() + 20_000;
-    while (true) {
-      const run = (await localRequest(base, `/api/runs/${id}`, auth)).value.run;
-      if (run?.status === 'completed') break;
-      if (Date.now() > deadline || ['failed', 'cancelled', 'interrupted'].includes(run?.status)) throw new Error('Isolated deployment fixture failed.');
-      await delay(100);
-    }
   }
   await localRequest(base, '/api/auth/logout', { ...auth, body: {} });
 }
@@ -424,7 +413,7 @@ export async function prepareRelease(config, candidate, phase, { execute: runCom
   const closed = new Promise(done => child.once('close', () => { childClosed = true; done(); }));
   let childError; child.on('error', error => { childError = error; });
   try {
-    await checkApplication(`http://127.0.0.1:${config.probePort}`, { username: 'deploy-probe', password }, candidate.sha, { fixture: true });
+    await checkApplication(`http://127.0.0.1:${config.probePort}`, { username: 'deploy-probe', password }, candidate.sha);
     if (childError || child.exitCode !== null) throw new Error('Candidate server exited during isolated verification.');
   } finally {
     if (!childClosed) child.kill('SIGTERM');

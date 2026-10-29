@@ -68,7 +68,7 @@ test('general run renders and supported targets launch the bounded model assessm
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs: [run], total: 1 });
     if (path === '/api/models') return json({ models: [
       { id: 'rule-baseline', name: 'Rule baseline', provider: 'local', mode: 'local-lab-rule', available: true },
-      { id: 'deepseek-test', name: 'DeepSeek test', provider: 'deepseek', mode: 'local-lab-deepseek', available: true },
+      { id: 'deepseek-test', name: 'DeepSeek test', provider: 'deepseek', mode: 'local-lab-general', available: true },
     ] });
     if (path === '/api/platform') return json({ source: {}, modules: [] });
     if (path === '/api/ci-results') return json({ runs: [] });
