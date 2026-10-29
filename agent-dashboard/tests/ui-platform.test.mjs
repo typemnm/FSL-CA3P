@@ -87,8 +87,8 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
       const body = request.postDataJSON();
       mutations.push({ body, csrf: request.headers()['x-csrf-token'] }); state = snapshot('new-assessment', body.mode);
       if (body.mode === 'local-lab-general') {
-        state = { ...state, assessmentMode: 'general', fixtureId: body.fixtureId ?? 'vul-web-1',
-          target: body.target ?? 'http://127.0.0.1:3000',
+        state = { ...state, assessmentMode: 'general', fixtureId: body.fixtureId,
+          target: body.target,
           report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
             hypotheses: [], probes: [], evidence: [], findings: [],
             coverage: { totalHypotheses: 0, confirmed: 0, notReproduced: 0, inconclusive: 0, notTested: 0 } } };
@@ -263,7 +263,7 @@ test('changing a registered target keeps the selected general model without forc
   await page.locator('#model-reset-toggle').uncheck();
   await page.locator('#model-select').selectOption('deepseek-flash');
   await page.locator('#model-reset-toggle').check();
-  for (const fixture of ['vul-web2-daehan', 'vul-web2-wonchang', 'vul-web-1']) {
+  for (const fixture of ['vul-web2-daehan', 'vul-web2-wonchang']) {
     await page.locator('#fixture-select').selectOption(fixture);
     assert.equal(await page.locator('#fixture-select').inputValue(), fixture);
     assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-flash');
@@ -353,7 +353,8 @@ test('authenticated workspace starts a general assessment and safely renders com
   await page.locator('#lab-run-button').click();
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'GENERAL / EVIDENCE');
-  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary' }, csrf: 'csrf-live' });
+  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary',
+    fixtureId: 'vul-web2-daehan', target: 'http://127.0.0.1:4101' }, csrf: 'csrf-live' });
   await page.locator('#history-review-panel [data-review-note]').fill('Synthetic evidence checked.');
   await page.locator('#history-review-panel [data-review-form] button').click();
   await page.locator('#history-review-panel .review-complete').waitFor();
@@ -375,7 +376,7 @@ test('authenticated workspace starts a general assessment and safely renders com
   assert.deepEqual(errors, []);
 });
 
-test('registered universities and board launch general assessments with their selected origin', async t => {
+test('registered universities launch general assessments with their selected origin', async t => {
   const { page, mutations, errors } = await setup(t);
   await page.locator('#fixture-select').selectOption('vul-web2-daehan');
   assert.match(await page.locator('#lab-title').textContent(), /vul-web2 대한대학교/);
@@ -398,10 +399,10 @@ test('registered universities and board launch general assessments with their se
   assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary',
     fixtureId: 'vul-web2-wonchang', target: 'http://192.168.0.84:4102' }, csrf: 'csrf-live' });
   await page.locator('[data-view=assets]').click();
-  await page.locator('#fixture-select').selectOption('vul-web-1');
+  assert.deepEqual(await page.locator('#fixture-select option').evaluateAll(options => options.map(option => option.value)),
+    ['vul-web2-daehan', 'vul-web2-wonchang']);
   assert.equal(await page.locator('#model-select').isEnabled(), true);
-  assert.match(await page.locator('#lab-run-label').textContent(), /범용 취약점 점검 시작/);
-  assert.equal(await page.locator('#lab-target-control').isHidden(), true);
+  assert.equal(await page.locator('#lab-target-control').isVisible(), true);
   assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #target-form, #settings-speed').count(), 0);
   assert.deepEqual(errors, []);
 });

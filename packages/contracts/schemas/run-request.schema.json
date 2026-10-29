@@ -7,7 +7,7 @@
   "properties": {
     "mode": {"enum": ["local-lab-rule", "local-lab-general", "external-general"]},
     "modelId": {"enum": ["rule-baseline", "deepseek-flash", "deepseek-v4-pro"]},
-    "fixtureId": {"enum": ["vul-web-1", "vul-web2-daehan", "vul-web2-wonchang"]},
+    "fixtureId": {"enum": ["vul-web2-daehan", "vul-web2-wonchang"]},
     "target": {"type": "string", "maxLength": 2048},
     "delayMs": {"type": "integer", "minimum": 0, "maximum": 3000},
     "testProfile": {"enum": ["known_record_idor_read", "general"]},
@@ -17,13 +17,6 @@
     "authorizationConfirmed": {"type": "boolean"}
   },
   "allOf": [
-    {"if": {"not": {"properties": {"fixtureId": {"enum": ["vul-web2-daehan", "vul-web2-wonchang"]}}, "required": ["fixtureId"]}},
-      "then": {"if": {"properties": {"mode": {"enum": ["local-lab-rule", "local-lab-general"]}}, "required": ["mode"]},
-        "then": {"not": {"required": ["target"]}}}},
-    {"if": {"properties": {"fixtureId": {"enum": ["vul-web2-daehan", "vul-web2-wonchang"]}}, "required": ["fixtureId"]},
-      "then": {"properties": {"mode": {"enum": ["local-lab-rule", "local-lab-general"]}}}},
-    {"if": {"properties": {"mode": {"const": "local-lab-rule"}}, "required": ["mode"]},
-      "then": {"required": ["fixtureId"], "properties": {"fixtureId": {"enum": ["vul-web2-daehan", "vul-web2-wonchang"]}}}},
     {"if": {"properties": {"mode": {"const": "local-lab-general"}}, "required": ["mode"]},
       "then": {"properties": {"modelId": {"enum": ["deepseek-flash", "deepseek-v4-pro"]}, "testProfile": {"const": "general"}}},
       "else": {"properties": {"testProfile": {"not": {"const": "general"}}}}},
@@ -31,7 +24,7 @@
       "then": {"required": ["target", "preflightToken", "authorizationConfirmed"],
         "properties": {"modelId": {"const": "rule-baseline"}, "authorizationConfirmed": {"const": true}},
         "not": {"anyOf": [{"required": ["fixtureId"]}, {"required": ["testProfile"]}, {"required": ["delayMs"]}]}},
-      "else": {"not": {"anyOf": [{"required": ["scope"]}, {"required": ["preflightToken"]},
+      "else": {"required": ["fixtureId"], "not": {"anyOf": [{"required": ["scope"]}, {"required": ["preflightToken"]},
         {"required": ["authorizationConfirmed"]}]}}}
   ]
 }

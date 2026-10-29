@@ -2,7 +2,8 @@ import { validateUniversityOrigin } from '../../packages/contracts/university-ta
 import { prepareLabSessionCleanup } from '../../packages/adapters/lab-session-registry.mjs';
 
 const UNIVERSITY_FIXTURES = new Set(['vul-web2-daehan', 'vul-web2-wonchang']);
-const ISOLATED_FIXTURES = new Set(['vul-web-1', 'scripted-contract-fixture']);
+// Old board runs remain readable and their private process residue may still need cleanup.
+const HISTORICAL_ISOLATED_FIXTURES = new Set(['vul-web-1', 'scripted-contract-fixture']);
 const REQUIRED_SCOPES = ['database', 'sessions', 'process', 'files'];
 const RESET_PATH = '/_ca3p/experiment-reset';
 const fault = (status, message) => Object.assign(new Error(message), { status, code: 'EXPERIMENT_TARGET_RESET_BLOCKED' });
@@ -24,7 +25,7 @@ export function targetResetObligationsForRuns(runs = []) {
         manifest: { target: { fixtureId, origin: run.manifest?.target?.origin } },
         coreTargetOrigin: run.coreTargetOrigin, target: run.target,
         report: { target: { origin: run.report?.target?.origin } } });
-    } else if (!ISOLATED_FIXTURES.has(fixtureId) && run.targetContacted === true) {
+    } else if (!HISTORICAL_ISOLATED_FIXTURES.has(fixtureId) && run.targetContacted === true) {
       obligations.push({ fixtureId: fixtureId ?? null, targetContacted: true });
     }
   }
@@ -75,7 +76,7 @@ export async function prepareTargetReset({ runs = [], env = process.env, fetchIm
         touched.set(fixtureId, recorded);
       } catch { throw fault(409, `${fixtureId} 실행의 실제 대상 주소를 확인할 수 없어 초기화를 중단했습니다.`); }
     }
-    else if (!ISOLATED_FIXTURES.has(fixtureId) && run.targetContacted === true) {
+    else if (!HISTORICAL_ISOLATED_FIXTURES.has(fixtureId) && run.targetContacted === true) {
       throw fault(409, '접촉한 외부 대상의 초기화 방법이 등록되지 않았습니다. 운영자가 관리하는 실습 대상만 초기화할 수 있습니다.');
     }
   }

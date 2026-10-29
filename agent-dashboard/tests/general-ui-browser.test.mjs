@@ -106,7 +106,9 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.equal(await page.locator('#view-assets').isVisible(), true);
   assert.equal(await page.locator('#fixture-select option').allTextContents().then(values => values.some(value => /XSS|IDOR/.test(value))), false);
   assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #target-form').count(), 0);
-  assert.match(await page.locator('#lab-title').textContent(), /vul-web-1 로컬 게시판/);
+  assert.deepEqual(await page.locator('#fixture-select option').evaluateAll(options => options.map(option => option.value)),
+    ['vul-web2-daehan', 'vul-web2-wonchang']);
+  assert.match(await page.locator('#lab-title').textContent(), /vul-web2 대한대학교/);
   assert.doesNotMatch(await page.locator('#lab-title').textContent(), /XSS|IDOR/);
   assert.match(await page.locator('#lab-check-scope').textContent(), /반복 점검/);
   assert.match(await page.locator('#lab-run-label').textContent(), /범용 취약점 점검 시작/);

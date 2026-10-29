@@ -20,11 +20,11 @@
 | 실행 파일 | registry 옆 `artifacts/<run hash>`, `reports/<run hash>`, `case-snapshots/<run hash>.sqlite` 및 WAL/SHM | 알려진 run의 소유 경로만 삭제. 인증 파일과 다른 디렉터리는 보존. 연결 파일·경계 이상은 중단 |
 | pentest-db | `reports/pentest-db-runs/<run hash>`의 events/report 파일, 서버 시작 시 legacy 자동 가져오기 | 알려진 실행 파일 삭제. 첫 초기화 이후 자동 legacy 재가져오기 비활성화로 이력 부활 방지 |
 | CASPER DB | `packages/history/check-sync.mjs`가 원본 DB에 실험 check를 기록. 사람이 검토하면 다음 snapshot과 과거 사례 매칭에 영향을 줄 수 있음 | 삭제 대상 run ID에 연결된 draft/reviewed check만 삭제. curated cases·case_versions와 무관한 check는 보존. 저장 당시와 다른 DB 설정이면 중단 |
-| `vul-web-1` | canary 게시글·삭제/수정·랜덤 쿠키·세션·메모리 | 매 run 새 임시 게시판/secret/process. worker 종료를 기다린 후 닫음. 신규 실행은 소유권 registry+토큰으로 crash 잔류를 추적하고, IPC 단절 시 게시판 종료 |
+| 퇴역한 `vul-web-1` 기록 | 이전 실행의 registry·보고서·파일 | 과거 기록은 조회 가능하다. 실험 초기화는 위 실행 registry·파일 규칙에 따라 해당 기록을 삭제하며 새 게시판 프로세스는 시작하지 않는다. |
 | `vul-web2` | 대한/원창 SQLite volume, 게시물·조회수·요청·일정·설정·서버 세션, 프로세스와 파일 상태 | 로그인 probe는 finally 로그아웃. 전체 초기화는 운영자가 등록한 관리 훅이 DB·세션·프로세스·파일 복원을 확인해야 함. 미설정·실패 시 전체 초기화 차단 |
 | 외부 URL 읽기 관찰 | 등록된 `external-general` 경로는 비인증 GET/HEAD로 공개 페이지만 관찰 | 앱 소유 실행 기록·파일은 삭제한다. 대상 복원 훅은 요구하지 않으며 외부 사이트의 로그·조회 기록은 복원하지 않는다. 다른 미등록 외부 실행은 계속 차단 |
-| parser/관찰 브라우저 | 쿠키·local/session storage·IndexedDB·서비스워커·HTTP cache | `web-parser/collect.mjs`는 수집마다 별도 Chromium과 임시 profile을 만들고 finally에서 닫은 뒤 profile을 삭제. 보고서 capture와 저장형 XSS 실행 확인 어댑터(`packages/adapters/integrations/xss-execution.mjs`)는 새 browser/context를 만들고 finally close; 서비스워커 차단. 영구 사용자 profile 재사용 없음 |
-| attack/guardrail/agent | gateway 쿠키, request budget, canary ID, 모델 messages/응답 | 실행별 closure/engine/child runtime 생성. 초기화 전 worker의 종료 확인으로 이전 메모리 제거 |
+| parser/관찰 브라우저 | 쿠키·local/session storage·IndexedDB·서비스워커·HTTP cache | `web-parser/collect.mjs`는 수집마다 별도 Chromium과 임시 profile을 만들고 finally에서 닫은 뒤 profile을 삭제. 보고서 capture는 새 browser/context를 만들고 finally close; 서비스워커 차단. 영구 사용자 profile 재사용 없음 |
+| attack/guardrail/agent | 요청 예산, 모델 messages/응답 | 실행별 런타임 생성. 초기화 전 worker의 종료 확인으로 이전 메모리 제거 |
 | 대시보드 브라우저 | 앱 소유 localStorage fallback 이력, 상세·비교·검토 초안·진행 중 조회/SSE | 앱 실행 cache만 비우고 epoch로 늦은 응답을 거부. 같은 브라우저 탭은 storage event, 연결된 다른 브라우저는 SSE epoch로 폐기. 인증·사용자 설정 보존 |
 | 기준 입력 | 소스·ruleset·pentest catalog·검토된 사례·API 자격 증명 | 삭제하지 않음. 같은 조건을 재현할 연구 기준값이며 각 manifest에 digest 기록 |
 
@@ -39,7 +39,7 @@
 이전 버전에서 출처 정보 없이 저장된 외부 대상 복원 의무는 읽기 전용 실행인지 확인할 수 없으므로 자동 면제하지 않는다. 원본 실행 기록이 남아 있는 실패 상태는 새 코드로 전체 초기화를 재시도할 수 있다.
 
 1. 영구 maintenance 상태를 잠근다. 어떤 실행이든 queued/leased/running이면 409로 거부한다. 다른 reset과 CASPER 검토 쓰기도 상호 배제한다.
-2. idle worker가 실제로 종료될 때까지 기다려 보고서 촬영·게시판 정리와의 경쟁을 없앤다.
+2. idle worker가 실제로 종료될 때까지 기다려 진행 중인 검사·보고서 촬영과의 경쟁을 없앤다.
 3. 전체 run과 삭제 경로, DB identity, 소유권, 대상 관리 훅 설정을 사전 검증한다.
 4. 관리 대상 복원 → CASPER 실험 check 삭제 → run 소유 파일 삭제 → registry 행 삭제 순서로 처리한다.
 5. 모든 처리가 성공하면 epoch를 증가시키고 초기 상태를 SSE로 보낸 뒤 worker를 새로 시작한다.

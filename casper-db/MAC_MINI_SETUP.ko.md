@@ -81,16 +81,15 @@ python -m casper_db --db "$CASPER_DB_PATH" knowledge-sync-runs
 
 조회는 네트워크를 사용하지 않습니다. 수집 이력에서 `partial`은 일부 검색 실패·잘림, `running`은 완료 영수증이 남지 않은 작업을 뜻합니다. 강제 종료된 작업은 자동 성공이나 자동 재개로 처리하지 않습니다. 원인을 확인하고 새 작업으로 재시도합니다. 같은 권고 내용은 중복 등록되지 않습니다.
 
-## 통합 DB를 사용하는 공격 툴 확인
+## 통합 DB의 공격 정보 확인
 
-Python 설치 후 임시 loopback 게시판에서 DB 조회와 IDOR 검사를 함께 확인할 수 있습니다. 아래 호출은 별도 공격 정보 DB와 임시 게시판 데이터를 사용합니다.
+`vul-web-1` 전용 Repeater·Intruder CLI는 제거됐습니다. 과거 seed JSON과 기존 DB의 해당 공격 정보 행은 보존하지만 활성 목록·조회에서는 제외됩니다. 다음 명령은 DB에 등록된 대학 대상의 공격 정보만 조회합니다.
 
 ```bash
-mkdir -p .runtime
-CASPER_DB_PATH="$PWD/.runtime/mac-attack-knowledge.sqlite3" npm --prefix vul-web-1 run repeater -- idor
+python -m casper_db --db "$CASPER_DB_PATH" attack-catalog
 ```
 
-JSON의 `provenance.catalog=casper-db.attack_catalog`, `patternId`·`patternRevision`·`definitionSha256`, `finding`과 단계별 `evidence`를 확인합니다. runner는 완료 후 임시 게시판을 닫습니다. Intruder는 별도로 실행 중인 승인된 실습 서버가 필요하며 [사용 안내](../vul-web-1/scripts/INTRUDER.md)를 따릅니다.
+이 조회는 현재 대상의 취약점 판정이나 공격 실행을 수행하지 않습니다. 대학 실습의 규칙 기반 IDOR 검사는 [vul-web2 안내](../vul-web2/README.md)를 따릅니다.
 
 ## 에이전트와 서비스 실행
 

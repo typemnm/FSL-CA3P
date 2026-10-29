@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -132,74 +131,6 @@ test('general university run uses multiple model hypotheses and confirms only th
   await runtime.close();
 });
 
-test('general board run stays isolated and rejects off-origin model probes', async () => {
-  const urls = [];
-  const catalogReads = [];
-  let boardClosed = false;
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-v4-pro',
-    runIdFactory: () => 'general-board-test',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678',
-      close: async () => { boardClosed = true; } }),
-    caseSnapshot: { path: '/frozen/general-board-catalog.sqlite',
-      caseRevisions: [{ caseId: 'old-case', revision: 2 }],
-      caseSummaries: [{ caseId: 'old-case', revision: 2, title: 'Prior finding',
-        vulnerabilityType: 'access_control', endpoint: '/api/posts/1', method: 'DELETE',
-        description: 'api_key=old-secret', status: 'ready', patchStatus: 'unknown' }] },
-    catalogReader: async options => {
-      catalogReads.push(options);
-      return { schemaVersion: 'casper-attack-catalog-1', status: 'ok',
-        provenance: { source: 'casper-db.attack_catalog', sha256: 'a'.repeat(64) },
-        patterns: [
-          { pattern_id: 'board-xss', revision: 2, definition: {
-            vulnType: 'stored_xss', target: { application: 'vul-web-1', endpoint: 'POST /api/posts' },
-            payloads: [{ payloadId: 'board-payload', value: 'catalog-private-payload' }],
-          } },
-          { pattern_id: 'university-idor', revision: 1, definition: {
-            vulnType: 'access_control', target: { application: 'vul-web2-daehan', endpoint: 'GET /api/item' },
-            payloads: [{ payloadId: 'university-payload' }],
-          } },
-        ] };
-    },
-    fetchImpl: async url => { urls.push(String(url)); return response(new URL(url).pathname); },
-    plannerFactory: () => ({ async propose(context) {
-      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-      return { done: false, hypotheses: [{ id: 'h1', category: 'configuration',
-        asset: '/admin', rationale: 'Administrative route should be reviewed.',
-        evidenceIds: [context.evidence[0].id] }], probes: [
-        { id: 'p1', hypothesisId: 'h1', tool: 'http_get', input: { path: 'http://example.com/admin' } },
-        { id: 'p2', hypothesisId: 'h1', tool: 'repository_read',
-          input: { file: 'vul-web-1/package.json' } },
-        { id: 'p3', hypothesisId: 'h1', tool: 'http_get',
-          input: { path: '/unobserved-internal-route' } },
-      ] };
-    } }),
-  });
-  const done = terminal(runtime);
-  runtime.startLab();
-  const run = await done;
-  assert.equal(run.status, 'completed');
-  assert.equal(run.report.probes.find(item => item.id === 'p1').status, 'blocked');
-  assert.equal(run.report.probes.find(item => item.id === 'p2').status, 'inconclusive');
-  assert.equal(run.report.probes.find(item => item.id === 'p3').status, 'blocked');
-  assert.equal(run.report.findings[0].status, 'inconclusive');
-  assert.ok(urls.every(url => url.startsWith('http://127.0.0.1:49678/')));
-  assert.ok(run.report.inventory.referenceSources.some(item =>
-    item.source === 'casper-db/case-snapshot' && item.summaries[0].caseId === 'old-case'));
-  const catalog = run.report.inventory.referenceSources.find(item =>
-    item.source === 'casper-db/attack-catalog');
-  assert.equal(catalog.status, 'available');
-  assert.equal(catalog.sha256, 'a'.repeat(64));
-  assert.deepEqual(catalog.entries, [{ patternId: 'board-xss', revision: 2,
-    category: 'stored_xss', endpoint: 'POST /api/posts', payloadIds: ['board-payload'] }]);
-  assert.equal(catalogReads.length, 1);
-  assert.equal(catalogReads[0].databasePath, '/frozen/general-board-catalog.sqlite');
-  assert.doesNotMatch(JSON.stringify(run.report), /catalog-private-payload/u);
-  assert.doesNotMatch(JSON.stringify(run.report), /old-secret/u);
-  await runtime.close();
-  assert.equal(boardClosed, true);
-});
-
 test('general university catalog uses its frozen snapshot and excludes other targets', async () => {
   const reads = [];
   const runtime = createGeneralRuntime({
@@ -274,17 +205,16 @@ test('general runtime default catalog reader preserves the frozen database', asy
 
 test('multibyte repository excerpts stay within the core evidence byte limit', async () => {
   const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     runIdFactory: () => 'multibyte-source-excerpt',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
     fetchImpl: async url => response(new URL(url).pathname),
     plannerFactory: () => ({ async propose(context) {
       if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
       return { done: false, hypotheses: [{ id: 'h-readme', category: 'configuration',
-        asset: 'vul-web-1/README.md', rationale: 'Inspect the available local source excerpt.',
+        asset: 'vul-web2/README.md', rationale: 'Inspect the available local source excerpt.',
         evidenceIds: [context.evidence[0].id] }],
       probes: [{ id: 'p-readme', hypothesisId: 'h-readme', tool: 'repository_read',
-        input: { file: 'vul-web-1/README.md' } }] };
+        input: { file: 'vul-web2/README.md' } }] };
     } }),
   });
   const done = terminal(runtime);
@@ -293,7 +223,7 @@ test('multibyte repository excerpts stay within the core evidence byte limit', a
   assert.equal(run.status, 'completed', run.error);
   assert.equal(run.report.probes[0].status, 'inconclusive');
   const excerpt = run.report.evidence.find(item => item.kind === 'source-excerpt'
-    && item.source === 'repository/vul-web-1/README.md');
+    && item.source === 'repository/vul-web2/README.md');
   assert.ok(excerpt);
   assert.ok(Buffer.byteLength(excerpt.summary, 'utf8') <= 1800);
   assert.match(excerpt.summary, /CA3P/u);
@@ -302,7 +232,8 @@ test('multibyte repository excerpts stay within the core evidence byte limit', a
 
 test('general runtime rejects unregistered targets and rule-only models', () => {
   assert.throws(() => createGeneralRuntime({ fixtureId: 'outside', modelId: 'deepseek-flash' }));
-  assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web-1', modelId: 'rule-baseline' }));
+  assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web-1', modelId: 'deepseek-flash' }));
+  assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web2-daehan', modelId: 'rule-baseline' }));
   assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     targetOrigin: 'http://8.8.8.8:4101' }));
 });
@@ -572,9 +503,8 @@ test('registered university backend excerpts are available with seed passwords m
 test('failed model proposal is recorded once without invented token usage', async () => {
   const recorded = [];
   const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     runIdFactory: () => 'failed-model',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
     fetchImpl: async url => response(new URL(url).pathname),
     onModelCall: async metadata => { recorded.push(metadata); },
     plannerFactory: () => ({ async propose() {
@@ -598,9 +528,8 @@ test('failed model proposal is recorded once without invented token usage', asyn
 test('planner schema failures retain only a fixed validation message, not model output', async () => {
   const recorded = [];
   const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     runIdFactory: () => 'invalid-plan-diagnostic',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
     fetchImpl: async url => response(new URL(url).pathname),
     onModelCall: async metadata => { recorded.push(metadata); },
     plannerFactory: () => plannerModule.createGeneralModelPlanner({
@@ -626,9 +555,8 @@ test('corrected planner schema produces one log entry per actual model call', as
   const recorded = [];
   let attempts = 0;
   const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     runIdFactory: () => 'corrected-plan-diagnostic',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
     fetchImpl: async url => response(new URL(url).pathname),
     onModelCall: async metadata => { recorded.push(metadata); },
     plannerFactory: () => plannerModule.createGeneralModelPlanner({
@@ -657,9 +585,8 @@ test('corrected planner schema produces one log entry per actual model call', as
 test('a custom planner cannot forge extra model call attempts', async () => {
   const recorded = [];
   const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     runIdFactory: () => 'custom-plan-attempts',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
     fetchImpl: async url => response(new URL(url).pathname),
     onModelCall: async metadata => { recorded.push(metadata); },
     plannerFactory: () => ({ async propose() { return {
@@ -676,193 +603,6 @@ test('a custom planner cannot forge extra model call attempts', async () => {
   assert.equal(recorded.length, 1);
   assert.equal(run.report.modelCalls.length, 1);
   assert.doesNotMatch(JSON.stringify(run.report), /PRIVATE_MODEL_RESPONSE/u);
-  await runtime.close();
-});
-
-async function runRealBoardCanary(safeMode) {
-  const hooks = [];
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
-    runIdFactory: () => safeMode ? 'safe-board-canary' : 'vulnerable-board-canary',
-    boardFactory: async () => {
-      const { startLocalLab } = await import('../../../packages/adapters/local-lab-gateway.mjs');
-      return startLocalLab({ safeMode });
-    },
-    beforeProbe: async probe => { hooks.push(probe); },
-    plannerFactory: () => ({ async propose(context) {
-      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-      return { done: false, hypotheses: [{ id: 'h-board', category: 'access_control',
-        asset: '/api/posts/:id', rationale: 'Compare fresh Bob post deletion from Alice.',
-        evidenceIds: [context.evidence[0].id] }],
-      probes: [{ id: 'p-board', hypothesisId: 'h-board',
-        tool: 'known_cross_user_delete_canary', input: {} }] };
-    } }),
-  });
-  try {
-    const done = terminal(runtime);
-    runtime.startLab();
-    return { run: await done, hooks };
-  } finally { await runtime.close(); }
-}
-
-test('fresh isolated board canary independently confirms cross-user deletion', async () => {
-  const { run, hooks } = await runRealBoardCanary(false);
-  assert.equal(run.status, 'completed');
-  assert.equal(run.report.findings[0].status, 'confirmed', JSON.stringify(run.report.evidence));
-  assert.equal(run.report.coverage.confirmed, 1);
-  const canaryHooks = hooks.filter(item => item.tool === 'known_cross_user_delete_canary');
-  assert.equal(canaryHooks.length, 8);
-  assert.equal(canaryHooks.filter(item => item.method === 'DELETE').length, 2);
-  assert.equal(new Set(canaryHooks.map(item => item.id)).size, canaryHooks.length);
-  assert.ok(canaryHooks.every(item => item.url.startsWith(run.target)));
-  assert.match(run.report.evidence.find(item => item.kind === 'cross-user-delete-comparison').summary,
-    /Bob post still present.*independent authorization verdict=confirmed/u);
-});
-
-test('safe isolated board retains Bob post and is not reproduced', async () => {
-  const { run } = await runRealBoardCanary(true);
-  assert.equal(run.status, 'completed');
-  assert.equal(run.report.findings[0].status, 'not_reproduced', JSON.stringify(run.report.evidence));
-  assert.equal(run.report.coverage.notReproduced, 1);
-  assert.match(run.report.evidence.find(item => item.kind === 'cross-user-delete-comparison').summary,
-    /Alice cross-user delete HTTP 403.*remains=true/u);
-});
-
-function fakeBoardResponses({ removeOnControl = false, onCandidate } = {}) {
-  let posts = [];
-  return async (urlValue, init = {}) => {
-    const url = new URL(urlValue);
-    const method = init.method ?? 'GET';
-    const json = (value, status = 200, headers = {}) =>
-      new Response(JSON.stringify(value), { status,
-        headers: { 'content-type': 'application/json', ...headers } });
-    if (url.pathname === '/' && method === 'GET') return new Response('<html>Local board</html>', {
-      status: 200, headers: { 'content-type': 'text/html' },
-    });
-    if (url.pathname === '/api/session' && method === 'GET') return json({ user: { id: 'alice' } });
-    if (url.pathname === '/api/session' && method === 'POST') {
-      const id = JSON.parse(init.body).userId;
-      return json({ user: { id } }, 200,
-        { 'set-cookie': 'board_session=' + id + 'Secret123456; HttpOnly' });
-    }
-    if (url.pathname === '/api/posts' && method === 'GET') return json({ posts });
-    if (url.pathname === '/api/posts' && method === 'POST') {
-      const body = JSON.parse(init.body);
-      const post = { id: 7, authorId: 'bob', ...body };
-      posts = [...posts, post];
-      return json({ post }, 201);
-    }
-    if (url.pathname === '/api/posts/7' && method === 'DELETE') {
-      if (!url.search) {
-        if (removeOnControl) posts = [];
-        return json({ error: 'denied' }, 403);
-      }
-      onCandidate?.();
-      posts = [];
-      return json({ ok: true }, 200);
-    }
-    return json({ error: 'not_found' }, 404);
-  };
-}
-
-function fakeBoardPlanner() {
-  return { async propose(context) {
-    if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-    return { done: false, hypotheses: [{ id: 'h-board', category: 'access_control',
-      asset: '/api/posts/:id', rationale: 'Compare a fresh Bob-owned post.',
-      evidenceIds: [context.evidence[0].id] }],
-    probes: [{ id: 'p-board', hypothesisId: 'h-board',
-      tool: 'known_cross_user_delete_canary', input: {} }] };
-  } };
-}
-
-test('mismatched board probes leave the one-shot canary for the registered asset', async () => {
-  let candidateSent = 0;
-  const hooks = [];
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
-    runIdFactory: () => 'board-mismatch-then-valid',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
-    fetchImpl: fakeBoardResponses({ onCandidate: () => { candidateSent += 1; } }),
-    beforeProbe: async hook => { hooks.push(hook); },
-    plannerFactory: () => ({ async propose(context) {
-      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-      const evidenceIds = [context.evidence[0].id];
-      return { done: false, hypotheses: [
-        { id: 'board-wrong-category', category: 'xss', asset: '/api/posts/:id',
-          rationale: 'Wrong vulnerability class.', evidenceIds },
-        { id: 'board-wrong-asset', category: 'access_control', asset: '/api/posts/7',
-          rationale: 'Concrete post is not the registered asset.', evidenceIds },
-        { id: 'board-valid', category: 'access_control', asset: '/api/posts/:id',
-          rationale: 'Compare isolated cross-user delete.', evidenceIds },
-      ], probes: [
-        { id: 'p-board-wrong-category', hypothesisId: 'board-wrong-category',
-          tool: 'known_cross_user_delete_canary', input: {} },
-        { id: 'p-board-wrong-asset', hypothesisId: 'board-wrong-asset',
-          tool: 'known_cross_user_delete_canary', input: {} },
-        { id: 'p-board-valid', hypothesisId: 'board-valid',
-          tool: 'known_cross_user_delete_canary', input: {} },
-      ] };
-    } }),
-  });
-  const done = terminal(runtime);
-  runtime.startLab();
-  const run = await done;
-  assert.equal(run.status, 'completed', run.error);
-  assert.deepEqual(run.report.probes.map(item => item.status), ['blocked', 'blocked', 'confirmed']);
-  assert.deepEqual(run.report.probes.slice(0, 2).map(item => item.reason),
-    ['hypothesis_tool_mismatch', 'hypothesis_tool_mismatch']);
-  assert.equal(run.events.find(item => item.stage === 'policy'
-    && item.request?.probeId === 'p-board-wrong-category').response.reason,
-  'hypothesis_tool_mismatch');
-  assert.ok(run.report.probes.slice(0, 2).every(item => item.evidenceIds.length === 0));
-  assert.equal(run.report.findings.find(item => item.hypothesisId === 'board-valid').status,
-    'confirmed');
-  assert.equal(candidateSent, 1);
-  assert.equal(hooks.filter(item => item.tool === 'known_cross_user_delete_canary').length, 8);
-  await runtime.close();
-});
-
-test('denied control that removes the canary never proceeds to candidate deletion', async () => {
-  let candidateSent = 0;
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
-    runIdFactory: () => 'anomalous-control',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
-    fetchImpl: fakeBoardResponses({ removeOnControl: true,
-      onCandidate: () => { candidateSent += 1; } }),
-    plannerFactory: () => fakeBoardPlanner(),
-  });
-  const done = terminal(runtime);
-  runtime.startLab();
-  const run = await done;
-  assert.equal(run.status, 'completed');
-  assert.equal(run.report.findings[0].status, 'inconclusive');
-  assert.equal(candidateSent, 0);
-  assert.match(run.report.evidence.find(item => item.kind === 'cross-user-delete-comparison').summary,
-    /did not survive the denied control/u);
-  await runtime.close();
-});
-
-test('cancellation before candidate write prevents the delete and stops the run', async () => {
-  let candidateSent = 0;
-  let runtime;
-  runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
-    runIdFactory: () => 'cancel-board-canary',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
-    fetchImpl: fakeBoardResponses({ onCandidate: () => { candidateSent += 1; } }),
-    beforeProbe: async hook => {
-      if (hook.id.endsWith('-alice-candidate')) runtime.stop('cancel-board-canary');
-    },
-    plannerFactory: () => fakeBoardPlanner(),
-  });
-  const done = terminal(runtime);
-  runtime.startLab();
-  const run = await done;
-  assert.equal(run.status, 'stopped');
-  assert.equal(run.report.status, 'cancelled');
-  assert.equal(candidateSent, 0);
   await runtime.close();
 });
 
@@ -986,91 +726,6 @@ test('web_info honors cancellation mid-run', async () => {
   assert.equal(run.status, 'stopped');
   assert.equal(run.report.status, 'cancelled');
   await runtime.close();
-});
-
-const SESSION_VALUE = 'SessionCookieValue12345';
-const TRACKER_VALUE = 'TrackerCookieValue67890';
-
-/** A loopback stand-in for the isolated board: session login, Set-Cookie page, robots.txt and JSON. */
-async function loopbackBoard() {
-  const server = createServer((req, res) => {
-    const path = new URL(req.url, 'http://127.0.0.1').pathname;
-    if (req.method === 'POST' && path === '/api/session') {
-      res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'sid=' + SESSION_VALUE + '; HttpOnly; Path=/' });
-      return res.end('{"ok":true}');
-    }
-    if (path === '/robots.txt') {
-      res.writeHead(200, { 'content-type': 'text/plain' });
-      return res.end('User-agent: *\nDisallow: /hidden-admin\n');
-    }
-    if (path.startsWith('/api/')) {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end('{"posts":[]}');
-    }
-    // A logged-in page reflects the session value in a header and a link.
-    const reflected = req.headers.cookie?.includes(SESSION_VALUE) ? SESSION_VALUE : null;
-    res.writeHead(200, { 'content-type': 'text/html', server: 'nginx/1.25.3',
-      'set-cookie': 'tracker=' + TRACKER_VALUE + '; Path=/; SameSite=Lax',
-      ...(reflected ? { 'x-echo': reflected } : {}) });
-    return res.end('<html><head><title>Loopback Board</title></head><body>'
-      + '<a href="/robots.txt">robots</a><a href="/api/data">data</a>'
-      + (reflected ? '<a href="/echo?ref=' + reflected + '">echo</a>' : '')
-      + '<form action="/api/posts" method="post"><input name="title"><textarea name="content"></textarea></form></body></html>');
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { origin: 'http://127.0.0.1:' + server.address().port,
-    close: async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
-}
-
-test('web_info evidence shows the planner real page details from a browser without cookie values', async () => {
-  const contexts = [];
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash', runIdFactory: () => 'web-info-evidence',
-    boardFactory: loopbackBoard,
-    plannerFactory: () => ({ async propose(context) {
-      contexts.push(JSON.stringify({ inventory: context.inventory, evidence: context.evidence }));
-      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration', asset: '/',
-        rationale: 'Observe the board with a browser.', evidenceIds: [context.evidence[0].id] }],
-      probes: [
-        { id: 'w-home', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/' } },
-        { id: 'w-robots', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/robots.txt' } },
-        { id: 'w-json', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/api/data' } },
-        { id: 'w-alice', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/', sessionRole: 'alice' } },
-      ] };
-    } }),
-  });
-  try {
-    const done = terminal(runtime);
-    runtime.startLab();
-    const run = await done;
-    assert.equal(run.status, 'completed', run.error);
-    const seen = JSON.parse(contexts[1]).evidence;
-    const of = id => run.report.probes.find(item => item.id === id).evidenceIds
-      .map(evidenceId => seen.find(item => item.id === evidenceId));
-    const [home, homePaths, homeSurface] = of('w-home');
-    assert.deepEqual([home.kind, homePaths.kind, homeSurface.kind], ['web-info', 'web-info-paths', 'web-info-surface']);
-    assert.match(home.summary, /HTTP 200 text\/html; title "Loopback Board"/u);
-    assert.match(home.summary, /"name":"Nginx","version":"1\.25\.3"/u);
-    assert.match(homePaths.summary, /"url":"\/robots\.txt"/u);
-    assert.match(homeSurface.summary, /"action":"\/api\/posts","method":"post","fields":\[\{"name":"title","type":"text"\},\{"name":"content","type":"textarea"\}\]/u);
-    assert.match(homeSurface.summary, /"name":"tracker","httpOnly":false/u);
-    const [robots, robotsPaths] = of('w-robots');
-    assert.match(robots.summary, /HTTP 200 text\/plain/u);
-    assert.match(robotsPaths.summary, /"url":"\/hidden-admin","sources":\["robots:disallow"\]/u);
-    assert.match(of('w-json')[0].summary, /HTTP 200 application\/json/u);
-    const aliceSurface = of('w-alice').find(item => item.kind === 'web-info-surface');
-    assert.equal(aliceSurface.source, 'web-parser/vul-web-1/role:alice');
-    assert.match(aliceSurface.summary, /"name":"sid",/u);
-    assert.match(aliceSurface.summary, /"name":"x-echo","value":"\[redacted\]"/u);
-    assert.match(of('w-alice').find(item => item.kind === 'web-info-paths').summary, /"url":"\/echo\?ref \[redacted\]"/u);
-    for (const item of seen.filter(entry => entry.kind.startsWith('web-info'))) {
-      assert.ok(Buffer.byteLength(item.summary, 'utf8') <= 2048 && Buffer.byteLength(JSON.stringify(item), 'utf8') <= 4096);
-    }
-    for (const text of [JSON.stringify(run.report), ...contexts]) {
-      assert.doesNotMatch(text, new RegExp(SESSION_VALUE + '|' + TRACKER_VALUE, 'u'));
-    }
-  } finally { await runtime.close(); }
 });
 
 function largeTargetInfo(url) {

@@ -25,14 +25,14 @@ async function setup(t, { status = 'completed', reportGenerator } = {}) {
   const store = createRunRepository({ path: storePath });
   store.createRun({ id, mode, modelId: 'deepseek-flash', manifest: { runId: id, modules: {}, shared: {} },
     state: { id, mode, assessmentMode: 'general', modelId: 'deepseek-flash', status: 'queued', events: [] },
-    options: { mode, testProfile: 'general', fixtureId: 'vul-web-1', delayMs: 0 } });
+    options: { mode, testProfile: 'general', fixtureId: 'vul-web2-daehan', delayMs: 0 } });
   store.close();
-  const board = { alive: false, closed: 0 };
+  const runtimeState = { alive: false, closed: 0 };
   const generalRuntimeFactory = () => {
     let state; const listeners = new Set();
     return { subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
       async startLab() {
-        board.alive = true;
+        runtimeState.alive = true;
         state = { run: { id, mode, assessmentMode: 'general', status, events: [],
           report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general', runId: id,
             status: status === 'stopped' ? 'failed' : status,
@@ -40,16 +40,16 @@ async function setup(t, { status = 'completed', reportGenerator } = {}) {
         for (const listener of listeners) listener(structuredClone(state));
       },
       getState: () => structuredClone(state), stop() {},
-      async close() { board.alive = false; board.closed += 1; } };
+      async close() { runtimeState.alive = false; runtimeState.closed += 1; } };
   };
   const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10, envFile: null, env: {},
-    generalRuntimeFactory, ...(reportGenerator ? { reportGenerator: input => reportGenerator(input, board, worker) } : {}) });
+    generalRuntimeFactory, ...(reportGenerator ? { reportGenerator: input => reportGenerator(input, runtimeState, worker) } : {}) });
   t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
-  return { worker, board, id };
+  return { worker, runtimeState, id };
 }
 
-test('report generation reads the persisted core JSON while the board and lease remain alive', async t => {
-  const { worker, board, id } = await setup(t, { reportGenerator: async ({ run, signal }, target, currentWorker) => {
+test('report generation reads the persisted core JSON while the runtime and lease remain alive', async t => {
+  const { worker, runtimeState, id } = await setup(t, { reportGenerator: async ({ run, signal }, target, currentWorker) => {
     assert.equal(target.alive, true);
     assert.equal(signal.aborted, false);
     const saved = currentWorker.store.getRun(run.id);
@@ -60,7 +60,7 @@ test('report generation reads the persisted core JSON while the board and lease 
       previewMarkdown: '# 검사 보고서\n\n전체 본문',
       previewHtml: '<!doctype html><html><body><table><tr><td>전체 본문</td></tr></table></body></html>' };
   } });
-  const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === 'completed' && !board.alive && value; });
+  const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === 'completed' && !runtimeState.alive && value; });
   const [document] = run.reportDocuments.items;
   assert.equal(run.reportDocuments.status, 'ready');
   assert.equal(document.status, 'ready');
@@ -71,16 +71,16 @@ test('report generation reads the persisted core JSON while the board and lease 
   const htmlPreview = worker.store.getArtifact(document.previewHtmlArtifactId);
   assert.equal(htmlPreview.kind, 'report-preview-html');
   assert.match(readFileSync(htmlPreview.path, 'utf8'), /<table>/);
-  assert.equal(board.closed, 1);
+  assert.equal(runtimeState.closed, 1);
 });
 
 test('failed inspections can produce documents; document failures do not fail successful inspections', async t => {
   for (const status of ['completed', 'failed']) {
-    const { worker, board, id } = await setup(t, { status, reportGenerator: async () => {
+    const { worker, runtimeState, id } = await setup(t, { status, reportGenerator: async () => {
       if (status === 'completed') throw new Error('PRIVATE RAW FAILURE');
       return { status: 'ready', filename: 'failed-inspection.hwpx', bytes: Buffer.from('PK\x03\x04synthetic') };
     } });
-    const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === status && !board.alive && value.reportDocuments && value; });
+    const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === status && !runtimeState.alive && value.reportDocuments && value; });
     assert.equal(run.reportDocuments.status, status === 'completed' ? 'failed' : 'ready');
     assert.equal(run.report.status, status);
     assert.doesNotMatch(JSON.stringify(run.reportDocuments), /PRIVATE/);
@@ -88,27 +88,32 @@ test('failed inspections can produce documents; document failures do not fail su
 });
 
 test('stopped inspections skip generation without invoking the report agent', async t => {
-  const { worker, board, id } = await setup(t, { status: 'stopped',
+  const { worker, runtimeState, id } = await setup(t, { status: 'stopped',
     reportGenerator: () => assert.fail('skipped runs must not invoke the report agent') });
-  const run = await waitFor(() => { const value = worker.store.getRun(id); return !board.alive && value.reportDocuments?.completedAt && value; });
+  const run = await waitFor(() => { const value = worker.store.getRun(id); return !runtimeState.alive && value.reportDocuments?.completedAt && value; });
   assert.equal(run.reportDocuments.status, 'skipped');
   assert.equal(run.reportDocuments.errorCode, 'RUN_STOPPED');
   assert.equal(run.status, 'cancelled');
 });
 
-test('runs queued in a retired single-check mode fail with RETIRED_MODE before any runtime or report work', async t => {
+test('runs queued with retired modes or the old board fail before any runtime or report work', async t => {
   const temporaryRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   mkdirSync(temporaryRoot, { recursive: true });
   const directory = mkdtempSync(join(temporaryRoot, 'rw-'));
   const storePath = join(directory, 'runs.sqlite');
-  const retired = [['core-fixture', 'agent_cross_user_delete_canary'], ['local-lab-deepseek', 'stored_xss_canary'],
-    ['local-lab-rule', 'stored_xss_canary'], ['local-lab-rule', 'agent_cross_user_delete_canary']];
+  const retired = [
+    ['core-fixture', 'agent_cross_user_delete_canary', 'vul-web2-daehan', 'RETIRED_MODE'],
+    ['local-lab-deepseek', 'stored_xss_canary', 'vul-web2-daehan', 'RETIRED_MODE'],
+    ['local-lab-rule', 'stored_xss_canary', 'vul-web2-daehan', 'RETIRED_MODE'],
+    ['local-lab-rule', 'agent_cross_user_delete_canary', 'vul-web2-daehan', 'RETIRED_MODE'],
+    ['local-lab-general', 'general', 'vul-web-1', 'RETIRED_FIXTURE'],
+  ];
   const store = createRunRepository({ path: storePath });
-  // A pre-upgrade manifest also froze the removed xss-parser lock; the retired code must still win.
-  for (const [index, [mode, testProfile]] of retired.entries()) store.createRun({ id: `retired-${index}`, mode,
+  // A pre-upgrade manifest also froze the removed parser lock; the retirement reason must still win.
+  for (const [index, [mode, testProfile, fixtureId]] of retired.entries()) store.createRun({ id: `retired-${index}`, mode,
     modelId: 'rule-baseline', manifest: { runId: `retired-${index}`, modules: {}, shared: { lockDigest: 'stale-xss-parser-lock' } },
     state: { id: `retired-${index}`, mode, modelId: 'rule-baseline', status: 'queued', events: [] },
-    options: { delayMs: 0, testProfile, fixtureId: 'vul-web-1' } });
+    options: { delayMs: 0, testProfile, fixtureId } });
   store.close();
   const unexpected = () => assert.fail('retired runs must not create a runtime');
   const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10, envFile: null, env: {},
@@ -117,21 +122,21 @@ test('runs queued in a retired single-check mode fail with RETIRED_MODE before a
   t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
   const runs = await waitFor(() => { const values = retired.map((_, index) => worker.store.getRun(`retired-${index}`));
     return values.every(value => value.status === 'failed') && values; });
-  for (const run of runs) {
-    assert.match(run.error, /^RETIRED_MODE: /);
+  for (const [index, run] of runs.entries()) {
+    assert.ok(run.error.startsWith(retired[index][3] + ': '), run.error);
     assert.equal(run.reportDocument, undefined);
     assert.equal(run.reportDocuments, undefined);
   }
 });
 
 test('cancelling document generation aborts it and cleans up without changing the completed finding', async t => {
-  const { worker, board, id } = await setup(t, { reportGenerator: ({ signal }) => new Promise(resolve => {
+  const { worker, runtimeState, id } = await setup(t, { reportGenerator: ({ signal }) => new Promise(resolve => {
     signal.addEventListener('abort', () => resolve({ status: 'failed', errorCode: 'REPORT_CANCELLED', message: '취소됨' }), { once: true });
   }) });
   await waitFor(() => worker.store.getRun(id).reportDocuments?.items[0]?.status === 'generating');
   worker.store.requestCancel(id);
-  const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === 'completed' && !board.alive && value; });
+  const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === 'completed' && !runtimeState.alive && value; });
   assert.equal(run.report.findings[0].status, 'confirmed');
   assert.equal(run.reportDocuments.items[0].errorCode, 'REPORT_CANCELLED');
-  assert.equal(board.closed, 1);
+  assert.equal(runtimeState.closed, 1);
 });

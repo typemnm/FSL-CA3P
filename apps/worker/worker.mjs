@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../packages/run-store/index.mjs';
 import { createIdorRuntime } from '../application/idor-runtime.mjs';
@@ -8,7 +8,6 @@ import { createExternalRuntime } from '../application/external-runtime.mjs';
 import { digest } from '../../packages/contracts/index.mjs';
 import { syncRunChecks } from '../../packages/history/check-sync.mjs';
 import { PROJECT_ROOT, treeDigest } from '../../packages/contracts/manifest.mjs';
-import { join } from 'node:path';
 import { generateReportDocument } from '../../packages/report/index.mjs';
 
 const GENERAL_DOCUMENTS_SCHEMA_VERSION = 'general-report-documents/1';
@@ -45,7 +44,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
   reportGenerator = generateReportDocument,
   idorRuntimeFactory = createIdorRuntime, generalRuntimeFactory = createGeneralRuntime,
   externalRuntimeFactory = createExternalRuntime, externalRequestImpl,
-  generalPlannerFactory, generalFetchImpl, generalIdorProbe, generalBoardFactory } = {}) {
+  generalPlannerFactory, generalFetchImpl, generalIdorProbe } = {}) {
   const store = createRunRepository({ path: storePath });
   let stopping = false; let runtime = null; let activeLease = null; let activeController = null; let busy = false; let timer; let shutdownTask;
   const notify = () => { if (process.connected) process.send({ type: 'state' }); };
@@ -64,6 +63,10 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       const externalRun = lease.mode === 'external-general';
       const generalLab = lease.mode === 'local-lab-general' || externalRun;
       const idorLab = lease.options.testProfile === 'known_record_idor_read';
+      if (lease.options.fixtureId === 'vul-web-1') {
+        throw Object.assign(new Error('The local board fixture was retired. Start a university assessment instead.'),
+          { code: 'RETIRED_FIXTURE' });
+      }
       // Runs queued before the single stored-XSS/BOLA check was retired have no runtime left.
       if (!generalLab && !(lease.mode === 'local-lab-rule' && idorLab)) {
         throw Object.assign(new Error('This run mode was retired. Start a general assessment instead.'), { code: 'RETIRED_MODE' });
@@ -119,11 +122,9 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         unavailableInputs: lease.options.unavailableInputs ?? [],
         ...(generalLab && !externalRun ? { limits: lease.options.loopBudget } : {}),
         historyProvider,
-        cleanupRegistryPath: join(dirname(store.path), 'lab-sessions'),
         ...(generalPlannerFactory ? { plannerFactory: generalPlannerFactory } : {}),
         ...(generalFetchImpl ? { fetchImpl: generalFetchImpl } : {}),
         ...(generalIdorProbe ? { idorProbe: generalIdorProbe } : {}),
-        ...(generalBoardFactory ? { boardFactory: generalBoardFactory } : {}),
         modelId: lease.modelId,
         env, ...(envFile ? { envFile } : {}), signal: controller.signal,
         onModelCall(metadata) { store.recordModelCall(lease, metadata); notify(); },
@@ -186,7 +187,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
           finalState = { ...finalState, historyWrite };
         }
         // Persist the core JSON before the report collector opens its read-only DB.
-        // The lease/heartbeat and local board stay alive through document capture.
+        // The lease and heartbeat stay alive through document capture.
         const startedAt = new Date().toISOString();
         if (generalLab) {
           const confirmed = Array.isArray(final.report?.findings)

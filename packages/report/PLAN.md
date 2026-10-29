@@ -1,5 +1,7 @@
 # 보고서 생성 모듈(Report Agent) — 조사 결과 및 개발 PLAN
 
+> 이 문서는 2026-10-18~20 조사·구현 계획의 기록이다. 이후 `vul-web-1`과 전용 실행 gateway가 제거됐다. 아래 게시판 수명·촬영 및 로컬 fixture 절은 당시 코드 기준이며 현재 신규 실행 절차가 아니다. 보고서 모듈의 현재 사용법은 [README](README.md)를 참고한다.
+
 - 작성일: 2026-10-18 / 개정: 2026-10-19
 - 브랜치: `woohyun212/report-module`. `origin/develop`(`1560b1c`)에서 새로 만들었다.
 - 모듈 위치: `packages/report/`. 이 문서도 모듈 안에 둔다.
@@ -87,7 +89,7 @@
 - `integration-manifest.json`: 모듈 id, path, layer, dependencies를 등록하고, `scripts/check-boundaries.mjs`가 상대경로 import를 dependencies 기준으로 검사한다. 새 모듈은 **반드시 manifest에 등록**해야 하며, 이 파일은 공용이므로 사람과 합의가 필요하다.
 - 런타임은 Node `>=24 <25`이다(develop의 루트 `package.json`).
 
-### 0.5 실습 게시판 수명과 촬영 관련 사실 (develop, 10-19 확인)
+### 0.5 퇴역한 실습 게시판 수명과 촬영 관련 사실 (develop, 10-19 확인)
 - **테스트용 app 경로에서는 게시판이 run마다 생성되고 종료된다.**
   - `startLocalLab`이 임시 디렉터리, `PORT=0`, run별 쿠키 비밀값으로 vul-web-1을 띄운다(`packages/adapters/local-lab-gateway.mjs:520-566`).
   - run이 끝나면 worker의 `finally`에서 `runtime.close()`가 호출되고, 이어서 프로세스 SIGTERM/SIGKILL과 임시 데이터 삭제가 일어난다(`apps/worker/worker.mjs:110`, `local-runtime.mjs:366-372`).
@@ -244,7 +246,7 @@ manifest 예시(초안):
 - **세션 전환(§2.2에서 수집):** 상태를 바꾸지 않는 계정 전환 요청(예: `POST /api/session {userId}`)만, **수집기가 번들에 담아 둔 정의와 정확히 일치할 때** 허용하고 기록한다. `hints/capture.json`가 없거나 세션 전환 정의가 비어 있으면 **허용 목록이 비어 전환을 전혀 허용하지 않는다(빈 목록 = 금지).** 그 외 쓰기 요청은 모두 차단한다.
 - 저장: 사진은 `evidence/images/`에, 메타데이터(촬영 URL, 선택자, 세션 주체, 시각, 크기)는 `evidence/captures.json`에 추가한다. 파일 해시는 번들 무결성 확인용으로 manifest에만 기록하고, **보고서 본문에는 해시를 넣지 않는다(Q13).**
 - **형식·장수는 고정하지 않는다.** LLM이 필요에 따라 찍는다. PNG로 저장한다.
-- **vul-web-1 사실(§0.5):** 쿠키가 없으면 alice로 로그인되고 공격자도 alice다. 피해자 관점이 필요하면 수집기가 담아 둔 계정 전환으로 LLM이 전환해 찍고, 불가하면 기본 계정으로 찍되 그 사실을 캡션에 쓴다.
+- **과거 vul-web-1 사실(§0.5):** 쿠키가 없으면 alice로 로그인되고 공격자도 alice다. 피해자 관점이 필요하면 수집기가 담아 둔 계정 전환으로 LLM이 전환해 찍고, 불가하면 기본 계정으로 찍되 그 사실을 캡션에 쓴다.
 - **촬영에 실패해도 보고서는 만든다.** 해당 사진만 빠지고, LLM이 그 사실을 본문에 적는다.
 
 ### 2.6 출력

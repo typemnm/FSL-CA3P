@@ -15,7 +15,7 @@ const readOnlyExternal = {
   targetContacted: true, target: 'https://example.org/start',
 };
 
-test('fresh per-run board and scripted fixtures need no management request', async () => {
+test('historical private board and scripted fixtures need no remote management request', async () => {
   const plan = await prepareTargetReset({ runs: [{ fixtureId: 'vul-web-1', targetContacted: true },
     { mode: 'core-fixture', fixtureId, simulated: true }], env: {}, fetchImpl: () => assert.fail('isolated fixtures must not be reset remotely') });
   assert.deepEqual(await plan.execute(), { status: 'clean', targets: [], localLabs: { removed: 0 } });

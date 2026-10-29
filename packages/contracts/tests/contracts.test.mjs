@@ -60,11 +60,15 @@ test('university manifests identify the real fixture and omit unused XSS, histor
   assert.notEqual(privateHost.data.logicalInputDigest, manifests[0].data.logicalInputDigest);
 });
 
-test('retired single stored-XSS/BOLA checks no longer produce a run manifest', () => {
+test('retired checks and removed board fixture cannot produce a new run manifest', () => {
   for (const [mode, testProfile] of [['local-lab-rule', 'stored_xss_canary'], ['core-fixture', 'agent_cross_user_delete_canary'],
     ['local-lab-deepseek', 'stored_xss_canary']]) {
     assert.throws(() => createRunManifest({ runId: `manifest-${mode}`, mode, modelId: 'rule-baseline',
-      options: { fixtureId: 'vul-web-1', testProfile } }), /retired/);
+      options: { fixtureId: 'vul-web-1', testProfile } }), /retired|registered university/u);
+  }
+  for (const mode of ['local-lab-rule', 'local-lab-general']) {
+    assert.throws(() => createRunManifest({ runId: `removed-board-${mode}`, mode, modelId: 'deepseek-flash',
+      options: { fixtureId: 'vul-web-1', testProfile: 'general' } }), /registered university/u);
   }
 });
 
@@ -117,16 +121,8 @@ test('general manifests bind the unified catalog snapshot and actual execution d
     modelId: 'deepseek-flash', options: { fixtureId: 'vul-web2-daehan', caseSnapshot: snapshot }, env });
   assert.notEqual(changedManifest.data.catalogDigest, university.data.catalogDigest);
 
-  const board = createRunManifest({ runId: 'general-board-catalog', mode: 'local-lab-general',
-    modelId: 'deepseek-flash', options: { fixtureId: 'vul-web-1', caseSnapshot: snapshot }, env });
-  assert.equal(board.target.testProfile, 'general');
-  assert.ok(board.modules['casper-db']?.contentDigest);
-  for (const name of ['attack-module', 'guardrail', 'packages/run-store']) {
-    assert.ok(board.modules[name]?.contentDigest, `${name} must be frozen for general board runs`);
-  }
-  assert.equal(board.policy.rulesetDigest, null);
-  const unavailable = createRunManifest({ runId: 'general-board-unavailable', mode: 'local-lab-general',
-    modelId: 'deepseek-flash', options: { fixtureId: 'vul-web-1', unavailableInputs: ['casper-db'] }, env });
+  const unavailable = createRunManifest({ runId: 'general-university-unavailable', mode: 'local-lab-general',
+    modelId: 'deepseek-flash', options: { fixtureId: 'vul-web2-wonchang', unavailableInputs: ['casper-db'] }, env });
   assert.equal(unavailable.data.catalogDigest, null);
   assert.deepEqual(unavailable.data.unavailableInputs, ['casper-db']);
 });

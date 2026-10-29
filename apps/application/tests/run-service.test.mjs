@@ -180,21 +180,6 @@ test('general assessment requires a real configured model and registered target 
   assert.equal(configured.listRuns().total, 0);
 });
 
-test('general board run records unavailable case history instead of failing to queue', async t => {
-  const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
-    env: { DEEPSEEK_API_KEY: 'test-key', CASPER_DB_PYTHON: 'missing-python-for-general-board' } });
-  const state = await service.start({ mode: 'local-lab-general', modelId: 'deepseek-v4-pro', fixtureId: 'vul-web-1' });
-  assert.equal(state.run.status, 'queued');
-  assert.equal(state.run.assessmentMode, 'general');
-  assert.equal(state.run.manifest.data.caseSnapshotDigest, null);
-  assert.deepEqual(state.run.manifest.data.unavailableInputs, ['casper-db']);
-  const lease = service.store.claimNext('general-board-test');
-  assert.equal(lease.options.fixtureId, 'vul-web-1');
-  assert.equal(lease.options.caseSnapshot, undefined);
-  assert.deepEqual(lease.options.unavailableInputs, ['casper-db']);
-  service.store.finish(lease, 'completed');
-});
-
 test('university fixture selections forward approved private Docker target origins', async t => {
   const { service } = setup(t, { autoStartWorker: false, importLegacy: false });
   for (const target of ['http://192.168.0.20:4101', 'http://10.0.0.8:4102', 'http://host.docker.internal:4101', 'http://daehan:3000', 'http://wonchang:8080']) {
@@ -234,12 +219,10 @@ test('retired single-check modes and profiles are rejected before queuing over t
     [{ mode: 'core-fixture' }, 'RETIRED_MODE'],
     [{ mode: 'core-fixture', target: 'https://display.invalid', delayMs: 0 }, 'RETIRED_MODE'],
     [{ mode: 'local-lab-deepseek', modelId: 'deepseek-flash' }, 'RETIRED_MODE'],
-    [{ mode: 'local-lab-rule' }, 'RETIRED_MODE'],
-    [{ mode: 'local-lab-rule', fixtureId: 'vul-web-1', modelId: 'rule-baseline' }, 'RETIRED_MODE'],
     [{ testProfile: 'stored_xss_canary' }, 'RETIRED_PROFILE'],
     [{ testProfile: 'agent_cross_user_delete_canary' }, 'RETIRED_PROFILE'],
   ]) await assert.rejects(service.start(options), { status: 400, code }, JSON.stringify(options));
-  await assert.rejects(service.startLab({ modelId: 'rule-baseline' }), { status: 400, code: 'RETIRED_MODE' });
+  await assert.rejects(service.startLab({ modelId: 'rule-baseline' }), { status: 400 });
   assert.equal(service.listRuns().total, 0);
 
   const server = createDashboardServer({ runtime: service,
@@ -261,18 +244,12 @@ test('retired single-check modes and profiles are rejected before queuing over t
   assert.equal(service.listRuns().total, 0);
 });
 
-test('the board lab defaults to a general assessment and the university rule lab still queues', async t => {
+test('local assessment requires a registered university fixture', async t => {
   const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
     env: { DEEPSEEK_API_KEY: 'test-key', CASPER_DB_PYTHON: 'unavailable-python-for-default' } });
   for (const start of [() => service.start({}), () => service.start({ fixtureId: 'vul-web-1' }),
-    () => service.startLab({ modelId: 'deepseek-flash' })]) {
-    const state = await start();
-    assert.equal(state.run.mode, 'local-lab-general');
-    assert.equal(state.run.modelId, 'deepseek-flash');
-    assert.equal(state.run.testProfile, 'general');
-    assert.equal(state.run.fixtureId, 'vul-web-1');
-    service.store.finish(service.store.claimNext('default-mode-test'), 'completed');
-  }
+    () => service.startLab({ modelId: 'deepseek-flash' })]) await assert.rejects(start(), { status: 400 });
+  assert.equal(service.listRuns().total, 0);
   const idor = await service.startLab({ fixtureId: 'vul-web2-daehan' });
   assert.equal(idor.run.mode, 'local-lab-rule');
   assert.equal(idor.run.testProfile, 'known_record_idor_read');

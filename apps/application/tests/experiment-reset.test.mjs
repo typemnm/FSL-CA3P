@@ -18,8 +18,8 @@ function sql(path, program) {
   return result.stdout.trim();
 }
 
-// Queues a startable isolated board run. No worker runs, so the synthetic key is never sent anywhere.
-const LAB_RUN = { mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId: 'vul-web-1' };
+// Queues a university run. No worker runs, so the synthetic key is never sent anywhere.
+const LAB_RUN = { mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId: 'vul-web2-daehan' };
 const LAB_ENV = { DEEPSEEK_API_KEY: 'synthetic-test-only', CASPER_DB_PYTHON: 'missing-python-for-reset-test' };
 
 function setup(t, { env: envOverrides, ...options } = {}) {
@@ -46,6 +46,16 @@ function recordReadOnlyExternalObservation(service, id) {
     options: { mode: 'external-general', modelId: 'rule-baseline', testProfile: 'external-read-only',
       fixtureId: null, target: 'https://example.org/start' } });
   service.store.requestCancel(id);
+}
+
+function recordHistoricalCoreFixture(service, id) {
+  const mode = 'core-fixture';
+  const state = { id, mode, modelId: 'rule-baseline', status: 'queued',
+    fixtureId: 'scripted-contract-fixture', simulated: true, targetContacted: false, events: [] };
+  service.store.createRun({ id, mode, modelId: 'rule-baseline',
+    manifest: { runId: id, target: { fixtureId: state.fixtureId } }, state,
+    options: { mode, fixtureId: state.fixtureId } });
+  return state;
 }
 
 test('confirmed reset removes all central history and publishes a new experiment epoch', async t => {
@@ -124,10 +134,11 @@ test('an in-flight history review prevents reset until its external write finish
 
 test('real cleanup removes run-derived files, preserves credentials and never resurrects deleted history', async t => {
   const { service, open, directory, storePath } = setup(t, { experimentCleanupFactory: prepareExperimentCleanup });
-  const started = await service.start(LAB_RUN); const id = started.run.id; const hash = digest(id);
+  const state = recordHistoricalCoreFixture(service, 'historical-file-run');
+  const id = state.id; const hash = digest(id);
   const lease = service.store.claimNext('test-worker');
   const artifact = service.store.writeArtifact(id, 'run-report', { marker: 'prior-model-output' });
-  service.store.saveState(lease, { ...started.run, coreRunId: 'old-core-alias', status: 'completed', events: [] });
+  service.store.saveState(lease, { ...state, coreRunId: 'old-core-alias', status: 'completed', events: [] });
   service.store.finish(lease, 'completed');
   const paths = [
     join(directory, 'case-snapshots', `${hash}.sqlite`),
@@ -259,9 +270,10 @@ test('a failed Daehan reset can use a newly configured management hook before an
   } finally { globalThis.fetch = originalFetch; }
 });
 
-test('history clear of isolated runs advances the epoch and permits another run', async t => {
+test('history clear of historical core fixtures advances the epoch and permits another run', async t => {
   const { service } = setup(t);
-  const first = await service.start(LAB_RUN); service.stop(first.run.id);
+  const first = recordHistoricalCoreFixture(service, 'historical-clear-run');
+  service.store.requestCancel(first.id);
   const result = await service.clearRunHistory({ confirmed: true });
   assert.equal(result.experiment.status, 'ready');
   assert.equal(result.experiment.epoch, 1);

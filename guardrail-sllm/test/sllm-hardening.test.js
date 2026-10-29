@@ -35,7 +35,7 @@ function makeVariant(category, pathname, parameters) {
       }
     },
     context: {
-      targetSite: 'vul-web-1',
+      targetSite: 'sllm-cert-fixture',
       stage: 'security-test',
       requestPurpose: '결정론적 차단 규칙 회귀 테스트',
       approvedOrigins: [origin],

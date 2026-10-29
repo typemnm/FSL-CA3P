@@ -57,7 +57,7 @@ CA3P_COMMIT_SHA="$(git rev-parse HEAD)" docker compose -p ca3p up --build -d --w
 docker compose -p ca3p logs -f dashboard
 ```
 
-컨테이너는 Node 24.19.0, lockfile의 Playwright 1.58.2와 같은 패키지가 설치한 Chromium, Python exact requirements lock을 사용한다. API와 worker는 같은 이미지에서 실행하고 실습 웹은 실행마다 임시 인스턴스를 만든다.
+컨테이너는 Node 24.19.0, lockfile의 Playwright 1.58.2와 같은 패키지가 설치한 Chromium, Python exact requirements lock을 사용한다. API와 worker는 같은 이미지에서 실행한다. 대학 실습 웹은 별도 `vul-web2` Compose 서비스에서 실행한다.
 
 | Volume | Container path | 내용 |
 | --- | --- | --- |
@@ -90,6 +90,6 @@ docker compose -p ca3p -f docker-compose.deploy.yml up -d --wait
 
 develop은 모든 모듈 브랜치 tip을 포함한 baseline이다. 전체 장기 브랜치를 반복 머지하지 않고 `feature/<module>/<change>` PR을 develop에 넣는다. 모듈 담당자 리뷰를 유지하고 JSON 계약 변경은 소비자 검증을 함께 수행한다. main은 release 승격에 쓴다. CI 안정화 후 main을 공통 개발 기준으로 올리고 짧은 feature PR로 전환할 수 있다.
 
-manifest의 active/replaced는 Git ancestry와 별도로 관리한다. xss-fuzzer는 현재 parser/attack 실행 경로로 대체됐으며 원래 브랜치는 참고용이다. xss-parser는 web-parser로 대체돼 `replaced`로 남고 디렉터리는 삭제했다. Chromium은 web-parser의 Playwright로 설치하며 report capture와 버전이 같다. parser 내부의 중복 실습 웹을 제거하고 root vul-web-1 하나를 start·테스트에서 공동 사용한다.
+manifest의 active/replaced는 Git ancestry와 별도로 관리한다. xss-fuzzer는 현재 parser/attack 실행 경로로 대체됐으며 원래 브랜치는 참고용이다. xss-parser는 web-parser로 대체돼 `replaced`로 남고 디렉터리는 삭제했다. Chromium은 web-parser의 Playwright로 설치하며 report capture와 버전이 같다. `vul-web-1`은 활성 실습 대상과 CI suite에서 제거했다. 대학 실습은 `vul-web2`의 두 사이트를 사용하며 저장된 과거 실행 기록은 읽을 수 있다.
 
-경계 검사는 contracts, persistence/evaluation과 adapters의 선언된 의존, UI dist의 backend import 금지를 확인한다. 실행 어댑터와 local-lab-gateway 구현은 `packages/adapters`에 두고, 예전 dashboard 경로는 기존 테스트·호출자를 위한 호환 진입점으로 유지한다. 경로별 CI 최적화는 의존 그래프가 안정화된 뒤 적용한다. 현재는 모든 모듈을 매번 검증한다.
+경계 검사는 contracts, persistence/evaluation과 adapters의 선언된 의존, UI dist의 backend import 금지를 확인한다. 실행 어댑터는 `packages/adapters`에 둔다. 퇴역한 게시판용 local-lab-gateway는 활성 경로에서 제거했다. 경로별 CI 최적화는 의존 그래프가 안정화된 뒤 적용한다. 현재는 모든 모듈을 매번 검증한다.

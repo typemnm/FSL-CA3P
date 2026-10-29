@@ -6,7 +6,7 @@
 
 `src/general-model-planner.js`는 기존 DeepSeek 클라이언트를 사용하는 구조화 플래너다. `createGeneralModelPlannerFromEnv()`를 선택해 호출하면 실제 모델 API를 사용한다. 대상 페이지와 관측 자료는 비신뢰 데이터로 취급하고, 허용된 도구·증거 ID를 벗어난 출력은 거부한다. 문맥이 모델 입력 한도를 넘으면 자료를 조용히 생략하지 않고 오류를 반환한다.
 
-범용 점검은 운영 경로의 API → 실행 서비스 → worker → `apps/application/general-runtime.mjs`를 통해 세 등록 실습 대상에 연결돼 있다. 에이전트 모듈은 판단 코어와 모델 플래너를 제공하고, 대상 요청·실행 정책·독립 검증과 실행 상태 저장은 런타임이 담당한다. 범용 런타임에는 브라우저 실행을 확인하는 도구가 없어서 브라우저 증거가 필요한 XSS는 확정으로 표시하지 않는다.
+범용 점검은 운영 경로의 API → 실행 서비스 → worker → `apps/application/general-runtime.mjs`를 통해 두 대학 실습 대상에 연결돼 있다. 외부 URL은 별도 읽기 전용 관찰 경로에서 처리한다. 에이전트 모듈은 판단 코어와 모델 플래너를 제공하고, 대상 요청·실행 정책·독립 검증과 실행 상태 저장은 런타임이 담당한다. 범용 런타임에는 브라우저 실행을 확인하는 도구가 없어서 브라우저 증거가 필요한 XSS는 확정으로 표시하지 않는다.
 
 코어의 `onEvent`는 `observe`, `plan`, `policy`, `execute`, `verify`, `complete` 단계와 반복 번호를 보낸다. 계획 이벤트에는 가설·검사 ID와 도구 연결, 가설의 분류·자산이 있고, 관측·실행 이벤트에는 새 증거의 유형·자산이 있다. 검사 이벤트에는 가설·검사 ID, 도구, 판정 상태, 증거 ID 참조가 있다. 모든 이벤트의 `progress`는 가설·검사·증거 수와 **검사별** 판정 수를 기록한다. 이는 최종 `findings[]` 수나 전체 취약점 완료율이 아니다. 운영 런타임은 이 제한된 메타데이터를 실행 상태와 대시보드로 전달한다. 원본 HTTP 응답, 쿠키, 모델 출력, 가설의 원문 rationale과 증거의 원문 summary는 진행 이벤트에 넣지 않는다. 자세한 근거와 최종 finding은 보고서가 저장된 뒤 표시한다.
 
@@ -28,7 +28,7 @@ npm --prefix agent run test:general
 
 기존 단일 검사는 폐기됐고 코드도 삭제됐다. 여기에는 `src/orchestrator.js`의 `runOnce()`, 규칙·DeepSeek Reasoning Engine, scripted gateway, `stored_xss_canary`·`agent_cross_user_delete_canary` 프로필, `xss-parser` receiver가 포함된다. 저장된 과거 실행은 실행 이력과 보고서에서 계속 읽는다. 큐에 남아 있던 퇴역 모드 실행은 worker가 `RETIRED_MODE`로 실패 처리한다.
 
-`src/protocol.js`는 JSON envelope, 상관관계, 오류 정규화를 제공한다. 런타임에서 쓰는 곳은 `parseEnvelope`·`replyTo`이고, `casper-db` 지식 조회와 과거 실행 가져오기가 사용한다. 남은 계약은 [EXTERNAL_MODULE_CONTRACTS.md](./EXTERNAL_MODULE_CONTRACTS.md)에 있다.
+`src/protocol.js`는 JSON envelope, 상관관계, 오류 정규화를 제공한다. 런타임에서 쓰는 곳은 `parseEnvelope`·`replyTo`이고, `casper-db` 지식 조회와 과거 실행 가져오기가 사용한다. 남은 JSON envelope 계약은 [EXTERNAL_MODULE_CONTRACTS.md](./EXTERNAL_MODULE_CONTRACTS.md)에 있다.
 
 ## DeepSeek 클라이언트
 
@@ -66,7 +66,6 @@ npm test
 - `src/deepseek-client.js`: timeout·재시도·JSON Output 검증을 포함한 DeepSeek 전용 HTTP client
 - `src/deepseek-config.js`: `.env`/환경변수 설정 로딩
 - `src/model-definitions.js`: 허용 DeepSeek 모델 목록
-- `src/xss-canary.js`: 실행별 고유 마커와 고정된 무해한 XSS 확인 본문 생성(`packages/adapters`의 guardrail·저장형 XSS 실행 확인이 사용)
 - `src/protocol.js`: JSON envelope, 상관관계, 오류 정규화
 - `src/index.js`: 공개 API
 

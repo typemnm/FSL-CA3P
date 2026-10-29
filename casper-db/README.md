@@ -259,7 +259,7 @@ python -m casper_db --db data/knowledge.sqlite3 attack-catalog-import --bundled 
 python -m casper_db --db data/knowledge.sqlite3 attack-catalog
 ```
 
-첫 명령은 기존 사례·권고를 보존한다. 두 번째 명령은 stored-XSS·IDOR·SQL injection·정보 노출·접근 통제의 공격 정보 5종을 `attack_*` 테이블로 이관한다. 같은 내용을 재수입하면 revision을 추가하지 않는다. 내용이 바뀌면 불변 revision을 만들고, 과거 자료를 재수입해도 최신 revision을 과거 것으로 되돌리지 않는다. 사용자 카탈로그는 `attack-catalog-import '<파일>' --source-ref '<출처>' --apply`로 가져온다.
+첫 명령은 기존 사례·권고를 보존한다. 두 번째 명령은 현재 대학 대상인 SQL injection·정보 노출·접근 통제의 공격 정보 3종만 `attack_*` 테이블에 기본 등록한다. 이전 `vul-web-1` 관련 stored-XSS·IDOR seed JSON과 기존 DB 행은 보존하지만 활성 목록·조회 결과에서는 제외한다. 같은 내용을 재수입하면 revision을 추가하지 않는다. 내용이 바뀌면 불변 revision을 만들고, 과거 자료를 재수입해도 최신 revision을 과거 것으로 되돌리지 않는다. 사용자 카탈로그는 `attack-catalog-import '<파일>' --source-ref '<출처>' --apply`로 가져온다.
 
 | 저장 영역 | 내용 |
 |---|---|
@@ -275,7 +275,7 @@ python -m casper_db --db data/knowledge.sqlite3 attack-catalog
 
 ### 이후 공격 툴 연결 계약
 
-현재 Repeater·Intruder는 `casper-db/client.mjs`의 동기 카탈로그 조회로 같은 DB의 정의를 읽는다. 선택한 공격 정보의 ID·revision·내용 해시를 실행 결과에 보존하며, 여러 애플리케이션이 겹치면 명시적인 선택을 요구한다. 실행 방법과 판정 조건은 [Repeater](../vul-web-1/scripts/REPEATER.md), [Intruder](../vul-web-1/scripts/INTRUDER.md)에 있다. 이 CLI 연결은 다음 템플릿 계약을 자동 등록하거나 실행 활성화하지 않는다.
+`vul-web-1`의 Repeater·Intruder CLI는 제거됐다. 해당 공격 정보의 과거 seed JSON과 기존 DB 행은 보존되지만 `attack-catalog` 목록과 `attack-info` 조회에서는 제외된다. 활성 공격 정보 조회에서 여러 애플리케이션이 겹치면 명시적인 선택을 요구한다. 아래 템플릿 계약은 등록된 공격 정보를 실행에 연결하는 별도 계약이다.
 
 [템플릿 JSON Schema](schemas/attack-template.schema.json)의 `casper-attack-template-1`을 사용한다. 필수 연결은 `pattern_id + pattern_revision`, `executor_id + executor_contract_version`, 입력 JSON Schema, 필요한 기능, `verification_rule_ids`, 출처다. 검증 규칙은 같은 공격 정보 revision에 속해야 한다. ID·version이 같은 템플릿은 변경할 수 없으며 내용 변경에는 새 version이 필요하다.
 

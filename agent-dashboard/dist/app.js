@@ -126,7 +126,7 @@ let centralHistoryLoaded = false;
 let historyRefreshPending = false;
 let models = [];
 let acceptedModelId = '';
-let acceptedFixtureId = 'vul-web-1';
+let acceptedFixtureId = 'vul-web2-daehan';
 let pendingModelChange = null;
 let modelChangeUnreset = storedSettings?.modelChangeUnreset === true;
 let experimentEpoch = readJSON(EXPERIMENT_EPOCH, null);
@@ -203,7 +203,7 @@ function isLab(item) { return ['local-lab-rule', 'local-lab-deepseek', 'local-la
 function isExternalRun(item) { return item?.mode === 'external-general'; }
 function isAiLab(item) { return item?.mode === 'local-lab-deepseek' || isGeneralAssessment(item) && !isExternalRun(item); }
 function canOperate() { return authSession && (!authSession.authRequired || authSession.authenticated) && authSession.user?.role !== 'viewer'; }
-function selectedFixture() { return $('fixture-select').value || 'vul-web-1'; }
+function selectedFixture() { return $('fixture-select').value || 'vul-web2-daehan'; }
 function selectedIdorFixture() { return IDOR_FIXTURES[selectedFixture()]; }
 function selectedModel() { return models.find(item => item.id === $('model-select').value); }
 function isXssLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile) === 'stored_xss_canary'; }
@@ -390,22 +390,21 @@ function renderStats() {
   const idor = selectedIdorFixture();
   $('asset-summary-detail').textContent = targetKind === 'external'
     ? `외부 URL · ${$('external-url').value.trim() || '아직 지정하지 않음'}${externalPreflight?.ready ? ' · 사전 점검 완료' : ''}`
-    : idor ? `등록 실습 · vul-web2 ${idor.name} · ${$('lab-target-origin').value.trim()}`
-      : '등록 실습 · vul-web-1 로컬 게시판';
+    : `등록 실습 · vul-web2 ${idor.name} · ${$('lab-target-origin').value.trim()}`;
   const model = selectedModel();
   $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || !labReadiness.generalSupported || !labReadiness.generalAvailable;
   $('external-preflight-button').disabled = !canOperate() || !connected || active || externalPreflightPending;
   $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || !externalPreflight?.ready;
   $('fixture-select').disabled = controlPending || active || !canOperate();
   $('lab-target-origin').disabled = controlPending || active || !canOperate();
-  $('lab-target-control').hidden = !idor;
+  $('lab-target-control').hidden = false;
   $('model-select').disabled = controlPending || active || !canOperate();
   $('model-reset-toggle').checked = settings.confirmModelReset;
   $('model-reset-toggle').disabled = controlPending || !!pendingModelChange;
   $('experiment-reset-button').disabled = !canOperate() || !connected || controlPending || active || !!pendingModelChange;
   $('model-reset-warning').hidden = !modelChangeUnreset;
-  $('lab-title').textContent = idor ? `실습 대상 · vul-web2 ${idor.name}` : '실습 대상 · vul-web-1 로컬 게시판';
-  $('lab-description').textContent = idor ? `${idor.name}의 실습 IP와 포트를 아래에 입력하세요. vul-web2 Compose를 먼저 시작해야 하며 기본 포트는 ${idor.port}입니다.` : '서버가 격리된 로컬 게시판을 임시 포트로 시작합니다.';
+  $('lab-title').textContent = `실습 대상 · vul-web2 ${idor.name}`;
+  $('lab-description').textContent = `${idor.name}의 실습 IP와 포트를 아래에 입력하세요. vul-web2 Compose를 먼저 시작해야 하며 기본 포트는 ${idor.port}입니다.`;
   $('lab-check-scope').textContent = '발견한 공격면과 사용 가능한 증거에서 가설을 세우고, 실행 예산 안에서 반복 점검합니다. 지원되지 않는 검사는 미점검 사유로 기록합니다.';
   $('lab-run-label').textContent = '범용 취약점 점검 시작';
   $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : !labReadiness.generalSupported ? '범용 점검 서버 경로가 연결되지 않았습니다.' : !labReadiness.generalAvailable ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 설정을 확인하세요.' : model?.available ? `${model.name || model.id} · 범용 점검 준비됨` : '사용 가능한 범용 점검 모델이 없습니다. 서버의 모델 설정을 확인하세요.';
@@ -713,26 +712,24 @@ $('lab-run-button').addEventListener('click', async () => {
   if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available
     || !labReadiness.generalSupported || !labReadiness.generalAvailable || model.provider !== 'deepseek') return;
   let target;
-  if (selectedIdorFixture()) {
-    try {
-      const input = $('lab-target-origin').value.trim();
-      const url = new URL(input.includes('://') ? input : `http://${input}`);
-      if (url.protocol !== 'http:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error();
-      target = url.origin;
-      $('lab-target-origin').value = target;
-      $('lab-target-origin').removeAttribute('aria-invalid');
-    } catch {
-      $('lab-target-origin').setAttribute('aria-invalid', 'true');
-      showRuntimeError('실습 대상의 HTTP 원점(IP와 포트)만 입력하세요. 경로, 쿼리와 로그인 정보는 포함할 수 없습니다.');
-      $('lab-target-origin').focus(); return;
-    }
+  try {
+    const input = $('lab-target-origin').value.trim();
+    const url = new URL(input.includes('://') ? input : `http://${input}`);
+    if (url.protocol !== 'http:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error();
+    target = url.origin;
+    $('lab-target-origin').value = target;
+    $('lab-target-origin').removeAttribute('aria-invalid');
+  } catch {
+    $('lab-target-origin').setAttribute('aria-invalid', 'true');
+    showRuntimeError('실습 대상의 HTTP 원점(IP와 포트)만 입력하세요. 경로, 쿼리와 로그인 정보는 포함할 수 없습니다.');
+    $('lab-target-origin').focus(); return;
   }
   await submitControl(async () => {
     await runtime.startAssessment(model.id, selectedFixture(), target);
     inspectedRun = null;
     selectedEventId = null;
     showAttackProgress();
-    notify(`${selectedIdorFixture()?.name || '로컬 게시판'} 범용 점검을 시작했습니다.`);
+    notify(`${selectedIdorFixture().name} 범용 점검을 시작했습니다.`);
   });
 });
 function commitFixture(id) {

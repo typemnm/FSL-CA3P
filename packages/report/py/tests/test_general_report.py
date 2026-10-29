@@ -23,7 +23,7 @@ def _report(run_id: str, *, status: str = "completed") -> dict:
         "assessmentMode": "general",
         "runId": run_id,
         "status": status,
-        "target": {"fixtureId": "vul-web-1", "origin": "http://127.0.0.1:40123"},
+        "target": {"fixtureId": "LAB-DEMO", "origin": "http://127.0.0.1:40123"},
         "hypotheses": [
             {"id": "h-a", "category": "access_control", "asset": "/api/posts/:id"},
             {"id": "h-b", "category": "access_control", "asset": "/api/records/:id"},
@@ -44,7 +44,7 @@ def _report(run_id: str, *, status: str = "completed") -> dict:
             {"id": "ev-c", "kind": "browser", "summary": "no callback"},
         ],
         "probes": [
-            {"id": "p-a", "hypothesisId": "h-a", "tool": "known_cross_user_delete_canary",
+            {"id": "p-a", "hypothesisId": "h-a", "tool": "known_record_idor_read",
              "status": "confirmed", "evidenceIds": ["ev-a"]},
             {"id": "p-b", "hypothesisId": "h-b", "tool": "known_record_idor_read",
              "status": "confirmed", "evidenceIds": ["ev-b"]},

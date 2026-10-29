@@ -7,7 +7,6 @@
     "start": "node start.mjs",
     "start:managed-daehan": "node scripts/start-managed-daehan.mjs",
     "serve:external": "node scripts/serve-external.mjs",
-    "seed:lab-history": "node scripts/seed-lab-history.mjs",
     "test": "node scripts/ci.mjs",
     "verify": "node scripts/ci.mjs",
     "preflight": "node scripts/preflight.mjs",

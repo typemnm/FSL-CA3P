@@ -123,7 +123,7 @@ CASPER_DB_PYTHON="$PWD/.venv/bin/python" PORT=4174 npm run serve:external
 
 출력과 `.runtime/public-url.txt`에서 임시 HTTPS 주소를 확인한다. 서버·터널 로그는 `.runtime/server.log`, `.runtime/tunnel.log`에 저장된다. 주소는 터널 재시작 시 바뀔 수 있다. 이미 4174 포트의 Quick Tunnel이 실행 중이면 두 번째 인스턴스를 시작하지 않는다.
 
-게시판 실습은 서버가 생성한 `vul-web-1`에서 범용 점검으로 실행한다. 실습 시작을 누를 때만 게시판을 실행한다. DeepSeek 모델은 API 키를 별도로 설정한 경우에만 호출되며 비용이 발생할 수 있다. 아래 대학 실습은 별도로 실행 중인 컨테이너의 입력 원점에 접속한다.
+대학 실습은 별도로 실행 중인 `vul-web2` 컨테이너의 입력 원점에 접속한다. 범용 점검에서 DeepSeek 모델은 API 키를 별도로 설정한 경우에만 호출되며 비용이 발생할 수 있다. 외부 URL 경로는 공개 페이지만 읽기 전용으로 관찰한다.
 
 ## 대학 사이트 실습 반영
 

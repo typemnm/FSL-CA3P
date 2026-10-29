@@ -139,31 +139,26 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (body.scope !== undefined || body.preflightToken !== undefined || body.authorizationConfirmed !== undefined) {
       throw fault(400, 'External target options require external-general mode.');
     }
-    const fixtureId = body.fixtureId ?? 'vul-web-1';
+    const fixtureId = body.fixtureId;
     if (typeof fixtureId !== 'string') throw fault(400, 'Choose a registered local fixture.');
     const idorOrigin = Object.hasOwn(universityOrigins, fixtureId) ? universityOrigins[fixtureId] : null;
-    if (fixtureId !== 'vul-web-1' && !idorOrigin) throw fault(400, 'Choose a registered local fixture.');
-    const mode = body.mode ?? (idorOrigin ? 'local-lab-rule' : 'local-lab-general');
+    if (!idorOrigin) throw fault(400, 'Choose a registered local fixture.');
+    const mode = body.mode ?? 'local-lab-rule';
     if (!RUN_MODES.includes(mode)) throw fault(400, 'Unsupported run mode.');
-    if (mode === 'local-lab-rule' && !idorOrigin) {
-      throw Object.assign(fault(400, 'The rule lab now runs only the university IDOR check. Use a general assessment for vul-web-1.'),
-        { code: 'RETIRED_MODE' });
-    }
     const general = mode === 'local-lab-general';
     const modelId = body.modelId ?? (general ? 'deepseek-flash' : 'rule-baseline');
-    if (idorOrigin && !general && (mode !== 'local-lab-rule' || modelId !== 'rule-baseline')) {
+    if (!general && (mode !== 'local-lab-rule' || modelId !== 'rule-baseline')) {
       throw fault(400, 'University fixtures support only the rule baseline known-record IDOR check.');
     }
     const model = listModels().find(item => item.id === modelId);
     if (!model) throw fault(400, 'Choose a registered model.');
     if (!model.available) throw fault(503, 'Selected model is unavailable. Configure server credentials before starting.');
     if (general && model.provider !== 'deepseek') throw fault(400, 'General assessment requires a registered DeepSeek model.');
-    if (!idorOrigin && body.target !== undefined) throw fault(400, 'The board lab does not accept a target URL.');
     const delayMs = body.delayMs ?? defaultDelayMs;
     if (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 3000) throw fault(400, 'delayMs must be 0..3000.');
     const testProfile = body.testProfile ?? (general ? 'general' : 'known_record_idor_read');
     if (general ? testProfile !== 'general' : testProfile !== 'known_record_idor_read') throw fault(400, 'Unsupported fixture test profile.');
-    const target = idorOrigin ? validateUniversityOrigin(body.target === undefined ? idorOrigin : body.target) : 'https://demo.ca3p.local';
+    const target = validateUniversityOrigin(body.target === undefined ? idorOrigin : body.target);
     const id = `run-${randomUUID()}`;
     const options = { mode, modelId, target, delayMs: 0, testProfile, fixtureId };
     if (general) {
@@ -188,7 +183,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     }
     const state = { ...emptyRun(), id, coreRunId: id, status: 'queued', mode, modelId,
       ...(general ? { assessmentMode: 'general' } : {}),
-      target: idorOrigin ? target : 'http://127.0.0.1/',
+      target,
       simulated: false, testProfile, fixtureId, manifest };
     store.createRun({ id, mode, modelId, manifest, state, options });
     selectedRunId = id; ensureWorker(); publish(true);

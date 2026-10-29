@@ -1,8 +1,7 @@
 /**
- * Hardened Playwright context for one loopback origin (PLAN §2.5). Mirrors the
- * verify-stage sandbox in packages/adapters/integrations/xss-execution.mjs
- * (observeStoredXssExecution): same-origin GET/HEAD only, no WebSocket, no
- * service workers, no downloads, popups closed, dialogs dismissed, deadline.
+ * Hardened Playwright context for one loopback origin (PLAN §2.5):
+ * same-origin GET/HEAD only, no WebSocket, no service workers, no downloads,
+ * popups closed, dialogs dismissed, deadline.
  * The single exception is one session-switch request that exactly matches an
  * allow-list entry handed in by the collector; an empty list permits none.
  */

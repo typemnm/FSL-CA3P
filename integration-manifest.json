@@ -75,18 +75,6 @@
       "reason": "Catalog, payload and verifier data migrated into the unified vulnerability DB; legacy wire/import aliases carry no independent store."
     },
     {
-      "id": "vul-web-1",
-      "path": "vul-web-1",
-      "layer": "fixture",
-      "status": "active",
-      "sourceBranch": "typemnm/vul-web",
-      "dependencies": [
-        "attack-module",
-        "guardrail",
-        "casper-db"
-      ]
-    },
-    {
       "id": "vul-web2",
       "path": "vul-web2",
       "layer": "fixture",
@@ -108,7 +96,6 @@
         "attack-module",
         "guardrail",
         "casper-db",
-        "vul-web-1",
         "vul-web2",
         "contracts",
         "run-store",
@@ -164,7 +151,6 @@
         "attack-module",
         "guardrail",
         "casper-db",
-        "vul-web-1",
         "attack-tool"
       ]
     },
@@ -308,7 +294,6 @@
         "attack-module",
         "guardrail",
         "casper-db",
-        "vul-web-1",
         "attack-tool"
       ]
     }
@@ -321,9 +306,7 @@
     "suiteAssignments": {
       "adapters": [
         "agent-dashboard/tests/casper-db-integration.test.mjs",
-        "agent-dashboard/tests/guardrail-integration.test.mjs",
-        "agent-dashboard/tests/pentest-db-integration.test.mjs",
-        "agent-dashboard/tests/pentest-db-multitype.test.mjs"
+        "agent-dashboard/tests/pentest-db-integration.test.mjs"
       ],
       "worker": [
         "apps/application/tests/run-service.test.mjs"
@@ -331,7 +314,7 @@
     }
   },
   "migration": {
-    "legacyComposition": "Compatibility wrappers remain in agent-dashboard; execution adapters and lab gateway live in packages/adapters.",
+    "legacyComposition": "Historical run records remain readable; active university and external URL execution adapters live in packages/adapters.",
     "pentestDb": "Replaced by casper-db attack_catalog namespace. Existing JSON run artifacts and legacy protocol aliases are retained for historical compatibility only.",
     "xssParser": "Replaced by web-parser. Run records created by the retired single checks (core-fixture, local-lab-rule/local-lab-deepseek stored XSS) stay readable; their parser events, manifest module entries and lock digests are kept as recorded."
   }

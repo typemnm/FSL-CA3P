@@ -82,10 +82,11 @@ function absoluteDatabasePath(value) {
 }
 
 /** Translate only explicit parser API hints to historical-case lookup locations. */
-export function parserReferenceLocations(report, { targetId = 'vul-web-1', origin, locationHints = [] } = {}) {
+export function parserReferenceLocations(report, { targetId, origin, locationHints = [] } = {}) {
   report = knowledgeParserReport(report, { origin });
-  if (!report || !Array.isArray(report.pages) || typeof origin !== 'string') {
-    throw new TypeError('A parser report and exact target origin are required.');
+  if (!report || !Array.isArray(report.pages) || typeof origin !== 'string'
+    || typeof targetId !== 'string' || !targetId.trim()) {
+    throw new TypeError('A parser report, target ID, and exact target origin are required.');
   }
   const allowed = new URL(origin);
   const seen = new Set();
@@ -199,7 +200,7 @@ function runPython(input, { python, signal, timeoutMs = 30_000 } = {}) {
   });
 }
 
-export async function matchCasperHistory({ report, origin, targetId = 'vul-web-1', databasePath,
+export async function matchCasperHistory({ report, origin, targetId, databasePath,
   intakeWorkspace = process.env.CASPER_DB_INTAKE_WORKSPACE,
   externalDatabase = process.env.CASPER_DB_EXTERNAL_PATH, cveIds = [], locationHints = [],
   softwareInventory, python, signal } = {}) {
@@ -225,7 +226,7 @@ export async function matchCasperHistory({ report, origin, targetId = 'vul-web-1
 }
 
 /** Collect into the owned source DB; callers preserve the returned context in run evidence. */
-export async function syncParserAdvisories({ report, origin, targetId = 'vul-web-1', databasePath,
+export async function syncParserAdvisories({ report, origin, targetId, databasePath,
   softwareInventory, providers = ['github', 'nvd'],
   maxPages = 2, maxRequests = 20, timeoutSeconds = 180, python, signal } = {}) {
   const { observations } = parserReferenceLocations(report, { targetId, origin });
@@ -251,7 +252,7 @@ export async function syncParserAdvisories({ report, origin, targetId = 'vul-web
 /** Collection writes the source DB; historical lookups keep the queued snapshot.
  * The returned provider records are frozen in the run's immutable JSON evidence.
  */
-export async function prepareParserKnowledge({ report, origin, targetId = 'vul-web-1', databasePath,
+export async function prepareParserKnowledge({ report, origin, targetId, databasePath,
   sourceDatabasePath, python, signal, sync = syncParserAdvisories } = {}) {
   const converted = inventoryFromParser(report, { targetId });
   let collection = { status: 'not_observed', collection_complete: false, database_written: false };

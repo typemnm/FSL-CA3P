@@ -88,7 +88,7 @@ def stored_xss_events() -> list[dict]:
                     "assessments": [
                         {
                             "observation": {
-                                "target_id": "vul-web-1",
+                                "target_id": "LAB-DEMO",
                                 "endpoint": "/api/posts",
                                 "method": "POST",
                                 "parameter": "content",

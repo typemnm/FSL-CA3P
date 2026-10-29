@@ -4,7 +4,6 @@ import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startLocalLab } from '../local-lab-gateway.mjs';
 import { prepareLabSessionCleanup, registerLabSession } from '../lab-session-registry.mjs';
 
 async function fixture(t, pid) {
@@ -61,33 +60,4 @@ test('registry paths and recorded directory boundaries are validated', async t =
   await writeFile(value.entry, JSON.stringify({ ...record, directory: tmpdir() }));
   await assert.rejects(prepareLabSessionCleanup(value.registryPath), error => error.status === 409);
   assert.ok(await readFile(join(value.directory, '.ca3p-lab-owner.json')));
-});
-
-test('a managed private board registers its active process and unregisters after shutdown', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ca3p-session-gateway-test-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const registryPath = join(directory, 'lab-sessions');
-  const lab = await startLocalLab({ cleanupRegistryPath: registryPath });
-  t.after(() => lab.close());
-  assert.equal((await readdir(registryPath)).length, 1);
-  await assert.rejects(prepareLabSessionCleanup(registryPath), error => error.status === 409);
-  await lab.close();
-  assert.deepEqual(await readdir(registryPath), []);
-});
-
-test('a board exits when its worker IPC channel disappears and its owned residue is recoverable', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ca3p-session-disconnect-test-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const registryPath = join(directory, 'lab-sessions');
-  const source = new URL('../local-lab-gateway.mjs', import.meta.url).href;
-  const child = spawnSync(process.execPath, ['--input-type=module', '-e',
-    `import { startLocalLab } from ${JSON.stringify(source)}; await startLocalLab({ cleanupRegistryPath: ${JSON.stringify(registryPath)} }); process.exit(0);`],
-  { timeout: 15_000, encoding: 'utf8' });
-  assert.equal(child.status, 0, child.stderr);
-  let plan;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try { plan = await prepareLabSessionCleanup(registryPath); break; }
-    catch (error) { if (attempt === 99) throw error; await new Promise(resolve => setTimeout(resolve, 20)); }
-  }
-  assert.deepEqual(await plan.execute(), { removed: 1 });
 });

@@ -133,7 +133,7 @@ def casper_db(tmp_path: Path) -> Path:
     )
     example.update(
         case_id=CASE_ID,
-        target_id="vul-web-1",
+        target_id="LAB-DEMO",
         endpoint="/api/posts",
         method="POST",
         parameter="content",
@@ -148,7 +148,7 @@ def casper_db(tmp_path: Path) -> Path:
             "check_id": "CHECK-SYN-1",
             "case_id": CASE_ID,
             "run_id": "RUN-SYN-1",
-            "target_id": "vul-web-1",
+            "target_id": "LAB-DEMO",
             "endpoint": "/api/posts",
             "method": "POST",
             "parameter": "content",

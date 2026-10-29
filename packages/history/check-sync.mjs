@@ -5,17 +5,6 @@ import { readFile, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const hash = value => createHash('sha256').update(value).digest('hex');
-const program = String.raw`
-import json, sys
-from pathlib import Path
-from casper_db.repository import CaseStore
-request=json.load(sys.stdin)
-store=CaseStore(Path(request['database']), evidence_root=Path(request['evidenceRoot']))
-saved=[value.model_dump() for value in store.add_checks(request['checks'], allow_unchanged=True)]
-json.dump({'status':'synced','checks':saved},sys.stdout)
-`;
-
 const resultProgram = String.raw`
 import json,sys
 from pathlib import Path
@@ -77,28 +66,7 @@ export async function syncRunChecks(run, { artifact, storePath, databasePath, py
     return pythonJson(resultProgram, { database, evidenceRoot, results: bound,
       artifactReference: reference, artifactSha256: createHash('sha256').update(bytes).digest('hex') }, { python });
   }
-  const history = (run.events ?? []).find(event => event.module === 'casper' && Array.isArray(event.response?.payload?.assessments));
-  if (!history) return { status: 'not-applicable', checks: [], reason: 'no-history-or-explicit-results' };
-  const rows = [];
-  for (const assessment of history.response.payload.assessments) {
-    const observed = assessment.observation;
-    // Only the exact location actually verified by this bounded XSS profile may be linked.
-    if (observed?.endpoint !== '/api/posts' || observed.method !== 'POST' || observed.parameter !== 'content'
-      || observed.parameter_location !== 'body' || run.report.testProfile !== 'stored_xss_canary') continue;
-    for (const match of assessment.matches ?? []) {
-      if (match.decision !== 'retest_candidate' || match.changed_fields?.length || !/xss/i.test(match.vulnerability_type ?? '')) continue;
-      const result = run.report.finding?.status === 'confirmed' ? 'confirmed'
-        : run.report.finding?.status === 'not_confirmed' && run.report.progress?.verificationCompleted ? 'not_reproduced' : 'inconclusive';
-      rows.push({ check_id: `CHECK-${hash(`${run.id}:${match.case_id}:${match.case_revision}`).slice(0, 48)}`,
-        run_id: run.id, case_id: match.case_id, case_revision: match.case_revision,
-        ...observed, observed_at: run.report.completedAt ?? new Date().toISOString(), result,
-        observation: `격리된 실습 대상의 ${run.report.testProfile} 검증 결과. 사람의 검토는 별도로 수행합니다.`,
-        source: 'tool', evidence_refs: [reference] });
-    }
-  }
-  if (!rows.length) return { status: 'not-applicable', checks: [] };
-  return pythonJson(program, { database,
-    evidenceRoot, checks: rows }, { python });
+  return { status: 'not-applicable', checks: [], reason: 'no-explicit-results' };
 }
 
 export async function reviewRunCheck(checkId, { reviewer, note, databasePath, evidenceRoot, python } = {}) {

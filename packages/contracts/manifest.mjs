@@ -80,17 +80,17 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
         runnerImageDigest: process.env.CA3P_RUNNER_IMAGE_DIGEST ?? null },
       provenance: 'captured-before-execution', missingValuesMean: 'unavailable' };
   }
-  const fixtureId = options.fixtureId ?? 'vul-web-1';
+  const fixtureId = options.fixtureId;
   const general = mode === 'local-lab-general';
   const loopBudget = general ? validateGeneralLoopBudget(options.loopBudget ?? GENERAL_LOOP_BUDGET_DEFAULTS) : null;
   const universityOrigins = { 'vul-web2-daehan': 'http://127.0.0.1:4101', 'vul-web2-wonchang': 'http://127.0.0.1:4102' };
-  const universityLab = Object.hasOwn(universityOrigins, fixtureId);
-  if (!general && !universityLab) throw new TypeError('The single stored-XSS/BOLA check was retired.');
-  const fixedUniversityProbe = universityLab && !general;
-  const universityOrigin = universityLab ? options.target ?? universityOrigins[fixtureId] : null;
+  if (!['local-lab-rule', 'local-lab-general'].includes(mode)) throw new TypeError('The single stored-XSS/BOLA check was retired.');
+  if (!Object.hasOwn(universityOrigins, fixtureId)) throw new TypeError('Only registered university fixtures can start a run.');
+  const fixedUniversityProbe = !general;
+  const universityOrigin = options.target ?? universityOrigins[fixtureId];
   const testProfile = options.testProfile ?? (general ? 'general' : 'known_record_idor_read');
   const moduleNames = general
-    ? ['agent', universityLab ? 'vul-web2' : 'vul-web-1', 'casper-db',
+    ? ['agent', 'vul-web2', 'casper-db',
       'attack-tool', 'attack-module', 'guardrail', 'packages/models', 'packages/adapters', 'web-parser',
       'packages/report', 'packages/run-store', 'apps/application', 'apps/worker']
     : ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker'];
@@ -114,18 +114,22 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       ...(fixedUniversityProbe ? { executionRole: 'not-used-fixed-probe' } : {}),
       settings: model.settings ?? {}, actualPromptDigests: [] },
     data: { logicalInputDigest: digest({ mode, fixtureId, testProfile,
-      ...(general ? { loopBudget } : {}), ...(universityLab ? { origin: universityOrigin } : {}) }),
-      datasetDigest: treeDigest(join(PROJECT_ROOT, universityLab ? 'vul-web2' : 'vul-web-1')),
+      ...(general ? { loopBudget } : {}), origin: universityOrigin }),
+      datasetDigest: treeDigest(join(PROJECT_ROOT, 'vul-web2')),
       catalogDigest: general && options.caseSnapshot?.path ? attackCatalogSnapshot(options.caseSnapshot.path) : null,
       catalogSeedDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')),
       caseSnapshotDigest: general ? options.caseSnapshot?.contentDigest ?? null : null,
       caseRevisions: [], ...(options.unavailableInputs ? { unavailableInputs: options.unavailableInputs } : {}) },
     target: { fixtureId,
       imageDigest: process.env.CA3P_FIXTURE_IMAGE_DIGEST ?? null,
-      initialStateDigest: universityLab ? null : treeDigest(join(PROJECT_ROOT, 'vul-web-1/server.js')),
-      ...(universityLab ? { origin: universityOrigin, stateCapture: 'running-fixture-not-snapshotted' } : {}),
+      initialStateDigest: null,
+      origin: universityOrigin, stateCapture: 'running-fixture-not-snapshotted',
       testProfile },
-    policy: { rulesetDigest: general && !universityLab ? null : treeDigest(join(PROJECT_ROOT, 'guardrail/rules')),
+    policy: { rulesetDigest: digest({
+      idorRuleset: treeDigest(join(PROJECT_ROOT, 'vul-web2/scripts/idor-probe.mjs')),
+      guardrail: treeDigest(join(PROJECT_ROOT, 'guardrail/src')),
+      generalRuntime: general ? treeDigest(join(PROJECT_ROOT, 'apps/application/general-runtime.mjs')) : null,
+    }),
       mutationRetry: 'never', recovery: 'interrupted-new-run-required', maxIterations: loopBudget?.maxIterations ?? 1 },
     environment: { nodeVersion: process.version,
       pythonVersion: fixedUniversityProbe ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'), ['--version']),

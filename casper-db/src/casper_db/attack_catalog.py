@@ -21,6 +21,7 @@ from .models import Identifier, Text
 from .repository import SCHEMA_VERSION, CaseStore, ConflictError, _run_schema, initialize_database
 
 CATALOG_SCHEMA = "casper-attack-catalog-1"
+RETIRED_APPLICATIONS = frozenset({"vul-web-1"})
 ATTACK_TABLES = {
     "attack_catalog_metadata", "attack_catalog_sources", "attack_patterns", "attack_payloads",
     "attack_verification_rules", "attack_templates", "attack_template_rules",
@@ -193,15 +194,12 @@ def import_attack_catalog(database: Path, catalog: dict, *, source_ref: str) -> 
 
 
 def bundled_catalogs() -> list[tuple[str, dict]]:
-    catalogs = []
-    for name, source in (
-        ("legacy-v1.json", "git:FSL-CA3P@04ee99c/pentest-db/cases.json"),
-        ("develop-v2.json", "git:FSL-CA3P@86e1f54/pentest-db/cases.multi.draft.json"),
-        ("expanded-v2.json", "git:FSL-CA3P@ed769f4/pentest-db/cases.multi.draft.json"),
-    ):
-        catalog = json.loads(files("casper_db").joinpath("catalog_seed", name).read_text("utf-8"))
-        catalogs.append((source, catalog))
-    return catalogs
+    # Keep historical snapshots on disk, but bootstrap only guidance for active targets.
+    catalog = json.loads(files("casper_db").joinpath(
+        "catalog_seed", "expanded-v2.json").read_text("utf-8"))
+    catalog["responses"] = [block for block in _blocks(catalog)
+                            if block["target"]["application"] not in RETIRED_APPLICATIONS]
+    return [("bundled:expanded-v2.json#active-targets", catalog)]
 
 
 def import_bundled_catalogs(database: Path) -> list[dict]:
@@ -248,7 +246,8 @@ def list_attack_patterns(database: Path) -> dict:
         patterns = [{"pattern_id": row["pattern_id"], "revision": row["revision"],
                      "content_sha256": row["content_sha256"], "definition_kind": "attack_guidance",
                      "source_ref": row["source_ref"], "source_sha256": row["source_sha256"],
-                     "definition": json.loads(row["snapshot"])} for row in rows]
+                     "definition": json.loads(row["snapshot"])} for row in rows
+                    if row["application"] not in RETIRED_APPLICATIONS]
     return {"schemaVersion": CATALOG_SCHEMA, "status": "ok", "patterns": patterns,
             "provenance": {"source": "casper-db.attack_catalog", "status": "draft_advisory",
                            "currentRunVerified": False, "sha256": digest(patterns)}}

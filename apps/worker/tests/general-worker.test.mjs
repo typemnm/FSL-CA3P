@@ -149,22 +149,22 @@ test('general worker generates two distinct real Python HWPX files for two confi
     const report = { schemaVersion: 'general-assessment/1', assessmentMode: 'general', runId: id,
       status: 'completed', target: { origin: 'http://127.0.0.1:4101' },
       hypotheses: [
-        { id: 'h1', category: 'access_control', asset: '/api/records/:id', status: 'confirmed' },
-        { id: 'h2', category: 'access_control', asset: '/api/posts/:id', status: 'confirmed' },
+        { id: 'h1', category: 'access_control', asset: '/api/admissions/partner/applications/1', status: 'confirmed' },
+        { id: 'h2', category: 'access_control', asset: '/api/admissions/partner/applications/3', status: 'confirmed' },
       ],
       findings: [
         { id: 'finding:h1', hypothesisId: 'h1', category: 'access_control',
-          asset: '/api/records/:id', status: 'confirmed', evidenceIds: ['ev1'] },
+          asset: '/api/admissions/partner/applications/1', status: 'confirmed', evidenceIds: ['ev1'] },
         { id: 'finding:h2', hypothesisId: 'h2', category: 'access_control',
-          asset: '/api/posts/:id', status: 'confirmed', evidenceIds: ['ev2'] },
+          asset: '/api/admissions/partner/applications/3', status: 'confirmed', evidenceIds: ['ev2'] },
       ],
       probes: [
         { id: 'p1', hypothesisId: 'h1', tool: 'known_record_idor_read', status: 'confirmed', evidenceIds: ['ev1'] },
-        { id: 'p2', hypothesisId: 'h2', tool: 'known_cross_user_delete_canary', status: 'confirmed', evidenceIds: ['ev2'] },
+        { id: 'p2', hypothesisId: 'h2', tool: 'known_record_idor_read', status: 'confirmed', evidenceIds: ['ev2'] },
       ],
       evidence: [
         { id: 'ev1', source: 'control', kind: 'role-comparison', summary: 'Cross-role record read was confirmed.' },
-        { id: 'ev2', source: 'control', kind: 'owner-comparison', summary: 'Cross-owner delete was confirmed.' },
+        { id: 'ev2', source: 'control', kind: 'role-comparison', summary: 'Cross-role record read was confirmed.' },
       ], coverage: { totalHypotheses: 2, confirmed: 2, notReproduced: 0, inconclusive: 0, notTested: 0 } };
     const events = [
       { id: 'verify-h1', source: 'agent/general-assessment', module: 'agent', stage: 'verify',

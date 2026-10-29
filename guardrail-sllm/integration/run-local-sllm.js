@@ -35,7 +35,7 @@ function buildSafeFixture() {
       },
     },
     testContext: {
-      targetSite: 'vul-web-1',
+      targetSite: 'sllm-cert-fixture',
       stage: 'security-test',
       requestPurpose: '승인된 SQL Injection 읽기 확인',
       approvedOrigins: ['http://127.0.0.1:4101'],

@@ -19,7 +19,7 @@ const timeoutMs = Number(process.env.SLLM_TIMEOUT_MS || 120000);
 // 공통 승인 범위를 만든 뒤 케이스별 overrides로 필요한 항목만 바꾼다.
 function makeContext(overrides = {}) {
   return {
-    targetSite: 'vul-web-1',
+    targetSite: 'sllm-cert-fixture',
     stage: 'security-test',
     requestPurpose: '승인된 보안 테스트',
     approvedOrigins: ['http://127.0.0.1:4101'],

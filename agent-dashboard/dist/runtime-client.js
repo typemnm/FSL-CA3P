@@ -131,9 +131,11 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       session = { ...session, authenticated: false, user: null, csrfToken: null };
       onSession(session); onAuthRequired(); onConnection('disconnected', transport);
     },
-    async startAssessment(modelId, fixtureId = 'vul-web-1', target) {
+    async startAssessment(modelId, fixtureId, target) {
+      if (!['vul-web2-daehan', 'vul-web2-wonchang'].includes(fixtureId)) throw new TypeError('A registered university fixture is required.');
+      if (typeof target !== 'string' || !target.trim()) throw new TypeError('A registered university origin is required.');
       const value = await request('/api/runs', { mode: 'local-lab-general', modelId,
-        ...(fixtureId !== 'vul-web-1' ? { fixtureId } : {}), ...(target ? { target } : {}) });
+        fixtureId, target });
       receive(value); return value;
     },
     preflightExternal(target, pathPrefix = '/') { return api('/api/targets/preflight', { method: 'POST', body: { target, scope: { pathPrefix }, authorizationConfirmed: true } }); },

@@ -63,28 +63,28 @@ def connect(path, *args, **kwargs):
     return original_connect(path, *args, **kwargs)
 
 sqlite3.connect = connect
-request = {'database':database, 'targetId':'vul-web-1', 'observations':[]}
+request = {'database':database, 'targetId':'vul-web2-daehan', 'observations':[]}
 sys.stdin = io.StringIO(json.dumps(request))
 code = Path(source).read_text(encoding='utf-8').split('const PYTHON_CODE = String.raw' + chr(96), 1)[1].split(chr(96) + ';', 1)[0]
 exec(compile(code, source + ':PYTHON_CODE', 'exec'))
 assert committed, 'the initializer did not commit between schema reads'
 `;
 
-test('xss-parser API hints become location observations without asserting a vulnerability', () => {
-  const rows = observationsFromParser(report, { targetId: 'vul-web-1', origin });
+test('parser API hints become location observations without asserting a vulnerability', () => {
+  const rows = observationsFromParser(report, { targetId: 'vul-web2-daehan', origin });
   assert.deepEqual(rows, [
-    { target_id: 'vul-web-1', endpoint: '/api/posts', method: 'POST', parameter: 'title', parameter_location: 'body' },
-    { target_id: 'vul-web-1', endpoint: '/api/posts', method: 'POST', parameter: 'content', parameter_location: 'body' },
+    { target_id: 'vul-web2-daehan', endpoint: '/api/posts', method: 'POST', parameter: 'title', parameter_location: 'body' },
+    { target_id: 'vul-web2-daehan', endpoint: '/api/posts', method: 'POST', parameter: 'content', parameter_location: 'body' },
   ]);
   assert.deepEqual(observationsFromParser({ pages: [{ behaviors: [{ api: [
     { method: 'POST', url: 'https://other.invalid/api/posts', bodyKeys: ['content'] },
-  ] }] }] }, { origin }), []);
+  ] }] }] }, { targetId: 'vul-web2-daehan', origin }), []);
 });
 
 test('real casper-db assesses parser locations against an isolated empty SQLite database', async t => {
   const databasePath = join(tmpdir(), `ca3p-casper-integration-${randomUUID()}.sqlite3`);
   t.after(async () => { await unlink(databasePath).catch(error => { if (error.code !== 'ENOENT') throw error; }); });
-  const result = await matchCasperHistory({ report, origin, databasePath });
+  const result = await matchCasperHistory({ report, targetId: 'vul-web2-daehan', origin, databasePath });
   assert.equal(result.source, 'casper-db');
   assert.equal(result.readyCaseCount, 0);
   assert.equal(result.assessments.length, 2);
@@ -95,7 +95,7 @@ test('concurrent first-use lookups wait for one complete database initialization
   const databasePath = join(tmpdir(), `ca3p-casper-concurrent-${randomUUID()}.sqlite3`);
   t.after(async () => { await unlink(databasePath).catch(error => { if (error.code !== 'ENOENT') throw error; }); });
   const results = await Promise.all(Array.from({ length: 4 }, () =>
-    matchCasperHistory({ report, origin, databasePath })));
+    matchCasperHistory({ report, targetId: 'vul-web2-daehan', origin, databasePath })));
   assert.equal(results.length, 4);
   assert.ok(results.every(result => result.readyCaseCount === 0 && result.assessments.length === 2));
 });
@@ -128,7 +128,7 @@ with sqlite3.connect(sys.argv[1]) as connection:
 `, databasePath], { env: pythonEnvironment, encoding: 'utf8', timeout: 15_000 });
   assert.equal(created.status, 0, created.error?.message || created.stderr);
   const before = await readFile(databasePath);
-  await assert.rejects(matchCasperHistory({ report, origin, databasePath }),
+  await assert.rejects(matchCasperHistory({ report, targetId: 'vul-web2-daehan', origin, databasePath }),
     /explicit database migration is required before read-only lookup/);
   assert.deepEqual(await readFile(databasePath), before);
 });

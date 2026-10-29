@@ -104,7 +104,7 @@ export async function capture(origin, {
         kind,
         url,
         selector: kind === 'element' ? selector : null,
-        // null = the target's default session (vul-web-1: alice).
+        // null = the target's default session.
         viewer: sessionSwitch ? (sessionSwitch.body?.userId ?? bodyText(sessionSwitch.body)) : null,
         capturedAt: new Date().toISOString(),
         pageUrl: page.url(),

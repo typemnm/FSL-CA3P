@@ -27,10 +27,10 @@ with closing(sqlite3.connect(destination)) as connection:
 json.dump({'schemaVersion': SCHEMA_VERSION, 'cases': case_rows, 'checks': checks, 'knowledgeDigest': identity}, sys.stdout)
 `;
 
-const CASE_FIXTURES = new Set(['vul-web-1', 'vul-web2-daehan', 'vul-web2-wonchang']);
+const CASE_FIXTURES = new Set(['vul-web2-daehan', 'vul-web2-wonchang']);
 
 /** SQLite backup includes a consistent view of WAL data and freezes lookup input. */
-export function prepareCaseSnapshot({ runId, storePath, fixtureId = 'vul-web-1', env = process.env,
+export function prepareCaseSnapshot({ runId, storePath, fixtureId, env = process.env,
   spawn = spawnSync } = {}) {
   if (!CASE_FIXTURES.has(fixtureId)) throw Object.assign(new TypeError('Choose a registered local fixture.'), { status: 400 });
   const sourcePath = resolve(env.CASPER_DB_PATH ?? join(PROJECT_ROOT, 'casper-db/data/cases.sqlite3'));
