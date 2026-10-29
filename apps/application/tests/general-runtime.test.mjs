@@ -35,12 +35,13 @@ const confirmedIdor = () => ({ finding: { status: 'confirmed' }, evidence: [
 ] });
 
 test('general university run uses multiple model hypotheses and confirms only the guarded role comparison', async () => {
+  const origin = 'http://127.0.0.1:53987';
   const calls = [];
   const modelCalls = [];
   const hooks = [];
   let liveVerify;
   const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    fixtureId: 'vul-web2-daehan', targetOrigin: origin,
     modelId: 'deepseek-flash', runIdFactory: () => 'general-university-test',
     unavailableInputs: ['casper-db'],
     catalogReader: async () => { throw new Error('catalog must not read the shared database without a snapshot'); },
@@ -68,7 +69,10 @@ test('general university run uses multiple model hypotheses and confirms only th
       ], probes: [{ id: 'p-idor', hypothesisId: 'h-idor', tool: 'known_record_idor_read', input: {} }],
       modelMetadata: { provider: 'deepseek', model: 'deepseek-flash' } };
     } }),
-    idorProbe: async () => confirmedIdor(),
+    idorProbe: async options => {
+      assert.equal(options.origin, origin);
+      return confirmedIdor();
+    },
   });
   const detach = runtime.subscribe(({ run }) => {
     const event = run.events.find(item => item.stage === 'verify' && item.request?.probeId === 'p-idor');
@@ -85,7 +89,7 @@ test('general university run uses multiple model hypotheses and confirms only th
   assert.equal(run.report.modelCalls.length, 2);
   assert.equal(modelCalls.length, 2);
   assert.ok(calls.length >= 4);
-  assert.ok(calls.every(item => item.url.startsWith('http://127.0.0.1:4101/')));
+  assert.ok(calls.every(item => item.url.startsWith(`${origin}/`)));
   assert.ok(hooks.every(item => item.method === 'GET'
     || item.method === 'POST' && new URL(item.url).pathname === '/login'));
   assert.ok(run.report.inventory.referenceSources.some(item => item.source === 'run-store/previous-runs'));
@@ -300,8 +304,6 @@ test('general runtime rejects unregistered targets and rule-only models', () => 
   assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web-1', modelId: 'rule-baseline' }));
   assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     targetOrigin: 'http://8.8.8.8:4101' }));
-  assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
-    targetOrigin: 'http://127.0.0.1:9999' }));
 });
 
 test('wrong private service fails identity binding before the model or general probes run', async () => {
@@ -309,7 +311,7 @@ test('wrong private service fails identity binding before the model or general p
   const paths = [];
   const runtime = createGeneralRuntime({
     fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
-    targetOrigin: 'http://192.168.0.42:4101', runIdFactory: () => 'wrong-site',
+    targetOrigin: 'http://192.168.0.42:53987', runIdFactory: () => 'wrong-site',
     fetchImpl: async url => {
       paths.push(new URL(url).pathname);
       return new Response('<html><title>Internal service</title></html>', {
@@ -593,11 +595,13 @@ test('failed model proposal is recorded once without invented token usage', asyn
 });
 
 test('planner schema failures retain only a fixed validation message, not model output', async () => {
+  const recorded = [];
   const runtime = createGeneralRuntime({
     fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
     runIdFactory: () => 'invalid-plan-diagnostic',
     boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
     fetchImpl: async url => response(new URL(url).pathname),
+    onModelCall: async metadata => { recorded.push(metadata); },
     plannerFactory: () => plannerModule.createGeneralModelPlanner({
       client: { async completeJson() { return {
         value: { done: false, hypotheses: [], probes: [], rawModelSecret: 'do-not-store' },
@@ -609,8 +613,68 @@ test('planner schema failures retain only a fixed validation message, not model 
   runtime.startLab();
   const run = await done;
   assert.equal(run.status, 'failed');
+  assert.equal(recorded.length, 2);
+  assert.equal(run.report.modelCalls.length, 2);
+  assert.deepEqual(recorded.map(item => item.status), ['failed', 'failed']);
   assert.equal(run.report.modelCalls[0].validationError, 'Model plan contains missing or unexpected fields');
   assert.doesNotMatch(JSON.stringify(run.report), /do-not-store/u);
+  await runtime.close();
+});
+
+test('corrected planner schema produces one log entry per actual model call', async () => {
+  const recorded = [];
+  let attempts = 0;
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    runIdFactory: () => 'corrected-plan-diagnostic',
+    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
+    fetchImpl: async url => response(new URL(url).pathname),
+    onModelCall: async metadata => { recorded.push(metadata); },
+    plannerFactory: () => plannerModule.createGeneralModelPlanner({
+      client: { async completeJson() { attempts += 1; return {
+        value: attempts === 1
+          ? { done: true, hypotheses: [], probes: [], rawModelSecret: 'do-not-store' }
+          : { done: true, hypotheses: [], probes: [] },
+        metadata: { provider: 'deepseek', model: 'deepseek-flash', finishReason: 'stop' },
+      }; } },
+    }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed');
+  assert.equal(attempts, 2);
+  assert.equal(recorded.length, 2);
+  assert.equal(run.report.modelCalls.length, 2);
+  assert.deepEqual(recorded.map(item => item.status), ['failed', 'completed']);
+  assert.deepEqual(run.report.modelCalls.map(item => item.status), ['failed', 'completed']);
+  assert.equal(recorded[0].validationError, 'Model plan contains missing or unexpected fields');
+  assert.doesNotMatch(JSON.stringify(run.report), /do-not-store/u);
+  await runtime.close();
+});
+
+test('a custom planner cannot forge extra model call attempts', async () => {
+  const recorded = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    runIdFactory: () => 'custom-plan-attempts',
+    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
+    fetchImpl: async url => response(new URL(url).pathname),
+    onModelCall: async metadata => { recorded.push(metadata); },
+    plannerFactory: () => ({ async propose() { return {
+      done: true, hypotheses: [], probes: [],
+      modelMetadata: { provider: 'deepseek', model: 'deepseek-flash' },
+      modelAttempts: [{ validationError: 'PRIVATE_MODEL_RESPONSE' },
+        { validationError: 'PRIVATE_MODEL_RESPONSE' }, { validationError: 'PRIVATE_MODEL_RESPONSE' }],
+    }; } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed');
+  assert.equal(recorded.length, 1);
+  assert.equal(run.report.modelCalls.length, 1);
+  assert.doesNotMatch(JSON.stringify(run.report), /PRIVATE_MODEL_RESPONSE/u);
   await runtime.close();
 });
 

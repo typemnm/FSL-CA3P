@@ -57,6 +57,7 @@ RUN_REQUIRED_TABLES = {"runs", "jobs", "run_events", "action_intents", "model_ca
 RUN_OPTIONAL_COLUMNS = {
     "experiment_control": {"id", "status", "owner", "epoch", "last_reset_at", "summary_json", "error"},
     "pending_target_resets": {"id", "obligations_json"},
+    "general_loop_budget": {"id", "limits_json", "updated_at"},
 }
 RUN_TABLES = RUN_REQUIRED_TABLES | RUN_OPTIONAL_COLUMNS.keys()
 

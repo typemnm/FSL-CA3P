@@ -19,19 +19,35 @@ const caseLabels = {
   prior_evidence: '기존 증거', reported_on: '보고일',
 };
 const longFields = new Set(['description', 'remediation', 'preconditions', 'procedure', 'payload', 'success_condition', 'prior_evidence']);
+const loopBudgetFields = [
+  { key: 'maxIterations', label: '반복 횟수' },
+  { key: 'maxProbes', label: '검사 요청 수' },
+  { key: 'maxEvidenceItems', label: '증거 항목 수' },
+];
+
+function validLoopBudget(value) {
+  return value && ['limits', 'defaults', 'caps'].every(group =>
+    value[group] && loopBudgetFields.every(({ key }) => Number.isSafeInteger(value[group][key])
+      && value[group][key] > 0));
+}
 
 export function createOperationsPages({ runtime, canEdit, notify }) {
   const dbRoot = document.getElementById('workspace-db-content');
   const moduleRoot = document.getElementById('module-detail-content');
+  const llmLogPanel = document.getElementById('llm-call-log-panel');
   const db = { tab: 'cases', cases: [], intakes: [], total: 0, offset: 0, q: '', archived: 'false',
     caseDetail: null, versions: null, intakeDetail: null, selectedFile: null, loading: false, error: '' };
-  const mod = { slug: '', id: '', summary: null, config: null, logs: [], models: [], loading: false, error: '', query: '' };
+  const mod = { slug: '', id: '', summary: null, config: null, logs: [], models: [], loading: false, error: '', query: '',
+    loopBudget: null, budgetDraft: null, budgetError: '', budgetNotice: '', budgetSaving: false };
+  let llmLogRefreshPending = false;
 
   function reset() {
     db.cases = []; db.intakes = []; db.caseDetail = null; db.intakeDetail = null; db.selectedFile = null;
     dbRoot.textContent = '로그인 후 DB 자료를 불러옵니다.';
-    mod.summary = null; mod.config = null; mod.logs = []; mod.models = [];
+    mod.slug = ''; mod.query = ''; mod.summary = null; mod.config = null; mod.logs = []; mod.models = [];
+    mod.loopBudget = null; mod.budgetDraft = null; mod.budgetError = ''; mod.budgetNotice = ''; mod.budgetSaving = false;
     moduleRoot.textContent = '로그인 후 모듈 자료를 불러옵니다.';
+    llmLogPanel.hidden = true;
   }
 
   async function refreshDb() {
@@ -119,22 +135,46 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
 
   async function showModule(slug) {
     if (!moduleNames[slug]) return;
+    if (mod.slug !== slug) { mod.query = ''; mod.logs = []; mod.loopBudget = null; mod.budgetDraft = null; }
+    mod.budgetError = ''; mod.budgetNotice = '';
     mod.slug = slug; mod.loading = true; mod.error = ''; renderModule();
     try {
       const payload = await runtime.api('/api/modules');
       const modules = Array.isArray(payload.modules) ? payload.modules : [];
       mod.summary = modules.find(item => moduleAliases[slug].includes(item.id)) || null;
       mod.id = mod.summary?.id || moduleAliases[slug][0];
-      const [config, logs, models] = await Promise.all([
+      const [config, logs, models, budgetResult] = await Promise.all([
         runtime.api(`/api/modules/${encodeURIComponent(mod.id)}/config`),
         runtime.api(`/api/modules/${encodeURIComponent(mod.id)}/logs`),
         slug === 'llm' ? runtime.getModels() : Promise.resolve({ models: [] }),
+        slug === 'llm' ? runtime.api('/api/modules/llm/loop-budget').then(value => ({ value }), error => ({ error }))
+          : Promise.resolve(null),
       ]);
       mod.config = config;
       mod.logs = Array.isArray(logs.logs) ? logs.logs : [];
       mod.models = Array.isArray(models.models) ? models.models : [];
+      if (slug === 'llm') {
+        if (budgetResult?.error) { mod.loopBudget = null; mod.budgetError = budgetResult.error.message; }
+        else if (!validLoopBudget(budgetResult?.value)) {
+          mod.loopBudget = null; mod.budgetError = '루프 예산 설정 형식을 확인할 수 없습니다.';
+        } else {
+          mod.loopBudget = budgetResult.value;
+          mod.budgetDraft = { ...budgetResult.value.limits };
+        }
+      }
     } catch (error) { mod.error = error.message; }
     finally { mod.loading = false; renderModule(); }
+  }
+
+  function renderLlmBudget() {
+    if (mod.slug !== 'llm') return '';
+    const budget = mod.loopBudget;
+    const fields = budget ? loopBudgetFields.map(({ key, label }) =>
+      `<label for="llm-budget-${key}"><strong>${label}</strong><input id="llm-budget-${key}" name="${key}" type="number" min="1" max="${budget.caps[key]}" step="1" required value="${escape(mod.budgetDraft?.[key] ?? budget.limits[key])}" ${canEdit() ? '' : 'disabled'}><small>기본 ${budget.defaults[key]} · 최대 ${budget.caps[key]}</small></label>`).join('') : '';
+    return `<section class="panel ops-panel llm-budget-panel" aria-labelledby="llm-budget-title"><h3 id="llm-budget-title">범용 루프 예산</h3><p>모델 계획의 반복 횟수와 검사 요청·증거 수의 상한입니다. 저장한 값은 다음 범용 실행부터 적용됩니다.</p>
+      ${mod.budgetError ? `<p class="runtime-error" role="alert">${escape(mod.budgetError)}</p>` : ''}
+      ${budget ? `<form id="llm-budget-form"><div class="llm-budget-fields">${fields}</div><div class="ops-form-actions"><button class="button primary" type="submit" ${canEdit() && !mod.budgetSaving ? '' : 'disabled'}>${mod.budgetSaving ? '저장 중…' : '예산 저장'}</button>${canEdit() ? '' : '<small>관리자만 변경할 수 있습니다.</small>'}</div></form>` : `<p role="status">${mod.loading ? '루프 예산을 불러오는 중입니다.' : '루프 예산을 표시할 수 없습니다.'}</p>`}
+      ${mod.budgetNotice ? `<p class="llm-budget-notice" role="status">${escape(mod.budgetNotice)}</p>` : ''}</section>`;
   }
 
   function renderModule() {
@@ -143,7 +183,66 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     const logs = mod.logs.filter(item => !mod.query || json(item).toLowerCase().includes(mod.query.toLowerCase()));
     moduleRoot.innerHTML = `<section class="panel ops-panel"><div class="ops-panel-head"><div><div class="eyebrow">MODULE OPERATIONS</div><h2>${escape(name)}</h2><p>모듈 ID ${escape(mod.id || '확인 중')} · ${escape(mod.summary?.status || '상태 확인 중')}</p></div><button class="button secondary" data-action="refresh-module">새로고침</button></div>${mod.error ? `<p class="runtime-error" role="alert">${escape(mod.error)}</p>` : ''}${mod.loading ? '<p role="status">설정과 로그를 불러오는 중입니다.</p>' : ''}
       <div class="ops-module-facts"><span><small>소스 경로</small><strong>${escape(config.config?.path || mod.summary?.path || '—')}</strong></span><span><small>버전 / revision</small><strong>${escape(config.revision || mod.summary?.revision || mod.summary?.version || '—')}</strong></span><span><small>설정 적용</small><strong>${config.editable ? '서버 관리' : '배포 설정 · 읽기 전용'}</strong></span></div>
-      <div class="ops-two-column"><section class="ops-subpanel"><h3>현재 유효 설정</h3><p>설정은 실행 환경과 배포 계약을 따릅니다. 변경 가능한 필드가 제공되지 않으면 이 화면에서 저장하지 않습니다.</p><pre>${escape(json(config.config || {}))}</pre>${mod.slug === 'llm' ? `<h3>등록 모델</h3><div class="ops-list">${mod.models.map(item => `<div class="ops-row"><span><strong>${escape(item.name || item.id)}</strong><small>${escape(item.provider || '')}</small></span><span class="state-chip">${item.available ? '사용 가능' : '사용 불가'}</span></div>`).join('') || '<p>등록 모델 없음</p>'}</div>` : ''}</section><section class="ops-subpanel"><div class="ops-panel-head"><h3>모듈 로그</h3><label>검색<input id="module-log-search" type="search" value="${escape(mod.query)}" placeholder="실행 ID, 단계, 메시지"></label></div><div class="ops-log-list">${logs.length ? logs.map(item => `<details class="ops-log"><summary><span>${escape(date(item.createdAt || item.time || item.timestamp))}</span><strong>${escape(item.level || item.type || item.stage || '이벤트')}</strong><span>${escape(item.detail || item.message || item.title || '')}</span></summary><pre>${escape(json(item))}</pre></details>`).join('') : '<div class="ops-empty">표시할 로그가 없습니다.</div>'}</div></section></div></section>`;
+      <div class="${mod.slug === 'llm' ? 'ops-llm-config' : 'ops-two-column'}"><section class="ops-subpanel"><h3>현재 유효 설정</h3><p>설정은 실행 환경과 배포 계약을 따릅니다. 변경 가능한 필드가 제공되지 않으면 이 화면에서 저장하지 않습니다.</p><pre>${escape(json(config.config || {}))}</pre>${mod.slug === 'llm' ? `<h3>등록 모델</h3><div class="ops-list">${mod.models.map(item => `<div class="ops-row"><span><strong>${escape(item.name || item.id)}</strong><small>${escape(item.provider || '')}</small></span><span class="state-chip">${item.available ? '사용 가능' : '사용 불가'}</span></div>`).join('') || '<p>등록 모델 없음</p>'}</div>` : ''}</section>${mod.slug === 'llm' ? '' : `<section class="ops-subpanel"><div class="ops-panel-head"><h3>모듈 로그</h3><label>검색<input id="module-log-search" type="search" value="${escape(mod.query)}" placeholder="실행 ID, 단계, 메시지"></label></div><div class="ops-log-list">${logs.length ? logs.map(item => `<details class="ops-log"><summary><span>${escape(date(item.createdAt || item.time || item.timestamp))}</span><strong>${escape(item.level || item.type || item.stage || '이벤트')}</strong><span>${escape(item.detail || item.message || item.title || '')}</span></summary><pre>${escape(json(item))}</pre></details>`).join('') : '<div class="ops-empty">표시할 로그가 없습니다.</div>'}</div></section>`}</div></section>`;
+    moduleRoot.insertAdjacentHTML('beforeend', renderLlmBudget());
+    renderLlmCallLog();
+  }
+
+  function renderLlmCallLog() {
+    llmLogPanel.hidden = mod.slug !== 'llm';
+    if (mod.slug !== 'llm') return;
+    const logs = mod.logs.filter(item => item.stage === 'model.call'
+      && (!mod.query || json(item).toLowerCase().includes(mod.query.toLowerCase())));
+    const search = document.getElementById('llm-call-search');
+    if (search.value !== mod.query) search.value = mod.query;
+    document.getElementById('llm-call-count').textContent = String(logs.length).padStart(2, '0');
+    document.getElementById('llm-call-list').innerHTML = logs.length ? logs.map(item =>
+      `<details class="llm-call-entry"><summary><span class="event-time">${escape(date(item.createdAt || item.time || item.timestamp))}</span><span class="event-copy"><strong class="event-title">${escape(item.title || item.stage || '모델 호출')}</strong><small class="event-detail">${escape([item.runId, item.stage].filter(Boolean).join(' · '))}</small></span><span class="state-chip">${escape(item.status || '기록')}</span></summary><pre>${escape(json(item))}</pre></details>`).join('')
+      : `<div class="empty-state compact"><span data-icon="brain"></span><h3>${mod.query ? '일치하는 호출 기록이 없습니다' : '모델 호출 기록이 없습니다'}</h3></div>`;
+  }
+
+  async function refreshLlmLogs() {
+    if (mod.slug !== 'llm' || mod.loading || llmLogRefreshPending) return;
+    llmLogRefreshPending = true;
+    try {
+      const response = await runtime.api(`/api/modules/${encodeURIComponent(mod.id)}/logs`);
+      if (mod.slug !== 'llm') return;
+      const next = Array.isArray(response.logs) ? response.logs : [];
+      if (json(next) !== json(mod.logs)) {
+        mod.logs = next;
+        renderLlmCallLog();
+      }
+    } catch { /* Keep the last successful log view until the next refresh. */ }
+    finally { llmLogRefreshPending = false; }
+  }
+
+  async function saveLoopBudget(form) {
+    if (mod.slug !== 'llm' || !mod.loopBudget || mod.budgetSaving || !canEdit()) return;
+    const draft = Object.fromEntries(loopBudgetFields.map(({ key }) =>
+      [key, form.elements.namedItem(key)?.value.trim() ?? '']));
+    mod.budgetDraft = draft;
+    const limits = {};
+    for (const { key, label } of loopBudgetFields) {
+      const raw = draft[key];
+      const value = Number(raw);
+      if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(value) || value > mod.loopBudget.caps[key]) {
+        mod.budgetError = `${label}는 1부터 ${mod.loopBudget.caps[key]}까지의 정수여야 합니다.`;
+        mod.budgetNotice = '';
+        renderModule();
+        return;
+      }
+      limits[key] = value;
+    }
+    mod.budgetSaving = true; mod.budgetError = ''; mod.budgetNotice = ''; renderModule();
+    try {
+      const saved = await runtime.api('/api/modules/llm/loop-budget', { method: 'PUT', body: { limits } });
+      if (!validLoopBudget(saved)) throw new Error('저장된 루프 예산 설정 형식을 확인할 수 없습니다.');
+      mod.loopBudget = saved;
+      mod.budgetDraft = { ...saved.limits };
+      mod.budgetNotice = '저장했습니다. 다음 범용 실행부터 적용됩니다.';
+      notify('범용 루프 예산을 저장했습니다.');
+    } catch (error) { mod.budgetError = error.message; }
+    finally { mod.budgetSaving = false; renderModule(); }
   }
 
   dbRoot.addEventListener('click', async event => {
@@ -273,7 +372,12 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     document.getElementById('intake-file-name').textContent = db.selectedFile?.name || '파일 미선택';
   });
   moduleRoot.addEventListener('click', event => {
-    if (event.target.closest('[data-action="refresh-module"]')) void showModule(mod.slug);
+    if (event.target.closest('[data-action="refresh-module"]') && !mod.budgetSaving) void showModule(mod.slug);
+  });
+  moduleRoot.addEventListener('submit', event => {
+    if (event.target.id !== 'llm-budget-form') return;
+    event.preventDefault();
+    void saveLoopBudget(event.target);
   });
   moduleRoot.addEventListener('input', event => {
     if (event.target.id !== 'module-log-search') return;
@@ -283,6 +387,11 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     const filtered = mod.logs.filter(item => json(item).toLowerCase().includes(mod.query.toLowerCase()));
     list.innerHTML = filtered.length ? filtered.map(item => `<details class="ops-log"><summary><span>${escape(date(item.createdAt || item.time || item.timestamp))}</span><strong>${escape(item.level || item.type || item.stage || '이벤트')}</strong><span>${escape(item.message || item.title || item.detail || '')}</span></summary><pre>${escape(json(item))}</pre></details>`).join('') : '<div class="ops-empty">표시할 로그가 없습니다.</div>';
   });
+  llmLogPanel.addEventListener('input', event => {
+    if (event.target.id !== 'llm-call-search') return;
+    mod.query = event.target.value;
+    renderLlmCallLog();
+  });
 
-  return { reset, showDb, showModule };
+  return { reset, showDb, showModule, refreshLlmLogs };
 }

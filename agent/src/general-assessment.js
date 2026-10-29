@@ -306,8 +306,14 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
       }
       aborted(signal);
       if (!record(plan) || (plan.done !== undefined && typeof plan.done !== 'boolean')) throw fault('INVALID_PLAN');
-      const metadata = modelMetadata(plan.modelMetadata, iteration);
-      if (metadata) report.modelCalls.push(metadata);
+      const attempts = plan.modelAttempts === undefined ? [plan.modelMetadata]
+        : Array.isArray(plan.modelAttempts) && plan.modelAttempts.length >= 1
+          && plan.modelAttempts.length <= 2 ? plan.modelAttempts : null;
+      if (!attempts) throw fault('INVALID_PLAN');
+      for (const item of attempts) {
+        const metadata = modelMetadata(item, iteration);
+        if (metadata) report.modelCalls.push(metadata);
+      }
       const newHypotheses = normalizeHypotheses(plan.hypotheses ?? [], hypothesisById, evidenceById);
       if (report.hypotheses.length + newHypotheses.length > 128) throw fault('HYPOTHESIS_BUDGET_EXCEEDED');
       for (const item of newHypotheses) { hypothesisById.set(item.id, item); report.hypotheses.push(item); }

@@ -25,6 +25,12 @@ test('workspace navigation, external target preflight and report preview use the
   const page = await browser.newPage();
   const errors = []; const requests = []; const uploads = [];
   let role = 'admin';
+  let activeRun = idle;
+  const firstModelLog = { runId: 'stored-report', createdAt: '2026-10-28T00:00:00Z', title: 'deepseek-flash', stage: 'model.call', status: 'completed' };
+  let llmLogs = [firstModelLog, { runId: 'stored-report', title: 'generic module event', stage: 'inventory' }];
+  let loopBudget = { limits: { maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 },
+    defaults: { maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 },
+    caps: { maxIterations: 32, maxProbes: 128, maxEvidenceItems: 256 } };
   let caseRecord = { case_id: 'case-1', title: '첫 사례', target_id: 'target-1', revision: 1,
     vulnerability_type: 'access_control', status: 'ready', severity: 'medium', preconditions: ['로그인'], procedure: ['조회'] };
   let intakes = [];
@@ -41,7 +47,7 @@ test('workspace navigation, external target preflight and report preview use the
     const json = value => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
     if (request.method() === 'POST' && path !== '/api/db/intakes') requests.push({ path, body: request.postDataJSON() });
     if (path === '/api/auth/session') return json({ authenticated: true, authRequired: false, user: { role, name: 'Test' }, csrfToken: 'csrf-test' });
-    if (path === '/api/state') return json({ instanceId: 'workspace-test', mode: idle.mode, run: idle, lab: { available: true, generalSupported: true, generalAvailable: false } });
+    if (path === '/api/state') return json({ instanceId: 'workspace-test', mode: activeRun.mode, run: activeRun, lab: { available: true, generalSupported: true, generalAvailable: false } });
     if (path === '/api/models') return json({ models: [{ id: 'rule-baseline', name: 'Rule', provider: 'local', mode: 'local-lab-rule', available: true }] });
     if (path === '/api/platform') return json({ source: {}, modules: [] });
     if (path === '/api/ci-results') return json({ runs: [] });
@@ -59,7 +65,15 @@ test('workspace navigation, external target preflight and report preview use the
     });
     if (path === '/api/modules') return json({ modules: [{ id: 'llm', status: 'active', path: 'packages/models' }] });
     if (path === '/api/modules/llm/config') return json({ config: { defaultModel: 'rule-baseline' }, revision: 'v1', editable: false, source: 'deployment' });
-    if (path === '/api/modules/llm/logs') return json({ logs: [{ time: '2026-10-28T00:00:00Z', title: 'model available', level: 'info' }] });
+    if (path === '/api/modules/llm/loop-budget') {
+      if (request.method() === 'PUT') {
+        const body = request.postDataJSON();
+        requests.push({ path, body, method: 'PUT' });
+        loopBudget = { ...loopBudget, limits: body.limits };
+      }
+      return json(loopBudget);
+    }
+    if (path === '/api/modules/llm/logs') return json({ logs: llmLogs });
     if (path === '/api/db/cases') return json({ cases: [caseRecord], total: 1, limit: 50, offset: 0 });
     if (path === '/api/db/cases/case-1' && request.method() === 'GET') return json({ case: caseRecord, archived: false, audit: [] });
     if (path === '/api/db/cases/case-1/versions') return json({ versions: [] });
@@ -91,7 +105,7 @@ test('workspace navigation, external target preflight and report preview use the
   await page.locator('#view-assets').waitFor({ state: 'visible' });
   await page.locator('#target-kind-external').click();
   await page.locator('#external-url').fill('https://example.org/start');
-  await page.locator('#external-authorization').check();
+  assert.equal(await page.locator('#external-authorization').count(), 0);
   await page.locator('#external-preflight-button').click();
   // The button is visible while preflight is pending; wait for its result.
   await page.waitForFunction(() => document.querySelector('#external-run-button')?.disabled === false);
@@ -111,6 +125,38 @@ test('workspace navigation, external target preflight and report preview use the
   assert.match(await page.frameLocator('#report-preview-frame').locator('table').textContent(), /검증 근거/);
   await page.locator('[data-view=module-llm]').click();
   assert.match(await page.locator('#module-detail-content').textContent(), /배포 설정 · 읽기 전용/);
+  await page.locator('#llm-budget-form').waitFor();
+  assert.deepEqual(await Promise.all(['maxIterations', 'maxProbes', 'maxEvidenceItems'].map(key =>
+    page.locator(`#llm-budget-${key}`).inputValue())), ['6', '24', '128']);
+  assert.match(await page.locator('.llm-budget-panel').textContent(), /다음 범용 실행부터 적용/);
+  assert.match(await page.locator('.llm-budget-panel').textContent(), /기본 6 · 최대 32/);
+  await page.locator('#llm-budget-maxIterations').fill('8');
+  await page.locator('#llm-budget-maxProbes').fill('30');
+  await page.locator('#llm-budget-maxEvidenceItems').fill('160');
+  await page.locator('#llm-budget-form button[type=submit]').click();
+  await page.locator('.llm-budget-notice').waitFor();
+  assert.deepEqual(requests.find(item => item.path === '/api/modules/llm/loop-budget'),
+    { path: '/api/modules/llm/loop-budget', method: 'PUT',
+      body: { limits: { maxIterations: 8, maxProbes: 30, maxEvidenceItems: 160 } } });
+  await page.locator('[data-action=refresh-module]').click();
+  await page.waitForFunction(() => document.querySelector('#llm-budget-maxIterations')?.value === '8');
+  assert.equal(await page.locator('#llm-call-log-panel').isVisible(), true);
+  assert.match(await page.locator('#llm-call-log-panel').textContent(), /llm call log/);
+  await page.locator('#llm-call-list .event-title').filter({ hasText: 'deepseek-flash' }).waitFor();
+  assert.match(await page.locator('#llm-call-list').textContent(), /deepseek-flash/);
+  assert.doesNotMatch(await page.locator('#llm-call-list').textContent(), /generic module event/);
+  await page.locator('#llm-call-search').fill('missing model');
+  assert.match(await page.locator('#llm-call-list').textContent(), /일치하는 호출 기록이 없습니다/);
+  await page.locator('#llm-call-search').fill('deepseek-flash');
+  assert.match(await page.locator('#llm-call-list').textContent(), /deepseek-flash/);
+  await page.locator('#llm-call-search').fill('model.call');
+  activeRun = { ...run, status: 'running', report: null, events: [] };
+  llmLogs = [firstModelLog, { runId: 'live-run', createdAt: '2026-10-28T00:00:02Z',
+    title: 'deepseek-v4-pro', stage: 'model.call', status: 'completed' }];
+  await page.waitForFunction(() => document.querySelector('#llm-call-count')?.textContent === '02', null, { timeout: 7000 });
+  assert.equal(await page.locator('#llm-call-search').inputValue(), 'model.call');
+  assert.match(await page.locator('#llm-call-list').textContent(), /deepseek-v4-pro/);
+  activeRun = idle;
   if (process.env.CA3P_UI_PREVIEW) await page.screenshot({ path: process.env.CA3P_UI_PREVIEW.replace(/\.png$/i, '-module.png'), fullPage: true });
   await page.locator('[data-view=db]').click();
   assert.match(await page.locator('#workspace-db-content').textContent(), /취약점 사례/);
@@ -140,6 +186,11 @@ test('workspace navigation, external target preflight and report preview use the
   await page.locator('[data-view=db]').click();
   await page.locator('[data-case-id=case-1]').click();
   assert.equal(await page.locator('#case-edit-form button[type=submit]').isDisabled(), true);
+  await page.locator('[data-view=module-llm]').click();
+  await page.locator('#llm-budget-form').waitFor();
+  assert.equal(await page.locator('#llm-budget-maxIterations').inputValue(), '8');
+  assert.equal(await page.locator('#llm-budget-form button[type=submit]').isDisabled(), true);
+  assert.equal(await page.locator('#llm-budget-maxIterations').isDisabled(), true);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator('#menu-button').click();
   assert.equal(await page.locator('#sidebar').evaluate(element => element.classList.contains('open')), true);

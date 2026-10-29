@@ -146,8 +146,11 @@ class DeviceDatabaseTests(unittest.TestCase):
             connection.execute("UPDATE experiment_control SET epoch=4,summary_json='{}' WHERE id=1")
             connection.execute("INSERT OR REPLACE INTO pending_target_resets VALUES (1,?)",
                                ('[{"targetId":"isolated-lab","reason":"preserve"}]',))
+            connection.execute("UPDATE general_loop_budget SET limits_json=?,updated_at=? WHERE id=1",
+                               (json.dumps({"maxIterations": 12, "maxProbes": 48, "maxEvidenceItems": 160}),
+                                "2026-01-01T00:00:00.000Z"))
             expected = {table: connection.execute(f'SELECT * FROM "{table}"').fetchall()
-                        for table in ("experiment_control", "pending_target_resets")}
+                        for table in ("experiment_control", "pending_target_resets", "general_loop_budget")}
         self.assert_run_tables_restored(expected)
 
     def test_unknown_run_tables_are_rejected_without_altering_the_source(self):
@@ -161,7 +164,7 @@ class DeviceDatabaseTests(unittest.TestCase):
         self.assertEqual(self.run_db.read_bytes(), original)
 
     def test_malformed_optional_run_tables_are_rejected(self):
-        for table in ("experiment_control", "pending_target_resets"):
+        for table in ("experiment_control", "pending_target_resets", "general_loop_budget"):
             with self.subTest(table=table):
                 connection = self.create_run()
                 connection.execute(f'CREATE TABLE "{table}"(unrelated TEXT)')

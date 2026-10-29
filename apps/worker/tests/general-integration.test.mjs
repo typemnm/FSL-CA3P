@@ -22,6 +22,7 @@ test('service, worker, and general runtime create a real HWPX for a confirmed fi
   mkdirSync(runtimeRoot, { recursive: true });
   const directory = mkdtempSync(join(runtimeRoot, 'general-integration-'));
   const storePath = join(directory, 'runs.sqlite');
+  const origin = 'http://127.0.0.1:53987';
   const localPython = fileURLToPath(new URL(`../../../.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`, import.meta.url));
   const env = { ...process.env, DEEPSEEK_API_KEY: 'synthetic-test-only',
     CA3P_REPORT_PYTHON: process.env.CA3P_REPORT_PYTHON || process.env.CASPER_DB_PYTHON
@@ -31,7 +32,7 @@ test('service, worker, and general runtime create a real HWPX for a confirmed fi
     service = createRunService({ storePath, autoStartWorker: false, importLegacy: false,
       envFile: null, env });
     const queued = await service.start({ mode: 'local-lab-general', modelId: 'deepseek-flash',
-      fixtureId: 'vul-web2-daehan', target: 'http://127.0.0.1:4101' });
+      fixtureId: 'vul-web2-daehan', target: origin });
     const id = queued.run.id;
     const fetchCalls = [];
     const generalFetchImpl = async (url, init) => {
@@ -70,12 +71,15 @@ test('service, worker, and general runtime create a real HWPX for a confirmed fi
       modelMetadata: { provider: 'deepseek', requestedModel: 'deepseek-flash',
         status: 'completed', usage: { prompt_tokens: 12, completion_tokens: 5 } } };
     } });
-    const generalIdorProbe = async () => ({ finding: { status: 'confirmed' }, evidence: [
-      { check: 'firstOwner', recordId: 1, status: 200, ownerId: 4 },
-      { check: 'secondOwner', recordId: 3, status: 200, ownerId: 5 },
-      { check: 'crossOwner', recordId: 3, status: 200, ownerId: 5 },
-      { check: 'studentRole', recordId: 3, status: 403, ownerId: null },
-    ] });
+    const generalIdorProbe = async options => {
+      assert.equal(options.origin, origin);
+      return { finding: { status: 'confirmed' }, evidence: [
+        { check: 'firstOwner', recordId: 1, status: 200, ownerId: 4 },
+        { check: 'secondOwner', recordId: 3, status: 200, ownerId: 5 },
+        { check: 'crossOwner', recordId: 3, status: 200, ownerId: 5 },
+        { check: 'studentRole', recordId: 3, status: 403, ownerId: null },
+      ] };
+    };
     worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 20,
       env, generalPlannerFactory, generalFetchImpl, generalIdorProbe });
     const final = await waitFor(() => { const run = service.getRun(id); return run.status === 'completed' && run; });
@@ -94,7 +98,7 @@ test('service, worker, and general runtime create a real HWPX for a confirmed fi
     assert.ok(final.artifacts.some(item => item.kind === 'run-report'));
     assert.ok(fetchCalls.length >= 2);
     assert.ok(fetchCalls.some(call => call.authenticated));
-    assert.ok(fetchCalls.every(call => call.origin === 'http://127.0.0.1:4101'
+    assert.ok(fetchCalls.every(call => call.origin === origin
       && (call.method === 'GET' || (call.method === 'POST' && call.path === '/login'))),
     JSON.stringify(fetchCalls));
 
