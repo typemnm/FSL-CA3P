@@ -22,7 +22,8 @@ from datetime import datetime, timezone
 
 
 BACKUP_FORMAT = 1
-FILES = {"run": "run.sqlite3", "case": "case.sqlite3"}
+FILES = {"run": "run.sqlite3", "case": "case.sqlite3", "chat": "chat.sqlite3"}
+CHAT_TABLES = {"chat_sessions", "chat_messages"}
 CASE_REQUIRED_TABLES = {"cases", "checks", "case_versions"}
 # These namespaces share the versioned Case database, but are created only when
 # their owning feature is used. Keep legacy Case stores valid rollback targets.
@@ -87,7 +88,7 @@ def inspect_db(path: Path, kind: str) -> dict:
         tables = sorted(row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"))
         # Count known tables only; do not interpolate names from an unrelated DB.
-        known = CASE_TABLES if kind == "case" else RUN_TABLES
+        known = CASE_TABLES if kind == "case" else CHAT_TABLES if kind == "chat" else RUN_TABLES
         result["tables"] = tables
         result["counts"] = {name: connection.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
                             for name in tables if name in known}
@@ -107,10 +108,20 @@ def validate_identity(info: dict, kind: str) -> None:
     version = info["userVersion"]
     if version == 0 and not tables:
         return
-    allowed = CASE_TABLES if kind == "case" else RUN_TABLES
+    allowed = CASE_TABLES if kind == "case" else CHAT_TABLES if kind == "chat" else RUN_TABLES
     if tables - allowed:
         raise ValueError(f"refusing unrelated {kind} database with unknown tables")
-    if kind == "case":
+    if kind == "chat":
+        if version != 1 or tables != CHAT_TABLES:
+            raise ValueError("unsupported or unrelated chat database schema")
+        with closing(connect_readonly(Path(info["path"]))) as connection:
+            if not {"id", "owner", "title", "model_id", "summary", "compacted_through_sequence",
+                    "compaction_count", "created_at", "updated_at"} <= columns(connection, "chat_sessions"):
+                raise ValueError("refusing unrelated chat session columns")
+            if not {"id", "session_id", "sequence", "role", "content", "status", "metadata_json",
+                    "created_at"} <= columns(connection, "chat_messages"):
+                raise ValueError("refusing unrelated chat message columns")
+    elif kind == "case":
         if version not in range(1, 8) or "cases" not in tables:
             raise ValueError("unsupported or unrelated case database schema")
         required = {"case_id", "target_id", "title", "endpoint", "method", "parameter",
@@ -172,8 +183,10 @@ def snapshot(source: Path, target: Path) -> None:
 
 def paths(args: argparse.Namespace) -> dict[str, Path]:
     result = {"run": resolved(args.run_db), "case": resolved(args.case_db)}
-    if result["run"] == result["case"]:
-        raise ValueError("run and case database paths must be different")
+    if getattr(args, "chat_db", None):
+        result["chat"] = resolved(args.chat_db)
+    if len(set(result.values())) != len(result):
+        raise ValueError("database paths must be different")
     return result
 
 
@@ -286,8 +299,8 @@ def restore_command(args: argparse.Namespace) -> dict:
     if not isinstance(manifest, dict) or manifest.get("format") != BACKUP_FORMAT:
         raise ValueError("unsupported backup manifest")
     entries = manifest.get("databases")
-    if not isinstance(entries, dict) or set(entries) != set(FILES):
-        raise ValueError("backup must describe both databases")
+    if not isinstance(entries, dict) or set(entries) != set(target_paths):
+        raise ValueError("backup must describe exactly the requested databases")
     staged = {}
     try:
         # Validate *every* source and target before changing either target.
@@ -346,6 +359,7 @@ def main() -> int:
         command = commands.add_parser(name)
         command.add_argument("--run-db", required=True)
         command.add_argument("--case-db", required=True)
+        command.add_argument("--chat-db")
         if name == "backup":
             command.add_argument("--output", required=True)
         elif name == "restore":

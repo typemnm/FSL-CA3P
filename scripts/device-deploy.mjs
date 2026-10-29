@@ -126,6 +126,7 @@ function serviceEnvironment(config, release, overrides = {}) {
     PATH: [dirname(config.nodePath), dirname(config.pythonPath), '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(delimiter),
     CASPER_DB_PYTHON: join(release, '.venv/bin/python'), CA3P_REPORT_PYTHON: join(release, '.venv/bin/python'),
     CASPER_DB_PATH: config.caseDbPath, CA3P_STORE_PATH: join(config.runtimeDir, 'runs.sqlite'),
+    CA3P_CHAT_DB_PATH: join(config.runtimeDir, 'chat.sqlite'),
     DASHBOARD_AUTH_FILE: join(config.runtimeDir, 'auth.json'),
     ...overrides };
 }
@@ -137,7 +138,19 @@ export async function database(config, python, args, { targetSha, phase = args[0
   await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
   // A retry or crash recovery must retain the diagnostic from each prior attempt.
   const logFile = join(directory, `${phase}-${randomBytes(12).toString('hex')}.log`);
-  const output = await execute(python, [join(here, 'device-db.py'), ...args],
+  const operationArgs = [...args];
+  if (['inspect', 'backup', 'restore'].includes(args[0]) && !args.includes('--chat-db')) {
+    // Old journals contain two-store snapshots; recover them using their original
+    // identity. Every new snapshot also owns the separate conversation database.
+    let includeChat = true;
+    if (args[0] === 'restore') {
+      const snapshotPath = args[args.indexOf('--backup') + 1];
+      const manifest = JSON.parse(await readFile(join(snapshotPath, 'manifest.json'), 'utf8'));
+      includeChat = Object.hasOwn(manifest.databases ?? {}, 'chat');
+    }
+    if (includeChat) operationArgs.push('--chat-db', join(config.runtimeDir, 'chat.sqlite'));
+  }
+  const output = await execute(python, [join(here, 'device-db.py'), ...operationArgs],
     { timeoutMs: 60_000, env, logFile, stdoutOnly: true });
   let result;
   try { result = JSON.parse(output); }
@@ -270,6 +283,11 @@ async function checkApplication(base, credentials, expectedSha, { fixture = fals
   const platform = (await localRequest(base, '/api/platform', auth)).value;
   if (platform.source?.commitSha !== expectedSha || platform.source?.dirty) throw new Error('Serving source does not match the verified release.');
   for (const path of ['/api/models', '/api/runs?limit=1', '/api/state']) await localRequest(base, path, auth);
+  if (platform.modules?.some(module => module.id === 'chat-store' && module.status === 'active')) {
+    const models = (await localRequest(base, '/api/chat/models', auth)).value;
+    const sessions = (await localRequest(base, '/api/chat/sessions', auth)).value;
+    if (!Array.isArray(models.models) || !Array.isArray(sessions.sessions)) throw new Error('Workspace chat health check failed.');
+  }
   if (fixture) {
     const started = (await localRequest(base, '/api/runs', { ...auth, body: { mode: 'core-fixture', modelId: 'rule-baseline', delayMs: 0 } })).value;
     const id = started.run?.id;
@@ -356,6 +374,7 @@ export async function prepareRelease(config, candidate, phase) {
   const child = spawn(config.nodePath, [join(release, 'start.mjs')], { cwd: release,
     env: { ...env, PORT: String(config.probePort), DASHBOARD_HOST: '127.0.0.1', DASHBOARD_PUBLIC_ORIGIN: '',
       DASHBOARD_TRUSTED_PROXY_IPS: '', DASHBOARD_AUTH_FILE: join(probe, 'auth.json'), CA3P_STORE_PATH: join(probe, 'probe.sqlite'),
+      CA3P_CHAT_DB_PATH: join(probe, 'chat.sqlite'),
       CASPER_DB_PATH: casePath, DEEPSEEK_API_KEY: '', CA3P_MODEL_ENV_FILE: join(probe, 'no-model.env') },
     stdio: ['ignore', 'ignore', 'ignore'] });
   let childClosed = false;

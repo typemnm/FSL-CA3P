@@ -157,10 +157,11 @@ test('database failures keep helper output out of public errors while retaining 
     const python = join(directory, 'synthetic-python');
     const localConfig = { ...config, deployRoot: directory };
     const targetSha = 'c'.repeat(40);
+    await writeFile(join(directory, 'manifest.json'), JSON.stringify({ databases: { run: {}, case: {} } }));
     for (const [output, code] of [['{"ok":false,"error":"synthetic-private-database-value"}', 1],
       ['{"ok":false,"error":"synthetic-private-database-value"}', 0], ['synthetic-private-database-value', 0]]) {
       await writeFile(python, `#!/bin/sh\nprintf '%s\\n' '${output}'\nexit ${code}\n`, { mode: 0o700 });
-      await assert.rejects(database(localConfig, python, ['restore'], { targetSha, phase: 'rollback-restore' }), error => {
+      await assert.rejects(database(localConfig, python, ['restore', '--backup', directory], { targetSha, phase: 'rollback-restore' }), error => {
         assert.match(error.message, /private deployment log/);
         assert.doesNotMatch(error.message, /synthetic-private-database-value/);
         return true;
@@ -337,6 +338,7 @@ test('isolated preparation masks inherited/file model keys and never uses produc
     const observation = join(directory, 'smoke-observation.json');
     await mkdir(repoDir); await mkdir(runtimeDir); await mkdir(reports);
     await writeFile(join(runtimeDir, 'sentinel'), 'production-data');
+    await writeFile(join(runtimeDir, 'chat.sqlite'), 'production-chat-sentinel');
     const configModule = fileURLToPath(new URL('../../agent/src/deepseek-config.js', import.meta.url));
     // A minimal candidate HTTP app records the real child's environment and uses
     // the real model-option resolver with a synthetic agent/.env symlink.
@@ -347,13 +349,15 @@ import {createRequire} from 'node:module';
 import {join} from 'node:path';
 const config=createRequire(import.meta.url)(${JSON.stringify(configModule)});
 let modelAvailable=false;try{config.resolveDeepSeekOptions({env:process.env,envFile:join(process.cwd(),'agent/.env')});modelAvailable=true;}catch{}
-writeFileSync(process.env.CA3P_SMOKE_TEST_OBSERVATION,JSON.stringify({modelAvailable,store:process.env.CA3P_STORE_PATH,caseDb:process.env.CASPER_DB_PATH,auth:process.env.DASHBOARD_AUTH_FILE,envFile:process.env.CA3P_MODEL_ENV_FILE,keyBlank:process.env.DEEPSEEK_API_KEY==='',runtimeLink:process.cwd()+'/.runtime'}));
+writeFileSync(process.env.CA3P_SMOKE_TEST_OBSERVATION,JSON.stringify({modelAvailable,store:process.env.CA3P_STORE_PATH,chat:process.env.CA3P_CHAT_DB_PATH,caseDb:process.env.CASPER_DB_PATH,auth:process.env.DASHBOARD_AUTH_FILE,envFile:process.env.CA3P_MODEL_ENV_FILE,keyBlank:process.env.DEEPSEEK_API_KEY==='',runtimeLink:process.cwd()+'/.runtime'}));
 const sha=execFileSync('/usr/bin/git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
 const server=createServer((req,res)=>{let value={};
 if(req.url==='/api/health')value={status:'ok'};
 else if(req.url==='/api/auth/login'){res.setHeader('Set-Cookie','ca3p_session=synthetic; Path=/');value={authenticated:true,csrfToken:'synthetic-csrf'};}
-else if(req.url==='/api/platform')value={source:{commitSha:sha,dirty:false}};
+else if(req.url==='/api/platform')value={source:{commitSha:sha,dirty:false},modules:[{id:'chat-store',status:'active'}]};
 else if(req.url==='/api/models')value={models:[{id:'deepseek-flash',available:modelAvailable}]};
+else if(req.url==='/api/chat/models')value={models:[{id:'deepseek-flash',available:modelAvailable}]};
+else if(req.url==='/api/chat/sessions')value={sessions:[]};
 else if(req.url==='/api/runs'&&req.method==='POST')value={run:{id:'synthetic-fixture'}};
 else if(req.url==='/api/runs/synthetic-fixture')value={run:{status:'completed',simulated:true,targetContacted:false}};
 res.setHeader('Content-Type','application/json');res.end(JSON.stringify(value));});
@@ -388,12 +392,14 @@ process.once('SIGTERM',()=>server.close());
     assert.equal(observed.modelAvailable, false);
     assert.equal(observed.keyBlank, true);
     assert.equal(observed.store, join(probe, 'probe.sqlite'));
+    assert.equal(observed.chat, join(probe, 'chat.sqlite'));
     assert.equal(observed.caseDb, join(probe, 'source-backup/case.sqlite3'));
     assert.equal(observed.auth, join(probe, 'auth.json'));
     assert.equal(observed.envFile, join(probe, 'no-model.env'));
     assert.equal(await readlink(join(release, '.runtime')), runtimeDir);
     assert.equal(await readlink(join(release, 'reports/pentest-db-runs')), reports);
     assert.equal(await readFile(join(runtimeDir, 'sentinel'), 'utf8'), 'production-data');
+    assert.equal(await readFile(join(runtimeDir, 'chat.sqlite'), 'utf8'), 'production-chat-sentinel');
     assert.equal(await readFile(envFile, 'utf8'), 'DEEPSEEK_API_KEY=synthetic-file-key\n');
   } finally {
     if (previous.key === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = previous.key;
