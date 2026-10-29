@@ -8,7 +8,7 @@ import MarkdownIt from 'markdown-it';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDatabase, sha1 } from './db.mjs';
+import { daehanDatabasePath, openDatabase, sha1 } from './db.mjs';
 import { faqs, nav, sectionFor, siteConfigs } from './sites.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -266,7 +266,8 @@ export function createApp(siteKey) {
   });
 
   app.get('/_diag/config', (req, res) => {
-    res.json({ mode: 'development', site: site.id, database: join(root, 'data', `${site.id}.sqlite`),
+    res.json({ mode: 'development', site: site.id,
+      database: site.id === 'daehan' ? daehanDatabasePath() : join(root, 'data', `${site.id}.sqlite`),
       node: process.version, installedPackages: ['express', 'nunjucks', 'cookie-parser', 'dayjs', 'lodash@4.17.15', 'json5@2.2.1', 'markdown-it@12.3.1'],
       activeSessions: [...sessions.values()].filter(s => s.siteKey === siteKey).length,
       generatedRequestId: randomUUID() });
@@ -281,10 +282,24 @@ export function createApp(siteKey) {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const siteKey = process.argv[2] || 'daehan';
-  const { app, site } = createApp(siteKey);
+  const { app, db, site } = createApp(siteKey);
   const port = Number(process.env.PORT || configuredPorts[siteKey]);
   const host = process.env.HOST || '127.0.0.1';
-  app.listen(port, host, () => {
+  const server = app.listen(port, host, () => {
     console.log(`${site.name} listening on http://${host}:${port}`);
+    if (process.send) process.send({ type: 'ca3p-daehan-ready', host, port });
   });
+  if (process.send && siteKey === 'daehan') {
+    let stopping = false;
+    const stop = () => {
+      if (stopping) return;
+      stopping = true;
+      server.close(() => { db.close(); process.exit(0); });
+      server.closeAllConnections();
+    };
+    process.on('message', message => {
+      if (message?.type === 'ca3p-daehan-stop') stop();
+    });
+    process.once('disconnect', stop);
+  }
 }

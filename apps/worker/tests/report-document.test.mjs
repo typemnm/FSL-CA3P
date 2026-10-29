@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../../packages/run-store/index.mjs';
@@ -54,12 +54,20 @@ test('report generation reads the persisted core JSON while the board and lease 
     assert.equal(saved.report.finding.status, 'confirmed');
     assert.equal(saved.reportDocument.status, 'generating');
     assert.equal(saved.status, 'running');
-    return { status: 'ready', filename: 'report.hwpx', bytes: Buffer.from('PK\x03\x04synthetic') };
+    return { status: 'ready', filename: 'report.hwpx', bytes: Buffer.from('PK\x03\x04synthetic'),
+      previewMarkdown: '# 검사 보고서\n\n전체 본문',
+      previewHtml: '<!doctype html><html><body><table><tr><td>전체 본문</td></tr></table></body></html>' };
   } });
   const run = await waitFor(() => { const value = worker.store.getRun(id); return value.status === 'completed' && !board.alive && value; });
   assert.equal(run.reportDocument.status, 'ready');
   assert.ok(run.reportDocument.artifactId);
   assert.equal(worker.store.getArtifact(run.reportDocument.artifactId).kind, 'hwpx-report');
+  const preview = worker.store.getArtifact(run.reportDocument.previewArtifactId);
+  assert.equal(preview.kind, 'report-preview');
+  assert.equal(readFileSync(preview.path, 'utf8'), '# 검사 보고서\n\n전체 본문');
+  const htmlPreview = worker.store.getArtifact(run.reportDocument.previewHtmlArtifactId);
+  assert.equal(htmlPreview.kind, 'report-preview-html');
+  assert.match(readFileSync(htmlPreview.path, 'utf8'), /<table>/);
   assert.equal(board.closed, 1);
 });
 

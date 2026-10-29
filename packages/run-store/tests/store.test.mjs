@@ -119,6 +119,36 @@ test('failed reset remains fenced across reopen and permits an explicit retry', 
   assert.equal(store.experimentState().epoch, 1); enqueue(store);
 });
 
+test('history clear retains target reset obligations after deleting runs and across restart', t => {
+  const { store, reopen } = setup(t);
+  enqueue(store); const lease = store.claimNext('worker-a');
+  store.saveState(lease, { id: 'run-test', status: 'completed', events: [] }); store.finish(lease, 'completed');
+  const obligation = { fixtureId: 'vul-web2-daehan', manifest: { target: { origin: 'http://127.0.0.1:4101' } } };
+  assert.equal(store.beginExperimentReset('clear-a').previousStatus, 'ready');
+  const cleared = store.completeRunHistoryClear('clear-a', { newTargetObligations: [obligation] });
+  assert.equal(cleared.deleted.runs, 1);
+  assert.equal(cleared.pendingTargetResetCount, 1);
+  assert.equal(cleared.experimentStatus, 'failed');
+  assert.equal(cleared.epoch, 1);
+  const second = reopen();
+  assert.equal(second.listRuns().total, 0);
+  assert.deepEqual(second.pendingTargetResets(), [obligation]);
+  assert.throws(() => enqueue(second), { code: 'EXPERIMENT_RESET_REQUIRED' });
+  second.beginExperimentReset('full-a'); second.completeExperimentReset('full-a');
+  assert.deepEqual(second.pendingTargetResets(), []);
+  assert.equal(second.experimentState().status, 'ready');
+  assert.equal(second.experimentState().epoch, 2);
+});
+
+test('history clear cannot erase a prior failed maintenance fence', t => {
+  const { store, reopen } = setup(t);
+  store.beginExperimentReset('failed-a'); store.failExperimentReset('failed-a');
+  assert.equal(store.beginExperimentReset('clear-a').previousStatus, 'failed');
+  const result = store.completeRunHistoryClear('clear-a', { wasFailed: true });
+  assert.equal(result.experimentStatus, 'failed');
+  assert.equal(reopen().experimentState().status, 'failed');
+});
+
 test('review mutation lock excludes reset until the external write finishes', t => {
   const { store, reopen } = setup(t); const second = reopen();
   store.beginExperimentMutation('review-a');

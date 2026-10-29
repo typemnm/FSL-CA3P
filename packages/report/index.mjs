@@ -8,6 +8,8 @@ import configuration from '../../agent/src/deepseek-config.js';
 const PYTHON_ROOT = fileURLToPath(new URL('./py/src/', import.meta.url));
 const MAX_PROCESS_OUTPUT = 1_000_000;
 const MAX_DOCUMENT_BYTES = 20_000_000;
+const MAX_PREVIEW_BYTES = 2_000_000;
+const MAX_HTML_PREVIEW_BYTES = 30_000_000;
 const DEFAULT_TIMEOUT_MS = 180_000;
 const hash = value => createHash('sha256').update(value).digest('hex');
 const failure = (code, message) => Object.assign(new Error(message), { code });
@@ -163,8 +165,24 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     if (bytes.length < 4 || !bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
       throw failure('REPORT_INVALID_OUTPUT', 'HWPX 파일 형식이 올바르지 않습니다.');
     }
+    const previewEntry = response.files.find(item => item.name === 'report.md');
+    const previewBytes = previewEntry
+      ? await readVerifiedFile(reportDir, 'report.md', previewEntry, MAX_PREVIEW_BYTES)
+      : null;
+    const previewMarkdown = previewBytes?.toString('utf8') ?? null;
+    if (previewBytes && (!previewMarkdown || !Buffer.from(previewMarkdown, 'utf8').equals(previewBytes))) {
+      throw failure('REPORT_INVALID_OUTPUT', '보고서 미리보기 형식이 올바르지 않습니다.');
+    }
+    const htmlEntry = response.files.find(item => item.name === 'report.html');
+    const htmlBytes = htmlEntry
+      ? await readVerifiedFile(reportDir, 'report.html', htmlEntry, MAX_HTML_PREVIEW_BYTES)
+      : null;
+    const previewHtml = htmlBytes?.toString('utf8') ?? null;
+    if (htmlBytes && (!previewHtml || !Buffer.from(previewHtml, 'utf8').equals(htmlBytes))) {
+      throw failure('REPORT_INVALID_OUTPUT', '보고서 HTML 미리보기 형식이 올바르지 않습니다.');
+    }
     return { status: 'ready', ...(general ? { findingId } : {}),
-      filename: name, bytes, sha256: hash(bytes), size: bytes.length };
+      filename: name, bytes, sha256: hash(bytes), size: bytes.length, previewMarkdown, previewHtml };
   } catch (error) {
     const known = typeof error?.code === 'string' && /^REPORT_[A-Z_]+$/.test(error.code);
     return { status: 'failed', errorCode: known ? error.code : 'REPORT_GENERATION_FAILED',

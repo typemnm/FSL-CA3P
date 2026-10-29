@@ -22,6 +22,7 @@
 | CASPER DB | `packages/history/check-sync.mjs`가 원본 DB에 실험 check를 기록. 사람이 검토하면 다음 snapshot과 과거 사례 매칭에 영향을 줄 수 있음 | 삭제 대상 run ID에 연결된 draft/reviewed check만 삭제. curated cases·case_versions와 무관한 check는 보존. 저장 당시와 다른 DB 설정이면 중단 |
 | `vul-web-1` | canary 게시글·삭제/수정·랜덤 쿠키·세션·메모리 | 매 run 새 임시 게시판/secret/process. worker 종료를 기다린 후 닫음. 신규 실행은 소유권 registry+토큰으로 crash 잔류를 추적하고, IPC 단절 시 게시판 종료 |
 | `vul-web2` | 대한/원창 SQLite volume, 게시물·조회수·요청·일정·설정·서버 세션, 프로세스와 파일 상태 | 로그인 probe는 finally 로그아웃. 전체 초기화는 운영자가 등록한 관리 훅이 DB·세션·프로세스·파일 복원을 확인해야 함. 미설정·실패 시 전체 초기화 차단 |
+| 외부 URL 읽기 관찰 | 등록된 `external-general` 경로는 비인증 GET/HEAD로 공개 페이지만 관찰 | 앱 소유 실행 기록·파일은 삭제한다. 대상 복원 훅은 요구하지 않으며 외부 사이트의 로그·조회 기록은 복원하지 않는다. 다른 미등록 외부 실행은 계속 차단 |
 | parser/관찰 브라우저 | 쿠키·local/session storage·IndexedDB·서비스워커·HTTP cache | `xss-parser/parser.mjs`와 보고서 capture는 새 browser/context를 만들고 finally close; 서비스워커 차단. 영구 사용자 profile 재사용 없음 |
 | attack/guardrail/agent | gateway 쿠키, request budget, canary ID, 모델 messages/응답 | 실행별 closure/engine/child runtime 생성. 초기화 전 worker의 종료 확인으로 이전 메모리 제거 |
 | 대시보드 브라우저 | 앱 소유 localStorage fallback 이력, 상세·비교·검토 초안·진행 중 조회/SSE | 앱 실행 cache만 비우고 epoch로 늦은 응답을 거부. 같은 브라우저 탭은 storage event, 연결된 다른 브라우저는 SSE epoch로 폐기. 인증·사용자 설정 보존 |
@@ -32,6 +33,10 @@
 ## 구현 순서와 실패 처리
 
 `GET /api/experiment-reset`은 삭제 범위·개수·현재 초기화 상태를 조회한다. `POST /api/experiment-reset`은 정확히 `{ "confirmed": true }`를 요구한다. 기존 인증·운영자 권한·CSRF·배포 중 mutation 차단을 적용한다. 기존 `/api/reset`은 화면 초기화로 유지한다.
+
+실행 목록만 정리할 때는 운영자/관리자 인증과 CSRF 토큰으로 `POST /api/run-history/clear`에 정확히 `{ "confirmed": true }`를 보낸다. 이 경로는 실행 registry의 이력·비교 자료, 실행별 JSON/HWPX·snapshot·보고서 파일, 해당 run에 연결된 CASPER check를 삭제하고 epoch를 올려 대시보드 캐시와 legacy 재가져오기를 차단한다. 계정·API 설정·검토된 사례와 대학 실습 대상의 상태는 보존한다. 대학 대상의 복원 의무는 별도 DB 기록으로 남으므로, 관리 훅이 필요한 경우 또는 이전 전체 초기화가 실패한 경우 새 실행은 계속 차단된다. 등록된 외부 URL 읽기 관찰은 대상 복원 의무를 만들지 않는다. 이후 `POST /api/experiment-reset`은 남은 의무를 확인하고 전체 대상 복원을 마쳐야 실행을 다시 허용한다.
+
+이전 버전에서 출처 정보 없이 저장된 외부 대상 복원 의무는 읽기 전용 실행인지 확인할 수 없으므로 자동 면제하지 않는다. 원본 실행 기록이 남아 있는 실패 상태는 새 코드로 전체 초기화를 재시도할 수 있다.
 
 1. 영구 maintenance 상태를 잠근다. 어떤 실행이든 queued/leased/running이면 409로 거부한다. 다른 reset과 CASPER 검토 쓰기도 상호 배제한다.
 2. idle worker가 실제로 종료될 때까지 기다려 보고서 촬영·게시판 정리와의 경쟁을 없앤다.
@@ -62,6 +67,16 @@
 ```
 
 대학을 접촉한 이력이 있는데 훅이 없으면 초기화를 완료할 수 없다. dashboard 컨테이너에 Docker socket을 노출하거나 임의 서버에 삭제 요청을 보내는 우회는 하지 않는다. 대학 전체 복원 서비스 배포는 운영 환경에 맞춰 별도로 준비해야 한다.
+
+### 로컬 대한대 실습 실행
+
+직접 실행하는 대한대 실습(`http://127.0.0.1:4101`)에는 별도의 로컬 관리 프로세스를 사용할 수 있다. 기존 4101·4174 서버를 중지하고 실험 기록과 `vul-web2/data/daehan.sqlite`를 백업한 뒤 다음 명령으로 시작한다.
+
+```sh
+npm run start:managed-daehan -- --retry-reset
+```
+
+이 명령은 127.0.0.1:54101에만 바인딩되는 관리 서비스를 시작하고, 4101의 대한대 프로세스를 관리하며, 일회성 비밀 토큰과 `CA3P_EXPERIMENT_RESET_TARGETS`를 대시보드 프로세스 환경에 전달한다. `--retry-reset`은 실패한 전체 초기화를 다시 실행한 뒤 4174 대시보드를 시작한다. 초기화가 완료되면 기존 실행 기록과 보고서, 대한대 실습 DB 및 세션 상태가 새 기준 상태로 바뀐다. 이후 일반 시작에는 `npm run start:managed-daehan`을 사용한다. 이 경로는 로컬 직접 실행 전용이며 Docker volume이나 다른 호스트의 대학 서버를 복원한다고 주장하지 않는다.
 
 ## 연구 해석과 범위의 한계
 

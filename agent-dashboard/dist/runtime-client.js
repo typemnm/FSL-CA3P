@@ -12,7 +12,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
   const remote = !['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname);
 
   function readEnvelope(value) {
-    if (!value || !['core-fixture', 'local-lab-rule', 'local-lab-deepseek', 'local-lab-general'].includes(value.mode ?? value.run?.mode)
+    if (!value || !['core-fixture', 'local-lab-rule', 'local-lab-deepseek', 'local-lab-general', 'external-general'].includes(value.mode ?? value.run?.mode)
       || typeof value.instanceId !== 'string' || !value.run || !Array.isArray(value.run.events)) {
       throw new Error('실행 서버의 상태 형식을 확인할 수 없습니다.');
     }
@@ -25,19 +25,19 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     clearTimeout(timer); timer = null;
   }
 
-  async function request(path, body) {
+  async function api(path, { method = 'GET', body, formData } = {}) {
     const headers = { Accept: 'application/json' };
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
-      if (session?.csrfToken) headers['X-CSRF-Token'] = session.csrfToken;
     }
+    if (!['GET', 'HEAD'].includes(method) && session?.csrfToken) headers['X-CSRF-Token'] = session.csrfToken;
     const response = await fetchImpl(path, {
-      method: body === undefined ? 'GET' : 'POST', headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      method, headers,
+      ...(body === undefined ? formData === undefined ? {} : { body: formData } : { body: JSON.stringify(body) }),
       credentials: 'same-origin', cache: 'no-store',
     });
     let payload;
-    try { payload = await response.json(); }
+    try { payload = response.status === 204 ? {} : await response.json(); }
     catch { throw new Error(`서버 응답을 읽을 수 없습니다 (${response.status}).`); }
     if (!response.ok) {
       if (response.status === 401) { closed = true; disconnect(); onConnection('disconnected', transport); onAuthRequired(); }
@@ -46,6 +46,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     }
     return payload;
   }
+  function request(path, body) { return api(path, { method: body === undefined ? 'GET' : 'POST', ...(body === undefined ? {} : { body }) }); }
 
   function receive(value) { onState(readEnvelope(value)); }
 
@@ -118,7 +119,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
   }
 
   return {
-    connect, refreshSession,
+    connect, refreshSession, api,
     async login(username, password) {
       if (!session) await refreshSession();
       await request('/api/auth/login', { username, password });
@@ -136,6 +137,14 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     },
     async startLab(modelId, mode = 'local-lab-deepseek', fixtureId = 'vul-web-1', target) {
       const value = await request('/api/runs', { mode, ...(modelId ? { modelId } : {}), ...(fixtureId !== 'vul-web-1' ? { fixtureId } : {}), ...(target ? { target } : {}) });
+      receive(value); return value;
+    },
+    preflightExternal(target, pathPrefix = '/') { return api('/api/targets/preflight', { method: 'POST', body: { target, scope: { pathPrefix }, authorizationConfirmed: true } }); },
+    async startExternal({ target, pathPrefix, preflightToken }) {
+      const value = await api('/api/runs', { method: 'POST', body: {
+        mode: 'external-general', target, scope: { pathPrefix }, preflightToken,
+        authorizationConfirmed: true, modelId: 'rule-baseline',
+      } });
       receive(value); return value;
     },
     async stop(id) { const value = await request(`/api/runs/${encodeURIComponent(id)}/stop`, {}); receive(value); return value; },
@@ -161,6 +170,9 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     reportDownloadUrl(id) { return `/api/runs/${encodeURIComponent(id)}/report.hwpx`; },
     findingReportDownloadUrl(runId, artifactId) {
       return `/api/runs/${encodeURIComponent(runId)}/reports/${encodeURIComponent(artifactId)}.hwpx`;
+    },
+    reportPreviewUrl(runId, findingId) {
+      return `/api/runs/${encodeURIComponent(runId)}/report-preview/${encodeURIComponent(findingId)}`;
     },
     getModels() { return request('/api/models'); },
     getPlatform() { return request('/api/platform'); },

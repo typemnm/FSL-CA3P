@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#080d0d">
-  <meta name="description" content="CA3P 에이전트 코어의 모의 실행과 격리된 로컬 실습 실행을 관측하는 대시보드.">
-  <title>CA3P — Agent Loop</title>
+  <meta name="description" content="CA3P 취약점 점검 작업공간과 모듈 운영 대시보드.">
+  <title>CA3P — Security Workspace</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
   <script type="module" src="./app.js"></script>
@@ -15,23 +15,28 @@
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
-      <a class="brand" href="#dashboard" aria-label="CA3P 대시보드"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 8h9l9 8-9 8H5l9-8-9-8Z" fill="currentColor"/><path d="m20 8 9 8-9 8" stroke="currentColor" stroke-width="3"/></svg><span>CA3P<span class="brand-dot">®</span></span></a>
-      <div class="workspace-switch"><span class="workspace-logo">C</span><div><strong>Agent workspace</strong><small>팀 통합 워크스페이스</small></div><span data-icon="chevrons" class="muted"></span></div>
+      <a class="brand" href="#workspace/attack" aria-label="CA3P 작업공간"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 8h9l9 8-9 8H5l9-8-9-8Z" fill="currentColor"/><path d="m20 8 9 8-9 8" stroke="currentColor" stroke-width="3"/></svg><span>CA3P<span class="brand-dot">®</span></span></a>
+      <div class="workspace-switch"><span class="workspace-logo">C</span><div><strong>Security workspace</strong><small>취약점 점검 작업공간</small></div><span data-icon="chevrons" class="muted"></span></div>
       <div class="nav-caption">WORKSPACE</div>
       <nav class="primary-nav" aria-label="주 메뉴">
-        <button class="nav-item active" data-view="dashboard"><span data-icon="dashboard"></span><span>대시보드</span><span class="nav-active-dot"></span></button>
-        <button class="nav-item" data-view="sessions"><span data-icon="layers"></span><span>실행 이력</span><span class="nav-count" id="history-count">0</span></button>
-        <button class="nav-item" data-view="modules"><span data-icon="box"></span><span>모듈 탐색</span></button>
-        <button class="nav-item" data-view="reports"><span data-icon="file"></span><span>리포트</span></button>
-        <button class="nav-item" data-view="compare"><span data-icon="exchange"></span><span>실행 비교</span></button>
-        <button class="nav-item" data-view="ci"><span data-icon="check"></span><span>통합 테스트</span><span class="nav-count" id="ci-count">—</span></button>
-        <button class="nav-item" data-view="platform"><span data-icon="shield"></span><span>통합 상태</span></button>
+        <button class="nav-item" data-view="assets" data-nav="assets"><span data-icon="layers"></span><span>자산</span></button>
+        <button class="nav-item active" data-view="dashboard" data-nav="attack"><span data-icon="globe"></span><span>공격</span><span class="nav-count" id="history-count">0</span></button>
+        <button class="nav-item" data-view="reports" data-nav="reports"><span data-icon="file"></span><span>보고서</span></button>
+        <button class="nav-item" data-view="db" data-nav="db"><span data-icon="database"></span><span>DB</span></button>
+      </nav>
+      <button class="nav-caption nav-group-button" data-view="modules" data-nav="modules">MODULES <span class="nav-count" id="ci-count">—</span></button>
+      <nav class="primary-nav module-nav" aria-label="모듈 메뉴">
+        <button class="nav-item" data-view="module-attack" data-nav="module-attack"><span data-icon="terminal"></span><span>Attack Module</span></button>
+        <button class="nav-item" data-view="module-web-parser" data-nav="module-web-parser"><span data-icon="scan"></span><span>Web Parser</span></button>
+        <button class="nav-item" data-view="module-guardrail" data-nav="module-guardrail"><span data-icon="shield"></span><span>Guardrail</span></button>
+        <button class="nav-item" data-view="module-llm" data-nav="module-llm"><span data-icon="brain"></span><span>LLM</span></button>
+        <button class="nav-item" data-view="module-db" data-nav="module-db"><span data-icon="database"></span><span>DB</span></button>
       </nav>
       <div class="nav-caption connection-caption">ENVIRONMENT</div>
       <div class="environment-item"><span class="tiny-dot gray" id="connection-dot"></span><span id="connection-status">런타임 연결 중</span></div>
-      <div class="environment-item"><span class="tiny-dot green"></span><span>Core + local gateway</span><span class="environment-state">로컬</span></div>
+      <div class="environment-item"><span class="tiny-dot green"></span><span>Core + modules</span><span class="environment-state">연결 상태</span></div>
       <div class="sidebar-bottom">
-        <div class="local-note"><span data-icon="shield"></span><strong>세 가지 검증 경로</strong><p>모의 코어 fixture · 실제 규칙 실습 · AI 실습.<br>실제 검증은 등록된 로컬 실습 대상에서 실행합니다.</p></div>
+        <div class="local-note"><span data-icon="shield"></span><strong>점검 범위</strong><p>등록 실습 대상과 외부 URL을 구분합니다. 외부 대상은 서버가 확인한 범위 안에서 점검합니다.</p></div>
         <button class="nav-item" id="settings-button"><span data-icon="settings"></span><span>워크스페이스 설정</span></button>
         <div class="user-profile"><div class="avatar">C</div><div><strong id="user-name">CA3P Research</strong><small id="user-role">세션 확인 중</small></div><button class="text-button" id="logout-button" hidden>로그아웃</button></div>
       </div>
@@ -39,29 +44,36 @@
 
     <div class="main-shell">
       <header class="topbar">
-        <div class="breadcrumb"><button class="icon-button mobile-menu" id="menu-button" aria-label="메뉴 열기" aria-expanded="false"><span data-icon="menu"></span></button><span data-icon="grid"></span><span>Workspace</span><span class="breadcrumb-divider">/</span><strong id="breadcrumb-title">대시보드</strong></div>
-        <div class="topbar-actions"><span class="simulation-label"><span class="tiny-dot green"></span><span id="execution-label">CORE / FIXTURE</span></span><span class="topbar-divider"></span><button class="icon-button" id="notifications-button" aria-label="최근 이벤트 보기" aria-expanded="false"><span data-icon="bell"></span><i class="notification-dot"></i></button><div class="avatar small">C</div></div>
+          <div class="breadcrumb"><button class="icon-button mobile-menu" id="menu-button" aria-label="메뉴 열기" aria-expanded="false"><span data-icon="menu"></span></button><span data-icon="grid"></span><span id="breadcrumb-group">Workspace</span><span class="breadcrumb-divider">/</span><strong id="breadcrumb-title">공격</strong></div>
+        <div class="topbar-actions"><nav class="topbar-shortcuts" aria-label="빠른 이동"><button data-view="sessions">실행 이력</button><button data-view="compare">비교</button><button data-view="ci">CI</button><button data-view="platform">상태</button></nav><span class="simulation-label"><span class="tiny-dot green"></span><span id="execution-label">CORE / FIXTURE</span></span><span class="topbar-divider"></span><button class="icon-button" id="notifications-button" aria-label="최근 이벤트 보기" aria-expanded="false"><span data-icon="bell"></span><i class="notification-dot"></i></button><div class="avatar small">C</div></div>
         <div class="notification-popover" id="notification-popover" hidden><strong>최근 이벤트</strong><div id="notification-list"></div></div>
       </header>
 
       <main id="main" tabindex="-1">
         <section class="page-heading">
-          <div><div class="eyebrow"><span class="eyebrow-line"></span>AGENT OPERATIONS</div><h1 id="page-title">Observe. Decide. <span>Iterate.</span></h1><p id="page-subtitle">에이전트의 모든 판단과 흐름을, 한눈에.</p></div>
+          <div><div class="eyebrow"><span class="eyebrow-line"></span>SECURITY WORKSPACE</div><h1 id="page-title">공격 <span>작업공간</span></h1><p id="page-subtitle">대상을 지정하고 점검 과정과 기록을 확인합니다.</p></div>
           <div class="heading-actions"><button class="button secondary" id="export-button"><span data-icon="download"></span>내보내기</button><button class="button primary" id="new-session-button"><span data-icon="plus"></span>새 실행</button></div>
         </section>
 
         <div class="history-banner" id="history-banner" hidden><span><span data-icon="layers"></span>저장된 실행을 보고 있습니다.</span><button class="text-button" id="return-current-button">현재 실행으로 돌아가기<span data-icon="exchange"></span></button></div>
         <div class="runtime-notice" id="connection-notice" role="status">런타임 연결 중입니다.</div>
         <p class="runtime-error" id="runtime-error" role="alert" hidden></p>
-        <section class="view" id="view-dashboard">
-          <form class="target-panel" id="target-form" novalidate>
-            <div class="target-label"><span data-icon="globe"></span><label for="target-url">DISPLAY URL</label></div>
-            <div class="target-input-wrap"><input id="target-url" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false" aria-describedby="target-help runtime-scope url-error"><span class="input-shortcut">Ctrl K</span></div>
-            <span class="target-mode" id="target-help">표시용 · 접속 없음</span>
-            <button type="submit" class="button run-button" id="run-button" disabled><span data-icon="play"></span><span>모의 코어 시작</span></button>
-            <p class="url-error" id="url-error" role="alert" hidden></p>
-          </form>
-          <p class="runtime-scope" id="runtime-scope">이 모의 실행은 실제 RunOnce + RuleReasoningEngine을 사용합니다. 외부 모듈은 scripted fixture gateway이며, 입력 URL은 기록의 표시용 메타데이터입니다. 이 모드에서는 LLM·파서·fuzzer·대상 사이트에 연결하지 않습니다.</p>
+        <nav class="workspace-tabs" id="attack-tabs" aria-label="공격 작업공간" hidden><button data-route-view="dashboard">진행 상황</button><button data-route-view="sessions">실행 이력</button><button data-route-view="compare">실행 비교</button></nav>
+        <nav class="workspace-tabs" id="module-tabs" aria-label="모듈 통합 상태" hidden><button data-route-view="modules">모듈 개요</button><button data-route-view="ci">통합 테스트</button><button data-route-view="platform">통합 상태</button></nav>
+        <section class="view" id="view-assets" hidden>
+          <section class="panel external-target-panel" aria-labelledby="external-target-title">
+            <div class="panel-heading"><div><h2 id="external-target-title"><span data-icon="globe"></span>점검 대상 지정</h2><span class="panel-subtitle">등록 실습 대상 또는 외부 URL을 선택합니다.</span></div></div>
+            <div class="target-kind-switch" role="group" aria-label="대상 유형"><button type="button" class="active" id="target-kind-lab" aria-pressed="true">등록 실습 대상</button><button type="button" id="target-kind-external" aria-pressed="false">외부 URL</button></div>
+            <form id="external-target-form" class="external-target-form" hidden>
+              <label for="external-url">시작 URL <input id="external-url" type="url" placeholder="https://example.org/" autocomplete="off" required></label>
+              <label for="external-path">허용 경로 <input id="external-path" type="text" value="/" placeholder="/" autocomplete="off"></label>
+              <div class="external-scope-note">동일 원점의 공개 페이지를 읽기 전용으로 관찰합니다. 실습 전용 검증기와 계정은 외부 대상에서 사용하지 않습니다.</div>
+              <button class="button secondary" id="external-preflight-button" type="submit">대상 사전 점검</button>
+              <div id="external-preflight-status" role="status" aria-live="polite">URL을 입력하고 사전 점검을 시작하세요.</div>
+              <label class="external-confirm"><input id="external-authorization" type="checkbox"> 이 대상에 점검 권한이 있음을 확인합니다.</label>
+              <button class="button primary" id="external-run-button" type="button" disabled>외부 대상 점검 시작</button>
+            </form>
+          </section>
           <div class="lab-launch">
             <div class="lab-launch-copy">
               <strong id="lab-title">실습 대상 · vul-web-1 로컬 게시판</strong>
@@ -80,6 +92,25 @@
             <div class="lab-origin-control" id="lab-target-control" hidden><label for="lab-target-origin">에이전트에서 접근할 실습 원점 · IP와 포트</label><input id="lab-target-origin" type="text" value="http://127.0.0.1:4101" placeholder="http://192.168.0.84:4101" autocomplete="off" spellcheck="false" aria-describedby="lab-target-help"><small id="lab-target-help">Mac에서 직접 실행하면 127.0.0.1을 사용합니다. Docker에서는 host.docker.internal 또는 같은 네트워크의 daehan / wonchang을 사용하세요. 등록된 vul-web2 실습의 사설망 HTTP 원점만 허용합니다.</small></div>
             <button type="button" class="button lab-run-button" id="lab-run-button" disabled><span data-icon="play"></span><span id="lab-run-label">실습 실행 준비 중</span></button>
           </div>
+          <section class="asset-mock-run" id="asset-mock-run" aria-labelledby="asset-mock-title">
+            <h2 id="asset-mock-title">모의 코어 실행</h2>
+            <p>표시용 URL로 코어와 fixture gateway 흐름을 확인합니다. 실제 대상에는 접속하지 않습니다.</p>
+            <form class="target-panel" id="target-form" novalidate>
+              <div class="target-label"><span data-icon="globe"></span><label for="target-url">DISPLAY URL</label></div>
+              <div class="target-input-wrap"><input id="target-url" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false" aria-describedby="target-help runtime-scope url-error"><span class="input-shortcut">Ctrl K</span></div>
+              <span class="target-mode" id="target-help">표시용 · 접속 없음</span>
+              <button type="submit" class="button run-button" id="run-button" disabled><span data-icon="play"></span><span>모의 코어 시작</span></button>
+              <p class="url-error" id="url-error" role="alert" hidden></p>
+            </form>
+            <p class="runtime-scope" id="runtime-scope">이 모의 실행은 실제 RunOnce + RuleReasoningEngine을 사용합니다. 외부 모듈은 scripted fixture gateway이며, 입력 URL은 기록의 표시용 메타데이터입니다. 이 모드에서는 LLM·파서·fuzzer·대상 사이트에 연결하지 않습니다.</p>
+          </section>
+        </section>
+
+        <section class="view" id="view-dashboard">
+          <section class="panel asset-summary" aria-labelledby="asset-summary-heading">
+            <div class="asset-summary-copy"><div class="eyebrow">CURRENT ASSET</div><h2 id="asset-summary-heading">다음 점검 대상</h2><p id="asset-summary-detail">자산 메뉴에서 대상을 선택하고 점검을 시작합니다.</p></div>
+            <button class="button secondary" id="asset-settings-button" type="button"><span data-icon="layers"></span>자산에서 대상 지정</button>
+          </section>
 
           <div class="stats-grid">
             <div class="stat-card"><div class="stat-label">루프 상태<span data-icon="pulse"></span></div><div class="stat-value status-stat"><span class="status-orb stopped" id="status-orb"></span><span id="run-status">대기 중</span></div><div class="stat-foot" id="run-context">서버 상태 수신 대기</div></div>
@@ -120,9 +151,11 @@
           <div id="history-review-panel" hidden></div><div class="dashboard-footer"><span><span class="tiny-dot green"></span><span id="dashboard-mode">실제 코어 / 외부 모듈 fixture</span></span><span>Made for the loop. <span class="mint">Built for clarity.</span></span></div>
         </section>
 
-        <section class="view" id="view-sessions" hidden><section class="panel alternate-panel"><div class="panel-heading"><div><h2><span data-icon="layers"></span>실행 이력</h2><span class="panel-subtitle" id="history-source">중앙 실행 기록 조회 중</span></div><button class="button secondary" id="refresh-history">새로고침</button></div><div class="session-list" id="session-list"></div></section><div id="legacy-detail" hidden></div></section>
-        <section class="view" id="view-modules" hidden><div class="module-grid" id="module-grid"></div><section class="panel module-note"><span data-icon="exchange"></span><div><h2>하나의 루프, 연결된 데이터</h2><p>xss-parser, 통합 casper-db, attack-module, guardrail과 실행 기록의 요청·응답은 Correlation ID로 연결됩니다. 중앙 Agent / RunOnce의 plan · reflect 입출력은 Trace inspector의 Agent I/O에서 확인합니다.</p></div></section></section>
-        <section class="view" id="view-reports" aria-label="검사 결과와 HWPX 보고서" hidden><div id="report-content"></div></section>
+        <section class="view" id="view-sessions" hidden><section class="panel alternate-panel"><div class="panel-heading"><div><h2><span data-icon="layers"></span>실행 이력</h2><span class="panel-subtitle" id="history-source">중앙 실행 기록 조회 중</span></div><button class="button secondary" id="refresh-history">새로고침</button></div><div class="history-filters"><label for="history-search">대상·실행 ID 검색<input id="history-search" type="search" placeholder="URL, 대상명 또는 실행 ID"></label><label for="history-mode">대상 유형<select id="history-mode"><option value="all">전체</option><option value="external">외부 URL</option><option value="lab">등록 실습</option><option value="fixture">모의 fixture</option></select></label></div><div class="session-list" id="session-list"></div></section><div id="legacy-detail" hidden></div></section>
+        <section class="view" id="view-modules" hidden><div class="module-grid" id="module-grid"></div><section class="panel module-note"><span data-icon="exchange"></span><div><h2>하나의 루프, 연결된 데이터</h2><p>통합 테스트와 배포 상태는 위 탭에서 확인하세요. 각 모듈의 설정과 로그는 좌측 모듈 메뉴에서 확인합니다.</p></div></section></section>
+        <section class="view" id="view-reports" aria-label="검사 결과와 HWPX 보고서" hidden><section class="panel report-picker"><div class="panel-heading"><div><h2>보고서 목록</h2><span class="panel-subtitle">저장된 실행을 선택해 결과를 읽고 다운로드합니다.</span></div><button class="button secondary" id="refresh-reports">새로고침</button></div><label for="report-run-select">실행 선택</label><select id="report-run-select"></select><button class="button secondary" id="report-json-download">JSON 다운로드</button></section><section class="panel report-preview" id="report-preview" hidden><div class="panel-heading"><h2>HWPX 문서 본문</h2><button class="button secondary" id="report-preview-close">닫기</button></div><iframe id="report-preview-frame" title="보고서 문서 본문" sandbox hidden></iframe><pre id="report-preview-text" tabindex="0"></pre></section><div id="report-content"></div></section>
+        <section class="view" id="view-db" hidden><div id="workspace-db-content" class="operations-loading">취약점 DB를 불러오는 중입니다.</div></section>
+        <section class="view" id="view-module-detail" hidden><div id="module-detail-content" class="operations-loading">모듈 정보를 불러오는 중입니다.</div></section>
         <section class="view" id="view-compare" hidden><section class="panel compare-controls"><div><h2>같은 조건에서 실행 결과 비교</h2><p>기준 실행과 변경 후 실행을 선택하세요. 임시 포트·시간·canary ID는 정규화하고 원본 입출력을 함께 확인합니다.</p></div><form id="compare-form"><label for="comparison-kind">비교 종류<select id="comparison-kind"><option value="code">코드 변경</option><option value="model">모델 변경</option><option value="prompt">프롬프트 변경</option><option value="environment">환경 변경</option></select></label><label for="baseline-select">기준 실행<select id="baseline-select" required></select></label><label for="candidate-select">비교 실행<select id="candidate-select" required></select></label><button class="button primary" id="compare-button">비교</button></form></section><div id="comparison-content"><div class="panel empty-state"><span data-icon="exchange"></span><h3>두 실행을 선택하세요</h3><p>코드 변경 비교는 모델·입력·정책 조건을, 모델 비교는 코드·입력·정책 조건을 고정해야 합니다.</p></div></div></section>
         <section class="view" id="view-ci" hidden><section class="panel ci-heading"><div><div class="eyebrow">DEVELOP / MERGED MODULES</div><h2>전체 통합 테스트</h2><p>develop에 병합된 커밋의 GitHub Actions 결과입니다. 실습 실행 이력과 구분해 표시합니다.</p><small id="ci-source">결과 동기화 중</small></div><button class="button secondary" id="refresh-ci">새로고침</button></section><div id="ci-content"></div><section class="panel ci-compare-controls"><h2>병합 전후 테스트 결과 비교</h2><div class="ci-selectors"><label for="ci-baseline">기준 실행<select id="ci-baseline"></select></label><label for="ci-candidate">비교 실행<select id="ci-candidate"></select></label></div><div id="ci-comparison"></div></section></section>
         <section class="view" id="view-platform" hidden><div id="platform-content"><div class="panel empty-state"><h3>통합 상태 조회 중</h3></div></div></section>
@@ -137,7 +170,7 @@
     <p id="model-reset-scope" class="settings-note"></p>
     <p id="model-reset-error" class="runtime-error" role="alert" hidden></p>
     <div class="experiment-reset-actions"><button type="button" id="model-reset-no" class="button secondary" autofocus>아니오</button><button type="button" id="model-reset-yes" class="button primary">예</button></div>
-    <p class="settings-note">아니오: 흔적을 유지하고 모델만 변경합니다. Esc: 모델 변경을 취소합니다.</p>
+    <p id="model-reset-note" class="settings-note">아니오: 흔적을 유지하고 모델만 변경합니다. Esc: 모델 변경을 취소합니다.</p>
   </dialog>
   <div class="toast" id="toast" role="status" hidden></div>
   <dialog id="login-dialog" aria-labelledby="login-title"><form id="login-form"><div class="eyebrow">CA3P / TEAM WORKSPACE</div><h2 id="login-title">워크스페이스 로그인</h2><p>실행 기록과 격리 실습에 접근하려면 로그인하세요.</p><label for="login-username">사용자 이름</label><input id="login-username" name="username" autocomplete="username" required><label for="login-password">비밀번호</label><input id="login-password" name="password" type="password" autocomplete="current-password" required><p id="login-error" class="runtime-error" role="alert" hidden></p><button class="button primary" id="login-submit" type="submit">로그인</button></form></dialog>

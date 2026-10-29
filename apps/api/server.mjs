@@ -6,6 +6,9 @@ import { resolve, extname, sep } from 'node:path';
 import { createLocalRuntime } from '../application/local-runtime.mjs';
 import { createAuthentication } from './auth.mjs';
 import { getPlatform } from './platform.mjs';
+import { createModuleManagement } from './module-management.mjs';
+import { createDbManagement } from './db-management.mjs';
+import { preflightExternalTarget } from '../application/external-target.mjs';
 import { reviewRunCheck } from '../../packages/history/check-sync.mjs';
 import { redact } from '../../packages/contracts/index.mjs';
 import { deploymentPaused, deploymentStatus } from './deployment.mjs';
@@ -44,9 +47,9 @@ async function sendHwpx(res, artifact, document) {
   return res.end(data);
 }
 
-function readJson(req) {
+function readJson(req, maxBody = MAX_BODY) {
   if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) throw error(415, 'Use application/json.');
-  if (Number(req.headers['content-length']) > MAX_BODY) { req.resume(); throw error(413, 'Request body exceeds 8192 bytes.'); }
+  if (Number(req.headers['content-length']) > maxBody) { req.resume(); throw error(413, 'Request body is too large.'); }
   return new Promise((resolveBody, reject) => {
     let bytes = 0;
     const chunks = [];
@@ -60,7 +63,7 @@ function readJson(req) {
     const aborted = () => rejectRequest(error(400, 'Request aborted.'));
     const data = chunk => {
       bytes += chunk.length;
-      if (bytes > MAX_BODY) { cleanup(); req.resume(); reject(error(413, 'Request body exceeds 8192 bytes.')); }
+      if (bytes > maxBody) { cleanup(); req.resume(); reject(error(413, 'Request body is too large.')); }
       else chunks.push(chunk);
     };
     const end = () => {
@@ -73,11 +76,20 @@ function readJson(req) {
 }
 
 export function createDashboardServer({ runtime = createLocalRuntime(), auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform, ciResults = null,
-  maintenanceCheck = deploymentPaused, deploymentStatusProvider = deploymentStatus } = {}) {
+  maintenanceCheck = deploymentPaused, deploymentStatusProvider = deploymentStatus, moduleManagement = null,
+  dbManagement = null, targetPreflight = preflightExternalTarget } = {}) {
   const configured = publicOrigins.map(value => new URL(value));
   if (configured.some(url => url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/')) throw new Error('Public origins must be plain HTTPS origins.');
   if (configured.length && !auth.enabled) throw new Error('External dashboard access requires authentication.');
+  const db = dbManagement ?? createDbManagement();
+  const modules = moduleManagement ?? createModuleManagement({ runtime, platformProvider, dbManagement: db });
+  let dbInit;
+  const ensureDb = () => dbInit ??= Promise.resolve().then(() => db.bootstrap?.()).catch(failure => {
+    dbInit = null;
+    throw failure;
+  });
   const streams = new Set();
+  const preflightQuotas = new Map();
   const server = http.createServer(async (req, res) => {
     try {
       const port = server.address()?.port;
@@ -105,6 +117,113 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
           if (paused) return json(res, 503, { error: '배포를 적용하고 있습니다. 잠시 후 다시 실행하세요.' }, { 'Retry-After': '30' });
         }
         if (pathname === '/api/deployment' && req.method === 'GET') return json(res, 200, await deploymentStatusProvider());
+        if (pathname === '/api/targets/preflight') {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
+          const body = await readJson(req);
+          if (!body || typeof body !== 'object' || Array.isArray(body) || body.authorizationConfirmed !== true) {
+            throw error(400, 'Confirm authorization before contacting an external target.');
+          }
+          const actor = currentUser.user.name;
+          const now = Date.now();
+          let quota = preflightQuotas.get(actor);
+          if (!quota || now - quota.startedAt >= 60_000) {
+            quota = { startedAt: now, count: 0, active: false };
+            preflightQuotas.set(actor, quota);
+          }
+          if (quota.active || quota.count >= 10) {
+            return json(res, 429, { error: '외부 대상 사전 점검 요청이 너무 많습니다. 잠시 후 다시 시도하세요.' },
+              { 'Retry-After': String(Math.max(1, Math.ceil((60_000 - (now - quota.startedAt)) / 1000))) });
+          }
+          quota.count += 1;
+          quota.active = true;
+          try { return json(res, 200, await targetPreflight(body)); }
+          finally { quota.active = false; }
+        }
+        if (pathname === '/api/db/intakes') {
+          await ensureDb();
+          if (req.method === 'GET') return json(res, 200, await db.listIntakes());
+          if (req.method === 'POST') {
+            auth.requireUser(req, { mutate: true, admin: true });
+            return json(res, 201, await db.stageUpload(req, { actor: currentUser.user.name }));
+          }
+          return json(res, 405, { error: 'Use GET or POST.' }, { Allow: 'GET, POST' });
+        }
+        const intakePublish = /^\/api\/db\/intakes\/([a-f0-9]{64})\/publish$/.exec(pathname);
+        if (intakePublish) {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
+          auth.requireUser(req, { mutate: true, admin: true });
+          await ensureDb();
+          const body = await readJson(req);
+          if (!body || typeof body !== 'object' || Array.isArray(body)
+            || !/^[a-f0-9]{64}$/.test(body.expectedValidationSha)
+            || Object.keys(body).some(key => !['readyOnly', 'expectedValidationSha'].includes(key))) {
+            throw error(400, 'Invalid publish options.');
+          }
+          return json(res, 200, await db.publishIntake(intakePublish[1], body, currentUser.user.name));
+        }
+        const intake = /^\/api\/db\/intakes\/([a-f0-9]{64})$/.exec(pathname);
+        if (intake) {
+          await ensureDb();
+          if (req.method === 'GET') return json(res, 200, await db.getIntake(intake[1]));
+          auth.requireUser(req, { mutate: true, admin: true });
+          if (req.method === 'PATCH') {
+            const body = await readJson(req, 2_000_000);
+            if (!body || typeof body !== 'object' || Array.isArray(body)
+              || !/^[a-f0-9]{64}$/.test(body.expectedValidationSha)
+              || !body.review || typeof body.review !== 'object' || Array.isArray(body.review)) {
+              throw error(400, 'Provide a review and its current validation hash.');
+            }
+            return json(res, 200, await db.reviewIntake(intake[1], body.review,
+              currentUser.user.name, body.expectedValidationSha));
+          }
+          if (req.method === 'DELETE') return json(res, 200, await db.deleteIntake(intake[1], currentUser.user.name));
+          return json(res, 405, { error: 'Use GET, PATCH or DELETE.' }, { Allow: 'GET, PATCH, DELETE' });
+        }
+        if (pathname === '/api/db/cases' && req.method === 'GET') {
+          await ensureDb();
+          const params = new URL(req.url, expectedOrigin).searchParams;
+          const filters = Object.fromEntries(['q', 'targetId', 'status', 'severity', 'vulnerabilityType', 'archived']
+            .filter(key => params.has(key)).map(key => [key, params.get(key)]));
+          if (params.has('archived')) {
+            const archived = params.get('archived');
+            if (!['true', 'false', 'all'].includes(archived)) throw error(400, 'Invalid archived filter.');
+            filters.archived = archived === 'all' ? 'all' : archived === 'true';
+          }
+          filters.limit = params.has('limit') ? Number(params.get('limit')) : 50;
+          filters.offset = params.has('offset') ? Number(params.get('offset')) : 0;
+          if (!Number.isInteger(filters.limit) || filters.limit < 1 || filters.limit > 200
+            || !Number.isSafeInteger(filters.offset) || filters.offset < 0) throw error(400, 'Invalid case pagination.');
+          return json(res, 200, await db.listCases(filters));
+        }
+        const caseVersions = /^\/api\/db\/cases\/([a-zA-Z0-9._:-]{1,160})\/versions$/.exec(pathname);
+        if (caseVersions && req.method === 'GET') { await ensureDb(); return json(res, 200, await db.listCaseVersions(caseVersions[1])); }
+        const caseRestore = /^\/api\/db\/cases\/([a-zA-Z0-9._:-]{1,160})\/restore$/.exec(pathname);
+        if (caseRestore) {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
+          auth.requireUser(req, { mutate: true, admin: true });
+          await ensureDb();
+          const body = await readJson(req);
+          if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) throw error(400, 'Provide an empty JSON object.');
+          return json(res, 200, await db.restoreCase(caseRestore[1], currentUser.user.name));
+        }
+        const caseMatch = /^\/api\/db\/cases\/([a-zA-Z0-9._:-]{1,160})$/.exec(pathname);
+        if (caseMatch) {
+          await ensureDb();
+          if (req.method === 'GET') return json(res, 200, await db.getCase(caseMatch[1]));
+          auth.requireUser(req, { mutate: true, admin: true });
+          if (req.method === 'PATCH') {
+            const body = await readJson(req, 64_000);
+            if (!body || typeof body !== 'object' || Array.isArray(body)
+              || !body.patch || !Number.isInteger(body.expectedRevision)) throw error(400, 'Provide patch and expectedRevision.');
+            return json(res, 200, await db.updateCase(caseMatch[1], body, currentUser.user.name));
+          }
+          if (req.method === 'DELETE') {
+            const body = await readJson(req);
+            if (!body || typeof body !== 'object' || Array.isArray(body)) throw error(400, 'Provide archive reason.');
+            return json(res, 200, await db.archiveCase(caseMatch[1], body, currentUser.user.name));
+          }
+          return json(res, 405, { error: 'Use GET, PATCH or DELETE.' }, { Allow: 'GET, PATCH, DELETE' });
+        }
         const review = /^\/api\/runs\/([a-zA-Z0-9_-]+)\/reviews\/([a-zA-Z0-9._-]+)$/.exec(pathname);
         if (review && req.method === 'POST') {
           const body = await readJson(req);
@@ -168,7 +287,52 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
           }
           return await sendHwpx(res, artifact, document);
         }
+        const previewMatch = /^\/api\/runs\/([a-zA-Z0-9_-]+)\/report-preview\/([a-zA-Z0-9][a-zA-Z0-9._:-]{0,71})$/.exec(pathname);
+        if (previewMatch && req.method === 'GET') {
+          const run = await (runtime.store?.getRun?.(previewMatch[1]) ?? runtime.getRun?.(previewMatch[1]));
+          if (!run) throw error(404, 'Run not found.');
+          const general = run.report?.assessmentMode === 'general';
+          const document = general
+            ? run.reportDocuments?.schemaVersion === GENERAL_REPORT_DOCUMENTS_SCHEMA_VERSION
+              && Array.isArray(run.reportDocuments.items)
+              ? run.reportDocuments.items.find(item => item?.findingId === previewMatch[2]) : null
+            : previewMatch[2] === 'single' ? run.reportDocument : null;
+          if (!document || document.status !== 'ready') throw error(404, 'Report preview not found.');
+          if (general && (!Array.isArray(run.report?.findings)
+            || !run.report.findings.some(finding => finding?.id === document.findingId && finding.status === 'confirmed'))) {
+            throw error(409, 'Report finding is not confirmed.');
+          }
+          const htmlPreview = typeof document.previewHtmlArtifactId === 'string';
+          const previewId = htmlPreview ? document.previewHtmlArtifactId : document.previewArtifactId;
+          const artifact = typeof previewId === 'string' && /^[a-f0-9]{64}$/.test(previewId)
+            ? runtime.store?.getArtifact(previewId) : null;
+          if (!artifact || artifact.runId !== run.id
+            || artifact.kind !== (htmlPreview ? 'report-preview-html' : 'report-preview')
+            || (general && artifact.findingId !== document.findingId)
+            || artifact.size > (htmlPreview ? 30_000_000 : 2_000_000)) throw error(404, 'Report preview not found.');
+          const bytes = await readFile(artifact.path);
+          if (bytes.length !== artifact.size || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) {
+            throw error(409, 'Report preview integrity check failed.');
+          }
+          let previewText;
+          try { previewText = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+          catch { throw error(409, 'Report preview text is invalid.'); }
+          return json(res, 200, { [htmlPreview ? 'html' : 'markdown']: previewText, filename: document.filename });
+        }
         if (pathname === '/api/platform' && req.method === 'GET') return json(res, 200, await platformProvider());
+        if (pathname === '/api/modules' && req.method === 'GET') return json(res, 200, await modules.list());
+        const moduleConfig = /^\/api\/modules\/([a-zA-Z0-9-]+)\/config$/.exec(pathname);
+        if (moduleConfig) {
+          if (req.method === 'GET') return json(res, 200, await modules.config(moduleConfig[1]));
+          return json(res, 405, { error: 'This module has no live editable settings.' }, { Allow: 'GET' });
+        }
+        const moduleLogs = /^\/api\/modules\/([a-zA-Z0-9-]+)\/logs$/.exec(pathname);
+        if (moduleLogs && req.method === 'GET') {
+          const params = new URL(req.url, expectedOrigin).searchParams;
+          const limit = params.has('limit') ? Number(params.get('limit')) : 100;
+          const offset = params.has('offset') ? Number(params.get('offset')) : 0;
+          return json(res, 200, await modules.logs(moduleLogs[1], { limit, offset, runId: params.get('runId') ?? undefined }));
+        }
         if (pathname === '/api/ci-results' && req.method === 'GET') return json(res, 200,
           ciResults?.getSnapshot?.() ?? { source: 'none', status: 'unavailable', updatedAt: null, lastAttemptAt: null, runs: [] });
         if (pathname === '/api/models' && req.method === 'GET') return json(res, 200, { models: await runtime.listModels?.() ?? [] });
@@ -183,6 +347,14 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
             || Object.keys(body).some(key => key !== 'confirmed')) throw error(400, 'Confirm complete experiment deletion with confirmed: true.');
           if (!runtime.resetExperiment) throw error(503, 'Experiment reset is unavailable for this runtime.');
           return json(res, 200, await runtime.resetExperiment(body));
+        }
+        if (pathname === '/api/run-history/clear') {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
+          const body = await readJson(req);
+          if (!body || typeof body !== 'object' || Array.isArray(body) || body.confirmed !== true
+            || Object.keys(body).some(key => key !== 'confirmed')) throw error(400, 'Confirm run history deletion with confirmed: true.');
+          if (!runtime.clearRunHistory) throw error(503, 'Run history clear is unavailable for this runtime.');
+          return json(res, 200, await runtime.clearRunHistory(body));
         }
         if (pathname === '/api/comparisons' && req.method === 'GET') {
           const params = new URL(req.url, expectedOrigin).searchParams;

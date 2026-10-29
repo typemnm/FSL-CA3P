@@ -97,7 +97,8 @@ test('general run renders and supported targets launch the bounded model assessm
   await page.locator('[data-view=reports]').click();
   assert.match(await page.locator('#report-content').textContent(), /owner mismatch observed/);
   assert.equal(await page.locator('#history-banner').isVisible(), true);
-  await page.locator('[data-view=dashboard]').click();
+  await page.locator('[data-view=assets]').click();
+  assert.equal(await page.locator('#view-assets').isVisible(), true);
   assert.equal(await page.locator('#fixture-select option').allTextContents().then(values => values.some(value => /XSS|IDOR/.test(value))), false);
   assert.equal(await page.locator('#assessment-mode').inputValue(), 'general');
   assert.match(await page.locator('#lab-title').textContent(), /vul-web-1 로컬 게시판/);
@@ -112,8 +113,10 @@ test('general run renders and supported targets launch the bounded model assessm
   const launch = page.waitForResponse(response => response.url().endsWith('/api/runs') && response.request().method() === 'POST');
   await page.locator('#lab-run-button').click();
   await launch;
+  await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   assert.deepEqual(posts.at(-1), { path: '/api/runs', body: { mode: 'local-lab-general', modelId: 'deepseek-test',
     fixtureId: 'vul-web2-daehan', target: 'http://127.0.0.1:4101' } });
+  await page.locator('[data-view=assets]').click();
   await page.locator('#assessment-mode').selectOption('legacy');
   await page.locator('#model-reset-dialog').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#assessment-mode').inputValue(), 'general');
@@ -130,6 +133,7 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.equal(await page.locator('#assessment-mode').inputValue(), 'general');
   assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-test');
   assert.equal(posts.length, 1);
+  await page.locator('[data-view=dashboard]').click();
 
   const originalEvents = run.events;
   run.status = 'running'; run.report = null; run.iterations = 1;
