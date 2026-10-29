@@ -88,7 +88,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
     : mode === 'core-fixture' ? 'agent_cross_user_delete_canary' : 'stored_xss_canary');
   const moduleNames = general
     ? ['agent', universityLab ? 'vul-web2' : 'vul-web-1', 'casper-db',
-      'attack-module', 'guardrail', 'packages/models', 'packages/adapters',
+      'attack-module', 'guardrail', 'packages/models', 'packages/adapters', 'web-parser',
       'packages/report', 'packages/run-store', 'apps/application', 'apps/worker']
     : universityLab
     ? ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker']
