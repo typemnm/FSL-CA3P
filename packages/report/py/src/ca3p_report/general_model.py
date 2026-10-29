@@ -50,6 +50,25 @@ def build_general_model(
             "점검 미완료: 이미 확인된 결과만 기록하며 전체 범위의 완료를 뜻하지 않습니다."
         )
     target = report.get("target") if isinstance(report.get("target"), dict) else {}
+    text_evidence = [{
+        "label": f"검증 증거 {item['id']} ({_text(item.get('kind')) or '종류 미기록'})",
+        "text": _text(item.get("summary")) or "요약 자료 없음",
+    } for item in evidence]
+    verification = selection.get("verification")
+    images = []
+    if verification is not None:
+        verdict = verification["result"]
+        reason = _text(verdict.get("reason")) or "사유 미기록"
+        text_evidence.append({
+            "label": "AI 검증 판정",
+            "text": f"{_text(verdict.get('status')) or '상태 미기록'} — {reason}",
+        })
+        images = [{
+            "step": None,
+            "caption": f"{_text(image.get('label')) or '검증 캡처'} — AI verifier: {reason[:200]}",
+            "ref": image["ref"],
+            "integrity": "ok",
+        } for image in verification["images"]]
     return {
         "schemaVersion": "report-1.0",
         "sourceFindingId": source_id,
@@ -85,11 +104,8 @@ def build_general_model(
                 "limitations": " ".join(limitations),
             },
             "reproduction": [],
-            "images": [],
-            "textEvidence": [{
-                "label": f"검증 증거 {item['id']} ({_text(item.get('kind')) or '종류 미기록'})",
-                "text": _text(item.get("summary")) or "요약 자료 없음",
-            } for item in evidence],
+            "images": images,
+            "textEvidence": text_evidence,
             "checks": [{
                 "label": f"{_text(probe.get('tool')) or '검사'} · {probe['id']}",
                 "result": f"confirmed; 채택 증거: {', '.join(probe['evidenceIds'])}",

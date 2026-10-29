@@ -15,6 +15,7 @@ RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 FINDING_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 RUN_KINDS = frozenset({"pentest-db-disk", "run-store"})
 HISTORY_KINDS = frozenset({"casper-db", "none"})
+VERIFICATION_KINDS = frozenset({"handoff-dir", "none"})
 TOP_LEVEL_KEYS = frozenset({"schemaVersion", "runId", "sources", "capture", "output", "options"})
 
 
@@ -35,6 +36,7 @@ class Trigger:
     history: SourceRef
     output_dir: Path
     finding_id: str | None = None
+    verification: SourceRef = SourceRef("none", None)
 
 
 def _record(value: object, name: str) -> dict:
@@ -76,9 +78,10 @@ def parse_trigger(data: object) -> Trigger:
     if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
         raise TriggerError("runId must be a safe identifier of at most 128 characters")
     sources = _record(trigger.get("sources"), "sources")
-    if set(sources) - {"run", "history"}:
+    if set(sources) - {"run", "history", "verification"}:
         raise TriggerError("sources has unknown keys")
     history = sources.get("history", {"kind": "none"})
+    verification = sources.get("verification", {"kind": "none"})
     output = _record(trigger.get("output"), "output")
     options = _record(trigger.get("options", {}), "options")
     if set(options) - {"findingId"}:
@@ -94,6 +97,7 @@ def parse_trigger(data: object) -> Trigger:
         history=_source(history, "sources.history", HISTORY_KINDS),
         output_dir=_absolute(output.get("dir"), "output.dir"),
         finding_id=finding_id,
+        verification=_source(verification, "sources.verification", VERIFICATION_KINDS),
     )
     _refuse_output_inside_sources(parsed)
     return parsed
@@ -111,7 +115,7 @@ def _refuse_output_inside_sources(trigger: Trigger) -> None:
     """Writing the bundle into a source would modify what the agent must only read."""
     output = _resolved(trigger.output_dir)
     bundle = output / "bundle"
-    for source in (trigger.run, trigger.history):
+    for source in (trigger.run, trigger.history, trigger.verification):
         if source.location is None:
             continue
         location = _resolved(source.location)

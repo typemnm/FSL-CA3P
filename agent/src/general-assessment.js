@@ -200,16 +200,13 @@ function modelMetadata(value, iteration) {
 function buildFindings(report, verdicts) {
   report.findings = report.hypotheses.map(hypothesis => {
     const rows = verdicts.get(hypothesis.id) ?? [];
-    const hasConfirmed = rows.some(row => row.status === 'confirmed');
-    const hasNegative = rows.some(row => row.status === 'not_reproduced');
-    const status = hasConfirmed && hasNegative ? 'inconclusive'
-      : hasConfirmed ? 'confirmed'
-        : rows.some(row => row.status === 'inconclusive') ? 'inconclusive'
-          : hasNegative ? 'not_reproduced' : 'not_tested';
+    // The verifier judges everything known so far for the hypothesis, so its latest verdict is the finding.
+    const latest = rows.at(-1);
+    const status = latest?.status ?? 'not_tested';
     const evidenceIds = [...new Set([...hypothesis.evidenceIds, ...rows.flatMap(row => row.evidenceIds)])];
-    const reason = hasConfirmed && hasNegative ? 'conflicting_results'
-      : status === 'not_tested' ? (report.probes.find(probe => probe.hypothesisId === hypothesis.id)?.reason ?? 'no_probe')
-        : rows.find(row => row.reason)?.reason;
+    const reason = status === 'not_tested'
+      ? (report.probes.find(probe => probe.hypothesisId === hypothesis.id)?.reason ?? 'no_probe')
+      : latest.reason;
     hypothesis.status = status;
     return { id: `finding:${hypothesis.id}`, hypothesisId: hypothesis.id,
       category: hypothesis.category, asset: hypothesis.asset, status, evidenceIds,

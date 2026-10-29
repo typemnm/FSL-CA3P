@@ -79,7 +79,7 @@ async function readVerifiedFile(directory, name, entry, maxBytes) {
 
 /** Runs the existing Python report agent; public results never contain paths or credentials. */
 export async function generateReportDocument({ run, storePath, historyPath, envFile, env = process.env,
-  findingId, signal, timeoutMs = DEFAULT_TIMEOUT_MS, execute = executeReportProcess } = {}) {
+  findingId, verificationDir, signal, timeoutMs = DEFAULT_TIMEOUT_MS, execute = executeReportProcess } = {}) {
   if (run?.mode === 'core-fixture' || run?.simulated) {
     return { status: 'skipped', errorCode: 'FIXTURE_SKIPPED', message: '코어 fixture는 HWPX 보고서를 생성하지 않습니다.' };
   }
@@ -113,7 +113,8 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     await mkdir(output, { recursive: true, mode: 0o700 });
     const trigger = { schemaVersion: 'report-trigger-1.0', runId: run.id,
       sources: { run: { kind: 'run-store', location: resolve(storePath) },
-        history: historyPath ? { kind: 'casper-db', location: resolve(historyPath) } : { kind: 'none' } },
+        history: historyPath ? { kind: 'casper-db', location: resolve(historyPath) } : { kind: 'none' },
+        ...(verificationDir ? { verification: { kind: 'handoff-dir', location: resolve(verificationDir) } } : {}) },
       output: { dir: output }, ...(general ? { options: { findingId } } : {}) };
     const childEnv = { ...env, PYTHONPATH: PYTHON_ROOT, PYTHONIOENCODING: 'utf-8',
       ...(settings ? { DEEPSEEK_BASE_URL: settings.baseUrl,

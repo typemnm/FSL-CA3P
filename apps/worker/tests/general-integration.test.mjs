@@ -5,6 +5,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunService } from '../../application/run-service.mjs';
 import { runWorker } from '../worker.mjs';
+import { createGeneralRuntime } from '../../application/general-runtime.mjs';
+
+// The AI verifier is scripted so these runs never reach a real model.
+const scriptedRuntime = status => options => createGeneralRuntime({ ...options,
+  verifyAttackImpl: async record => ({ schemaVersion: 'verifier/1', attackId: record.id, status,
+    reason: 'scripted ' + status, artifacts: [] }) });
 
 async function waitFor(check) {
   const deadline = Date.now() + 30_000;
@@ -16,7 +22,7 @@ async function waitFor(check) {
   assert.fail('general integration run did not finish');
 }
 
-test('service, worker, and general runtime create a real HWPX for a confirmed finding without a report model API',
+test('service, worker, and general runtime turn an AI-confirmed probe into a real HWPX without a report model API',
   { timeout: 60_000 }, async () => {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   mkdirSync(runtimeRoot, { recursive: true });
@@ -67,21 +73,12 @@ test('service, worker, and general runtime create a real HWPX for a confirmed fi
           rationale: 'Search input exists, but browser verification is unavailable.',
           evidenceIds: [observedEvidenceId] },
       ], probes: [{ id: 'p-access', hypothesisId: 'h-access',
-        tool: 'known_record_idor_read', input: {} }],
+        tool: 'http_get', input: { path: '/api/admissions/partner/applications/1' } }],
       modelMetadata: { provider: 'deepseek', requestedModel: 'deepseek-flash',
         status: 'completed', usage: { prompt_tokens: 12, completion_tokens: 5 } } };
     } });
-    const generalIdorProbe = async options => {
-      assert.equal(options.origin, origin);
-      return { finding: { status: 'confirmed' }, evidence: [
-        { check: 'firstOwner', recordId: 1, status: 200, ownerId: 4 },
-        { check: 'secondOwner', recordId: 3, status: 200, ownerId: 5 },
-        { check: 'crossOwner', recordId: 3, status: 200, ownerId: 5 },
-        { check: 'studentRole', recordId: 3, status: 403, ownerId: null },
-      ] };
-    };
     worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 20,
-      env, generalPlannerFactory, generalFetchImpl, generalIdorProbe });
+      env, generalPlannerFactory, generalFetchImpl, generalRuntimeFactory: scriptedRuntime('confirmed') });
     const final = await waitFor(() => { const run = service.getRun(id); return run.status === 'completed' && run; });
     assert.equal(final.assessmentMode, 'general');
     assert.equal(final.report.schemaVersion, 'general-assessment/1');
@@ -134,6 +131,7 @@ test('general worker starts the real isolated board and records a bounded read w
       modelId: 'deepseek-flash', fixtureId: 'vul-web-1' });
     const id = queued.run.id;
     worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 20, env,
+      generalRuntimeFactory: scriptedRuntime('not_reproduced'),
       generalPlannerFactory: () => ({ async propose(context) {
         if (context.iteration > 1) return { done: true, hypotheses: [], probes: [],
           modelMetadata: { provider: 'deepseek', requestedModel: 'deepseek-flash' } };
@@ -150,7 +148,7 @@ test('general worker starts the real isolated board and records a bounded read w
     assert.equal(final.targetContacted, true);
     assert.equal(final.report.schemaVersion, 'general-assessment/1');
     assert.equal(final.report.findings.length, 1);
-    assert.equal(final.report.findings[0].status, 'inconclusive');
+    assert.equal(final.report.findings[0].status, 'not_reproduced');
     assert.equal(final.modelCalls.length, 2);
     assert.deepEqual(final.manifest.data.caseRevisions, []);
     assert.equal(final.reportDocuments.status, 'skipped');

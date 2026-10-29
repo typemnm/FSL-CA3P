@@ -19,6 +19,7 @@ SCHEMA_VERSION = "report-input-1.0"
 RUN_SCHEMA = "report-input-run-1.0"
 EVENTS_SCHEMA = "report-input-events-1.0"
 HISTORY_SCHEMA = "report-input-history-1.0"
+VERIFICATION_SCHEMA = "report-input-verification-1.0"
 
 
 class BundleExistsError(FileExistsError):
@@ -68,7 +69,13 @@ class BundleWriter:
             raise BundleExistsError("bundle directory already exists and is not empty")
 
     def add_json(self, relative: str, role: str, value: object) -> None:
-        data = _bytes(value)
+        self.add_bytes(relative, role, _bytes(value), "application/json")
+
+    def add_bytes(
+        self, relative: str, role: str, data: bytes, media_type: str = "application/octet-stream"
+    ) -> None:
+        if Path(relative).is_absolute() or ".." in Path(relative).parts:
+            raise ValueError("bundle path escapes the bundle")
         try:
             _write_exclusive(self.staging / relative, data)
         except OSError as exc:
@@ -79,7 +86,7 @@ class BundleWriter:
                 "role": role,
                 "sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
                 "size": len(data),
-                "mediaType": "application/json",
+                "mediaType": media_type,
             }
         )
 
