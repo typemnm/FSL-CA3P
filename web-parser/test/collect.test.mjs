@@ -29,12 +29,19 @@ wt.Worker = class extends wt.Worker {
   postMessage(m, ...rest) { posted.push(m?.html?.length ?? 0); return super.postMessage(m, ...rest); }
 };
 syncBuiltinESMExports(); // fingerprint.mjs's `Worker` import binding now points at the spy
-// Every profile a browser was launched on: pins "no browser started" and names a call's own Chromium for `ps`.
+// Every profile a browser was launched on: pins "no browser started" and identifies a call's own Chromium.
 const launches = [];
 const launch = chromium.launchPersistentContext;
 chromium.launchPersistentContext = function (profile, ...rest) { launches.push(profile); return launch.call(this, profile, ...rest); };
-const browsersOn = async (profile) => (await promisify(execFile)('ps', ['-axww', '-o', 'command='], { maxBuffer: 64 << 20 }))
-  .stdout.split('\n').filter((line) => line.includes(profile));
+const browsersOn = async (profile) => {
+  const command = process.platform === 'win32' ? 'powershell.exe' : 'ps';
+  const args = process.platform === 'win32'
+    ? ['-NoProfile', '-NonInteractive', '-Command',
+      'Get-CimInstance Win32_Process -Filter "Name = \'chrome.exe\' OR Name = \'chromium.exe\' OR Name = \'headless_shell.exe\' OR Name = \'chrome-headless-shell.exe\'" | Select-Object -ExpandProperty CommandLine']
+    : ['-axww', '-o', 'command='];
+  return (await promisify(execFile)(command, args, { maxBuffer: 64 << 20, windowsHide: true }))
+    .stdout.split('\n').filter((line) => line.includes(profile));
+};
 // Small budgets can add a fingerprint timeout (cold Worker start); tests about other stages ignore it.
 const core = (info) => info.errors.filter((e) => e.stage !== 'fingerprint');
 
@@ -682,7 +689,7 @@ test('V7: a broken dataset costs only the fingerprint stage; collect still resol
   }
   // No dataset at all (scripts/fetch-dataset.mjs never ran): same outcome.
   await rm(join(copy, 'data'), { recursive: true });
-  const missing = await import(`${join(copy, 'collect.mjs')}?missing`);
+  const missing = await import(`${pathToFileURL(join(copy, 'collect.mjs')).href}?missing`);
   const info = await missing.collect(`${base}/`);
   assert.ok(info.structure.links.length > 0);
   assert.deepEqual(info.errors.map((e) => e.stage), ['fingerprint']);
@@ -777,7 +784,7 @@ test('signal: an abort mid-navigation rejects within 2 s; that call\'s Chromium 
     run.catch(() => {});
     await silent.arrived;
     const profile = launches[launched];
-    assert.ok((await browsersOn(profile)).length > 0, 'ps sees the running browser by its profile');
+    assert.ok((await browsersOn(profile)).length > 0, 'process list sees the running browser by its profile');
     const t0 = Date.now();
     ac.abort(new Error('cancelled'));
     await assert.rejects(run, (err) => err.name === 'AbortError' && err.cause.message === 'cancelled');

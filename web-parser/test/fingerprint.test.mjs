@@ -3,7 +3,6 @@ import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import wt from 'node:worker_threads';
 import { fingerprint, fingerprintWithin, LIBRARY_CATEGORIES, MATCH_SAMPLE_LENGTH } from '../fingerprint.mjs';
@@ -123,7 +122,7 @@ test('no mixing between assets: each call on reused workers reports only its own
 });
 
 test('the idle worker is unref\'d: a process that used it exits on its own', T, async () => {
-  const mod = fileURLToPath(new URL('../fingerprint.mjs', import.meta.url));
+  const mod = new URL('../fingerprint.mjs', import.meta.url).href;
   // No --input-type flag: the Worker would inherit it from execArgv and fail.
   const child = `import(${JSON.stringify(mod)}).then((m) => m.fingerprintWithin(${JSON.stringify(EMPTY)}, 30000));`;
   await promisify(execFile)(process.execPath, ['-e', child], { timeout: 15_000 });
