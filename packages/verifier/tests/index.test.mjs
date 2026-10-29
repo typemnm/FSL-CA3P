@@ -193,3 +193,31 @@ test('invalid records are rejected before the model is called', async () => {
   );
   assert.equal(model.payloads.length, 0);
 });
+
+test('control, followUp and setup reach the model with side bodies cut to 4 KiB', async () => {
+  const exchange = status => ({ request: { method: 'GET', url: 'http://127.0.0.1:4174/api/posts', headers: {}, session: 'bob' },
+    response: { status, bodyText: 'x'.repeat(10_000) } });
+  const model = scriptedModel([{ verdict: 'valid', reason: 'state and effect line up' }]);
+  await verifyAttack(record({ control: exchange(403), followUp: exchange(200), setup: [exchange(201)] }), { model });
+  const { attack } = model.payloads[0];
+  assert.equal(attack.control.response.status, 403);
+  assert.equal(attack.followUp.request.session, 'bob');
+  assert.equal(attack.setup[0].response.status, 201);
+  assert.equal(attack.setup[0].response.bodyText.length, 4096);
+});
+
+test('the model may take a second browser visit after a wrong page, but not a third', async () => {
+  const { calls, factory } = fakeBrowser();
+  const model = scriptedModel([
+    { verdict: 'unknown', reason: 'look', browser: { path: '/posts/4' } },
+    { verdict: 'unknown', reason: '404, try the board', browser: { path: '/' } },
+    { verdict: 'unknown', reason: 'still want more', browser: { path: '/again' } },
+  ]);
+  const result = await verifyAttack(record(), { model, outDir: 'out', browserFactory: factory });
+  assert.deepEqual(calls.goto.map(call => call.path), ['/posts/4', '/']);
+  assert.equal(model.payloads.length, 3);
+  assert.equal(model.payloads[2].visitsLeft, 0);
+  assert.equal(model.payloads[2].previousVisits.length, 1);
+  assert.equal(result.artifacts.length, 2);
+  assert.equal(result.status, 'inconclusive');
+});

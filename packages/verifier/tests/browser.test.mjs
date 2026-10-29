@@ -120,6 +120,9 @@ test('readySelector reports ready only when the element appears', { skip: !CHROM
   try {
     const nav = await never.goto('/never', { readySelector: '#ready' });
     assert.equal(nav.ready, false);
+    // A missing element must not use up the deadline: the page can still be observed.
+    const observation = await never.observe();
+    assert.equal(observation.finalUrl, `${origin}/never`);
   } finally {
     await never.close();
   }

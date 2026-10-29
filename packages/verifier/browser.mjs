@@ -50,6 +50,8 @@ function pushCapped(list, item, max) {
   if (list.length < max) list.push(item);
 }
 
+const READY_WAIT_MS = 5000;
+
 export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10000, signal, bindingName = '__ca3pXssProbe' } = {}) {
   if (signal?.aborted) throw abortError();
   const allowedOrigin = originOf(origin);
@@ -151,7 +153,9 @@ export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10
       const finalUrl = page.url();
       let ready = response !== null;
       if (ready && readySelector) {
-        ready = await page.waitForSelector(readySelector, { timeout: remaining() }).then(() => true, () => false);
+        // An element that never appears is itself evidence, so keep half the deadline for observing the page.
+        ready = await page.waitForSelector(readySelector, { timeout: Math.min(READY_WAIT_MS, remaining() / 2) })
+          .then(() => true, () => false);
       }
       return { status: response?.status() ?? null, finalUrl, ready };
     };

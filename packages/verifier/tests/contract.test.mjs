@@ -93,3 +93,13 @@ test('bodyDigest returns a 12-hex sha256 prefix or null', () => {
   assert.equal(bodyDigest(''), null);
   assert.equal(bodyDigest(undefined), null);
 });
+
+test('validateAttackRecord accepts setup exchanges, redacts them and rejects a bad setup', () => {
+  const setup = [{ request: { method: 'POST', url: 'http://127.0.0.1:4174/api/posts', headers: { cookie: 'sid=abc' } },
+    response: { status: 201 } }];
+  const copy = validateAttackRecord(record({ setup }));
+  assert.equal(copy.setup[0].request.headers.cookie, '[redacted]');
+  for (const bad of [{ setup: {} }, { setup: ['x'] }, { setup: Array.from({ length: 9 }, () => ({})) }]) {
+    assert.throws(() => validateAttackRecord(record(bad)), error => error.code === 'INVALID_ATTACK_RECORD');
+  }
+});

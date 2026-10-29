@@ -61,11 +61,15 @@ export function validateAttackRecord(record) {
   for (const key of ['info', 'control', 'followUp']) {
     if (record[key] !== undefined && !isObject(record[key])) throw invalidRecord(`${key} must be an object`);
   }
+  if (record.setup !== undefined && (!Array.isArray(record.setup) || record.setup.length > 8 || !record.setup.every(isObject))) {
+    throw invalidRecord('setup must be an array of at most 8 exchanges');
+  }
   const copy = structuredClone(record);
   copy.kind = record.kind ?? 'unspecified';
   redactExchange(copy);
   redactExchange(copy.control);
   redactExchange(copy.followUp);
+  copy.setup?.forEach(redactExchange);
   return copy;
 }
 
