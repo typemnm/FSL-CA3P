@@ -123,8 +123,6 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.match(await page.locator('#report-content').textContent(), /owner mismatch observed/);
   assert.match(await page.locator('#report-content').textContent(), /observer_unavailable/);
   assert.match(await page.locator('#report-content').textContent(), /모델 호출 1건/);
-  assert.match(await page.locator('.parser-saved-preview').textContent(), /Bootstrap 5.*jQuery 3.*GET \/search.*\/search.*부분 결과/s);
-  assert.equal(await page.locator('.parser-saved-preview img').count(), 0);
   assert.equal(await page.locator('#report-content script').count(), 0);
   assert.match(await page.locator('#report-content').textContent(), /미점검과 판정 불가는 안전하다는 뜻이 아닙니다/);
   assert.match(await page.locator('#report-document-status').textContent(), /범용 HWPX 미지원/);

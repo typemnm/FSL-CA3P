@@ -504,7 +504,7 @@ function renderModules() {
       : snapshot.source === 'scripted-gateway' ? 'FIXTURE'
         : snapshot.source === 'core-internal-event' ? 'CORE EVENT'
           : snapshot.source === 'local-loopback-board' ? 'LOCAL BOARD'
-          : isExternalRun(item) ? 'EXTERNAL HTTP' : isLab(item) ? 'LOCAL MODULE' : 'FIXTURE';
+          : isLab(item) ? 'LOCAL MODULE' : 'FIXTURE';
     return `<article class="panel module-card"><div class="module-card-top"><span data-icon="${module.icon}"></span><span class="local-chip">${source}</span></div><h2>${escape(module.name)}</h2><p>${escape(describeModule(module.id, item))}</p><div class="module-metrics"><span><strong>${String(count).padStart(2,'0')}</strong>EVENTS</span><span><strong>${escape(snapshot?.latency ?? '—')}</strong>ELAPSED MS</span></div><button class="button secondary" data-open-module="${escape(module.id)}">데이터 확인 ${icon('code')}</button></article>`;
   }).join('') : '<section class="panel empty-state"><h3>수신한 도구 이벤트 없음</h3><p>이번 실행에서 실제로 사용한 도구만 여기에 표시합니다.</p></section>';
   hydrateIcons($('module-grid'));
@@ -581,17 +581,6 @@ function renderReportPicker() {
   if (entries.some(item => item.id === selected)) $('report-run-select').value = selected;
   $('report-json-download').disabled = !currentRun().id;
 }
-function parserPreviewMarkup(preview) {
-  if (!Array.isArray(preview?.pages) || !preview.pages.length) return '';
-  const label = items => (items || []).map(item => `${item.name || ''}${item.version ? ' ' + item.version : ''}`).filter(Boolean).join(', ') || '없음';
-  const forms = page => (page.forms || []).map(form => `${form.method || 'GET'} ${form.action || ''} (${(form.fields || []).map(field => field.name || field.type).join(', ')})`).join(', ') || '없음';
-  const paths = page => (page.paths || []).map(path => path.url || path).filter(Boolean);
-  const pathLabel = url => { try { return new URL(url).pathname; } catch { return String(url); } };
-  const pathSummary = page => { const values = paths(page); return `${values.length}개${values.length ? ' · ' + values.slice(0, 3).map(pathLabel).join(', ') + (values.length > 3 ? ' 외' : '') : ''}`; };
-  const pathDetails = page => paths(page).length > 3 ? `<details class="parser-report-paths"><summary>전체 발견 경로 보기</summary><ul>${paths(page).map(url => `<li>${escape(url)}</li>`).join('')}</ul></details>` : '';
-  const row = (name, value) => `<div class="parser-preview-row"><strong>${name}</strong><span>${escape(value)}</span></div>`;
-  return `<section class="panel parser-saved-preview"><h2>점검 전에 확인한 URL별 파싱 결과</h2><p>이 결과는 점검을 시작하기 전에 수집했습니다.</p><div class="parser-preview-pages">${preview.pages.map(page => `<article class="parser-preview-card"><h3>${escape(page.url)}</h3><p>HTTP ${escape(page.status ?? '응답 없음')} · ${escape(page.contentType || '콘텐츠 유형 미확인')} · ${escape(page.title || '제목 없음')} · ${page.mode === 'browser' ? '브라우저 관찰' : 'HTTP 응답 분석'}</p>${row('기술', label(page.technologies))}${row('외부 라이브러리', label(page.libraries))}${row('폼', forms(page))}${row('발견 경로', pathSummary(page))}${pathDetails(page)}${page.errors?.length ? `<p class="parser-preview-warning">수집 오류: ${escape(page.errors.map(error => error.code || String(error)).join(', '))}</p>` : ''}${page.truncated ? '<p class="parser-preview-warning">부분 결과</p>' : ''}${page.mode === 'http-response' ? '<p class="parser-preview-note">외부 URL은 HTTP 응답을 분석했습니다. 브라우저 DOM과 실행 후 JavaScript 상태, 폼은 수집하지 않았습니다.</p>' : ''}</article>`).join('')}</div></section>`;
-}
 function renderReports() {
   const item = currentRun();
   if (isLegacyRun(item)) {
@@ -604,12 +593,10 @@ function renderReports() {
         : '관측과 검증이 진행 중입니다. 결과가 저장되면 가설별 근거와 미점검 사유를 표시합니다.';
       $('report-content').innerHTML = `<section class="panel empty-state" role="status"><h2>범용 점검 결과 대기</h2><p>${message}</p></section>`;
       if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
-      if (item.parserPreview) $('report-content').insertAdjacentHTML('beforeend', parserPreviewMarkup(item.parserPreview));
       return;
     }
     $('report-content').innerHTML = `${reportDocumentMarkup(item)}${renderGeneralReport(item)}${jsonSection('범용 점검 결과 원문', generalReport(item))}`;
     if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
-    if (item.report?.parserPreview || item.parserPreview) $('report-content').insertAdjacentHTML('beforeend', parserPreviewMarkup(item.report?.parserPreview ?? item.parserPreview));
     if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
     hydrateIcons($('report-content'));
     return;
@@ -625,7 +612,6 @@ function renderReports() {
   $('report-content').insertAdjacentHTML('afterbegin', reportDocumentMarkup(item));
   hydrateIcons($('report-content'));
   if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
-  if (item.report?.parserPreview || item.parserPreview) $('report-content').insertAdjacentHTML('beforeend', parserPreviewMarkup(item.report?.parserPreview ?? item.parserPreview));
   if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
 }
 function renderNotifications() {

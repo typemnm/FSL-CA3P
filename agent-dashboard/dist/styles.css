@@ -445,13 +445,6 @@ button.ops-row:hover{background:#1c3324}
 .intake-save .ops-form-actions { margin-top: 0; }
 .intake-save small { display: block; margin-top: 12px; }
 @media (max-width: 650px) { .intake-save { position: static; } .review-summary > div { grid-template-columns: 88px minmax(0, 1fr); } }
-.web-parser-results { margin: 12px 0 4px; padding: 14px; border: 1px solid #34513c; border-radius: 6px; background: #122019; overflow-wrap: anywhere; }
-.web-parser-results h4 { margin: 0 0 6px; color: var(--mint); font-size: 17px; }
-.web-parser-results > p { margin: 0 0 10px; font-size: 14px; }
-.web-parser-results > div { margin-top: 9px; }
-.web-parser-results ul { margin: 4px 0 0; padding-left: 20px; }
-.web-parser-results li { padding: 2px 0; }
-.web-parser-results small { color: #9bb3a5; }
 /* URL별 파싱 결과를 판단 엔진 선택 전에 검토합니다. */
 .lab-launch[hidden],#target-preview-results[hidden]{display:none!important}
 .parser-url-form{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:12px 0}
@@ -476,8 +469,5 @@ button.ops-row:hover{background:#1c3324}
 .parser-preview-row strong{color:#bce8cb}
 .parser-preview-row span{overflow-wrap:anywhere}
 .parser-preview-warning{color:#ffd28c}
-.parser-report-paths{margin-top:10px;color:#a7c3b0}
-.parser-report-paths summary{cursor:pointer}
-.parser-report-paths ul{margin:8px 0 0;padding-left:20px;max-height:220px;overflow:auto;overflow-wrap:anywhere}
 @media(max-width:760px){.parser-preview-browser{grid-template-columns:1fr}.parser-preview-paths{display:flex;max-height:180px}.parser-preview-path{flex:0 0 min(200px,70vw)}}
 @media(max-width:650px){.parser-url-form button{width:100%}.parser-preview-row{grid-template-columns:1fr}}
