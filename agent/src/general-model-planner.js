@@ -315,14 +315,37 @@ class GeneralModelPlanner {
     if (promptBytes > MAX_PROMPT_BYTES) {
       throw plannerError('GENERAL_PLANNER_CONTEXT_TOO_LARGE', `Model context exceeds ${MAX_PROMPT_BYTES} bytes; no evidence was silently omitted`);
     }
-    const result = await this.client.completeJson({ systemPrompt: GENERAL_SYSTEM_PROMPT, userPayload, signal });
-    const plan = validateModelPlan(result.value, { evidenceIds: safeEvidence.ids,
+    const validationContext = { evidenceIds: safeEvidence.ids,
       priorHypotheses: prior.byId, priorProbeIds, iteration,
       availableTools: new Set(tools), maxHypotheses: this.maxHypotheses,
-      maxProbes: proposalLimits.maxProbes });
-    return { ...plan, modelMetadata: { ...sanitizeMetadata(result.metadata),
-      promptDigest: createHash('sha256').update(JSON.stringify(userPayload)).digest('hex'),
-      evidenceCount: safeEvidence.result.length, contextRedactions: state.redactedFields } };
+      maxProbes: proposalLimits.maxProbes };
+    const promptDigest = createHash('sha256').update(JSON.stringify(userPayload)).digest('hex');
+    const attempts = [];
+    let systemPrompt = GENERAL_SYSTEM_PROMPT;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let result;
+      try { result = await this.client.completeJson({ systemPrompt, userPayload, signal }); }
+      catch (error) { if (attempts.length) error.modelAttempts = attempts; throw error; }
+      const metadata = { ...sanitizeMetadata(result.metadata), iteration, promptDigest,
+        evidenceCount: safeEvidence.result.length, contextRedactions: state.redactedFields };
+      try {
+        const plan = validateModelPlan(result.value, validationContext);
+        const completed = { ...metadata, status: 'completed' };
+        attempts.push(completed);
+        return { ...plan, modelMetadata: completed, modelAttempts: attempts };
+      } catch (error) {
+        if (error?.code !== 'GENERAL_PLANNER_SCHEMA_ERROR') throw error;
+        // Validation messages are generated from fixed field names. Never replay or record the model response.
+        attempts.push({ ...metadata, status: 'failed', validationError: error.message });
+        const correction = `\nThe previous JSON failed local schema validation: ${error.message}. Return a newly generated plan using the exact required fields and types. Do not repeat the previous response.`;
+        if (attempt === 1 || Buffer.byteLength(systemPrompt + correction, 'utf8')
+          + Buffer.byteLength(JSON.stringify(userPayload), 'utf8') > MAX_PROMPT_BYTES) {
+          error.modelAttempts = attempts;
+          throw error;
+        }
+        systemPrompt += correction;
+      }
+    }
   }
 }
 

@@ -1,7 +1,7 @@
 import { MODULES, validateTarget, formatElapsed } from './engine.js';
 import { initStarfield } from './starfield.js';
 import { createRuntimeClient } from './runtime-client.js';
-import { generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun, renderGeneralLiveResults, renderGeneralLoop, renderGeneralReport } from './general-results.js';
+import { generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun, renderGeneralLoop, renderGeneralReport } from './general-results.js';
 import { createOperationsPages } from './operations-pages.js';
 import { createWorkspaceChat } from './workspace-chat.js';
 
@@ -112,7 +112,7 @@ function isLegacyRun(value) {
 const saved = readJSON(STORAGE, []);
 let history = Array.isArray(saved) ? saved.filter(isRun).slice(0, 12) : [];
 const storedSettings = readJSON(SETTINGS, {});
-const settings = { motion: storedSettings?.motion !== false, autoScroll: storedSettings?.autoScroll !== false, confirmModelReset: storedSettings?.confirmModelReset !== false, speed: [900,1800,3000].includes(Number(storedSettings?.speed)) ? Number(storedSettings.speed) : 1800 };
+const settings = { motion: storedSettings?.motion !== false, confirmModelReset: storedSettings?.confirmModelReset !== false, speed: [900,1800,3000].includes(Number(storedSettings?.speed)) ? Number(storedSettings.speed) : 1800 };
 // Browser history is read-only context. Only the server can advance the current run.
 let run = { id: '', target: '', status: 'idle', startedAt: null, elapsedMs: 0, step: 0, totalSteps: 19, iterations: 1, events: [], snapshots: {}, reviewItems: [], mode: 'core-fixture', simulated: true, targetContacted: false };
 let instanceId = null;
@@ -286,7 +286,8 @@ function acceptState(envelope) {
   instanceId = envelope.instanceId;
   labReadiness = isObject(envelope.lab) && typeof envelope.lab.available === 'boolean'
     ? { available: envelope.lab.available, model: envelope.lab.model, possibleRetries: envelope.lab.possibleRetries,
-      generalSupported: envelope.lab.generalSupported === true, generalAvailable: envelope.lab.generalAvailable === true }
+      generalSupported: envelope.lab.generalSupported === true, generalAvailable: envelope.lab.generalAvailable === true,
+      targetOrigins: isObject(envelope.lab.targetOrigins) ? envelope.lab.targetOrigins : {} }
     : { available: false };
   if (!assessmentModeTouched) {
     acceptedAssessmentMode = labReadiness.generalSupported ? 'general' : 'legacy';
@@ -359,7 +360,6 @@ function historyReplace(view) { window.history.replaceState(null, '', `#${viewTo
 function renderStats() {
   const item = currentRun();
   const general = isGeneralAssessment(item);
-  document.querySelector('.live-grid').classList.toggle('general-mode', general);
   if (general && selectedEventId && !item.events.some(event => event.id === selectedEventId)) {
     selectedEventId = null;
   }
@@ -375,18 +375,8 @@ function renderStats() {
   const connected = connection === 'connected';
   const connectionLabel = { connecting: '런타임 연결 중', connected: connectionTransport === 'polling' ? '1초 간격 상태 연결됨' : 'SSE 연결됨', disconnected: '연결 끊김 · 자동 재연결 중' }[connection];
   $('history-banner').hidden = !inspectedRun || !['dashboard', 'sessions', 'compare', 'reports'].includes(activeView);
-  $('run-status').textContent = inspectedRun ? '기록 보기' : statusNames[item.status];
-  $('status-orb').className = `status-orb ${running && connected ? '' : 'stopped'}`;
-  $('run-context').textContent = inspectedRun ? `${modeLabel(item)} · 저장한 실행` : !connected ? '마지막 수신 상태 · 진행 상태 갱신 대기' : general ? modeLabel(item) : isIdorLab(item) ? modeLabel(item) : lab ? `실제 격리 게시판 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'} 판단` : '실제 코어 · 외부 모듈 fixture';
   $('execution-label').textContent = activeView === 'chat' ? 'WORKSPACE / AI CHAT' : isExternalRun(item) ? 'EXTERNAL / READ ONLY' : general ? 'GENERAL / EVIDENCE' : isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
   $('dashboard-mode').textContent = isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : general ? '범용 점검 결과 · 지원된 관측 범위' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
-  $('elapsed-source').textContent = isExternalRun(item) ? '외부 URL 관찰' : lab ? '로컬 실습 실행' : 'fixture 실행';
-  $('iteration-value').textContent = general ? String(generalCounts?.iteration ?? item.iterations ?? 0) : '01';
-  $('iteration-value').nextElementSibling.textContent = general ? '회' : '/ 01';
-  $('step-label').textContent = general ? (item.events.at(-1)?.stage || item.stage || '단계 기록 대기') : item.status === 'completed' ? '코어 실행 완료' : stage ? `최근 수신 · ${stage.role}` : '첫 이벤트 대기';
-  $('total-event-count').textContent = general ? '가변 단계' : `${item.totalSteps} 이벤트`;
-  $('event-count').textContent = String(item.events.length).padStart(2, '0');
-  $('elapsed-value').textContent = formatElapsed(item.elapsedMs);
   $('progress-label').textContent = general
     ? generalCounts ? `가설 ${generalCounts.totalHypotheses}건 · ${statusNames[item.status] || item.status}`
       : `결과 대기 · ${statusNames[item.status] || item.status}`
@@ -399,7 +389,6 @@ function renderStats() {
   $('progress-fill').style.width = general ? '0%' : `${Math.min(100, item.step / item.totalSteps * 100)}%`;
   $('core-state').textContent = inspectedRun ? 'SAVED SESSION' : !connected ? connection === 'connecting' ? 'CONNECTING' : 'CONNECTION LOST' : {queued:'QUEUED',preparing:'LAB PREPARING',running:'CORE RUNNING',stopping:'CORE STOPPING',stopped:'CORE STOPPED',cancelled:'CANCELLED',interrupted:'INTERRUPTED',completed:'CORE COMPLETE',failed:'CORE FAILED',idle:'READY TO START'}[item.status];
   $('live-label').innerHTML = `<span class="tiny-dot ${connected && running ? 'green' : 'gray'}"></span>${inspectedRun ? 'SAVED' : !connected ? 'OFFLINE' : running ? 'LIVE' : 'IDLE'}`;
-  $('stream-status').textContent = connected ? connectionTransport === 'polling' ? 'Polling · 1s connected' : 'SSE connected' : '상태 연결 재시도 중';
   $('connection-status').textContent = connectionLabel;
   $('connection-dot').className = `tiny-dot ${connected ? 'green' : 'gray'}`;
   $('connection-notice').hidden = connected;
@@ -429,8 +418,8 @@ function renderStats() {
   if ($('model-select').selectedOptions[0]?.disabled) $('model-select').value = Array.from($('model-select').options).find(option => !option.disabled)?.value || '';
   const model = selectedModel();
   $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || (launchGeneral && !labReadiness.generalAvailable);
-  $('external-preflight-button').disabled = !canOperate() || !connected || active || externalPreflightPending || !$('external-authorization').checked;
-  $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || !externalPreflight?.ready || !$('external-authorization').checked;
+  $('external-preflight-button').disabled = !canOperate() || !connected || active || externalPreflightPending;
+  $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || !externalPreflight?.ready;
   $('fixture-select').disabled = controlPending || active || !canOperate();
   $('lab-target-origin').disabled = controlPending || active || !canOperate();
   $('lab-target-control').hidden = !idor;
@@ -473,20 +462,6 @@ function renderStats() {
   $('agent-core').classList.toggle('selected', selectedModule === 'agent');
   $('agent-core').classList.toggle('current', running && connected && stage?.id === 'agent');
   $('agent-core').setAttribute('aria-pressed', String(selectedModule === 'agent'));
-}
-function renderActivity() {
-  const item = currentRun();
-  const query = $('event-search').value.trim().toLowerCase();
-  const events = item.events.filter((event) => `${moduleById(event.module).name} ${event.title} ${event.detail} ${event.correlationId}`.toLowerCase().includes(query)).slice().reverse();
-  const previousScroll = $('activity-list').scrollTop;
-  $('activity-counter').textContent = String(item.events.length).padStart(2,'0');
-  $('activity-list').innerHTML = events.length ? events.map((event) => `<button class="activity-event ${event.id === selectedEventId ? 'active' : ''}" data-event="${escape(event.id)}"><span class="event-indicator">${icon(event.type === 'success' ? 'check' : moduleById(event.module).icon)}</span><span class="event-copy"><span class="event-meta"><span>${escape(moduleById(event.module).name.replace(' Engine','').replace('Observation Review','Observer'))}</span><span class="event-time">${escape(timeLabel(event.time))}</span></span><span class="event-title">${escape(event.title)}</span><span class="event-detail">${escape(event.detail)}</span></span></button>`).join('') : `<div class="empty-state compact"><span data-icon="pulse"></span><h3>${query ? '일치하는 이벤트가 없습니다' : '첫 코어 이벤트를 기다리는 중'}</h3><p>${query ? '다른 검색어를 입력해 보세요.' : isLab(item) ? '로컬 실습 서버가 준비되고 첫 이벤트가 도착하면 표시됩니다.' : '표시용 URL을 입력하고 코어 fixture를 시작하세요.'}</p></div>`;
-  hydrateIcons($('activity-list'));
-  $('activity-list').scrollTop = settings.autoScroll ? 0 : previousScroll;
-  const general = isGeneralAssessment(item);
-  $('general-live-results-panel').hidden = !general;
-  if (general) $('general-live-results-content').innerHTML = renderGeneralLiveResults(item);
-  if (!$('notification-popover').hidden) renderNotifications();
 }
 function getSnapshot() { const item = currentRun(); return selectedEventId ? item.events.find((event) => event.id === selectedEventId) : item.snapshots[selectedModule]; }
 function getAgentEvent() {
@@ -686,7 +661,7 @@ function renderNotifications() {
 function render() {
   $('history-count').textContent = history.length;
   renderStats();
-  if (activeView === 'dashboard') { renderActivity(); renderInspector(); renderHistoryChecks(); }
+  if (activeView === 'dashboard') { renderInspector(); renderHistoryChecks(); }
   if (activeView === 'sessions') renderSessions();
   if (activeView === 'modules') renderModules();
   if (activeView === 'reports') { renderReportPicker(); renderReports(); }
@@ -732,10 +707,9 @@ $('target-kind-lab').addEventListener('click', () => setTargetKind('lab'));
 $('target-kind-external').addEventListener('click', () => setTargetKind('external'));
 $('external-url').addEventListener('input', invalidateExternalPreflight);
 $('external-path').addEventListener('input', invalidateExternalPreflight);
-$('external-authorization').addEventListener('change', renderStats);
 $('external-target-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (!canOperate() || connection !== 'connected' || !$('external-authorization').checked) return;
+  if (!canOperate() || connection !== 'connected') return;
   const target = $('external-url').value.trim();
   const pathPrefix = $('external-path').value.trim() || '/';
   const generation = ++externalPreflightGeneration;
@@ -762,7 +736,7 @@ $('external-target-form').addEventListener('submit', async event => {
   }
 });
 $('external-run-button').addEventListener('click', async () => {
-  if (!externalPreflight?.ready || !$('external-authorization').checked) return;
+  if (!externalPreflight?.ready) return;
   if (['queued','preparing','running','stopping'].includes(run.status)) return;
   await submitControl(async () => {
     await runtime.startExternal({ target: externalPreflight.normalizedUrl,
@@ -770,7 +744,6 @@ $('external-run-button').addEventListener('click', async () => {
     inspectedRun = null;
     selectedEventId = null;
     externalPreflight = null;
-    $('external-authorization').checked = false;
     $('external-preflight-status').textContent = '외부 대상 관찰을 시작했습니다. 재실행하려면 사전 점검을 다시 수행하세요.';
     showAttackProgress();
     notify('외부 URL의 공개 페이지 읽기 관찰을 시작했습니다.');
@@ -826,7 +799,7 @@ function commitFixture(id) {
   $('fixture-select').value = id;
   acceptedFixtureId = id;
   const fixture = selectedIdorFixture();
-  if (fixture) $('lab-target-origin').value = `http://127.0.0.1:${fixture.port}`;
+  if (fixture) $('lab-target-origin').value = labReadiness.targetOrigins?.[id] || `http://127.0.0.1:${fixture.port}`;
   $('lab-target-origin').removeAttribute('aria-invalid');
   renderStats();
 }
@@ -899,7 +872,7 @@ function chooseModule(id, eventId = null) {
   selectedModule = id;
   selectedEventId = eventId;
   activeTab = ['agent','reasoning','observer'].includes(id) ? 'agent' : 'request';
-  renderStats(); renderInspector(); renderActivity();
+  renderStats(); renderInspector();
 }
 document.querySelectorAll('.graph-node').forEach((node) => node.addEventListener('click', () => chooseModule(node.dataset.module)));
 $('agent-core').addEventListener('click', () => chooseModule('agent'));
@@ -909,8 +882,6 @@ $('general-run-summary').addEventListener('click', (event) => {
   const selected = currentRun().events.find(entry => entry.id === button.dataset.generalEvent);
   if (selected) chooseModule(isGeneralAssessment(currentRun()) ? 'agent' : selected.module, selected.id);
 });
-$('activity-list').addEventListener('click', (event) => { const button = event.target.closest('[data-event]'); if (!button) return; const selected = currentRun().events.find((entry) => entry.id === button.dataset.event); if (selected) chooseModule(isGeneralAssessment(currentRun()) ? 'agent' : selected.module, selected.id); });
-$('event-search').addEventListener('input', renderActivity);
 document.querySelectorAll('[data-tab]').forEach((tab) => tab.addEventListener('click', () => { activeTab = tab.dataset.tab; renderInspector(); }));
 document.querySelector('.inspector-tabs').addEventListener('keydown', (event) => {
   if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
@@ -976,11 +947,8 @@ $('history-search').addEventListener('input', renderSessions);
 $('history-mode').addEventListener('change', renderSessions);
 $('return-current-button').addEventListener('click', () => { inspectedRun = null; selectedEventId = null; $('target-url').value = isLab(run) ? '' : run.target || ''; render(); notify('서버의 현재 실행으로 돌아왔습니다.'); });
 $('module-grid').addEventListener('click', (event) => { const button = event.target.closest('[data-open-module]'); if (!button) return; selectedModule = button.dataset.openModule; selectedEventId = null; activeTab = 'request'; navigate('dashboard'); $('inspector-panel').scrollIntoView({ block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' }); });
-function setAutoScroll(enabled) { settings.autoScroll = enabled; $('autoscroll-button').setAttribute('aria-pressed', String(enabled)); $('scroll-setting').checked = enabled; persistSettings(); }
-$('autoscroll-button').addEventListener('click', () => { setAutoScroll(!settings.autoScroll); if (settings.autoScroll) $('activity-list').scrollTop = 0; notify(settings.autoScroll ? '최신 이벤트를 자동으로 표시합니다.' : '자동 이벤트 표시를 끄었습니다.'); });
-$('settings-button').addEventListener('click', () => { $('motion-setting').checked = settings.motion; $('scroll-setting').checked = settings.autoScroll; $('speed-setting').value = settings.speed; $('settings-dialog').showModal(); });
+$('settings-button').addEventListener('click', () => { $('motion-setting').checked = settings.motion; $('speed-setting').value = settings.speed; $('settings-dialog').showModal(); });
 $('motion-setting').addEventListener('change', (event) => { settings.motion = event.target.checked; persistSettings(); updateStars(); });
-$('scroll-setting').addEventListener('change', (event) => setAutoScroll(event.target.checked));
 $('speed-setting').addEventListener('change', (event) => { settings.speed = Number(event.target.value); persistSettings(); });
 $('settings-dialog').addEventListener('click', (event) => { if (event.target === $('settings-dialog')) { const rect = $('settings-dialog').getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) $('settings-dialog').close(); } });
 $('notifications-button').addEventListener('click', () => { $('notification-popover').hidden = !$('notification-popover').hidden; $('notifications-button').setAttribute('aria-expanded', String(!$('notification-popover').hidden)); renderNotifications(); });
@@ -1253,7 +1221,6 @@ function clearExperimentView() {
   history = []; centralHistoryLoaded = false; inspectedRun = null; legacyDetail = null; comparison = null;
   reviewDrafts.clear(); pendingReviews.clear(); historyReviewSignature = '';
   selectedEventId = null; selectedModule = 'parser'; activeTab = 'request';
-  $('event-search').value = '';
   $('comparison-content').textContent = '';
   $('legacy-detail').textContent = '';
   $('notification-list').textContent = '';
@@ -1264,7 +1231,7 @@ function clearExperimentView() {
   return !browserResetError;
 }
 function renderAllExperimentViews() {
-  renderActivity(); renderInspector(); renderHistoryChecks(); renderSessions(); renderModules(); renderReports(); renderComparison();
+  renderInspector(); renderHistoryChecks(); renderSessions(); renderModules(); renderReports(); renderComparison();
 }
 $('model-reset-toggle').addEventListener('change', event => {
   settings.confirmModelReset = event.target.checked; persistSettings();
@@ -1387,8 +1354,11 @@ $('login-form').addEventListener('submit', async event => {
 $('logout-button').addEventListener('click', async () => { try { await runtime.logout(); } catch (error) { showRuntimeError(error.message); } });
 window.addEventListener('beforeunload', () => { saveRun(); runtime.close(); });
 $('target-url').value = '';
-$('autoscroll-button').setAttribute('aria-pressed', String(settings.autoScroll));
 navigate(location.hash.slice(1) || 'dashboard');
 runtime.connect();
 setInterval(() => { if (authSession && (!authSession.authRequired || authSession.authenticated)) void refreshHistory(); }, 5000);
 setInterval(() => { if (authSession && (!authSession.authRequired || authSession.authenticated)) void refreshCiResults(); }, 30_000);
+setInterval(() => {
+  if (activeView === 'module-llm' && ['queued', 'preparing', 'running', 'stopping'].includes(run.status)
+    && authSession && (!authSession.authRequired || authSession.authenticated)) void operations.refreshLlmLogs();
+}, 2000);

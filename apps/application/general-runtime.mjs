@@ -1,18 +1,23 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { emptyRun, assertIdentifier } from '../../packages/contracts/index.mjs';
+import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../packages/contracts/general-loop-budget.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
 import { probeSite } from '../../vul-web2/scripts/idor-probe.mjs';
 import { executeUniversityRead } from '../../packages/adapters/university-read.mjs';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
+import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
 
 const { runGeneralAssessment } = generalCore;
 const { createGeneralModelPlannerFromEnv } = generalPlanner;
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 const MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
-const LIMITS = Object.freeze({ maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 });
+// Planner prompt cap 65,536 − 8,192 margin − 39,894 measured worst non-web_info context (daehan inventory 13,859,
+// initial evidence 3,833, 40 hypotheses 19,867, system/rest/probe IDs 2,335) − 24 one-line overviews × 441 = 6,866.
+// Measured with the default loop budget (maxProbes 24); a larger maxProbes shrinks the headroom the core prompt has.
+const WEB_INFO_EVIDENCE_BUDGET_BYTES = 6800;
 const MAX_BODY_BYTES = 24 * 1024;
 const MAX_INITIAL_PAGES = 14;
 const BOARD_ACCESS_ASSET = '/api/posts/:id';
@@ -108,7 +113,7 @@ function eventMetadataText(value, maxBytes, { asset = false } = {}) {
   }
   return utf8Prefix(safeSourceExcerpt(text), maxBytes) || undefined;
 }
-function projectGeneralEvent(event) {
+function projectGeneralEvent(event, limits) {
   const stage = eventIdentifier(event.stage) ?? 'unknown';
   const request = {};
   const response = {};
@@ -116,7 +121,7 @@ function projectGeneralEvent(event) {
     const value = eventIdentifier(event[key]);
     if (value) request[key] = value;
   }
-  for (const [key, limit] of [['hypothesisIds', 128], ['probeIds', LIMITS.maxProbes]]) {
+  for (const [key, limit] of [['hypothesisIds', 128], ['probeIds', limits.maxProbes]]) {
     const values = eventIdentifiers(event[key], limit);
     if (values) request[key] = values;
   }
@@ -127,7 +132,7 @@ function projectGeneralEvent(event) {
       asset: eventMetadataText(item.asset, 256, { asset: true }) }))
     .filter(item => item.id && item.category && item.asset);
   if (Array.isArray(event.probeLinks)) request.probeLinks = event.probeLinks
-    .slice(0, LIMITS.maxProbes)
+    .slice(0, limits.maxProbes)
     .map(link => ({ probeId: eventIdentifier(link?.probeId),
       hypothesisId: eventIdentifier(link?.hypothesisId), tool: eventIdentifier(link?.tool) }))
     .filter(link => link.probeId && link.hypothesisId && link.tool);
@@ -136,10 +141,10 @@ function projectGeneralEvent(event) {
     const value = eventIdentifier(event[key]);
     if (value) response[key] = value;
   }
-  const evidenceIds = eventIdentifiers(event.evidenceIds, LIMITS.maxEvidenceItems);
+  const evidenceIds = eventIdentifiers(event.evidenceIds, limits.maxEvidenceItems);
   if (evidenceIds) response.evidenceIds = evidenceIds;
   if (Array.isArray(event.evidenceSummaries)) response.evidenceSummaries = event.evidenceSummaries
-    .slice(0, LIMITS.maxEvidenceItems).filter(record)
+    .slice(0, limits.maxEvidenceItems).filter(record)
     .map(item => ({ id: eventIdentifier(item.id), kind: eventMetadataText(item.kind, 128),
       asset: eventMetadataText(item.asset, 256, { asset: true }) }))
     .filter(item => item.id && item.kind)
@@ -290,21 +295,21 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   runIdFactory = () => 'general-' + randomUUID(), env = process.env, envFile,
   signal, onModelCall, beforeProbe, afterProbe, caseSnapshot, unavailableInputs = [],
   historyProvider, plannerFactory, boardFactory, cleanupRegistryPath, fetchImpl = fetch,
-  idorProbe = probeSite, catalogReader = readKnowledgeCatalogReadOnly, limits = LIMITS } = {}) {
+  idorProbe = probeSite, catalogReader = readKnowledgeCatalogReadOnly,
+  webParserCollect = collectWebInfo, limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!MODELS.has(modelId)) throw new TypeError('A registered DeepSeek model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
-    || typeof idorProbe !== 'function' || typeof catalogReader !== 'function') {
+    || typeof idorProbe !== 'function' || typeof catalogReader !== 'function'
+    || typeof webParserCollect !== 'function') {
     throw new TypeError('Invalid general runtime dependency.');
   }
   for (const callback of [onModelCall, beforeProbe, afterProbe, historyProvider, plannerFactory, boardFactory]) {
     if (callback !== undefined && typeof callback !== 'function') throw new TypeError('Invalid general runtime callback.');
   }
+  limits = validateGeneralLoopBudget(limits);
   const config = FIXTURES[fixtureId];
   const origin = config.siteKey ? validateUniversityOrigin(targetOrigin ?? config.origin) : null;
-  if (config.siteKey && new URL(origin).port !== new URL(config.origin).port) {
-    throw new TypeError('The selected university fixture must use its registered lab port.');
-  }
   const instanceId = randomUUID();
   const listeners = new Set();
   const initial = () => ({ ...emptyRun(), mode: 'local-lab-general', assessmentMode: 'general',
@@ -725,13 +730,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       referenceSources: references,
       toolCapabilities: {
         http_get: 'input {path,sessionRole?}: GET on a declared or observed pathname at the selected origin; optional sessionRole uses only a prepared fixed demo session; redirects are not followed',
+        web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); once the cumulative web_info evidence budget of the run is spent, returns only a one-line overview (status, content type, list counts); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
         repository_read: 'input {file,offset?}: read only an allowlisted local source or reference excerpt',
         ...(config.siteKey ? { known_record_idor_read:
           'input {}: guarded role comparison of registered virtual records; use access_control and the knownAssessmentAssets asset' }
           : { known_cross_user_delete_canary:
             'input {}: on a fresh isolated board, create one synthetic Bob post and compare an Alice delete with denied control and before/after lists; use access_control and the knownAssessmentAssets asset' }),
       },
-      limitations: ['No browser execution observer is connected for this general run.',
+      limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; no independent browser-execution verifier is connected for this general run.',
         'GET and repository references do not independently confirm most weakness classes.',
         'Historical cases and source reports are context, not current-run proof.',
         'Initial public discovery is bounded to ' + MAX_INITIAL_PAGES + ' routes; other declared routes require a model probe.',
@@ -755,6 +761,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       /^(?:access_control|idor|bola|cwe-639)$/iu.test(hypothesis?.category ?? '')
       && hypothesis?.asset === BOARD_ACCESS_ASSET;
     const failedModelCalls = [];
+    let evidenceCount = 0;
+    let webInfoBytes = 0;
     const allowedPaths = new Set(config.routes.map(path => new URL(path, allowedOrigin).pathname));
     const extendPaths = page => {
       for (const path of [...(page.links ?? []), ...(page.forms ?? []).map(form => form.path)]) {
@@ -770,12 +778,12 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       return initial;
     } };
     const policy = { async authorize({ probe, hypothesis }) {
-      if (probe.tool === 'http_get') {
+      if (probe.tool === 'http_get' || probe.tool === 'web_info') {
         const input = probe.input;
         if (!record(input) || Object.keys(input).some(key => !['path', 'sessionRole'].includes(key))
           || input.sessionRole !== undefined && (typeof input.sessionRole !== 'string'
             || !sessionCookies.has(input.sessionRole))) {
-          return { allowed: false, reason: 'invalid_http_get_input' };
+          return { allowed: false, reason: 'invalid_' + probe.tool + '_input' };
         }
         const url = safePath(probe.input.path, allowedOrigin);
         return { allowed: !!url && allowedPaths.has(url.pathname), reason: 'path_out_of_scope' };
@@ -826,6 +834,60 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             evidence: [{ id: evidenceId('probe', probe.id), source: 'http/' + fixtureId,
               kind: 'unavailable', asset: probe.input.path,
               summary: 'HTTP read failed or timed out; the hypothesis remains unverified.' }] };
+        }
+      }
+      if (probe.tool === 'web_info') {
+        const url = safePath(probe.input.path, allowedOrigin);
+        const sessionRole = probe.input.sessionRole;
+        const cookie = sessionRole === undefined ? null : sessionCookies.get(sessionRole);
+        // The core ends the run when one execution returns more evidence than it has room for.
+        const remaining = limits.maxEvidenceItems - evidenceCount;
+        // A page can reflect a fixed session value (header, URL) or carry URL userinfo; keep both out.
+        const evidenceText = value => [...sessionCookies.values()].reduce(
+          (text, pair) => text.replaceAll(pair.slice(pair.indexOf('=') + 1), '[redacted]'),
+          safeText(value).replace(/\/\/[^/@\s]+:[^/@\s]+@/gu, '//[redacted]@'));
+        // Session cookies are stored as a `name=value` pair; web-parser wants { name, value }.
+        const cookiePair = cookie ? [{ name: cookie.slice(0, cookie.indexOf('=')),
+          value: cookie.slice(cookie.indexOf('=') + 1) }] : null;
+        const probeRecord = { id: probe.id, probeId: probe.id, iteration: run.iterations,
+          tool: probe.tool, session: sessionRole ?? 'public', method: 'GET', url: url.href };
+        const reservation = await invokeHook(beforeProbe, probeRecord);
+        let observedStatus = null;
+        const bytes = items => items.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), 'utf8'), 0);
+        try {
+          const { info, summary } = await webParserCollect(url.href, {
+            ...(cookiePair ? { cookies: cookiePair } : {}), signal: currentSignal });
+          observedStatus = info.navigation.status ?? null;
+          // Extend scope with the same-origin http(s) paths web-parser discovered (like extendPaths).
+          for (const entry of info.paths ?? []) {
+            if (!entry?.sameOrigin || entry.wildcard) continue;
+            let discovered;
+            try { discovered = new URL(entry.url); } catch { continue; }
+            if (discovered.origin !== allowedOrigin) continue;
+            const safe = safePath(discovered.pathname + discovered.search, allowedOrigin);
+            if (safe) allowedPaths.add(safe.pathname);
+          }
+          const options = { idBase: evidenceId('probe', probe.id), sessionRole, remaining,
+            source: 'web-parser/' + fixtureId + (sessionRole ? '/role:' + sessionRole : ''),
+            asset: url.pathname + url.search, safeText: evidenceText, safeHeaderValue };
+          let evidence = evidenceFromTargetInfo(info, options);
+          // The planner resends all evidence each call; past the budget only a one-line overview fits.
+          if (webInfoBytes + bytes(evidence) > WEB_INFO_EVIDENCE_BUDGET_BYTES) {
+            evidence = evidenceFromTargetInfo(info, { ...options, mode: 'minimal' });
+          }
+          webInfoBytes += bytes(evidence);
+          return { kind: 'web_info', result: summary, evidence };
+        } catch (error) {
+          if (currentSignal?.aborted || error?.fatalProbe) throw error;
+          const evidence = [{ id: evidenceId('probe', probe.id), source: 'web-parser/' + fixtureId,
+            kind: 'unavailable', asset: probe.input.path,
+            summary: 'web_info browser observation failed or timed out; the hypothesis remains unverified.' }]
+            .slice(0, remaining);
+          webInfoBytes += bytes(evidence);
+          return { kind: 'web_info', error: 'request_unavailable', evidence };
+        } finally {
+          await invokeHook(afterProbe, probeRecord, { status: observedStatus,
+            evidenceId: evidenceId('probe', probe.id) }, reservation);
         }
       }
       if (probe.tool === 'repository_read') {
@@ -938,6 +1000,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       let plan;
       try { plan = await planner.propose(context); }
       catch (error) {
+        const attempts = planner instanceof generalPlanner.GeneralModelPlanner
+          && Array.isArray(error?.modelAttempts) ? error.modelAttempts : [];
+        for (const attempt of attempts) {
+          failedModelCalls.push(attempt);
+          await onModelCall?.(attempt);
+        }
+        if (attempts.length && error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR') throw error;
         const failed = { provider: 'deepseek', requestedModel: modelId,
           status: 'failed', iteration: context.iteration };
         if (planner instanceof generalPlanner.GeneralModelPlanner
@@ -955,18 +1024,27 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         await onModelCall?.(failed);
         throw error;
       }
-      if (plan?.modelMetadata) await onModelCall?.(plan.modelMetadata);
+      const trustedPlanner = planner instanceof generalPlanner.GeneralModelPlanner;
+      const attempts = trustedPlanner && Array.isArray(plan?.modelAttempts)
+        ? plan.modelAttempts : [plan?.modelMetadata];
+      for (const attempt of attempts) if (attempt) await onModelCall?.(attempt);
+      if (!trustedPlanner && plan && typeof plan === 'object' && Object.hasOwn(plan, 'modelAttempts')) {
+        plan = { ...plan };
+        delete plan.modelAttempts;
+      }
       return plan;
     } };
-    const availableTools = ['http_get', 'repository_read',
+    const availableTools = ['http_get', 'web_info', 'repository_read',
       config.siteKey ? 'known_record_idor_read' : 'known_cross_user_delete_canary'];
     const { report } = await runGeneralAssessment({
       target: { fixtureId, origin: allowedOrigin }, observer, planner: wrappedPlanner,
       policy, executor, verifier, availableTools, limits, signal: currentSignal,
       onEvent: async event => {
+        // The core reports its stored evidence count (initial observation included) before each probe.
+        evidenceCount = event.progress?.evidenceCount ?? evidenceCount;
         const iteration = eventCount(event.iteration) ?? run.iterations;
         run.iterations = Math.max(run.iterations, iteration);
-        appendEvent({ ...projectGeneralEvent(event), iteration });
+        appendEvent({ ...projectGeneralEvent(event, limits), iteration });
       },
     });
     report.runId = run.id;

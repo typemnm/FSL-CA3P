@@ -1,4 +1,6 @@
 import { redact } from '../../packages/contracts/index.mjs';
+import { GENERAL_LOOP_BUDGET_DEFAULTS, GENERAL_LOOP_BUDGET_CAPS,
+  validateGeneralLoopBudgetPayload } from '../../packages/contracts/general-loop-budget.mjs';
 
 const MODULES = Object.freeze([
   { id: 'attack', name: 'Attack Module', manifestId: 'attack-module', eventIds: ['attack-module', 'attack'] },
@@ -51,6 +53,17 @@ function belongsTo(event, item) {
 export function createModuleManagement({ runtime, platformProvider, dbManagement = null }) {
   if (!runtime || typeof platformProvider !== 'function') throw new Error('Module management requires runtime and platform provider.');
   return {
+    async loopBudget() {
+      if (typeof runtime.getGeneralLoopBudget !== 'function') throw fault(503, 'General loop budget is unavailable.');
+      return { limits: await runtime.getGeneralLoopBudget(),
+        defaults: GENERAL_LOOP_BUDGET_DEFAULTS, caps: GENERAL_LOOP_BUDGET_CAPS };
+    },
+    async updateLoopBudget(body) {
+      const limits = validateGeneralLoopBudgetPayload(body);
+      if (typeof runtime.setGeneralLoopBudget !== 'function') throw fault(503, 'General loop budget is unavailable.');
+      return { limits: await runtime.setGeneralLoopBudget(limits),
+        defaults: GENERAL_LOOP_BUDGET_DEFAULTS, caps: GENERAL_LOOP_BUDGET_CAPS };
+    },
     async list() {
       const platform = await platformProvider();
       return { modules: MODULES.map(item => {

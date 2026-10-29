@@ -29,6 +29,16 @@ function ports(overrides = {}) {
   };
 }
 
+test('general core rejects an unbounded model attempt list', async () => {
+  const { report } = await runGeneralAssessment(ports({
+    planner: { async propose() { return { done: true, hypotheses: [], probes: [],
+      modelAttempts: Array.from({ length: 3 }, () => ({ provider: 'deepseek' })) }; } },
+  }));
+  assert.equal(report.status, 'failed');
+  assert.equal(report.error.code, 'INVALID_PLAN');
+  assert.deepEqual(report.modelCalls, []);
+});
+
 test('general core evaluates multiple vulnerability categories and keeps evidence provenance', async () => {
   const events = [];
   const options = ports({

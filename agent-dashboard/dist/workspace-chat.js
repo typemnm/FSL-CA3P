@@ -11,6 +11,13 @@ function node(tag, className, text) {
   return result;
 }
 function button(text, className = 'text-button') { const result = node('button', className, text); result.type = 'button'; return result; }
+function providerLabel(model) {
+  if (model?.local || model?.provider === 'local') {
+    const runtime = ({ ollama: 'Ollama', 'lm-studio': 'LM Studio', 'docker-model-runner': 'Docker Model Runner' })[model.runtime] || model.runtime;
+    return runtime ? `${runtime} · 로컬` : '로컬 모델';
+  }
+  return ({ deepseek: 'DeepSeek API', ollama: 'Ollama · 로컬', 'lm-studio': 'LM Studio · 로컬', 'openai-compatible': 'OpenAI 호환 API' })[model?.provider] || model?.provider || '';
+}
 
 // Keep Markdown code fences readable without giving model output an HTML surface.
 function messageBody(content) {
@@ -40,6 +47,7 @@ export function createWorkspaceChat({ api, canEdit, notify, getRuns = () => [] }
       <section class="chat-conversation panel" aria-label="AI 채팅">
         <header class="chat-toolbar"><div class="chat-title-copy"><small>AI CONVERSATION</small><h2 id="chat-session-title">새로운 대화를 시작하세요</h2></div><div class="chat-session-actions"><button type="button" class="text-button" id="chat-rename-session">이름 변경</button><button type="button" class="text-button" id="chat-delete-session">삭제</button><button type="button" class="text-button" id="chat-refresh">새로고침</button></div></header>
         <div class="chat-model-row"><label for="chat-model-select">AI 모델 <select id="chat-model-select" aria-describedby="chat-model-status"><option value="">모델 확인 중</option></select></label><span id="chat-model-status" role="status"></span></div>
+        <p id="chat-local-model-notice" class="chat-readonly" role="status" hidden></p>
         <div class="chat-context-panel"><div class="chat-context-heading"><span id="chat-context-label">대화 컨텍스트 · 메시지를 보내면 사용량을 표시합니다.</span><button type="button" class="text-button" id="chat-compact">지금 압축</button></div><div id="chat-context-meter" class="chat-context-track" role="progressbar" aria-label="애플리케이션 컨텍스트 예산 사용률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="chat-context-fill"></span></div><p id="chat-context-help">대화·요약 기준 토큰 추정치입니다. 첨부 내용은 전송 시 합산하며 오래된 대화를 자동 요약해 원문 기록은 유지합니다.</p><p id="chat-provider-usage" hidden></p><details id="chat-summary-details" hidden><summary id="chat-summary-label">압축 요약 보기</summary><p id="chat-summary"></p></details></div>
         <p id="chat-error" class="chat-error" role="alert" hidden></p><p id="chat-readonly" class="chat-readonly" hidden>조회 전용 계정입니다. 새 대화와 메시지 전송은 운영자 권한이 필요합니다.</p>
         <div id="chat-messages" class="chat-messages" role="log" aria-label="대화 내용" aria-live="polite" aria-relevant="additions text"></div>
@@ -50,7 +58,7 @@ export function createWorkspaceChat({ api, canEdit, notify, getRuns = () => [] }
     <dialog id="chat-rename-dialog" class="chat-dialog"><form id="chat-rename-form"><h2>대화 이름 변경</h2><label for="chat-rename-input">이름<input id="chat-rename-input" maxlength="120" required autocomplete="off"></label><div class="chat-dialog-actions"><button class="button secondary" id="chat-rename-cancel" type="button">취소</button><button class="button primary" type="submit">저장</button></div></form></dialog>
     <dialog id="chat-files-dialog" class="chat-dialog chat-files-dialog" aria-labelledby="chat-files-title"><div class="chat-files-header"><div><small>WORKSPACE FILES</small><h2 id="chat-files-title">로컬 파일 첨부</h2></div><button type="button" class="text-button" id="chat-close-files">닫기</button></div><p class="chat-files-note">서버 작업공간의 허용된 텍스트 파일을 읽습니다. 파일 내용은 메시지를 보낼 때 AI에 전달됩니다.</p><nav id="chat-file-breadcrumb" aria-label="파일 경로"></nav><p id="chat-file-error" class="chat-error" role="alert" hidden></p><div class="chat-file-columns"><div id="chat-file-list" class="chat-file-list" aria-label="파일 목록"></div><section class="chat-file-preview"><h3 id="chat-file-name">파일을 선택하세요</h3><p id="chat-file-meta"></p><pre id="chat-file-content" tabindex="0"></pre><button type="button" class="button primary" id="chat-attach-file" disabled>이 파일 첨부</button></section></div></dialog>`;
   const $ = id => root.querySelector(`#${id}`);
-  const state = { models: [], sessions: [], selected: null, modelId: '', busy: false, loading: false, error: '', files: [], folder: '', entries: [], preview: null, fileLoading: false, generation: 0 };
+  const state = { models: [], modelError: '', sessions: [], selected: null, modelId: '', busy: false, loading: false, error: '', files: [], folder: '', entries: [], preview: null, fileLoading: false, generation: 0 };
   const drafts = new Map();
   let pending = null;
   let fileGeneration = 0;
@@ -84,13 +92,25 @@ export function createWorkspaceChat({ api, canEdit, notify, getRuns = () => [] }
   function renderModels() {
     const select = $('chat-model-select'); select.replaceChildren();
     for (const model of state.models) {
-      const option = node('option', '', `${model.name || model.id}${model.available ? '' : ' · 사용 불가'}`);
+      const provider = providerLabel(model);
+      const option = node('option', '', `${model.name || model.id}${provider ? ` · ${provider}` : ''}${model.available ? '' : ` · ${model.reason || '사용 불가'}`}`);
       option.value = model.id; option.disabled = model.available !== true; select.append(option);
     }
-    if (!state.models.length) { const option = node('option', '', '등록된 대화 모델 없음'); option.value = ''; select.append(option); }
-    select.value = state.modelId;
     const model = state.models.find(item => item.id === state.modelId);
-    $('chat-model-status').textContent = model?.available ? '현재 서버의 모델 설정을 사용합니다.' : model?.reason || '대화 모델 설정을 확인하세요.';
+    if (state.modelId && !model) {
+      const option = node('option', '', `${state.modelId} · 현재 연결 안 됨`); option.value = state.modelId; option.disabled = true; select.prepend(option);
+    } else if (!state.models.length) { const option = node('option', '', state.loading ? '모델 확인 중' : '등록된 대화 모델 없음'); option.value = ''; select.append(option); }
+    select.value = state.modelId;
+    const provider = providerLabel(model);
+    $('chat-model-status').textContent = state.loading ? '서버에서 모델 연결 상태를 확인하고 있습니다.'
+      : state.modelError ? `모델 목록을 불러오지 못했습니다. ${state.modelError} 새로고침으로 다시 확인하세요.`
+      : model?.available ? `${provider ? `${provider} · ` : ''}사용 가능`
+      : model ? `${provider ? `${provider} · ` : ''}${model.reason || '모델을 사용할 수 없습니다.'} 새로고침으로 연결 상태를 다시 확인하세요.`
+      : state.modelId ? '이 대화의 모델을 현재 서버에서 찾을 수 없습니다. 다른 모델을 선택하거나 새로고침하세요.'
+      : '등록된 대화 모델이 없습니다. 모델 서버를 확인한 뒤 새로고침하세요.';
+    const unavailableLocal = state.models.filter(item => (item.local || item.provider === 'local') && item.available === false);
+    const notice = $('chat-local-model-notice'); notice.hidden = !unavailableLocal.length;
+    notice.textContent = unavailableLocal.length ? `로컬 모델 연결 확인 · ${unavailableLocal.slice(0, 2).map(item => `${item.name || item.id}: ${item.reason || state.modelError || '모델 서버에 연결할 수 없습니다.'}`).join(' / ')}${unavailableLocal.length > 2 ? ` · 외 ${number(unavailableLocal.length - 2)}개 모델` : ''} 설정 확인 후 새로고침하세요.` : '';
   }
   function renderSessions() {
     const list = $('chat-session-list'); const filter = $('chat-session-search').value.trim().toLocaleLowerCase('ko-KR');
@@ -194,11 +214,18 @@ export function createWorkspaceChat({ api, canEdit, notify, getRuns = () => [] }
   }
   async function show() {
     if (state.busy || state.loading) { refreshPermissions(); return; }
-    const generation = state.generation; state.loading = true; setError(); refreshPermissions(); renderRuns();
+    const generation = state.generation; state.loading = true; state.modelError = ''; setError(); refreshPermissions(); renderModels(); renderRuns();
     try {
-      const [models, sessions] = await Promise.all([api('/api/chat/models'), api('/api/chat/sessions')]);
+      const [models, sessions] = await Promise.allSettled([api('/api/chat/models'), api('/api/chat/sessions')]);
       if (generation !== state.generation) return;
-      state.models = Array.isArray(models.models) ? models.models : []; state.sessions = Array.isArray(sessions.sessions) ? sessions.sessions : [];
+      if (models.status === 'fulfilled' && Array.isArray(models.value?.models)) state.models = models.value.models;
+      else {
+        state.modelError = models.status === 'rejected' ? cleanError(models.reason) : '서버의 모델 목록 형식을 확인할 수 없습니다.';
+        state.models = state.models.map(model => ({ ...model, available: false }));
+      }
+      if (sessions.status === 'rejected') throw sessions.reason;
+      if (!Array.isArray(sessions.value?.sessions)) throw new Error('저장된 대화 목록 형식을 확인할 수 없습니다.');
+      state.sessions = sessions.value.sessions;
       if (state.selected && state.sessions.some(item => item.id === state.selected.id)) { const result = await api(`/api/chat/sessions/${encodeURIComponent(state.selected.id)}`); if (generation !== state.generation) return; updateSession(result.session); }
       else if (!initialized && state.sessions.length) { const result = await api(`/api/chat/sessions/${encodeURIComponent(state.sessions[0].id)}`); if (generation !== state.generation) return; updateSession(result.session); restoreDraft(state.selected.id); }
       else if (state.selected) { state.selected = null; restoreDraft(null); }
@@ -270,7 +297,7 @@ export function createWorkspaceChat({ api, canEdit, notify, getRuns = () => [] }
   }
   function reset() {
     state.generation += 1; fileGeneration += 1; pending?.abort(); pending = null;
-    Object.assign(state, { models: [], sessions: [], selected: null, modelId: '', busy: false, loading: false, files: [], folder: '', entries: [], preview: null, fileLoading: false });
+    Object.assign(state, { models: [], modelError: '', sessions: [], selected: null, modelId: '', busy: false, loading: false, files: [], folder: '', entries: [], preview: null, fileLoading: false });
     drafts.clear(); initialized = false; $('chat-message-input').value = ''; $('chat-session-search').value = ''; $('chat-run-select').replaceChildren(); setError();
     $('chat-files-dialog').close(); $('chat-rename-dialog').close(); $('chat-file-list').replaceChildren(); $('chat-file-breadcrumb').replaceChildren(); fileError(); renderFilePreview(); render();
   }
@@ -294,7 +321,7 @@ export function createWorkspaceChat({ api, canEdit, notify, getRuns = () => [] }
   $('chat-delete-session').addEventListener('click', () => {
     if (!canEdit() || !state.selected || !window.confirm('이 대화를 삭제할까요? 저장된 메시지와 요약이 함께 삭제됩니다.')) return;
     const id = state.selected.id;
-    void action(async generation => { await api(`/api/chat/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }); if (generation !== state.generation) return; state.sessions = state.sessions.filter(item => item.id !== id); drafts.delete(id); state.selected = null; restoreDraft(null); render(); });
+    void action(async generation => { await api(`/api/chat/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }); if (generation !== state.generation) return; state.sessions = state.sessions.filter(item => item.id !== id); drafts.delete(id); state.selected = null; state.modelId = state.models.find(model => model.available)?.id || state.models[0]?.id || ''; restoreDraft(null); render(); });
   });
   $('chat-open-files').addEventListener('click', () => { if (!canEdit() || state.busy) return; $('chat-files-dialog').showModal(); void loadFolder(state.folder); });
   $('chat-close-files').addEventListener('click', () => { fileGeneration += 1; $('chat-files-dialog').close(); });

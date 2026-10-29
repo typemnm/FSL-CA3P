@@ -26,6 +26,14 @@
       "dependencies": []
     },
     {
+      "id": "web-parser",
+      "path": "web-parser",
+      "layer": "adapter",
+      "status": "active",
+      "sourceBranch": "woohyun212/web-parser",
+      "dependencies": []
+    },
+    {
       "id": "attack-module",
       "path": "attack-module",
       "layer": "adapter",
@@ -150,6 +158,7 @@
       "dependencies": [
         "agent",
         "xss-parser",
+        "web-parser",
         "attack-module",
         "guardrail",
         "casper-db",
@@ -284,6 +293,7 @@
         "adapters",
         "agent",
         "xss-parser",
+        "web-parser",
         "attack-module",
         "guardrail",
         "casper-db",

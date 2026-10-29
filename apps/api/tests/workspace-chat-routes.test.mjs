@@ -5,10 +5,10 @@ import { once } from 'node:events';
 import { createDashboardServer } from '../server.mjs';
 import { createAuthentication, hashAccount } from '../auth.mjs';
 
-async function fixture(t, { paused = false, sendMessage } = {}) {
+async function fixture(t, { paused = false, sendMessage, listModels } = {}) {
   const calls = [];
   const service = {
-    listModels: () => [{ id: 'deepseek-flash', available: true }],
+    listModels: listModels ?? (() => [{ id: 'deepseek-flash', available: true }]),
     listSessions: owner => [{ id: 'session-1', title: owner }],
     createSession: (owner, body) => { calls.push({ owner, body }); return { id: 'session-1', ...body }; },
     getSession: (owner, id) => ({ id, title: owner, messages: [] }),
@@ -72,6 +72,24 @@ test('deployment maintenance pauses chat mutations and leaves history readable',
   const f = await fixture(t, { paused: true }); const headers = await f.login('admin');
   assert.equal((await f.api('/api/chat/sessions', { headers })).status, 200);
   assert.equal((await f.api('/api/chat/sessions/session-1/messages', { method: 'POST', headers, body: { content: '질문' } })).status, 503);
+});
+
+test('asynchronous local model discovery and provider metadata pass through authenticated HTTP routes', async t => {
+  const model = { id: 'local:ollama:0123456789abcdef0123', name: 'Qwen 3', provider: 'local', runtime: 'ollama',
+    local: true, available: true, applicationBudgetTokens: 5632, contextWindowTokens: 8192, maxOutputTokens: 2048 };
+  const f = await fixture(t, {
+    listModels: async () => { await new Promise(resolve => setImmediate(resolve)); return [model]; },
+    sendMessage: async (owner, id, body) => ({ id, title: owner, modelId: model.id,
+      messages: [{ role: 'assistant', content: '로컬 응답', metadata: { provider: model.provider, runtime: model.runtime } }] }),
+  });
+  const headers = await f.login('admin');
+  const result = await f.api('/api/chat/models', { headers });
+  assert.equal(result.status, 200); assert.deepEqual(result.value.models, [model]);
+  const created = await f.api('/api/chat/sessions', { method: 'POST', headers, body: { modelId: model.id } });
+  assert.equal(created.status, 200); assert.equal(created.value.session.modelId, model.id);
+  const answer = await f.api('/api/chat/sessions/session-1/messages', { method: 'POST', headers, body: { content: '로컬 모델로 설명해 줘' } });
+  assert.equal(answer.status, 200); assert.equal(answer.value.session.messages[0].metadata.provider, 'local');
+  assert.equal(answer.value.session.messages[0].metadata.runtime, 'ollama');
 });
 
 test('disconnecting a chat request aborts the provider signal', async t => {

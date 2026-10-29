@@ -20,11 +20,18 @@ const IDOR_FIXTURES = Object.freeze({
   'vul-web2-daehan': 'http://127.0.0.1:4101',
   'vul-web2-wonchang': 'http://127.0.0.1:4102',
 });
+const UNIVERSITY_ORIGIN_ENV = Object.freeze({
+  'vul-web2-daehan': 'CA3P_DAEHAN_ORIGIN',
+  'vul-web2-wonchang': 'CA3P_WONCHANG_ORIGIN',
+});
 
 /** API-side application service. It never runs the lab in the HTTP process. */
 export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWorker = true,
   pollMs = 100, workerOptions = {}, envFile, env = process.env, defaultDelayMs = 0, importLegacy = true,
   experimentCleanupFactory = prepareExperimentCleanup, experimentFileOptions = {}, workerShutdownMs = 10_000 } = {}) {
+  const universityOrigins = Object.freeze(Object.fromEntries(Object.entries(IDOR_FIXTURES)
+    .map(([fixtureId, fallback]) => [fixtureId,
+      validateUniversityOrigin(env[UNIVERSITY_ORIGIN_ENV[fixtureId]] ?? fallback)])));
   const store = createRunRepository({ path: storePath });
   store.recoverExpired();
   store.recoverAbandonedExperimentOperation();
@@ -53,7 +60,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     return { run, mode: run.mode, instanceId, experiment: { epoch: experiment.epoch, lastResetAt: experiment.lastResetAt, status: experiment.status },
       experimentReset: experiment, lab: { available: true, model: 'rule-baseline', provider: 'rules',
       remoteAvailable: Boolean(remote), generalSupported: true, generalAvailable: Boolean(remote),
-      externalSupported: true, externalAvailable: true, models } };
+      externalSupported: true, externalAvailable: true, targetOrigins: universityOrigins, models } };
   }
   function publish(force = false) {
     if (closed) return;
@@ -127,7 +134,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     }
     const fixtureId = body.fixtureId ?? 'vul-web-1';
     if (typeof fixtureId !== 'string') throw fault(400, 'Choose a registered local fixture.');
-    const idorOrigin = Object.hasOwn(IDOR_FIXTURES, fixtureId) ? IDOR_FIXTURES[fixtureId] : null;
+    const idorOrigin = Object.hasOwn(universityOrigins, fixtureId) ? universityOrigins[fixtureId] : null;
     if (fixtureId !== 'vul-web-1' && !idorOrigin) throw fault(400, 'Choose a registered local fixture.');
     const mode = body.mode ?? (idorOrigin ? 'local-lab-rule'
       : body.modelId && body.modelId !== 'rule-baseline' ? 'local-lab-deepseek' : 'core-fixture');
@@ -164,6 +171,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     const id = `run-${randomUUID()}`;
     const options = { mode, modelId, target, delayMs: mode === 'core-fixture' ? delayMs : 0, testProfile, fixtureId };
     if (general) {
+      options.loopBudget = store.getGeneralLoopBudget();
       try { options.caseSnapshot = prepareCaseSnapshot({ runId: id, storePath: store.path, fixtureId, env }); }
       catch (failure) {
         if (failure.code !== 'CASE_SNAPSHOT_UNAVAILABLE') throw failure;
@@ -337,6 +345,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
   return { getState, start, startLab: ({ modelId = 'rule-baseline', ...options } = {}) => start({ ...options,
     modelId, mode: modelId === 'rule-baseline' ? 'local-lab-rule' : 'local-lab-deepseek' }),
     stop, reset, resetExperiment, clearRunHistory, experimentResetPreview, withMutationLock, close, listModels, store, ready,
+    getGeneralLoopBudget: () => store.getGeneralLoopBudget(),
+    setGeneralLoopBudget: limits => store.setGeneralLoopBudget(limits),
     importLegacyRuns: options => withMutationLock(() => importLegacyRuns(store, options)),
     listRuns: filters => store.listRuns(filters), getRun: id => store.getRun(id),
     compareRuns: (base, candidate, options) => compareRunRecords(store.getRun(base), store.getRun(candidate), options),

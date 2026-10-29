@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes, scryptSync, createHash } from 'node:crypto';
 import { access, chmod, copyFile, lstat, mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, delimiter } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isIP } from 'node:net';
 import { request as httpRequest } from 'node:http';
 import { selectVerifiedRelease, verifyWorkflowRun } from './device-deploy-verification.mjs';
@@ -321,11 +321,29 @@ export async function normalizeTrackedModes(release) {
   }
 }
 
-export async function prepareRelease(config, candidate, phase) {
+const WEB_PARSER_DATASET_CHECK = `
+  import { lstat, readFile } from 'node:fs/promises';
+  const parser = new URL('./web-parser/', process.argv[1]);
+  const files = ['categories.json', 'groups.json', ...'_abcdefghijklmnopqrstuvwxyz'.split('').map(letter => 'technologies/' + letter + '.json')];
+  for (const file of files) {
+    const target = new URL('data/webappanalyzer/' + file, parser);
+    const stat = await lstat(target);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 2 || stat.size > 10 * 1024 * 1024) throw new Error('Invalid web-parser dataset file.');
+    const value = JSON.parse(await readFile(target, 'utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.keys(value).length) throw new Error('Empty or invalid web-parser dataset object.');
+  }
+  const { pageProbes } = await import(new URL('fingerprint.mjs', parser).href);
+  const probes = pageProbes();
+  if (!Array.isArray(probes?.js) || !probes.js.length || !probes.dom || typeof probes.dom !== 'object'
+    || Array.isArray(probes.dom) || !Object.keys(probes.dom).length) throw new Error('The web-parser fingerprint dataset has no usable probes.');
+  console.log('Web-parser fingerprint dataset ready.');
+`;
+
+export async function prepareRelease(config, candidate, phase, { execute: runCommand = execute } = {}) {
   const release = join(config.deployRoot, 'releases', candidate.sha);
   const env = serviceEnvironment(config, release);
   const logs = join(config.deployRoot, 'logs', candidate.sha); await mkdir(logs, { recursive: true, mode: 0o700 });
-  const command = (name, executable, args, extra = {}) => execute(executable, args, { cwd: release, env,
+  const command = (name, executable, args, extra = {}) => runCommand(executable, args, { cwd: release, env,
     logFile: join(logs, `${name}.log`), ...extra });
   if (!await exists(release)) {
     await execute('/usr/bin/git', ['worktree', 'add', '--detach', release, candidate.sha], { cwd: config.repoDir });
@@ -333,14 +351,20 @@ export async function prepareRelease(config, candidate, phase) {
   if ((await execute('/usr/bin/git', ['rev-parse', 'HEAD'], { cwd: release })) !== candidate.sha
     || await execute('/usr/bin/git', ['status', '--porcelain', '--untracked-files=no'], { cwd: release })) throw new Error('Release worktree is not pristine.');
   await normalizeTrackedModes(release);
-  if (!await exists(join(config.deployRoot, 'prepared', `${candidate.sha}.json`))
+  const manifestPath = join(release, 'integration-manifest.json');
+  const manifest = await exists(manifestPath) ? JSON.parse(await readFile(manifestPath, 'utf8')) : null;
+  const webParser = manifest?.modules?.find(item => item.id === 'web-parser' && item.status === 'active');
+  if (webParser && webParser.path !== 'web-parser') throw new Error('The active web-parser must use its fixed release directory.');
+  const needsDependencies = !await exists(join(config.deployRoot, 'prepared', `${candidate.sha}.json`))
     || !await exists(join(release, '.venv/bin/python')) || !await exists(join(release, 'xss-parser/node_modules/playwright/package.json'))
-    || !await exists(join(release, 'packages/report/capture/node_modules/playwright/package.json'))) {
+    || !await exists(join(release, 'packages/report/capture/node_modules/playwright/package.json'))
+    || (webParser && (!await exists(join(release, 'web-parser/node_modules/playwright/package.json'))
+      || !await exists(join(release, 'web-parser/node_modules/wapalyzer-core/package.json'))));
+  if (needsDependencies) {
     await phase('dependencies');
     if (!await exists(join(release, '.venv/bin/python'))) await command('venv', config.pythonPath, ['-m', 'venv', join(release, '.venv')]);
     const python = join(release, '.venv/bin/python');
     const tracked = (await execute('/usr/bin/git', ['ls-files'], { cwd: release })).split('\n');
-    const manifest = JSON.parse(await readFile(join(release, 'integration-manifest.json'), 'utf8'));
     const active = manifest.modules.filter(item => item.status === 'active').map(item => item.path);
     const included = file => active.some(path => file.startsWith(`${path}/`));
     const locks = tracked.filter(file => file.endsWith('/package-lock.json') && included(file));
@@ -351,6 +375,25 @@ export async function prepareRelease(config, candidate, phase) {
     const packages = tracked.filter(file => file.endsWith('/pyproject.toml') && included(file));
     await command('python-packages', python, ['-m', 'pip', 'install', '--no-deps', ...packages.map(file => dirname(join(release, file)))]);
     await command('chromium', config.nodePath, [join(release, 'xss-parser/node_modules/playwright/cli.js'), 'install', 'chromium']);
+  }
+  if (webParser) {
+    for (const name of ['web-parser', 'web-parser/scripts', 'web-parser/data', 'web-parser/data/webappanalyzer', 'web-parser/data/webappanalyzer/technologies']) {
+      let entry;
+      try { entry = await lstat(join(release, name)); } catch (failure) { if (failure.code !== 'ENOENT') throw failure; }
+      if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) throw new Error('The web-parser dataset directories must stay inside the release.');
+    }
+    for (const name of ['web-parser/scripts/fetch-dataset.mjs', 'web-parser/fingerprint.mjs']) {
+      const entry = await lstat(join(release, name));
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('The web-parser dataset entry points must be regular release files.');
+    }
+    await phase('web-parser-dataset');
+    // npm lifecycle scripts remain disabled. Run this one audited, pinned-data
+    // downloader explicitly, including when a prepared release lost its cache.
+    await command('web-parser-dataset', config.nodePath, [join(release, 'web-parser/scripts/fetch-dataset.mjs')]);
+    await command('web-parser-dataset-check', config.nodePath,
+      ['--input-type=module', '-e', WEB_PARSER_DATASET_CHECK, pathToFileURL(release + '/').href]);
+  }
+  if (needsDependencies) {
     await command('preflight', config.nodePath, ['scripts/preflight.mjs'], { timeoutMs: 90_000 });
     await atomicJson(join(config.deployRoot, 'prepared', `${candidate.sha}.json`), { sha: candidate.sha, preparedAt: stamp() });
   }

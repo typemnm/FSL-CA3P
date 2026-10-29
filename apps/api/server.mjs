@@ -325,6 +325,12 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
         }
         if (pathname === '/api/platform' && req.method === 'GET') return json(res, 200, await platformProvider());
         if (pathname === '/api/modules' && req.method === 'GET') return json(res, 200, await modules.list());
+        if (pathname === '/api/modules/llm/loop-budget') {
+          if (req.method === 'GET') return json(res, 200, await modules.loopBudget());
+          if (req.method !== 'PUT') return json(res, 405, { error: 'Use GET or PUT.' }, { Allow: 'GET, PUT' });
+          auth.requireUser(req, { mutate: true, admin: true });
+          return json(res, 200, await modules.updateLoopBudget(await readJson(req)));
+        }
         const moduleConfig = /^\/api\/modules\/([a-zA-Z0-9-]+)\/config$/.exec(pathname);
         if (moduleConfig) {
           if (req.method === 'GET') return json(res, 200, await modules.config(moduleConfig[1]));

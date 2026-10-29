@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,12 +36,13 @@ const confirmedIdor = () => ({ finding: { status: 'confirmed' }, evidence: [
 ] });
 
 test('general university run uses multiple model hypotheses and confirms only the guarded role comparison', async () => {
+  const origin = 'http://127.0.0.1:53987';
   const calls = [];
   const modelCalls = [];
   const hooks = [];
   let liveVerify;
   const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    fixtureId: 'vul-web2-daehan', targetOrigin: origin,
     modelId: 'deepseek-flash', runIdFactory: () => 'general-university-test',
     unavailableInputs: ['casper-db'],
     catalogReader: async () => { throw new Error('catalog must not read the shared database without a snapshot'); },
@@ -68,7 +70,10 @@ test('general university run uses multiple model hypotheses and confirms only th
       ], probes: [{ id: 'p-idor', hypothesisId: 'h-idor', tool: 'known_record_idor_read', input: {} }],
       modelMetadata: { provider: 'deepseek', model: 'deepseek-flash' } };
     } }),
-    idorProbe: async () => confirmedIdor(),
+    idorProbe: async options => {
+      assert.equal(options.origin, origin);
+      return confirmedIdor();
+    },
   });
   const detach = runtime.subscribe(({ run }) => {
     const event = run.events.find(item => item.stage === 'verify' && item.request?.probeId === 'p-idor');
@@ -85,7 +90,7 @@ test('general university run uses multiple model hypotheses and confirms only th
   assert.equal(run.report.modelCalls.length, 2);
   assert.equal(modelCalls.length, 2);
   assert.ok(calls.length >= 4);
-  assert.ok(calls.every(item => item.url.startsWith('http://127.0.0.1:4101/')));
+  assert.ok(calls.every(item => item.url.startsWith(`${origin}/`)));
   assert.ok(hooks.every(item => item.method === 'GET'
     || item.method === 'POST' && new URL(item.url).pathname === '/login'));
   assert.ok(run.report.inventory.referenceSources.some(item => item.source === 'run-store/previous-runs'));
@@ -300,8 +305,6 @@ test('general runtime rejects unregistered targets and rule-only models', () => 
   assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web-1', modelId: 'rule-baseline' }));
   assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     targetOrigin: 'http://8.8.8.8:4101' }));
-  assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
-    targetOrigin: 'http://127.0.0.1:9999' }));
 });
 
 test('wrong private service fails identity binding before the model or general probes run', async () => {
@@ -309,7 +312,7 @@ test('wrong private service fails identity binding before the model or general p
   const paths = [];
   const runtime = createGeneralRuntime({
     fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
-    targetOrigin: 'http://192.168.0.42:4101', runIdFactory: () => 'wrong-site',
+    targetOrigin: 'http://192.168.0.42:53987', runIdFactory: () => 'wrong-site',
     fetchImpl: async url => {
       paths.push(new URL(url).pathname);
       return new Response('<html><title>Internal service</title></html>', {
@@ -593,11 +596,13 @@ test('failed model proposal is recorded once without invented token usage', asyn
 });
 
 test('planner schema failures retain only a fixed validation message, not model output', async () => {
+  const recorded = [];
   const runtime = createGeneralRuntime({
     fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
     runIdFactory: () => 'invalid-plan-diagnostic',
     boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
     fetchImpl: async url => response(new URL(url).pathname),
+    onModelCall: async metadata => { recorded.push(metadata); },
     plannerFactory: () => plannerModule.createGeneralModelPlanner({
       client: { async completeJson() { return {
         value: { done: false, hypotheses: [], probes: [], rawModelSecret: 'do-not-store' },
@@ -609,8 +614,68 @@ test('planner schema failures retain only a fixed validation message, not model 
   runtime.startLab();
   const run = await done;
   assert.equal(run.status, 'failed');
+  assert.equal(recorded.length, 2);
+  assert.equal(run.report.modelCalls.length, 2);
+  assert.deepEqual(recorded.map(item => item.status), ['failed', 'failed']);
   assert.equal(run.report.modelCalls[0].validationError, 'Model plan contains missing or unexpected fields');
   assert.doesNotMatch(JSON.stringify(run.report), /do-not-store/u);
+  await runtime.close();
+});
+
+test('corrected planner schema produces one log entry per actual model call', async () => {
+  const recorded = [];
+  let attempts = 0;
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    runIdFactory: () => 'corrected-plan-diagnostic',
+    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
+    fetchImpl: async url => response(new URL(url).pathname),
+    onModelCall: async metadata => { recorded.push(metadata); },
+    plannerFactory: () => plannerModule.createGeneralModelPlanner({
+      client: { async completeJson() { attempts += 1; return {
+        value: attempts === 1
+          ? { done: true, hypotheses: [], probes: [], rawModelSecret: 'do-not-store' }
+          : { done: true, hypotheses: [], probes: [] },
+        metadata: { provider: 'deepseek', model: 'deepseek-flash', finishReason: 'stop' },
+      }; } },
+    }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed');
+  assert.equal(attempts, 2);
+  assert.equal(recorded.length, 2);
+  assert.equal(run.report.modelCalls.length, 2);
+  assert.deepEqual(recorded.map(item => item.status), ['failed', 'completed']);
+  assert.deepEqual(run.report.modelCalls.map(item => item.status), ['failed', 'completed']);
+  assert.equal(recorded[0].validationError, 'Model plan contains missing or unexpected fields');
+  assert.doesNotMatch(JSON.stringify(run.report), /do-not-store/u);
+  await runtime.close();
+});
+
+test('a custom planner cannot forge extra model call attempts', async () => {
+  const recorded = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    runIdFactory: () => 'custom-plan-attempts',
+    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
+    fetchImpl: async url => response(new URL(url).pathname),
+    onModelCall: async metadata => { recorded.push(metadata); },
+    plannerFactory: () => ({ async propose() { return {
+      done: true, hypotheses: [], probes: [],
+      modelMetadata: { provider: 'deepseek', model: 'deepseek-flash' },
+      modelAttempts: [{ validationError: 'PRIVATE_MODEL_RESPONSE' },
+        { validationError: 'PRIVATE_MODEL_RESPONSE' }, { validationError: 'PRIVATE_MODEL_RESPONSE' }],
+    }; } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed');
+  assert.equal(recorded.length, 1);
+  assert.equal(run.report.modelCalls.length, 1);
+  assert.doesNotMatch(JSON.stringify(run.report), /PRIVATE_MODEL_RESPONSE/u);
   await runtime.close();
 });
 
@@ -799,4 +864,321 @@ test('cancellation before candidate write prevents the delete and stops the run'
   assert.equal(run.report.status, 'cancelled');
   assert.equal(candidateSent, 0);
   await runtime.close();
+});
+
+function fakeTargetInfo(url, extraPaths = []) {
+  const parsed = new URL(url);
+  return {
+    schemaVersion: 'web-parser-1',
+    target: { requestedUrl: url, finalUrl: url, origin: parsed.origin },
+    navigation: { status: 200, contentType: 'text/html', redirectChain: [], loadTimingMs: 5, securityDetails: null },
+    headers: [{ name: 'Content-Type', value: 'text/html' }],
+    cookies: [], meta: [], html: '<html><head><title>Fixture ' + parsed.pathname + '</title></head></html>', body: null,
+    technologies: [{ name: 'nginx', categories: ['Web servers'], version: null, confidence: 100, evidence: [] }],
+    libraries: [],
+    structure: { forms: [], links: [], scripts: [], iframes: [], inputs: [], linkTags: [],
+      areas: [], formActions: [], frames: [], embeds: [], objects: [], metaRefresh: [], media: [] },
+    resources: [{ kind: 'document', method: 'GET', url, status: 200 }],
+    paths: extraPaths,
+    errors: [],
+    truncated: false,
+  };
+}
+
+function universityLoginFetch() {
+  return async (url, init = {}) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === '/login') {
+      const account = init.body.get('username');
+      return new Response('', { status: 302, headers: { location: '/mypage',
+        'set-cookie': 'sess=' + account + 'TOKEN1234567; HttpOnly' } });
+    }
+    if (parsed.pathname === '/api/search') return new Response(JSON.stringify({ site: '대한대학교', results: [] }),
+      { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response('<html><title>대한대학교</title></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+}
+
+test('web_info observes declared paths, extends scope, and rejects off-scope or off-origin paths', async () => {
+  const collected = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-scope',
+    fetchImpl: universityLoginFetch(),
+    webParserCollect: async (url, opts = {}) => {
+      collected.push({ url, cookies: opts.cookies ?? null });
+      const origin = new URL(url).origin;
+      const extra = new URL(url).pathname === '/' ? [
+        { url: origin + '/discovered', sources: ['link'], methods: [], sameOrigin: true, params: [] },
+        { url: 'http://evil.example/x', sources: ['link'], methods: [], sameOrigin: false, params: [] },
+        { url: origin + '/wild', sources: ['robots:disallow'], methods: [], sameOrigin: true, params: [], wildcard: true },
+      ] : [];
+      const info = fakeTargetInfo(url, extra);
+      const { summarizeTargetInfo } = await import('../../../packages/adapters/integrations/web-parser.mjs');
+      return { info, summary: summarizeTargetInfo(info) };
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      const evidenceIds = [context.evidence[0].id];
+      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration',
+        asset: '/', rationale: 'Observe the selected origin with a browser.', evidenceIds }],
+      probes: [
+        { id: 'w-pub', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/' } },
+        { id: 'w-role', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/mypage', sessionRole: 'owner' } },
+        { id: 'w-discovered', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/discovered' } },
+        { id: 'w-wild', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/wild' } },
+        { id: 'w-offorigin', hypothesisId: 'h-web', tool: 'web_info', input: { path: 'http://evil.example/x' } },
+      ] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  const probe = id => run.report.probes.find(item => item.id === id);
+  assert.equal(probe('w-pub').status, 'inconclusive');
+  assert.equal(probe('w-role').status, 'inconclusive');
+  assert.equal(probe('w-discovered').status, 'inconclusive', 'the discovered same-origin path was authorized');
+  assert.equal(probe('w-wild').status, 'blocked');
+  assert.equal(probe('w-offorigin').status, 'blocked');
+  assert.equal(probe('w-wild').reason, 'path_out_of_scope');
+  assert.equal(probe('w-offorigin').reason, 'path_out_of_scope');
+  // web_info evidence is observation; the verifier never promotes it to a verdict.
+  const pubEvidence = run.report.evidence.find(item => item.id === probe('w-pub').evidenceIds[0]);
+  assert.equal(pubEvidence.kind, 'web-info');
+  assert.equal(pubEvidence.source, 'web-parser/vul-web2-daehan');
+  const roleEvidence = run.report.evidence.find(item => item.id === probe('w-role').evidenceIds[0]);
+  assert.equal(roleEvidence.source, 'web-parser/vul-web2-daehan/role:owner');
+  // The fixed owner session cookie reached web-parser as a { name, value } pair.
+  const roleCall = collected.find(item => new URL(item.url).pathname === '/mypage');
+  assert.deepEqual(roleCall.cookies, [{ name: 'sess', value: 'partner1TOKEN1234567' }]);
+  assert.ok(run.report.scope.allowedPaths.includes('/discovered'));
+  assert.ok(!run.report.scope.allowedPaths.includes('/wild'));
+  assert.ok(run.report.scope.toolIds.includes('web_info'));
+  assert.doesNotMatch(JSON.stringify(run.report), /TOKEN1234567/u);
+  await runtime.close();
+});
+
+test('web_info honors cancellation mid-run', async () => {
+  const collected = [];
+  let runtime;
+  runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-cancel',
+    fetchImpl: universityLoginFetch(),
+    beforeProbe: async probe => { if (probe.tool === 'web_info') runtime.stop('web-info-cancel'); },
+    webParserCollect: async (url, opts = {}) => {
+      collected.push(url);
+      if (opts.signal?.aborted) { const error = new Error('aborted'); error.name = 'AbortError'; throw error; }
+      const info = fakeTargetInfo(url);
+      return { info, summary: {} };
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration',
+        asset: '/', rationale: 'Observe the selected origin.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'w-abort', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/' } }] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'stopped');
+  assert.equal(run.report.status, 'cancelled');
+  await runtime.close();
+});
+
+const SESSION_VALUE = 'SessionCookieValue12345';
+const TRACKER_VALUE = 'TrackerCookieValue67890';
+
+/** A loopback stand-in for the isolated board: session login, Set-Cookie page, robots.txt and JSON. */
+async function loopbackBoard() {
+  const server = createServer((req, res) => {
+    const path = new URL(req.url, 'http://127.0.0.1').pathname;
+    if (req.method === 'POST' && path === '/api/session') {
+      res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'sid=' + SESSION_VALUE + '; HttpOnly; Path=/' });
+      return res.end('{"ok":true}');
+    }
+    if (path === '/robots.txt') {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      return res.end('User-agent: *\nDisallow: /hidden-admin\n');
+    }
+    if (path.startsWith('/api/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end('{"posts":[]}');
+    }
+    // A logged-in page reflects the session value in a header and a link.
+    const reflected = req.headers.cookie?.includes(SESSION_VALUE) ? SESSION_VALUE : null;
+    res.writeHead(200, { 'content-type': 'text/html', server: 'nginx/1.25.3',
+      'set-cookie': 'tracker=' + TRACKER_VALUE + '; Path=/; SameSite=Lax',
+      ...(reflected ? { 'x-echo': reflected } : {}) });
+    return res.end('<html><head><title>Loopback Board</title></head><body>'
+      + '<a href="/robots.txt">robots</a><a href="/api/data">data</a>'
+      + (reflected ? '<a href="/echo?ref=' + reflected + '">echo</a>' : '')
+      + '<form action="/api/posts" method="post"><input name="title"><textarea name="content"></textarea></form></body></html>');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return { origin: 'http://127.0.0.1:' + server.address().port,
+    close: async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
+}
+
+test('web_info evidence shows the planner real page details from a browser without cookie values', async () => {
+  const contexts = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web-1', modelId: 'deepseek-flash', runIdFactory: () => 'web-info-evidence',
+    boardFactory: loopbackBoard,
+    plannerFactory: () => ({ async propose(context) {
+      contexts.push(JSON.stringify({ inventory: context.inventory, evidence: context.evidence }));
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration', asset: '/',
+        rationale: 'Observe the board with a browser.', evidenceIds: [context.evidence[0].id] }],
+      probes: [
+        { id: 'w-home', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/' } },
+        { id: 'w-robots', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/robots.txt' } },
+        { id: 'w-json', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/api/data' } },
+        { id: 'w-alice', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/', sessionRole: 'alice' } },
+      ] };
+    } }),
+  });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    const seen = JSON.parse(contexts[1]).evidence;
+    const of = id => run.report.probes.find(item => item.id === id).evidenceIds
+      .map(evidenceId => seen.find(item => item.id === evidenceId));
+    const [home, homePaths, homeSurface] = of('w-home');
+    assert.deepEqual([home.kind, homePaths.kind, homeSurface.kind], ['web-info', 'web-info-paths', 'web-info-surface']);
+    assert.match(home.summary, /HTTP 200 text\/html; title "Loopback Board"/u);
+    assert.match(home.summary, /"name":"Nginx","version":"1\.25\.3"/u);
+    assert.match(homePaths.summary, /"url":"\/robots\.txt"/u);
+    assert.match(homeSurface.summary, /"action":"\/api\/posts","method":"post","fields":\[\{"name":"title","type":"text"\},\{"name":"content","type":"textarea"\}\]/u);
+    assert.match(homeSurface.summary, /"name":"tracker","httpOnly":false/u);
+    const [robots, robotsPaths] = of('w-robots');
+    assert.match(robots.summary, /HTTP 200 text\/plain/u);
+    assert.match(robotsPaths.summary, /"url":"\/hidden-admin","sources":\["robots:disallow"\]/u);
+    assert.match(of('w-json')[0].summary, /HTTP 200 application\/json/u);
+    const aliceSurface = of('w-alice').find(item => item.kind === 'web-info-surface');
+    assert.equal(aliceSurface.source, 'web-parser/vul-web-1/role:alice');
+    assert.match(aliceSurface.summary, /"name":"sid",/u);
+    assert.match(aliceSurface.summary, /"name":"x-echo","value":"\[redacted\]"/u);
+    assert.match(of('w-alice').find(item => item.kind === 'web-info-paths').summary, /"url":"\/echo\?ref \[redacted\]"/u);
+    for (const item of seen.filter(entry => entry.kind.startsWith('web-info'))) {
+      assert.ok(Buffer.byteLength(item.summary, 'utf8') <= 2048 && Buffer.byteLength(JSON.stringify(item), 'utf8') <= 4096);
+    }
+    for (const text of [JSON.stringify(run.report), ...contexts]) {
+      assert.doesNotMatch(text, new RegExp(SESSION_VALUE + '|' + TRACKER_VALUE, 'u'));
+    }
+  } finally { await runtime.close(); }
+});
+
+function largeTargetInfo(url) {
+  const info = fakeTargetInfo(url, Array.from({ length: 400 }, (_, i) => ({ url: new URL('/p/' + i + '?q=1', url).href,
+    sources: ['robots:disallow'], methods: ['GET'], sameOrigin: true, params: ['q'] })));
+  const fields = Array.from({ length: 60 }, (_, i) => ({ name: '필드' + i, type: 'text' }));
+  info.structure.forms = Array.from({ length: 25 }, (_, i) => ({ action: url + 'f' + i, method: 'POST', fields }));
+  info.headers = Array.from({ length: 80 }, (_, i) => ({ name: 'X-Header-' + i, value: '값'.repeat(300) }));
+  return info;
+}
+
+async function runWebInfoBudget({ limits, probes, onEvidence }) {
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-budget', fetchImpl: universityLoginFetch(), limits,
+    webParserCollect: async url => ({ info: largeTargetInfo(url), summary: {} }),
+    plannerFactory: () => ({ async propose(context) {
+      onEvidence?.(context.evidence);
+      if (context.iteration > 1 || !probes.length) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration', asset: '/',
+        rationale: 'Observe a large page.', evidenceIds: [context.evidence[0].id] }],
+      probes: probes.map(([id, path]) => ({ id, hypothesisId: 'h-web', tool: 'web_info', input: { path } })) };
+    } }),
+  });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    return await done;
+  } finally { await runtime.close(); }
+}
+
+test('web_info evidence from a large page stays within core limits and marks shown/total', async () => {
+  const run = await runWebInfoBudget({ probes: [['w-large', '/']] });
+  assert.equal(run.status, 'completed', run.error);
+  const items = run.report.evidence.filter(item => item.kind.startsWith('web-info'));
+  assert.deepEqual(items.map(item => item.kind), ['web-info', 'web-info-paths', 'web-info-surface']);
+  for (const item of items) {
+    assert.ok(Buffer.byteLength(item.summary, 'utf8') <= 2048 && Buffer.byteLength(JSON.stringify(item), 'utf8') <= 4096);
+  }
+  assert.match(items[1].summary, /paths \d+\/400: \[\{"url":"\/p\/0\?q=1"/u);
+  assert.match(items[2].summary, /forms 1\/25: .*"\+30 more"\]\}\]; headers \d+\/80: /u);
+});
+
+function heavyTargetInfo(url) {
+  const info = fakeTargetInfo(url, Array.from({ length: 150 }, (_, i) => ({ url: new URL('/p/' + i + '?q=1', url).href,
+    sources: ['link'], methods: ['GET'], sameOrigin: true, params: ['q'] })));
+  info.headers = Array.from({ length: 22 }, (_, i) => ({ name: 'X-Header-' + i, value: 'value-' + i }));
+  info.technologies = Array.from({ length: 12 }, (_, i) => ({ name: 'Tech' + i, version: '1.' + i,
+    categories: ['Web frameworks'] }));
+  info.structure.forms = Array.from({ length: 6 }, (_, i) => ({ action: url + 'f' + i, method: 'POST',
+    fields: Array.from({ length: 8 }, (_, j) => ({ name: 'field' + j, type: 'text' })) }));
+  return info;
+}
+
+test('web_info on heavy pages up to maxProbes keeps the real planner prompt under its limit', async () => {
+  const promptBytes = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-prompt-budget', fetchImpl: universityLoginFetch(),
+    webParserCollect: async url => ({ info: heavyTargetInfo(url), summary: {} }),
+    plannerFactory: () => plannerModule.createGeneralModelPlanner({ client: { async completeJson({ systemPrompt, userPayload }) {
+      promptBytes.push(Buffer.byteLength(systemPrompt, 'utf8') + Buffer.byteLength(JSON.stringify(userPayload), 'utf8'));
+      const { iteration, evidence } = userPayload;
+      return { value: { done: false, hypotheses: [{ id: 'h' + iteration, category: 'configuration', asset: '/',
+        rationale: 'Observe a heavy page.', evidenceIds: [evidence[0].id] }],
+      probes: Array.from({ length: 4 }, (_, i) => ({ id: 'w' + iteration + '-' + i, hypothesisId: 'h' + iteration,
+        tool: 'web_info', input: { path: '/' } })) }, metadata: { provider: 'deepseek', model: 'deepseek-flash' } };
+    } } }),
+  });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    assert.equal(promptBytes.length, 6);
+    const probes = run.report.probes.filter(item => item.tool === 'web_info');
+    assert.equal(probes.length, 24);
+    const byId = new Map(run.report.evidence.map(item => [item.id, item]));
+    const full = probes[0].evidenceIds.map(id => byId.get(id));
+    assert.deepEqual(full.map(item => item.kind), ['web-info', 'web-info-paths', 'web-info-surface']);
+    // Without the budget, the 20 calls a planner sees would resend far more than its prompt limit.
+    const fullBytes = full.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), 'utf8'), 0);
+    assert.ok(20 * fullBytes > 64 * 1024, String(fullBytes));
+    const counts = probes.map(item => item.evidenceIds.length);
+    const fullCalls = counts.lastIndexOf(3) + 1;
+    assert.deepEqual(counts, counts.map((_, index) => index < fullCalls ? 3 : 1));
+    assert.ok(fullCalls < 24);
+    for (const probe of probes.slice(fullCalls)) {
+      const line = byId.get(probe.evidenceIds[0]);
+      assert.equal(line.kind, 'web-info');
+      assert.match(line.summary, /^web_info \/: HTTP 200 text\/html; counts \{.*"paths":150.*\}; details withheld: evidence budget$/u);
+      assert.ok(Buffer.byteLength(line.summary, 'utf8') <= 300);
+    }
+  } finally { await runtime.close(); }
+});
+
+test('web_info fits the remaining evidence budget with one and then zero free slots', async () => {
+  let initial = 0;
+  await runWebInfoBudget({ probes: [], onEvidence: evidence => { initial = evidence.length; } });
+  assert.ok(initial > 0);
+  const limits = { maxIterations: 3, maxProbes: 24, maxEvidenceItems: initial + 1 };
+  const run = await runWebInfoBudget({ limits, probes: [['w-one', '/'], ['w-zero', '/about']] });
+  assert.equal(run.status, 'completed', run.error);
+  assert.equal(run.report.stopReason, 'planner_done');
+  const probe = id => run.report.probes.find(item => item.id === id);
+  assert.equal(probe('w-one').evidenceIds.length, 1);
+  assert.equal(run.report.evidence.find(item => item.id === probe('w-one').evidenceIds[0]).kind, 'web-info');
+  assert.equal(probe('w-zero').status, 'inconclusive');
+  assert.equal(probe('w-zero').reason, 'no_evidence');
+  assert.equal(run.report.evidence.length, initial + 1);
 });

@@ -327,6 +327,106 @@ async function availablePort() {
   return port;
 }
 
+async function webParserReleaseFixture(t, { malformedDataset = false, emptyProbes = false, modulePath = 'web-parser' } = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'ca3p-parser-prepare-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const repoDir = join(directory, 'repo'); const deployRoot = join(directory, 'deploy');
+  await mkdir(repoDir);
+  const files = {
+    'integration-manifest.json': JSON.stringify({ modules: [
+      { id: 'xss-parser', path: 'xss-parser', status: 'active' },
+      { id: 'web-parser', path: modulePath, status: 'active' },
+      { id: 'report', path: 'packages/report', status: 'active' },
+    ] }),
+    'xss-parser/package-lock.json': '{}', 'web-parser/package-lock.json': '{}',
+    'packages/report/capture/package-lock.json': '{}', 'packages/report/requirements-ci.lock': '# fixture',
+    'packages/report/pyproject.toml': '# fixture',
+    'web-parser/scripts/fetch-dataset.mjs': `import {mkdir,writeFile} from 'node:fs/promises';
+const root=new URL('../data/webappanalyzer/',import.meta.url);await mkdir(new URL('technologies/',root),{recursive:true});
+for(const file of ['categories.json','groups.json',...'_abcdefghijklmnopqrstuvwxyz'.split('').map(c=>'technologies/'+c+'.json')]){
+await writeFile(new URL(file,root),${malformedDataset ? "file==='technologies/x.json'?'':" : ''}JSON.stringify({fixture:{name:'Synthetic'}}));}
+`,
+    'web-parser/fingerprint.mjs': `import {readFileSync} from 'node:fs';
+export function pageProbes(){JSON.parse(readFileSync(new URL('./data/webappanalyzer/categories.json',import.meta.url),'utf8'));
+return ${emptyProbes ? '{js:[],dom:{}}' : "{js:['Synthetic.version'],dom:{'body':{text:true,attributes:[]}}}"};}
+`,
+  };
+  for (const [name, content] of Object.entries(files)) {
+    await mkdir(join(repoDir, name, '..'), { recursive: true }); await writeFile(join(repoDir, name), content);
+  }
+  const git = args => execFileSync('/usr/bin/git', args, { cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(['init', '-q']); git(['add', '.']); git(['-c', 'user.name=CA3P fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Parser deployment fixture']);
+  const sha = git(['rev-parse', 'HEAD']); const release = join(deployRoot, 'releases', sha);
+  git(['worktree', 'add', '--detach', release, sha]);
+  const localConfig = { ...config, repoDir, deployRoot, runtimeDir: join(directory, 'runtime'),
+    nodePath: process.execPath, pythonPath: join(directory, 'synthetic-python'), npmCli: join(directory, 'synthetic-npm-cli.mjs') };
+  const commands = []; const phases = [];
+  const runCommand = async (executable, args, options) => {
+    const name = options.logFile.split('/').at(-1).replace(/\.log$/u, '');
+    commands.push({ name, executable, args });
+    if (name === 'venv') {
+      await mkdir(join(release, '.venv/bin'), { recursive: true }); await writeFile(join(release, '.venv/bin/python'), 'fixture');
+    }
+    if (name.startsWith('npm-')) {
+      assert.ok(args.includes('--ignore-scripts'), 'arbitrary npm lifecycle scripts remain disabled');
+      const prefix = args[args.indexOf('--prefix') + 1];
+      for (const dependency of prefix.endsWith('/web-parser') ? ['playwright', 'wapalyzer-core'] : ['playwright']) {
+        const path = join(prefix, 'node_modules', dependency); await mkdir(path, { recursive: true }); await writeFile(join(path, 'package.json'), '{}');
+      }
+    }
+    if (['web-parser-dataset', 'web-parser-dataset-check'].includes(name)) return execute(executable, args, options);
+    return '';
+  };
+  const phase = async value => {
+    phases.push(value);
+    if (value === 'isolated-smoke') throw new Error('fixture stopped before database or service operations');
+  };
+  return { directory, localConfig, release, sha, commands, phases, phase, runCommand };
+}
+
+test('fresh device releases explicitly fetch and validate parser data despite disabled npm scripts', async t => {
+  const f = await webParserReleaseFixture(t);
+  await assert.rejects(stat(join(f.release, 'web-parser/data/webappanalyzer')), { code: 'ENOENT' });
+  await assert.rejects(prepareRelease(f.localConfig, { sha: f.sha }, f.phase, { execute: f.runCommand }), /fixture stopped before database or service operations/);
+  assert.deepEqual(f.commands.map(item => item.name), ['venv', 'npm-0', 'npm-1', 'npm-2', 'python-requirements',
+    'python-packages', 'chromium', 'web-parser-dataset', 'web-parser-dataset-check', 'preflight']);
+  assert.deepEqual(f.phases, ['dependencies', 'web-parser-dataset', 'isolated-smoke']);
+  const download = f.commands.find(item => item.name === 'web-parser-dataset');
+  assert.equal(download.executable, process.execPath);
+  assert.deepEqual(download.args, [join(f.release, 'web-parser/scripts/fetch-dataset.mjs')]);
+  assert.equal(JSON.parse(await readFile(join(f.localConfig.deployRoot, 'prepared', `${f.sha}.json`), 'utf8')).sha, f.sha);
+  assert.match(await readFile(join(f.localConfig.deployRoot, 'logs', f.sha, 'web-parser-dataset-check.log'), 'utf8'), /dataset ready/);
+  // Prepared dependencies do not imply that ignored runtime data still exists.
+  await rm(join(f.release, 'web-parser/data'), { recursive: true }); f.commands.length = 0; f.phases.length = 0;
+  await assert.rejects(prepareRelease(f.localConfig, { sha: f.sha }, f.phase, { execute: f.runCommand }), /fixture stopped before database or service operations/);
+  assert.deepEqual(f.commands.map(item => item.name), ['web-parser-dataset', 'web-parser-dataset-check']);
+  assert.deepEqual(f.phases, ['web-parser-dataset', 'isolated-smoke']);
+  assert.ok((await stat(join(f.release, 'web-parser/data/webappanalyzer/technologies/x.json'))).size > 0);
+});
+
+test('empty dataset files and unusable matcher probes stop preparation before the prepared marker or smoke', async t => {
+  for (const settings of [{ malformedDataset: true }, { emptyProbes: true }]) {
+    const f = await webParserReleaseFixture(t, settings);
+    await assert.rejects(prepareRelease(f.localConfig, { sha: f.sha }, f.phase, { execute: f.runCommand }), /private deployment log/);
+    assert.equal(f.commands.at(-1).name, 'web-parser-dataset-check');
+    assert.equal(f.commands.some(item => item.name === 'preflight'), false);
+    assert.equal(f.phases.includes('isolated-smoke'), false);
+    await assert.rejects(stat(join(f.localConfig.deployRoot, 'prepared', `${f.sha}.json`)), { code: 'ENOENT' });
+  }
+});
+
+test('parser setup rejects another module path and linked data directories before executing the downloader', async t => {
+  const wrong = await webParserReleaseFixture(t, { modulePath: '../outside' });
+  await assert.rejects(prepareRelease(wrong.localConfig, { sha: wrong.sha }, wrong.phase, { execute: wrong.runCommand }), /fixed release directory/);
+  assert.equal(wrong.commands.length, 0);
+  const linked = await webParserReleaseFixture(t);
+  const outside = join(linked.directory, 'outside-data'); await mkdir(outside);
+  await symlink(outside, join(linked.release, 'web-parser/data'));
+  await assert.rejects(prepareRelease(linked.localConfig, { sha: linked.sha }, linked.phase, { execute: linked.runCommand }), /directories must stay inside/);
+  assert.equal(linked.commands.some(item => item.name === 'web-parser-dataset'), false);
+  assert.deepEqual(await readdir(outside), []);
+});
+
 test('isolated preparation masks inherited/file model keys and never uses production runtime paths', { timeout: 30_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'ca3p-isolated-'));
   const previous = { key: process.env.DEEPSEEK_API_KEY, observation: process.env.CA3P_SMOKE_TEST_OBSERVATION };

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { digest, redact, CONTRACT_VERSIONS } from './index.mjs';
+import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from './general-loop-budget.mjs';
 
 export const PROJECT_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const EXCLUDED = new Set(['node_modules', '.git', '.runtime', 'data', '__pycache__', '.pytest_cache', '.ruff_cache', '.venv', 'reports', '.env']);
@@ -80,6 +81,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
   }
   const fixtureId = options.fixtureId ?? 'vul-web-1';
   const general = mode === 'local-lab-general';
+  const loopBudget = general ? validateGeneralLoopBudget(options.loopBudget ?? GENERAL_LOOP_BUDGET_DEFAULTS) : null;
   const universityOrigins = { 'vul-web2-daehan': 'http://127.0.0.1:4101', 'vul-web2-wonchang': 'http://127.0.0.1:4102' };
   const universityLab = mode !== 'core-fixture' && Object.hasOwn(universityOrigins, fixtureId);
   const fixedUniversityProbe = universityLab && !general;
@@ -88,7 +90,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
     : mode === 'core-fixture' ? 'agent_cross_user_delete_canary' : 'stored_xss_canary');
   const moduleNames = general
     ? ['agent', universityLab ? 'vul-web2' : 'vul-web-1', 'casper-db',
-      'attack-module', 'guardrail', 'packages/models', 'packages/adapters',
+      'attack-module', 'guardrail', 'packages/models', 'packages/adapters', 'web-parser',
       'packages/report', 'packages/run-store', 'apps/application', 'apps/worker']
     : universityLab
     ? ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker']
@@ -106,14 +108,16 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
     shared: { contractDigest: treeDigest(join(PROJECT_ROOT, 'packages/contracts')),
       lockDigest: universityLab || general ? null : treeDigest(join(PROJECT_ROOT, 'xss-parser/package-lock.json')),
       modelRegistryDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')) },
-    execution: { mode, simulated: mode === 'core-fixture', maxIterations: general ? 6 : 1, delayMs: options.delayMs ?? 0 },
+    execution: { mode, simulated: mode === 'core-fixture', maxIterations: loopBudget?.maxIterations ?? 1,
+      ...(general ? { loopBudget } : {}), delayMs: options.delayMs ?? 0 },
     model: { id: modelId, provider: model.provider ?? (requestedModel ? 'deepseek' : 'rules'), requestedModel,
       reportedModel: null, snapshot: null, adapterDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')),
       promptTemplateDigest: general ? treeDigest(join(PROJECT_ROOT, 'agent/src/general-model-planner.js'))
         : fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'agent/src/deepseek-reasoning-engine.js')),
       ...(fixedUniversityProbe ? { executionRole: 'not-used-fixed-probe' } : {}),
       settings: model.settings ?? {}, actualPromptDigests: [] },
-    data: { logicalInputDigest: digest({ mode, fixtureId, testProfile, ...(universityLab ? { origin: universityOrigin } : {}) }),
+    data: { logicalInputDigest: digest({ mode, fixtureId, testProfile,
+      ...(general ? { loopBudget } : {}), ...(universityLab ? { origin: universityOrigin } : {}) }),
       datasetDigest: treeDigest(join(PROJECT_ROOT, universityLab ? 'vul-web2'
         : mode === 'core-fixture' ? 'apps/application/scripted-gateway.cjs' : 'vul-web-1')),
       catalogDigest: general ? (options.caseSnapshot?.path ? attackCatalogSnapshot(options.caseSnapshot.path) : null)
@@ -131,7 +135,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       ...(universityLab ? { origin: universityOrigin, stateCapture: 'running-fixture-not-snapshotted' } : {}),
       testProfile },
     policy: { rulesetDigest: general && !universityLab ? null : treeDigest(join(PROJECT_ROOT, 'guardrail/rules')),
-      mutationRetry: 'never', recovery: 'interrupted-new-run-required', maxIterations: general ? 6 : 1 },
+      mutationRetry: 'never', recovery: 'interrupted-new-run-required', maxIterations: loopBudget?.maxIterations ?? 1 },
     environment: { nodeVersion: process.version,
       pythonVersion: mode === 'core-fixture' || fixedUniversityProbe ? 'not-applicable' : runtimeVersion(env.CASPER_DB_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'), ['--version']),
       browserVersion: mode === 'core-fixture' || universityLab || general ? 'not-applicable' : (() => {

@@ -25,6 +25,11 @@ async function setup(t, options = {}) {
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1450, height: 1050 } });
   const errors = []; const requests = []; let role = options.role || 'admin'; let count = 1;
+  let models = options.models ?? [
+    { id: 'deepseek-chat', name: 'DeepSeek Chat', provider: 'deepseek', available: !options.unavailable, reason: options.unavailable ? 'API 키가 설정되지 않았습니다.' : null },
+    { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', provider: 'deepseek', available: !options.unavailable },
+  ];
+  let modelsError = options.modelsError || '';
   const sessions = new Map([['session-1', first()]]);
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => { window.EventSource = undefined; window.chatInjected = false; });
@@ -44,10 +49,7 @@ async function setup(t, options = {}) {
     if (path === '/api/platform') return json({ source: {}, modules: [] });
     if (path === '/api/ci-results') return json({ runs: [] });
     if (path === '/api/runs') return json({ runs: [{ ...idle, status: 'completed', startedAt: date, target: 'http://lab.example/', id: 'run-1' }], total: 1 });
-    if (path === '/api/chat/models') return json({ models: [
-      { id: 'deepseek-chat', name: 'DeepSeek Chat', available: !options.unavailable, reason: options.unavailable ? 'API 키가 설정되지 않았습니다.' : null },
-      { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', available: !options.unavailable },
-    ] });
+    if (path === '/api/chat/models') return modelsError ? json({ error: modelsError }, 503) : json({ models });
     if (path === '/api/chat/sessions' && method === 'GET') return json({ sessions: [...sessions.values()].map(session => ({ ...session, messages: undefined, messageCount: session.messages.length })) });
     if (path === '/api/chat/sessions' && method === 'POST') {
       const body = request.postDataJSON(); const session = { id: `session-${++count}`, title: '새 대화', modelId: body.modelId, createdAt: date, updatedAt: date, messages: [], context: { ...context, estimatedInputTokens: 0, percentage: 0 } };
@@ -80,7 +82,7 @@ async function setup(t, options = {}) {
   });
   await page.goto('http://ca3p.invalid/#workspace/chat');
   await page.waitForFunction(() => document.querySelector('#chat-session-title')?.textContent === '검증 계획');
-  return { page, requests, errors, sessions, setRole(value) { role = value; } };
+  return { page, requests, errors, sessions, setRole(value) { role = value; }, setModels(value) { models = value; }, setModelsError(value) { modelsError = value; } };
 }
 
 test('workspace chat manages private sessions, models, context, safe file attachments and message history', async t => {
@@ -200,4 +202,82 @@ test('chat handles model availability, provider failures and cancellation withou
   assert.equal(await unavailable.page.locator('#chat-send').isDisabled(), true);
   assert.equal(await unavailable.page.locator('#chat-new-session').isDisabled(), true);
   assert.deepEqual([...failed.errors, ...unavailable.errors], []);
+});
+
+test('chat lists discovered local providers, preserves offline conversations and recovers after rediscovery', async t => {
+  const local = { id: 'local:llama-cpp:qwen3.8-27b-turbo', name: 'Qwen 3.8 27B', provider: 'local', runtime: 'llama.cpp', local: true, available: true };
+  const apiModel = { id: 'deepseek-chat', name: 'DeepSeek Chat', provider: 'deepseek', available: true };
+  const { page, requests, errors, setModels, setModelsError } = await setup(t, { models: [apiModel, local] });
+  assert.match(await page.locator('#chat-model-select option').allTextContents().then(values => values.join('\n')), /Qwen 3.8 27B.*llama\.cpp.*로컬/);
+  assert.equal(await page.locator('#chat-local-model-notice').isHidden(), true);
+  setModels([apiModel, { ...local, available: false, reason: '로컬 모델 서버 인증이 필요합니다.' },
+    { ...local, id: 'local:ollama:qwen-2', name: 'Qwen 두 번째', available: false, reason: '로컬 모델 서버에 연결할 수 없습니다.' },
+    { ...local, id: 'local:ollama:qwen-3', name: '추가 모델', available: false, reason: '연결 실패' }]);
+  await page.locator('#chat-refresh').click();
+  await page.waitForFunction(() => document.querySelector('#chat-local-model-notice')?.textContent.includes('인증이 필요'));
+  assert.equal(await page.locator('#chat-model-select').inputValue(), apiModel.id);
+  assert.equal(await page.locator('#chat-local-model-notice').isVisible(), true);
+  assert.match(await page.locator('#chat-local-model-notice').textContent(), /Qwen 3.8 27B:.*인증이 필요.*Qwen 두 번째:.*연결할 수 없습니다.*외 1개 모델/);
+  assert.doesNotMatch(await page.locator('#chat-local-model-notice').textContent(), /추가 모델/);
+  await page.locator('#chat-message-input').fill('API 모델은 계속 사용');
+  assert.equal(await page.locator('#chat-send').isEnabled(), true);
+  setModels([apiModel, local]);
+  await page.locator('#chat-refresh').click();
+  await page.waitForFunction(() => document.querySelector('#chat-local-model-notice')?.hidden === true && !document.querySelector('#chat-model-select').disabled);
+  await page.locator('#chat-model-select').selectOption(local.id);
+  await page.waitForFunction(() => document.querySelector('#chat-model-status')?.textContent.includes('llama.cpp') && !document.querySelector('#chat-model-select').disabled);
+  assert.match(await page.locator('#chat-model-status').textContent(), /로컬.*사용 가능/);
+  assert.deepEqual(requests.find(item => item.method === 'PATCH')?.body, { modelId: local.id });
+  await page.locator('#chat-message-input').fill('로컬 모델에게 질문');
+  await page.locator('#chat-send').click();
+  await page.waitForFunction(() => document.querySelectorAll('.chat-message').length === 8);
+
+  setModels([apiModel, { ...local, available: false, reason: '로컬 모델 서버에 연결할 수 없습니다.' }]);
+  await page.locator('#chat-refresh').click();
+  await page.waitForFunction(() => document.querySelector('#chat-model-status')?.textContent.includes('연결할 수 없습니다'));
+  assert.match(await page.locator('#chat-model-select option:checked').textContent(), /연결할 수 없습니다/);
+  assert.equal(await page.locator('#chat-model-select').inputValue(), local.id);
+  await page.locator('#chat-message-input').fill('다시 시도할 초안');
+  assert.equal(await page.locator('#chat-send').isDisabled(), true);
+  assert.equal(await page.locator('.chat-message').count(), 8);
+  assert.match(await page.locator('#chat-model-status').textContent(), /새로고침/);
+  assert.match(await page.locator('#chat-local-model-notice').textContent(), /Qwen 3.8 27B:.*연결할 수 없습니다/);
+
+  setModels([apiModel]);
+  await page.locator('#chat-refresh').click();
+  await page.waitForFunction(() => document.querySelector('#chat-model-status')?.textContent.includes('찾을 수 없습니다'));
+  assert.equal(await page.locator('#chat-model-select').inputValue(), local.id);
+  assert.match(await page.locator('#chat-model-select option:checked').textContent(), /현재 연결 안 됨/);
+  assert.equal(await page.locator('#chat-send').isDisabled(), true);
+
+  setModelsError('모델 연결 상태를 확인하지 못했습니다.');
+  await page.locator('#chat-refresh').click();
+  await page.waitForFunction(() => document.querySelector('#chat-model-status')?.textContent.includes('목록을 불러오지 못했습니다'));
+  assert.equal(await page.locator('.chat-message').count(), 8);
+  assert.equal(await page.locator('#chat-message-input').inputValue(), '다시 시도할 초안');
+  assert.equal(await page.locator('#chat-send').isDisabled(), true);
+  setModelsError(''); setModels([apiModel, local]);
+  await page.locator('#chat-refresh').click();
+  await page.waitForFunction(() => document.querySelector('#chat-model-status')?.textContent.includes('사용 가능') && !document.querySelector('#chat-refresh').disabled);
+  assert.equal(await page.locator('#chat-send').isEnabled(), true);
+  assert.equal(await page.locator('#chat-model-select').inputValue(), local.id);
+  assert.deepEqual(errors, []);
+});
+
+test('empty or unavailable model discovery still loads the private conversation history', async t => {
+  const empty = await setup(t, { models: [] });
+  assert.match(await empty.page.locator('#chat-model-status').textContent(), /모델을 현재 서버에서 찾을 수 없습니다/);
+  assert.equal(await empty.page.locator('#chat-new-session').isDisabled(), true);
+  assert.equal(await empty.page.locator('.chat-message').count(), 6);
+  empty.page.once('dialog', dialog => dialog.accept());
+  await empty.page.locator('#chat-delete-session').click();
+  await empty.page.waitForFunction(() => document.querySelector('#chat-session-count')?.textContent === '0');
+  assert.match(await empty.page.locator('#chat-model-status').textContent(), /등록된 대화 모델이 없습니다.*새로고침/);
+
+  const failed = await setup(t, { modelsError: '모델 검색 서비스에 연결할 수 없습니다.' });
+  assert.match(await failed.page.locator('#chat-model-status').textContent(), /모델 목록을 불러오지 못했습니다/);
+  assert.equal(await failed.page.locator('.chat-message').count(), 6);
+  assert.equal(await failed.page.locator('#chat-new-session').isDisabled(), true);
+  assert.equal(await failed.page.locator('#chat-send').isDisabled(), true);
+  assert.deepEqual([...empty.errors, ...failed.errors], []);
 });
