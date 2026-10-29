@@ -23,8 +23,42 @@ from datetime import datetime, timezone
 
 BACKUP_FORMAT = 1
 FILES = {"run": "run.sqlite3", "case": "case.sqlite3"}
-CASE_TABLES = {"cases", "checks", "case_versions"}
-RUN_TABLES = {"runs", "jobs", "run_events", "action_intents", "model_calls", "artifacts", "review_audit"}
+CASE_REQUIRED_TABLES = {"cases", "checks", "case_versions"}
+# These namespaces share the versioned Case database, but are created only when
+# their owning feature is used. Keep legacy Case stores valid rollback targets.
+CASE_OPTIONAL_COLUMNS = {
+    "attack_catalog_metadata": {"key", "value"},
+    "attack_catalog_sources": {"source_ref", "content_sha256", "schema_version", "snapshot", "imported_at"},
+    "attack_patterns": {"pattern_id", "revision", "content_sha256", "vulnerability_type", "application",
+                        "endpoint", "cwe", "source_ref", "source_sha256", "snapshot", "created_at"},
+    "attack_payloads": {"pattern_id", "pattern_revision", "payload_id", "snapshot"},
+    "attack_verification_rules": {"rule_id", "pattern_id", "pattern_revision", "payload_id", "snapshot"},
+    "attack_templates": {"template_id", "version", "pattern_id", "pattern_revision", "content_sha256", "snapshot", "created_at"},
+    "attack_template_rules": {"template_id", "template_version", "rule_id"},
+    "external_metadata": {"key", "value"},
+    "external_sources": {"raw_sha256", "source", "source_url", "retrieved_at", "raw_json"},
+    "external_revisions": {"record_id", "content_sha256", "record_json"},
+    "external_records": {"record_id", "cve_id", "modified_at", "content_sha256", "record_json"},
+    "external_provenance": {"record_id", "content_sha256", "raw_sha256"},
+    "external_assessments": {"assessment_id", "target_id", "cve_id", "record_id", "inventory_sha", "snapshot"},
+    "external_active_inventory": {"target_id", "inventory_sha", "observed_at"},
+    "external_sync_runs": {"job_id", "target_id", "started_at", "status", "receipt"},
+    "dashboard_case_state": {"case_id", "archived_at", "archived_by", "reason"},
+    "dashboard_case_audit": {"id", "case_id", "action", "actor", "recorded_at", "details"},
+}
+CASE_NAMESPACE_MARKERS = {
+    "attack_catalog_metadata": "casper-attack-catalog-1",
+    "external_metadata": "external-vuln-1",
+}
+CASE_TABLES = CASE_REQUIRED_TABLES | CASE_OPTIONAL_COLUMNS.keys()
+RUN_REQUIRED_TABLES = {"runs", "jobs", "run_events", "action_intents", "model_calls", "artifacts", "review_audit"}
+# Version 1 stores gained these tables without changing user_version. Older
+# releases remain valid rollback targets, so validate additions only if present.
+RUN_OPTIONAL_COLUMNS = {
+    "experiment_control": {"id", "status", "owner", "epoch", "last_reset_at", "summary_json", "error"},
+    "pending_target_resets": {"id", "obligations_json"},
+}
+RUN_TABLES = RUN_REQUIRED_TABLES | RUN_OPTIONAL_COLUMNS.keys()
 
 
 def resolved(value: str | Path) -> Path:
@@ -84,14 +118,25 @@ def validate_identity(info: dict, kind: str) -> None:
         with closing(connect_readonly(Path(info["path"]))) as connection:
             if not required <= columns(connection, "cases"):
                 raise ValueError("refusing unrelated case database columns")
-        if version >= 5 and not CASE_TABLES <= tables:
+            for table, required in CASE_OPTIONAL_COLUMNS.items():
+                if table in tables and not required <= columns(connection, table):
+                    raise ValueError(f"refusing unrelated case database columns in {table}")
+            for table, expected in CASE_NAMESPACE_MARKERS.items():
+                if table in tables:
+                    marker = connection.execute(f'SELECT value FROM "{table}" WHERE key=?', ("schema",)).fetchone()
+                    if marker is None or marker[0] != expected:
+                        raise ValueError(f"unsupported case database namespace marker in {table}")
+        if version >= 5 and not CASE_REQUIRED_TABLES <= tables:
             raise ValueError("incomplete versioned case database schema")
     else:
-        if version != 1 or not RUN_TABLES <= tables:
+        if version != 1 or not RUN_REQUIRED_TABLES <= tables:
             raise ValueError("unsupported or unrelated run database schema")
         with closing(connect_readonly(Path(info["path"]))) as connection:
             if not {"id", "status", "manifest_json", "state_json"} <= columns(connection, "runs"):
                 raise ValueError("refusing unrelated run database columns")
+            for table, required in RUN_OPTIONAL_COLUMNS.items():
+                if table in tables and not required <= columns(connection, table):
+                    raise ValueError(f"refusing unrelated run database columns in {table}")
 
 
 def digest(path: Path) -> str:
