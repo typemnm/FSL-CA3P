@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { emptyRun, assertIdentifier, redact } from '../../packages/contracts/index.mjs';
 import { externalScopeRejectionReason, normalizeExternalTarget, requestExternalHttp } from './external-target.mjs';
 
+export { createExternalGeneralRuntime } from './external-general-runtime.mjs';
+
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const safeText = value => String(value ?? '').replace(/[\u0000-\u001f]/gu, ' ').slice(0, 180);

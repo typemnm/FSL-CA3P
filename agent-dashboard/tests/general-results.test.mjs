@@ -81,6 +81,24 @@ test('external report displays observed scope, rejections and response receipt s
   assert.doesNotMatch(html, /모델 제안|가설 기준/);
 });
 
+test('new external general report displays verified findings and model usage', () => {
+  const report = { ...result(), inspectionMode: 'external-general',
+    target: { kind: 'external', origin: 'https://example.org', entryUrl: 'https://example.org/start' },
+    scope: { origin: 'https://example.org', pathPrefix: '/start', methods: ['GET'], maxRequests: 8 } };
+  const run = normalizeGeneralRun({ id: 'external-general', mode: 'external-general',
+    modelId: 'deepseek-flash', testProfile: 'external-general', status: 'completed',
+    target: 'https://example.org/start', report, events: [] });
+  assert.match(renderGeneralOverview(run), /가설과 증거 기반 점검/);
+  assert.doesNotMatch(renderGeneralOverview(run), /독립 검증기가 없어/);
+  const html = renderGeneralReport(run);
+  assert.match(html, /범용 점검 결과/);
+  assert.match(html, /모델 호출 1건/);
+  assert.match(html, /확정/);
+  assert.match(html, /미점검/);
+  assert.match(html, /https:\/\/example\.org/);
+  assert.doesNotMatch(html, /외부 공개 페이지 관찰/);
+});
+
 test('general report shows evidence, incomplete coverage, model usage and escapes untrusted text', () => {
   const item = { report: result(), events: [{ stage: 'probe.verify' }] };
   const summary = generalSummary(item);

@@ -981,6 +981,23 @@ test('judgeAttackRecord maps an AI verdict to a core verdict that cites the prob
   assert.equal((await readReportHandoff(outDir)).result.attackId, 'p-any');
 });
 
+test('judgeAttackRecord forwards a browser boundary when the verifier requests a visit', async () => {
+  const requested = [];
+  const model = { async completeJson({ userPayload }) {
+    if (userPayload.round === 1) return { value: { browser: { path: 'https://elsewhere.example/' }, reason: 'check page' } };
+    assert.deepEqual(userPayload.browserObservation, { error: 'EXTERNAL_BROWSER_DISABLED' });
+    return { value: { verdict: 'invalid', reason: 'browser evidence unavailable' } };
+  } };
+  const verdict = await judgeAttackRecord(attackRecord, { evidenceId: 'ev-1', model,
+    browserFactory: async origin => {
+      requested.push(origin);
+      throw Object.assign(new Error('External browser visits are disabled.'), { code: 'EXTERNAL_BROWSER_DISABLED' });
+    } });
+  assert.deepEqual(requested, ['https://example.com']);
+  assert.deepEqual(verdict, { status: 'not_reproduced', completed: true,
+    evidenceIds: ['ev-1'], reason: 'browser evidence unavailable' });
+});
+
 test('judgeAttackRecord keeps inconclusive results, fills an empty reason and caps a long one', async () => {
   const inconclusive = await judgeAttackRecord(attackRecord, { evidenceId: 'ev-1',
     verify: async () => ({ status: 'inconclusive', reason: '  ', artifacts: [] }) });

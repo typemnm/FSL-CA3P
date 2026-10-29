@@ -70,10 +70,12 @@
             <form id="external-target-form" class="external-target-form" hidden>
               <label for="external-url">시작 URL <input id="external-url" type="url" placeholder="https://example.org/" autocomplete="off" required></label>
               <label for="external-path">허용 경로 <input id="external-path" type="text" value="/" placeholder="/" autocomplete="off"></label>
-              <div class="external-scope-note">동일 원점의 공개 페이지를 읽기 전용으로 관찰합니다. 실습 전용 검증기와 계정은 외부 대상에서 사용하지 않습니다.</div>
+              <div class="external-scope-note">선택한 모델이 허용 범위의 공개 자료에서 가설을 세웁니다. 정책과 독립 검증이 허용하는 검사만 실행하며 미지원 검사는 미점검으로 기록합니다.</div>
+              <label for="external-model-select">판단 엔진 / AI 모델 <select id="external-model-select" aria-describedby="external-model-readiness"><option value="">모델 목록 수신 중</option></select></label>
+              <small id="external-model-readiness" aria-live="polite">점검 모델을 확인하는 중입니다.</small>
               <button class="button secondary" id="external-preflight-button" type="submit">대상 사전 점검</button>
               <div id="external-preflight-status" role="status" aria-live="polite">URL을 입력하고 사전 점검을 시작하세요.</div>
-              <button class="button primary" id="external-run-button" type="button" disabled>외부 대상 점검 시작</button>
+              <button class="button primary" id="external-run-button" type="button" disabled>범용 취약점 점검 시작</button>
             </form>
           </section>
           <div class="lab-launch">
