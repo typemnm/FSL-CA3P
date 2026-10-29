@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { collectWebInfo, summarizeTargetInfo, MAX_SUMMARY_BYTES } from '../integrations/web-parser.mjs';
+import { collectWebInfo, summarizeTargetInfo, evidenceFromTargetInfo, MAX_SUMMARY_BYTES,
+  EVIDENCE_SUMMARY_BYTES } from '../integrations/web-parser.mjs';
 
 function targetInfo(overrides = {}) {
   return {
@@ -67,6 +68,102 @@ test('an oversized page is shrunk by count to fit 40KB while recording totals', 
   assert.ok(Buffer.byteLength(JSON.stringify(summary), 'utf8') <= MAX_SUMMARY_BYTES);
   assert.equal(summary.paths.total, 2000);
   assert.ok(summary.paths.shown < 2000);
+});
+
+const evidenceOptions = { idBase: 'probe-abc', source: 'web-parser/test', asset: '/app' };
+
+/** `label shown/total: [...]` from an evidence summary; JSON.parse fails if an item was cut mid-way. */
+function listIn(summary, label) {
+  const head = summary.indexOf(label + ' ') + label.length + 1;
+  const [match, shown, total] = /^(\d+)\/(\d+): /u.exec(summary.slice(head));
+  const rest = summary.slice(head + match.length);
+  for (let end = rest.indexOf(']'); end >= 0; end = rest.indexOf(']', end + 1)) {
+    try { return { shown: Number(shown), total: Number(total), items: JSON.parse(rest.slice(0, end + 1)) }; } catch { /* keep scanning */ }
+  }
+  return assert.fail('no complete JSON list for ' + label);
+}
+
+test('evidence gives the model form fields, paths and technologies but no cookie or body values', () => {
+  const info = targetInfo({ body: 'BODY-SECRET', html: targetInfo().html.replace('<body>', '<body>HTML-SECRET') });
+  const evidence = evidenceFromTargetInfo(info, { ...evidenceOptions, sessionRole: 'owner' });
+  assert.deepEqual(evidence.map(item => [item.id, item.kind, item.source, item.asset]), [
+    ['probe-abc', 'web-info', 'web-parser/test', '/app'],
+    ['probe-abc-paths', 'web-info-paths', 'web-parser/test', '/app'],
+    ['probe-abc-surface', 'web-info-surface', 'web-parser/test', '/app']]);
+  const [overview, paths, surface] = evidence.map(item => item.summary);
+  assert.match(overview, /^web_info \/app as fixed owner: HTTP 200 text\/html; final http:\/\/127\.0\.0\.1\/app; title "Lab Portal"/u);
+  assert.deepEqual(listIn(overview, 'technologies').items, [{ name: 'React', version: '18.2.0', categories: ['JavaScript frameworks'] }]);
+  assert.deepEqual(listIn(overview, 'redirects').items, [{ kind: 'http', status: 302 }]);
+  assert.deepEqual(listIn(paths, 'paths').items, [{ url: '/about', sources: ['link'] }]);
+  assert.deepEqual(listIn(surface, 'forms').items, [{ action: '/login', method: 'POST',
+    fields: [{ name: 'user', type: 'text' }, { name: 'pass', type: 'password' }] }]);
+  assert.deepEqual(listIn(surface, 'headers').items, [{ name: 'Content-Type', value: 'text/html' }, { name: 'Set-Cookie' }]);
+  assert.deepEqual(listIn(surface, 'cookies (names and attributes only)').items, [{ name: 'sid', httpOnly: true,
+    secure: false, sameSite: 'Lax', path: '/', domain: '127.0.0.1' }]);
+  assert.doesNotMatch(JSON.stringify(evidence), /secret123|BODY-SECRET|HTML-SECRET/u);
+});
+
+test('a large page stays within the core evidence limits and trims lists by whole items with shown/total', () => {
+  const fields = Array.from({ length: 80 }, (_, i) => ({ name: '필드' + i, type: 'text' }));
+  const info = targetInfo({
+    html: '<title>' + '제목 "quoted"\u0001'.repeat(100) + '</title>',
+    headers: Array.from({ length: 120 }, (_, i) => ({ name: 'X-Header-' + i, value: '값"'.repeat(200) })),
+    cookies: Array.from({ length: 60 }, (_, i) => ({ name: 'c' + i, value: 'v', path: '/', domain: '127.0.0.1',
+      httpOnly: false, secure: false, sameSite: 'Lax' })),
+    technologies: Array.from({ length: 90 }, (_, i) => ({ name: 'Tech ' + i, version: '1.' + i, categories: ['Misc'] })),
+    structure: { ...targetInfo().structure, forms: Array.from({ length: 40 }, (_, i) => ({
+      action: 'http://127.0.0.1/f' + i, method: 'POST', fields })) },
+    paths: [
+      ...Array.from({ length: 500 }, (_, i) => ({ url: 'http://other.example/x' + i, sources: ['link'],
+        methods: [], sameOrigin: false, params: [] })),
+      ...Array.from({ length: 500 }, (_, i) => ({ url: 'http://127.0.0.1/경로/' + i + '?q=1',
+        sources: ['robots:disallow'], methods: ['GET'], sameOrigin: true, params: ['q'] })),
+    ],
+  });
+  const evidence = evidenceFromTargetInfo(info, evidenceOptions);
+  assert.equal(evidence.length, 3);
+  for (const item of evidence) {
+    assert.ok(Buffer.byteLength(item.summary, 'utf8') <= EVIDENCE_SUMMARY_BYTES, item.kind);
+    assert.ok(Buffer.byteLength(JSON.stringify(item), 'utf8') <= 4096, item.kind);
+  }
+  const lists = [listIn(evidence[0].summary, 'technologies'), listIn(evidence[1].summary, 'paths'),
+    listIn(evidence[2].summary, 'forms'), listIn(evidence[2].summary, 'headers'),
+    listIn(evidence[2].summary, 'cookies (names and attributes only)')];
+  assert.deepEqual(lists.map(list => list.total), [90, 1000, 40, 120, 60]);
+  for (const list of lists) assert.equal(list.items.length, list.shown);
+  assert.ok(lists[0].shown > 0 && lists[0].shown < 90);
+  assert.ok(lists[1].shown > 0 && lists[1].items.every(path => path.url.startsWith('/')), 'same-origin paths come first');
+  assert.equal(lists[2].shown, 1);
+  assert.equal(lists[2].items[0].fields.at(-1), '+50 more');
+});
+
+test('evidence respects the remaining budget and tolerates non-HTML or empty observations', () => {
+  assert.deepEqual(evidenceFromTargetInfo(targetInfo(), { ...evidenceOptions, remaining: 1 }).map(item => item.kind), ['web-info']);
+  assert.deepEqual(evidenceFromTargetInfo(targetInfo(), { ...evidenceOptions, remaining: 0 }), []);
+  const json = evidenceFromTargetInfo(targetInfo({
+    target: { requestedUrl: 'http://127.0.0.1/api', finalUrl: 'http://127.0.0.1/api', origin: 'http://127.0.0.1' },
+    navigation: { status: 200, contentType: 'application/json', redirectChain: [] },
+    html: null, body: '{"site":"BODY-VALUE"}', structure: {}, paths: [], cookies: [], technologies: [],
+    headers: [{ name: 'Content-Type', value: 'application/json' }] }), evidenceOptions);
+  assert.deepEqual(json.map(item => item.kind), ['web-info', 'web-info-surface']);
+  assert.match(json[0].summary, /^web_info \/app: HTTP 200 application\/json; counts \{"headers":1,/u);
+  assert.doesNotMatch(JSON.stringify(json), /BODY-VALUE/u);
+  assert.match(evidenceFromTargetInfo({}, evidenceOptions)[0].summary, /^web_info \/app: HTTP no response unknown; counts/u);
+});
+
+test('masked values stay inside whole JSON items and are unchanged when the core masks the summary again', () => {
+  // The runtime safeText and the core redactText use these same patterns.
+  const mask = value => value.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/giu, '$1 [redacted]')
+    .replace(/\b(password|passwd|api[_-]?key|secret|token|session|cookie)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu, '$1=[redacted]');
+  const info = targetInfo({
+    headers: [{ name: 'Location', value: '/cb?token=abc' }, { name: 'X-A', value: 'ok' },
+      { name: 'X-Debug-Set-Cookie', value: 'sid=raw' }],
+    paths: [{ url: 'http://127.0.0.1/cb?token=abc', sources: ['link'], methods: [], sameOrigin: true, params: ['token'] }] });
+  const [, paths, surface] = evidenceFromTargetInfo(info, { ...evidenceOptions, safeText: mask });
+  for (const summary of [paths.summary, surface.summary]) assert.equal(mask(summary), summary);
+  assert.deepEqual(listIn(paths.summary, 'paths').items, [{ url: '/cb?token [redacted]', sources: ['link'], params: ['token'] }]);
+  assert.deepEqual(listIn(surface.summary, 'headers').items, [{ name: 'Location', value: '/cb?token [redacted]' },
+    { name: 'X-A', value: 'ok' }, { name: 'X-Debug-Set-Cookie' }]);
 });
 
 test('collectWebInfo returns the raw TargetInfo and its summary, bounding timeoutMs at 15s', async () => {

@@ -87,6 +87,109 @@ export function summarizeTargetInfo(info, { maxBytes = MAX_SUMMARY_BYTES } = {})
   return build(info, caps);
 }
 
+// The core ends the whole run on an evidence item whose summary exceeds 2048 UTF-8 bytes
+// or whose JSON exceeds 4096 bytes, so keep a margin under both.
+export const EVIDENCE_SUMMARY_BYTES = 1900;
+const EVIDENCE_JSON_BYTES = 3900;
+// Response headers whose value is a session or credential; only the name enters evidence.
+const SECRET_HEADER = /^(?:proxy-)?authorization$|cookie|token|secret|session|api-?key/iu;
+
+const list = value => Array.isArray(value) ? value : [];
+// Drop null and empty-array fields so the model-facing items stay short.
+const compact = value => Object.fromEntries(Object.entries(value)
+  .filter(([, item]) => item != null && !(Array.isArray(item) && !item.length)));
+const capped = (items, cap) => items.length > cap ? [...items.slice(0, cap), `+${items.length - cap} more`] : items;
+
+/**
+ * `lead; label shown/total: [item,...]`, adding whole JSON items while the summary and the
+ * evidence JSON stay under the core limits. An item that does not fit is skipped, never cut,
+ * so every list stays valid JSON and shown/total stays honest.
+ */
+function fitted(base, lead, sections) {
+  const kept = sections.filter(section => section.items.length);
+  const shown = kept.map(() => []);
+  const render = () => [lead, ...kept.map((section, index) => `${section.label} `
+    + `${shown[index].length}/${section.items.length}: [${shown[index].join(',')}]`)].join('; ');
+  const fits = summary => Buffer.byteLength(summary, 'utf8') <= EVIDENCE_SUMMARY_BYTES
+    && Buffer.byteLength(JSON.stringify({ ...base, summary }), 'utf8') <= EVIDENCE_JSON_BYTES;
+  kept.forEach((section, index) => {
+    for (const item of section.items) {
+      shown[index].push(item);
+      if (!fits(render())) shown[index].pop();
+    }
+  });
+  return { ...base, summary: render() };
+}
+
+/**
+ * Up to `remaining` (max 3) evidence items the model reads, in priority order: overview,
+ * discovered paths, page surface. The caller passes its own `safeText`/`safeHeaderValue`
+ * so the masking matches its other tools; every string value is masked before serialization. Response bodies, cookie values and secret
+ * header values are never included; robots/sitemap content arrives as paths[].sources.
+ */
+export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRole, remaining = 3,
+  safeText = String, safeHeaderValue = String } = {}) {
+  // Masking serialized JSON would let the core's `[^\s,;]+` value pattern run past a closing
+  // quote; `token [redacted]` (no `=`) is also left alone when the core masks the summary again.
+  const clean = value => safeText(String(value)).replaceAll('=[redacted]', ' [redacted]');
+  const encode = value => JSON.stringify(value, (key, item) => typeof item === 'string' ? clean(item) : item);
+  const structure = info.structure ?? {};
+  const navigation = info.navigation ?? {};
+  const relative = url => {
+    try {
+      const parsed = new URL(url);
+      return parsed.origin === info.target?.origin ? parsed.pathname + parsed.search : url;
+    } catch { return url; }
+  };
+  const subject = `web_info ${clean(asset)}${sessionRole ? ` as fixed ${sessionRole}` : ''}`;
+  const base = (suffix, kind) => ({ id: suffix ? `${idBase}-${suffix}` : idBase, source, kind, asset });
+  const frames = [...list(structure.iframes).map(frame => ({ tag: 'iframe', src: frame.src, sandbox: frame.sandbox })),
+    ...list(structure.frames).map(frame => ({ tag: 'frame', src: frame.src }))].filter(frame => frame.src);
+  const finalUrl = info.target?.finalUrl;
+  const title = extractTitle(info.html);
+  const counts = { headers: list(info.headers).length, cookies: list(info.cookies).length,
+    technologies: list(info.technologies).length, forms: list(structure.forms).length,
+    links: list(structure.links).length, frames: frames.length, resources: list(info.resources).length,
+    paths: list(info.paths).length, errors: list(info.errors).length };
+  // Lead fields are capped so the lead alone always fits; lists are trimmed by whole items.
+  const overview = fitted(base('', 'web-info'), `${subject}: HTTP ${navigation.status ?? 'no response'} `
+    + clean(String(navigation.contentType ?? 'unknown').slice(0, 80))
+    + (finalUrl && finalUrl !== info.target?.requestedUrl ? `; final ${clean(String(finalUrl).slice(0, 300))}` : '')
+    // A control character would JSON-escape to 6 bytes; drop them so the capped lead stays small.
+    + (title ? `; title ${encode(title.slice(0, 100).replace(/[\u0000-\u001f\u007f]/gu, ' '))}` : '')
+    + `; counts ${JSON.stringify(counts)}`, [
+    { label: 'redirects', items: list(navigation.redirectChain)
+      .map(hop => encode(compact({ kind: hop.kind, status: hop.status }))) },
+    { label: 'technologies', items: list(info.technologies).map(tech => encode(compact({
+      name: tech.name, version: tech.version, categories: tech.categories }))) },
+    { label: 'error stages', items: [...new Set(list(info.errors).map(error => error.stage))]
+      .map(stage => encode(stage)) },
+  ]);
+  const paths = [...list(info.paths)].sort((a, b) => (b.sameOrigin === true) - (a.sameOrigin === true))
+    .map(path => encode(compact({ url: relative(path.url), sources: path.sources,
+      methods: path.methods, params: capped(list(path.params), 20), wildcard: path.wildcard || null })));
+  const surface = [
+    { label: 'forms', items: list(structure.forms).map(form => encode(compact({
+      action: relative(form.action), method: form.method,
+      fields: capped(list(form.fields).map(field => compact({ name: field.name, type: field.type })), 30) }))) },
+    { label: 'frames', items: frames.map(frame => encode(compact({ ...frame, src: relative(frame.src) }))) },
+    { label: 'headers', items: list(info.headers).map(header => encode(SECRET_HEADER.test(header.name)
+      ? { name: header.name } : { name: header.name, value: safeHeaderValue(header.value ?? '') })) },
+    { label: 'cookies (names and attributes only)', items: list(info.cookies).map(cookie => encode(compact({
+      name: cookie.name, httpOnly: cookie.httpOnly, secure: cookie.secure, sameSite: cookie.sameSite,
+      path: cookie.path, domain: cookie.domain }))) },
+  ];
+  return [
+    overview,
+    paths.length ? fitted(base('paths', 'web-info-paths'),
+      `${subject} discovered paths, same-origin first and shown as path only`,
+      [{ label: 'paths', items: paths }]) : null,
+    surface.some(section => section.items.length) ? fitted(base('surface', 'web-info-surface'),
+      `${subject} page surface; response body, cookie values and secret header values are not retained`,
+      surface) : null,
+  ].filter(Boolean).slice(0, Math.max(0, remaining));
+}
+
 /**
  * Open one endpoint and return its raw TargetInfo plus a model-sized summary.
  * `collectImpl` is injectable for unit tests; the default is the real web-parser.
