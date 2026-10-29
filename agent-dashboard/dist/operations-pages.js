@@ -38,6 +38,7 @@ function validLoopBudget(value) {
 export function createOperationsPages({ runtime, canEdit, notify }) {
   const dbRoot = document.getElementById('workspace-db-content');
   const moduleRoot = document.getElementById('module-detail-content');
+  const templateRoot = document.getElementById('workspace-templates-content');
   const llmLogPanel = document.getElementById('llm-call-log-panel');
   const db = { tab: 'cases', cases: [], intakes: [], total: 0, offset: 0, q: '', archived: 'false',
     caseDetail: null, versions: null, intakeDetail: null, selectedFile: null, loading: false, error: '',
@@ -49,6 +50,9 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
   const mod = { slug: '', id: '', summary: null, config: null, logs: [], models: [], loading: false, error: '', query: '',
     loopBudget: null, budgetDraft: null, budgetError: '', budgetNotice: '', budgetSaving: false };
   let llmLogRefreshPending = false;
+  const templates = { items: [], support: {}, revisions: {}, q: '', type: '', selected: null, detail: null,
+    loading: false, detailLoading: false, busy: false, error: '', notice: '', editor: null,
+    draft: '', validated: null, preview: null, confirmDelete: false, generation: 0, request: 0 };
 
   function reset() {
     db.cases = []; db.intakes = []; db.caseDetail = null; db.intakeDetail = null; db.selectedFile = null;
@@ -59,6 +63,132 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     mod.loopBudget = null; mod.budgetDraft = null; mod.budgetError = ''; mod.budgetNotice = ''; mod.budgetSaving = false;
     moduleRoot.textContent = '로그인 후 모듈 자료를 불러옵니다.';
     llmLogPanel.hidden = true;
+    templates.generation += 1; templates.request += 1;
+    Object.assign(templates, { items: [], support: {}, revisions: {}, selected: null, detail: null,
+      loading: false, detailLoading: false, busy: false, error: '', notice: '', editor: null,
+      draft: '', validated: null, preview: null, confirmDelete: false });
+    if (templateRoot) templateRoot.textContent = '로그인 후 템플릿을 불러옵니다.';
+  }
+
+  const templateEndpoint = '/api/attack-templates';
+  const templateLabel = item => item.title || item.templateId;
+  const templateTarget = item => `${item.target?.method || item.request?.packet?.method || '—'} ${item.target?.endpoint || item.request?.packet?.path || '—'}`;
+  function filteredTemplates() {
+    const query = templates.q.toLowerCase();
+    return templates.items.filter(item => (!templates.type || item.attackType?.name === templates.type)
+      && (!query || json(item).toLowerCase().includes(query)));
+  }
+  function templateRows() {
+    const items = filteredTemplates();
+    if (templates.loading && !templates.items.length) return '<p class="ops-empty" role="status">템플릿을 불러오는 중입니다.</p>';
+    if (!items.length) return `<div class="ops-empty">${templates.q || templates.type ? '검색 조건에 맞는 템플릿이 없습니다.' : '등록된 템플릿이 없습니다.'}</div>`;
+    return items.map(item => `<button type="button" class="template-card${templates.selected === item.templateId ? ' selected' : ''}" data-template-id="${escape(item.templateId)}" aria-pressed="${templates.selected === item.templateId}"><span class="template-card-heading"><strong>${escape(templateLabel(item))}</strong><span class="state-chip">${templates.support[item.templateId]?.supported ? '실행 형식 지원' : '참고용'}</span></span><small class="mono">${escape(item.templateId)}</small><span>${escape(item.attackType?.name || '유형 미기록')} · ${escape(item.attackType?.cwe || 'CWE 미기록')}</span><span class="mono">${escape(templateTarget(item))}</span><small>${escape(Object.values(item.dependency || {}).filter(Boolean).join(' · ') || '의존성 미기록')} · payload ${item.payloads?.length || 0}개</small></button>`).join('');
+  }
+  function templateDetail() {
+    if (templates.detailLoading) return '<section class="panel ops-panel"><p role="status">템플릿 상세를 불러오는 중입니다.</p></section>';
+    const detail = templates.detail;
+    if (!detail) return '<section class="panel ops-panel ops-placeholder"><h2>템플릿 상세</h2><p>목록에서 템플릿을 선택하면 요청·payload·검증 조건을 확인할 수 있습니다.</p></section>';
+    const item = detail.template;
+    const support = detail.executionSupport || templates.support[item.templateId] || {};
+    const disabled = templates.busy ? ' disabled' : '';
+    return `<section class="panel ops-panel template-detail" aria-labelledby="template-detail-title"><div class="ops-panel-head"><div><h2 id="template-detail-title">${escape(templateLabel(item))}</h2><p class="mono">${escape(item.templateId)}${item.version ? ` · ${escape(item.version)}` : ''}</p></div><span class="state-chip">${support.supported ? '실행 형식 지원' : '참고용'}</span></div>${item.description ? `<p>${escape(item.description)}</p>` : ''}<dl class="template-facts"><div><dt>취약점 유형</dt><dd>${escape(item.attackType?.name)} · ${escape(item.attackType?.cwe)}</dd></div><div><dt>대상 요청</dt><dd class="mono">${escape(templateTarget(item))}</dd></div><div><dt>의존성</dt><dd>${escape(Object.entries(item.dependency || {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || '미기록')}</dd></div><div><dt>검증 방식</dt><dd>${escape(item.verify?.mode || '미기록')}</dd></div><div><dt>실행기 / 신뢰 상태</dt><dd>${escape(item.executor)} / ${escape(item.trust)}</dd></div></dl><p class="template-support-note">${escape(support.reason || '실제 실행에는 서버가 허용한 대상과 가드레일 정책이 적용됩니다.')}</p><h3>Payload ${item.payloads?.length || 0}개</h3><ul class="template-payloads">${(item.payloads || []).map(payload => `<li><code>${escape(payload)}</code></li>`).join('')}</ul><details><summary>요청 패킷과 검증 조건</summary><pre>${escape(json({ request: item.request, verify: item.verify, blanks: item.blanks }))}</pre></details><details><summary>전체 JSON</summary><pre id="template-raw-json" tabindex="0">${escape(json(item))}</pre></details><div class="ops-form-actions"><button class="button secondary" type="button" data-template-action="download"${disabled}>JSON 다운로드</button>${canEdit() ? `<button class="button secondary" type="button" data-template-action="copy"${disabled}>복사해서 추가</button><button class="button secondary" type="button" data-template-action="edit"${disabled}>수정</button><button class="button secondary" type="button" data-template-action="delete"${disabled}>삭제</button>` : ''}</div>${templates.confirmDelete && canEdit() ? `<div class="template-delete-confirm"><p><strong>${escape(item.templateId)}</strong> 템플릿을 삭제합니다.</p><div class="ops-form-actions"><button class="button primary" type="button" data-template-action="confirm-delete"${disabled}>삭제 확인</button><button class="button secondary" type="button" data-template-action="cancel-delete"${disabled}>취소</button></div></div>` : ''}</section>`;
+  }
+  function templateEditor() {
+    if (!templates.editor || !canEdit()) return '';
+    const editing = templates.editor.mode === 'edit';
+    const preview = templates.preview;
+    return `<section class="panel ops-panel template-editor" aria-labelledby="template-editor-title"><div class="ops-panel-head"><div><h2 id="template-editor-title">${editing ? '템플릿 수정' : 'JSON 템플릿 추가'}</h2><p>${editing ? `템플릿 ID ${escape(templates.editor.id)}는 유지하세요. 저장 시 최신 버전을 확인합니다.` : '템플릿 객체 1개, 배열 또는 {"templates": [...]} 형식으로 입력하세요. 한 번에 최대 100개를 가져옵니다.'}</p></div><button class="button secondary" type="button" data-template-action="close-editor" ${templates.busy ? 'disabled' : ''}>닫기</button></div><form id="template-editor-form">${editing ? '' : `<label class="template-file-label">JSON 파일 가져오기<input id="template-json-file" type="file" accept=".json,application/json" ${templates.busy ? 'disabled' : ''}><small>최대 1 MB · 파일을 읽은 후 내용을 확인하고 등록합니다.</small></label>`}<label for="template-json-input">템플릿 JSON<textarea id="template-json-input" rows="16" spellcheck="false" required ${templates.busy ? 'disabled' : ''} placeholder='[{"templateId": "my-template", ...}]'>${escape(templates.draft)}</textarea></label><div class="ops-form-actions">${editing ? `<button class="button primary" type="submit" ${templates.busy ? 'disabled' : ''}>${templates.busy ? '저장 중…' : '변경 저장'}</button>` : `<button class="button secondary" type="button" data-template-action="validate" ${templates.busy || !templates.draft.trim() ? 'disabled' : ''}>${templates.busy ? '처리 중…' : '검증 및 미리보기'}</button><button class="button primary" type="submit" ${templates.busy || templates.validated !== templates.draft ? 'disabled' : ''}>템플릿 등록</button>`}</div></form>${preview ? `<div class="template-import-preview" role="status"><h3>등록 미리보기</h3><p>새로 추가 ${preview.created}개 · 같은 내용 ${preview.unchanged}개 · 등록 후 총 ${preview.total}개</p><p>JSON을 바꾸면 다시 검증해야 합니다.</p></div>` : ''}</section>`;
+  }
+  function renderTemplates() {
+    if (!templateRoot) return;
+    const types = [...new Set(templates.items.map(item => item.attackType?.name).filter(Boolean))].sort();
+    templateRoot.innerHTML = `<section class="panel ops-panel template-catalog-heading"><div class="ops-panel-head"><div><div class="eyebrow">WORKSPACE / TEMPLATES</div><h2>템플릿</h2><p>공격 유형과 요청·검증 조건을 확인하고 JSON 템플릿을 관리합니다.</p></div><div class="ops-form-actions"><button class="button secondary" type="button" data-template-action="refresh" ${templates.loading || templates.busy ? 'disabled' : ''}>새로고침</button>${canEdit() ? `<button class="button primary" type="button" data-template-action="new" ${templates.busy ? 'disabled' : ''}>템플릿 추가</button>` : '<span class="state-chip">조회 전용</span>'}</div></div><p class="template-scope">등록된 템플릿은 다음 실행의 참고 자료로 제공됩니다. 실행 가능 여부는 지원 형식과 대상별 정책에 따라 결정됩니다.</p>${templates.error ? `<p id="template-error" class="runtime-error" role="alert">${escape(templates.error)}</p>` : ''}${templates.notice ? `<p id="template-notice" class="template-notice" role="status">${escape(templates.notice)}</p>` : ''}</section><div class="template-workspace"><section class="panel ops-panel template-catalog"><form id="template-search-form" class="ops-filters"><label for="template-query">템플릿 검색<input id="template-query" type="search" value="${escape(templates.q)}" placeholder="ID, CWE, 의존성, 엔드포인트"></label><label for="template-type">취약점 유형<select id="template-type"><option value="">전체 유형</option>${types.map(type => `<option value="${escape(type)}"${templates.type === type ? ' selected' : ''}>${escape(type)}</option>`).join('')}</select></label></form><p id="template-count" class="ops-caption">${templates.loading ? '조회 중 · ' : ''}${filteredTemplates().length} / ${templates.items.length}개</p><div id="template-list" class="template-list">${templateRows()}</div></section><div class="template-main">${templateDetail()}${templateEditor()}</div></div>`;
+  }
+  async function refreshTemplates() {
+    if (templates.loading || templates.busy) return;
+    const generation = templates.generation;
+    const request = ++templates.request;
+    templates.loading = true; templates.error = ''; renderTemplates();
+    try {
+      const result = await runtime.api(templateEndpoint);
+      if (generation !== templates.generation || request !== templates.request) return;
+      templates.items = Array.isArray(result.templates) ? result.templates : [];
+      templates.support = result.executionSupport || {}; templates.revisions = result.revisions || {};
+      if (templates.selected && templates.editor?.mode !== 'edit') {
+        const selected = templates.items.find(item => item.templateId === templates.selected);
+        if (selected) templates.detail = { template: selected, executionSupport: templates.support[selected.templateId],
+          revision: templates.revisions[selected.templateId] };
+        else { templates.selected = null; templates.detail = null; }
+      }
+    } catch (error) { if (generation === templates.generation) templates.error = error.message; }
+    finally { if (generation === templates.generation && request === templates.request) { templates.loading = false; renderTemplates(); } }
+  }
+  async function showTemplates() { renderTemplates(); await refreshTemplates(); }
+  async function showTemplate(id) {
+    if (templates.busy) return;
+    if (templates.editor?.mode === 'edit' && templates.editor.id !== id) {
+      templates.error = '수정 내용을 저장하거나 편집기를 닫은 후 다른 템플릿을 선택하세요.';
+      renderTemplates(); return;
+    }
+    const generation = templates.generation;
+    templates.selected = id; templates.detail = null; templates.detailLoading = true;
+    templates.confirmDelete = false; templates.error = ''; renderTemplates();
+    try {
+      const result = await runtime.api(`${templateEndpoint}/${encodeURIComponent(id)}`);
+      if (generation === templates.generation && templates.selected === id) templates.detail = result;
+    } catch (error) { if (generation === templates.generation && templates.selected === id) templates.error = error.message; }
+    finally { if (generation === templates.generation && templates.selected === id) { templates.detailLoading = false; renderTemplates(); } }
+  }
+  function startTemplateEditor(mode) {
+    const item = templates.detail?.template;
+    templates.editor = { mode, id: mode === 'edit' ? item.templateId : null,
+      revision: mode === 'edit' ? templates.detail.revision : null };
+    templates.draft = mode === 'edit' ? json(item) : mode === 'copy' ? json([{ ...item, templateId: `${item.templateId}-copy` }]) : '';
+    templates.validated = null; templates.preview = null; templates.confirmDelete = false;
+    templates.error = ''; templates.notice = ''; renderTemplates();
+    document.getElementById('template-json-input')?.focus();
+  }
+  function importTemplatesInput() {
+    const parsed = JSON.parse(templates.draft);
+    const items = Array.isArray(parsed) ? parsed : parsed && Array.isArray(parsed.templates) ? parsed.templates : [parsed];
+    if (!items.length || items.length > 100 || items.some(item => !item || typeof item !== 'object' || Array.isArray(item))) throw new Error('템플릿 객체를 1개부터 100개까지 입력하세요.');
+    return items;
+  }
+  async function mutateTemplates(action) {
+    if (!canEdit() || templates.busy || action !== 'delete' && !templates.editor) return;
+    const generation = templates.generation;
+    const source = templates.draft;
+    templates.busy = true; templates.error = ''; templates.notice = ''; renderTemplates();
+    try {
+      if (action === 'delete') {
+        const detail = templates.detail;
+        await runtime.api(`${templateEndpoint}/${encodeURIComponent(detail.template.templateId)}`, { method: 'DELETE', body: { expectedRevision: detail.revision } });
+        if (generation !== templates.generation) return;
+        templates.notice = `${detail.template.templateId} 템플릿을 삭제했습니다.`;
+        templates.selected = null; templates.detail = null; templates.confirmDelete = false; templates.editor = null;
+      } else if (templates.editor.mode === 'edit') {
+        const item = JSON.parse(source);
+        if (!item || item.templateId !== templates.editor.id) throw new Error('수정할 때 templateId를 변경할 수 없습니다. 새 ID로 추가하려면 복사해서 추가를 사용하세요.');
+        const result = await runtime.api(`${templateEndpoint}/${encodeURIComponent(templates.editor.id)}`, { method: 'PUT', body: { template: item, expectedRevision: templates.editor.revision } });
+        if (generation !== templates.generation) return;
+        templates.detail = result; templates.selected = result.template.templateId;
+        templates.editor = null; templates.notice = '템플릿 변경을 저장했습니다.';
+      } else {
+        if (action === 'save' && templates.validated !== source) throw new Error('현재 JSON을 검증한 후 등록하세요.');
+        const result = await runtime.api(templateEndpoint, { method: 'POST', body: { templates: importTemplatesInput(), dryRun: action === 'validate' } });
+        if (generation !== templates.generation) return;
+        if (action === 'validate') { templates.validated = source; templates.preview = result; return; }
+        templates.notice = `템플릿 ${result.created}개를 추가했습니다. 같은 내용 ${result.unchanged}개 · 총 ${result.total}개`;
+        templates.editor = null; templates.validated = null; templates.preview = null;
+      }
+      notify(templates.notice);
+    } catch (error) { if (generation === templates.generation) {
+      templates.error = error.message + (error.status === 409 && templates.editor
+        ? ' 입력 내용은 유지됩니다. 편집기를 닫고 템플릿을 다시 선택한 후 최신 내용을 확인하세요.' : '');
+      if (action === 'validate') { templates.validated = null; templates.preview = null; }
+    } }
+    finally { if (generation === templates.generation) { templates.busy = false; renderTemplates(); } }
+    if (generation === templates.generation && !templates.error && action !== 'validate') await refreshTemplates();
   }
 
   async function refreshDb() {
@@ -222,6 +352,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
       <div class="ops-module-facts"><span><small>소스 경로</small><strong>${escape(config.config?.path || mod.summary?.path || '—')}</strong></span><span><small>버전 / revision</small><strong>${escape(config.revision || mod.summary?.revision || mod.summary?.version || '—')}</strong></span><span><small>설정 적용</small><strong>${config.editable ? '서버 관리' : '배포 설정 · 읽기 전용'}</strong></span></div>
       ${mod.slug === 'db' ? renderDbHealth(config, canEdit()) : ''}<div class="${mod.slug === 'llm' ? 'ops-llm-config' : 'ops-two-column'}"><section class="ops-subpanel"><h3>현재 유효 설정</h3><p>설정은 실행 환경과 배포 계약을 따릅니다. 변경 가능한 필드가 제공되지 않으면 이 화면에서 저장하지 않습니다.</p><pre>${escape(json(config.config || {}))}</pre>${mod.slug === 'llm' ? `<h3>등록 모델</h3><div class="ops-list">${mod.models.map(item => `<div class="ops-row"><span><strong>${escape(item.name || item.id)}</strong><small>${escape(item.provider || '')}</small></span><span class="state-chip">${item.available ? '사용 가능' : '사용 불가'}</span></div>`).join('') || '<p>등록 모델 없음</p>'}</div>` : ''}</section>${mod.slug === 'llm' ? '' : `<section class="ops-subpanel"><div class="ops-panel-head"><h3>모듈 로그</h3><label>검색<input id="module-log-search" type="search" value="${escape(mod.query)}" placeholder="실행 ID, 단계, 메시지"></label></div><div class="ops-log-list">${logs.length ? logs.map(item => `<details class="ops-log"><summary><span>${escape(date(item.createdAt || item.time || item.timestamp))}</span><strong>${escape(item.level || item.type || item.stage || '이벤트')}</strong><span>${escape(item.detail || item.message || item.title || '')}</span></summary><pre>${escape(json(item))}</pre></details>`).join('') : '<div class="ops-empty">표시할 로그가 없습니다.</div>'}</div></section>`}</div></section>`;
     moduleRoot.insertAdjacentHTML('beforeend', renderLlmBudget());
+    if (mod.slug === 'attack') moduleRoot.insertAdjacentHTML('afterbegin', '<section class="panel ops-panel template-catalog-heading"><div class="ops-panel-head"><div><h2>공격 템플릿</h2><p>Workspace의 템플릿 화면에서 JSON 템플릿을 조회·추가·수정·삭제합니다.</p></div><a class="button secondary" href="#workspace/templates">템플릿 관리</a></div></section>');
     renderLlmCallLog();
   }
 
@@ -615,5 +746,60 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     renderLlmCallLog();
   });
 
-  return { reset, showDb, showModule, refreshLlmLogs };
+  templateRoot?.addEventListener('click', event => {
+    const row = event.target.closest('[data-template-id]');
+    if (row) { void showTemplate(row.dataset.templateId); return; }
+    const button = event.target.closest('[data-template-action]');
+    if (!button || button.disabled) return;
+    const action = button.dataset.templateAction;
+    if (action === 'refresh') { void refreshTemplates(); return; }
+    if (action === 'download' && templates.detail) {
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([json(templates.detail.template)], { type: 'application/json' }));
+      link.download = `${templates.detail.template.templateId}.json`;
+      link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); return;
+    }
+    if (!canEdit() || templates.busy) return;
+    if (action === 'new') startTemplateEditor('create');
+    if (['edit', 'copy'].includes(action) && templates.detail) startTemplateEditor(action);
+    if (action === 'close-editor') { templates.editor = null; templates.validated = null; templates.preview = null; renderTemplates(); }
+    if (action === 'validate') void mutateTemplates('validate');
+    if (action === 'delete' && templates.detail) { templates.confirmDelete = true; renderTemplates(); }
+    if (action === 'cancel-delete') { templates.confirmDelete = false; renderTemplates(); }
+    if (action === 'confirm-delete' && templates.detail && templates.confirmDelete) void mutateTemplates('delete');
+  });
+  templateRoot?.addEventListener('submit', event => {
+    event.preventDefault();
+    if (event.target.id === 'template-editor-form') void mutateTemplates('save');
+  });
+  templateRoot?.addEventListener('input', event => {
+    if (event.target.id === 'template-query') {
+      templates.q = event.target.value;
+      document.getElementById('template-list').innerHTML = templateRows();
+      document.getElementById('template-count').textContent = `${filteredTemplates().length} / ${templates.items.length}개`;
+    }
+    if (event.target.id === 'template-json-input') {
+      templates.draft = event.target.value; templates.validated = null; templates.preview = null;
+      templateRoot.querySelector('.template-import-preview')?.remove();
+      const validate = templateRoot.querySelector('[data-template-action="validate"]');
+      if (validate) validate.disabled = !templates.draft.trim();
+      if (templates.editor?.mode !== 'edit') templateRoot.querySelector('#template-editor-form [type="submit"]').disabled = true;
+    }
+  });
+  templateRoot?.addEventListener('change', async event => {
+    if (event.target.id === 'template-type') { templates.type = event.target.value; renderTemplates(); }
+    if (event.target.id !== 'template-json-file' || !canEdit() || templates.busy) return;
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const generation = templates.generation, editor = templates.editor;
+    try {
+      if (!/\.json$/i.test(file.name) || file.size > 1024 * 1024) throw new Error('최대 1 MB의 JSON 파일을 선택하세요.');
+      const source = await file.text();
+      if (generation !== templates.generation || editor !== templates.editor) return;
+      templates.draft = source; templates.validated = null; templates.preview = null; templates.error = '';
+      renderTemplates();
+    } catch (error) { if (generation === templates.generation) { templates.error = error.message; renderTemplates(); } }
+  });
+
+  return { reset, showDb, showModule, showTemplates, refreshLlmLogs };
 }

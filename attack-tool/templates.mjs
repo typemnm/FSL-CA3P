@@ -1,25 +1,36 @@
-import { readFileSync } from 'node:fs';
-
-const template = JSON.parse(readFileSync(new URL('./templates/sqli-like-tautology.json', import.meta.url), 'utf8'));
+import { defaultTemplateCatalog } from './template-catalog.mjs';
 export const TEMPLATE_EXCERPT_BYTES = 4096;
 
-export function listTemplates({ attackType, runtime, framework, library } = {}) {
-  if (attackType && ![template.attackType.name, template.attackType.cwe].includes(attackType)) return [];
-  if (Object.entries({ runtime, framework, library }).some(([key, value]) => value && value !== template.dependency[key])) return [];
-  return [structuredClone(template)];
+export function listTemplates(filters = {}, catalog = defaultTemplateCatalog) {
+  return catalog.list(filters);
 }
 
-export function renderTemplate(input) {
+export function templateExecutionSupport(template) {
+  const packet = template?.request?.packet;
+  if (template?.executor !== 'guardrail' || template?.trust !== 'unverified') return { supported: false, reason: 'Unsupported executor or trust state.' };
+  if (packet?.method !== 'GET' || packet.body !== undefined || !packet.query
+    || Object.keys(packet.query).length !== 1 || packet.query.q !== '{{payload}}') return { supported: false, reason: 'Execution currently supports GET packets with the q payload slot.' };
+  if (template.verify?.mode !== 'resultCount' || typeof template.verify.baseline?.q !== 'string'
+    || !Number.isSafeInteger(template.verify.baseline.expect) || template.verify.baseline.expect < 0
+    || !Number.isSafeInteger(template.verify.attack?.expectMin) || template.verify.attack.expectMin <= template.verify.baseline.expect
+    || Object.keys(template.verify.baseline).some(key => !['q', 'expect'].includes(key))
+    || Object.keys(template.verify.attack).some(key => key !== 'expectMin')) return { supported: false, reason: 'Execution currently supports resultCount with a higher attack threshold than the baseline.' };
+  return { supported: true, reason: 'Supported packet and verifier; execution still requires the target guardrail policy.' };
+}
+
+export function renderTemplate(input, catalog = defaultTemplateCatalog) {
+  const template = input && catalog.get(input.templateId);
   if (!input || Object.keys(input).some(key => !['templateId', 'payload'].includes(key))
-    || input.templateId !== template.templateId || !template.payloads.includes(input.payload)) {
+    || !template || !template.payloads.includes(input.payload)) {
     throw Object.assign(new Error('Unknown template or payload.'), { code: 'INVALID_TEMPLATE' });
   }
-  return { template: structuredClone(template), baseline: { method: 'GET', path: '/api/search',
+  if (!templateExecutionSupport(template).supported) throw Object.assign(new Error('Template execution is not supported.'), { code: 'UNSUPPORTED_TEMPLATE' });
+  return { template: structuredClone(template), baseline: { method: 'GET', path: template.request.packet.path,
     query: { q: template.verify.baseline.q } },
-  packet: { method: 'GET', path: '/api/search', query: { q: input.payload } } };
+  packet: { method: 'GET', path: template.request.packet.path, query: { q: input.payload } } };
 }
 
-export function verifyTemplate(baseline, attack) {
+export function verifyTemplate(baseline, attack, template) {
   const count = response => {
     if (response?.truncated || response?.status !== 200) return null;
     let body = response.json;
@@ -28,8 +39,10 @@ export function verifyTemplate(baseline, attack) {
     return Array.isArray(rows) ? rows.length : null;
   };
   const baselineCount = count(baseline), attackCount = count(attack);
-  return { status: baselineCount !== 0 || attackCount === null ? 'inconclusive'
-    : attackCount >= 1 ? 'confirmed' : 'not_reproduced', baselineCount, attackCount };
+  const expectedBaseline = template?.verify?.baseline?.expect ?? 0;
+  const expectedAttack = template?.verify?.attack?.expectMin ?? 1;
+  return { status: baselineCount !== expectedBaseline || attackCount === null ? 'inconclusive'
+    : attackCount >= expectedAttack ? 'confirmed' : 'not_reproduced', baselineCount, attackCount };
 }
 
 /** Keep response evidence bounded independently of the complete source used by verification. */
