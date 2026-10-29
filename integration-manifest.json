@@ -224,7 +224,8 @@
         "agent",
         "worker",
         "adapters",
-        "chat-store"
+        "chat-store",
+        "verifier"
       ]
     },
     {

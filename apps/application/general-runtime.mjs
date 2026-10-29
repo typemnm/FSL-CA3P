@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { emptyRun, assertIdentifier } from '../../packages/contracts/index.mjs';
+import { verifyAttack } from '../../packages/verifier/index.mjs';
+import { writeReportHandoff } from '../../packages/verifier/report-handoff.mjs';
 import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../packages/contracts/general-loop-budget.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import generalCore from '../../agent/src/general-assessment.js';
@@ -297,12 +301,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   signal, onModelCall, beforeProbe, afterProbe, caseSnapshot, unavailableInputs = [],
   historyProvider, plannerFactory, boardFactory, cleanupRegistryPath, fetchImpl = fetch,
   idorProbe = probeSite, catalogReader = readKnowledgeCatalogReadOnly,
-  webParserCollect = collectWebInfo, limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
+  webParserCollect = collectWebInfo, verificationRoot, verifyAttackImpl = verifyAttack, verifierModel,
+  limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!MODELS.has(modelId)) throw new TypeError('A registered DeepSeek model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
     || typeof idorProbe !== 'function' || typeof catalogReader !== 'function'
-    || typeof webParserCollect !== 'function') {
+    || typeof webParserCollect !== 'function' || typeof verifyAttackImpl !== 'function') {
     throw new TypeError('Invalid general runtime dependency.');
   }
   for (const callback of [onModelCall, beforeProbe, afterProbe, historyProvider, plannerFactory, boardFactory]) {
@@ -520,7 +525,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const raw = await limitedBody(response);
         let parsed = null;
         try { parsed = JSON.parse(raw); } catch { /* A malformed reply cannot establish a verdict. */ }
-        return { status: response.status, json: parsed,
+        return { status: response.status, json: parsed, method, url: url.href,
           setCookie: response.headers.get('set-cookie') };
       } finally {
         await invokeHook(afterProbe, hook, { status: response?.status ?? null }, reservation);
@@ -549,8 +554,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       return { verdictStatus: 'inconclusive',
         summary: 'Fresh synthetic Bob post was not confirmed; no delete was attempted.' };
     }
-    const canaryLabel = 'freshPostId=' + post.id + ', markerDigest='
-      + createHash('sha256').update(marker).digest('hex').slice(0, 12);
+    const markerDigest = createHash('sha256').update(marker).digest('hex').slice(0, 12);
+    const canaryLabel = 'freshPostId=' + post.id + ', markerDigest=' + markerDigest;
     const aliceLogin = await request('alice-login', 'POST', '/api/session', { data: { userId: 'alice' } });
     const aliceCookie = sessionCookie(aliceLogin, 'alice');
     if (!aliceCookie) return { verdictStatus: 'inconclusive',
@@ -577,11 +582,42 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     const verdictStatus = after.status !== 200 ? 'inconclusive'
       : candidate.status === 200 && !remains ? 'confirmed'
         : candidate.status === 403 && remains ? 'not_reproduced' : 'inconclusive';
-    return { verdictStatus,
+    const exchange = (reply, session) => ({
+      request: { method: reply.method, url: reply.url, headers: {}, body: null, session },
+      response: { status: reply.status, bodyText: utf8Prefix(JSON.stringify(reply.json), 16 * 1024) },
+    });
+    const attackRecord = { schemaVersion: 'attack-record/1', id: modelProbe.id, kind: 'cross_user_delete',
+      target: { origin: allowedOrigin },
+      info: { goal: 'Alice deletes a Bob-owned post by changing authorId', session: 'alice', owner: 'bob',
+        resource: { postId: post.id, markerDigest } },
+      ...exchange(candidate, 'alice'), control: exchange(control, 'alice'), followUp: exchange(after, 'bob'),
+      setup: [exchange(created, 'bob'), exchange(before, 'bob')] };
+    return { verdictStatus, attackRecord,
       summary: canaryLabel + ': fresh Bob-owned synthetic post, Alice no-authorId control HTTP '
         + control.status + ' with Bob post still present, Alice cross-user delete HTTP ' + candidate.status
         + ', Bob after-list HTTP ' + after.status + ', exact canary remains=' + remains
         + '; independent authorization verdict=' + verdictStatus + '.' };
+  }
+  // The AI verifier judges the attack record; its verdict is the only board verdict that reaches the report.
+  async function verifyAttackRecord(record, { id, probeId, signal }) {
+    const sessions = Object.fromEntries([...sessionCookies].map(([role, cookie]) => {
+      const split = cookie.indexOf('=');
+      return [role, [{ name: cookie.slice(0, split), value: cookie.slice(split + 1) }]];
+    }));
+    try {
+      const outDir = verificationRoot ? join(verificationRoot, probeId) : await mkdtemp(join(tmpdir(), 'ca3p-verify-'));
+      await mkdir(outDir, { recursive: true });
+      const result = await verifyAttackImpl(record, { outDir, sessions, model: verifierModel, env, envFile, signal });
+      if (verificationRoot) await writeReportHandoff(result, { outDir });
+      // The core rejects an empty verdict reason, which would fail the whole run.
+      const reason = utf8Prefix(String(result.reason ?? ''), 500).trim() || 'verifier_no_reason';
+      return result.status === 'inconclusive'
+        ? { status: 'inconclusive', evidenceIds: [id], reason }
+        : { status: result.status, completed: true, evidenceIds: [id], reason };
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      return { status: 'inconclusive', evidenceIds: [id], reason: 'verifier_failed' };
+    }
   }
   async function sourceReferences() {
     const entries = [];
@@ -736,9 +772,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         ...(config.siteKey ? { known_record_idor_read:
           'input {}: guarded role comparison of registered virtual records; use access_control and the knownAssessmentAssets asset' }
           : { known_cross_user_delete_canary:
-            'input {}: on a fresh isolated board, create one synthetic Bob post and compare an Alice delete with denied control and before/after lists; use access_control and the knownAssessmentAssets asset' }),
+            'input {}: on a fresh isolated board, create one synthetic Bob post and compare an Alice delete with denied control and before/after lists; an AI verifier judges the attack result and may open a read-only browser visit; use access_control and the knownAssessmentAssets asset' }),
       },
-      limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; no independent browser-execution verifier is connected for this general run.',
+      limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; an AI verifier judges each attack result and may open a read-only browser visit.',
         'GET and repository references do not independently confirm most weakness classes.',
         'Historical cases and source reports are context, not current-run proof.',
         'Initial public discovery is bounded to ' + MAX_INITIAL_PAGES + ' routes; other declared routes require a model probe.',
@@ -921,6 +957,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         try {
           const result = await boardCrossUserDeleteCanary(allowedOrigin, probe, probeSignal);
           return { kind: probe.tool, verdictStatus: result.verdictStatus, result,
+            attackRecord: result.attackRecord,
             evidence: [{ id: evidenceId('probe', probe.id),
               source: 'vul-web-1/isolated-board-canary', kind: 'cross-user-delete-comparison',
               asset: BOARD_ACCESS_ASSET, summary: result.summary }] };
@@ -987,7 +1024,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             asset: config.idorAsset, summary: 'Guarded role comparison could not complete; no access-control verdict was confirmed.' }] };
       }
     } };
-    const verifier = { async verify({ execution, hypothesis }) {
+    const verifier = { async verify({ execution, hypothesis, probe, signal }) {
       const id = execution.evidence?.[0]?.id;
       const idorHypothesis = matchesIdorHypothesis(hypothesis);
       const boardAccessHypothesis = matchesBoardAccessHypothesis(hypothesis);
@@ -998,8 +1035,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       }
       if (execution.kind === 'known_cross_user_delete_canary'
         && boardAccessHypothesis
-        && ['confirmed', 'not_reproduced'].includes(execution.verdictStatus)) {
-        return { status: execution.verdictStatus, completed: true, evidenceIds: [id] };
+        && execution.attackRecord) {
+        return verifyAttackRecord(execution.attackRecord, { id, probeId: probe.id, signal });
       }
       return { status: 'inconclusive', reason: execution.kind === 'known_record_idor_read'
         ? idorHypothesis ? 'control_incomplete' : 'hypothesis_tool_mismatch'
