@@ -1,7 +1,233 @@
 {
   "schemaVersion": "1.0",
-  "generatedAt": "2026-10-29T14:10:37.552Z",
+  "generatedAt": "2026-10-29T14:15:00.962Z",
   "runs": [
+    {
+      "runId": "40888779706",
+      "runAttempt": 1,
+      "commitSha": "9ca8735169fcbce4a9e8f5325fb42a001f3cbb12",
+      "branch": "develop",
+      "eventName": "push",
+      "startedAt": "2026-10-29T14:11:22.648Z",
+      "completedAt": "2026-10-29T14:14:40.961Z",
+      "status": "passed",
+      "completeSuite": true,
+      "tests": 866,
+      "passed": 866,
+      "failed": 0,
+      "skipped": 0,
+      "jobs": [
+        {
+          "id": "boundaries",
+          "status": "passed",
+          "tests": null,
+          "passed": null,
+          "failed": null,
+          "skipped": null
+        },
+        {
+          "id": "preflight",
+          "status": "passed",
+          "tests": null,
+          "passed": null,
+          "failed": null,
+          "skipped": null
+        },
+        {
+          "id": "agent",
+          "status": "passed",
+          "tests": 70,
+          "passed": 70,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "web-parser",
+          "status": "passed",
+          "tests": 54,
+          "passed": 54,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "attack-module",
+          "status": "passed",
+          "tests": 7,
+          "passed": 7,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "guardrail",
+          "status": "passed",
+          "tests": 24,
+          "passed": 24,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "vul-web-1",
+          "status": "passed",
+          "tests": 24,
+          "passed": 24,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "vul-web2",
+          "status": "passed",
+          "tests": 15,
+          "passed": 15,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "agent-dashboard",
+          "status": "passed",
+          "tests": 67,
+          "passed": 67,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "contracts",
+          "status": "passed",
+          "tests": 8,
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "run-store",
+          "status": "passed",
+          "tests": 14,
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "chat-store",
+          "status": "passed",
+          "tests": 9,
+          "passed": 9,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "evaluation",
+          "status": "passed",
+          "tests": 4,
+          "passed": 4,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "adapters",
+          "status": "passed",
+          "tests": 38,
+          "passed": 38,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "models",
+          "status": "passed",
+          "tests": 13,
+          "passed": 13,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "report",
+          "status": "passed",
+          "tests": 13,
+          "passed": 13,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "history",
+          "status": "passed",
+          "tests": 2,
+          "passed": 2,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "application",
+          "status": "passed",
+          "tests": 102,
+          "passed": 102,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "worker",
+          "status": "passed",
+          "tests": 34,
+          "passed": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "api",
+          "status": "passed",
+          "tests": 45,
+          "passed": 45,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "attack-tool",
+          "status": "passed",
+          "tests": 30,
+          "passed": 30,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "ci-tools",
+          "status": "passed",
+          "tests": 81,
+          "passed": 81,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "casper-db",
+          "status": "passed",
+          "tests": 79,
+          "passed": 79,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "report-python",
+          "status": "passed",
+          "tests": 133,
+          "passed": 133,
+          "failed": 0,
+          "skipped": 0
+        }
+      ],
+      "changedFromSha": "1014e2940562f01dfcbc2d981b2caafbf9b9ce2b",
+      "changedModules": [
+        "agent",
+        "web-parser",
+        "casper-db",
+        "agent-dashboard",
+        "evaluation",
+        "adapters",
+        "report",
+        "api"
+      ],
+      "pipeline": {
+        "tests": "success",
+        "containerSmoke": "success",
+        "integrationGate": "success"
+      },
+      "runUrl": "https://github.com/typemnm/FSL-CA3P/actions/runs/40888779706"
+    },
     {
       "runId": "40888748268",
       "runAttempt": 1,
