@@ -1,0 +1,6 @@
+# Pair with vul-web2/compose.reset.yaml and the same generated token env file.
+# The fixture service names resolve only through docker-compose.vul-web2.yml.
+services:
+  dashboard:
+    environment:
+      CA3P_EXPERIMENT_RESET_TARGETS: '{"vul-web2-daehan":{"origin":"http://daehan:54101","targetOrigin":"http://daehan:4101","token":"${CA3P_DAEHAN_RESET_TOKEN:?Create .runtime/experiment-reset.env first}"},"vul-web2-wonchang":{"origin":"http://wonchang:54102","targetOrigin":"http://wonchang:4102","token":"${CA3P_WONCHANG_RESET_TOKEN:?Create .runtime/experiment-reset.env first}"}}'

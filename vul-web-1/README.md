@@ -12,6 +12,23 @@ npm --prefix vul-web-1 start
 
 브라우저에서 <http://127.0.0.1:3000>에 접속합니다. 기본 실행 주소는 로컬 컴퓨터의 `127.0.0.1:3000`입니다. 테스트는 프로젝트 폴더에서 `npm test`로 실행합니다.
 
+## Docker Compose로 실행
+
+저장소 루트에서 다음 명령으로 독립 실행 게시판을 시작합니다.
+
+```powershell
+docker compose -f vul-web-1/compose.yaml up --build -d --wait
+```
+
+브라우저 주소는 <http://127.0.0.1:3000>입니다. 호스트에는 이 루프백 주소로만 공개됩니다. 게시글 파일은 컨테이너의 임시 메모리 파일시스템에 있으므로 컨테이너를 다시 시작하면 초기 게시글로 돌아갑니다.
+
+```powershell
+docker compose -f vul-web-1/compose.yaml restart board
+docker compose -f vul-web-1/compose.yaml down
+```
+
+이 독립 실행 게시판과 대시보드의 취약점 점검에서 실행별로 만드는 임시 게시판은 별개입니다. 대시보드의 실험 초기화는 실행별 임시 게시판과 실행 기록을 정리하며, 위 Docker 게시판의 상태는 `restart board`로 초기화합니다.
+
 게시글은 `data/posts.json`에 저장됩니다. 초기 게시글로 돌아가려면 서버를 중지하고 이 파일을 삭제한 뒤 다시 실행하세요. 서버가 시작할 때 파일이 없으면 관리자 글을 포함한 초기 데이터를 생성합니다.
 
 ## 계정과 게시판

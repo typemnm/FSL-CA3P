@@ -1,0 +1,30 @@
+# Apply with compose.yaml for an experiment whose university state can be reset.
+# Management ports are reachable only on the private fixture networks.
+services:
+  daehan:
+    command: ["node", "scripts/daehan-reset-supervisor.mjs"]
+    environment:
+      CA3P_DAEHAN_RESET_TOKEN: ${CA3P_DAEHAN_RESET_TOKEN:?Create .runtime/experiment-reset.env first}
+      CA3P_DAEHAN_RESET_PORT: "54101"
+      CA3P_DAEHAN_RESET_BIND: 0.0.0.0
+      CA3P_DAEHAN_TARGET_BIND: 0.0.0.0
+      CA3P_DAEHAN_TARGET_ORIGIN: http://daehan:4101
+      CA3P_DAEHAN_RESET_BACKUP_ROOT: /app/.reset-backups
+    volumes:
+      - daehan-reset-backups:/app/.reset-backups
+
+  wonchang:
+    entrypoint: ["python3", "/app/reset-supervisor.py"]
+    command: []
+    environment:
+      CA3P_WONCHANG_RESET_TOKEN: ${CA3P_WONCHANG_RESET_TOKEN:?Create .runtime/experiment-reset.env first}
+      CA3P_WONCHANG_RESET_PORT: "54102"
+      CA3P_WONCHANG_RESET_BIND: 0.0.0.0
+      CA3P_WONCHANG_TARGET_ORIGIN: http://wonchang:4102
+      CA3P_WONCHANG_RESET_BACKUP_ROOT: /app/.reset-backups
+    volumes:
+      - wonchang-reset-backups:/app/.reset-backups
+
+volumes:
+  daehan-reset-backups:
+  wonchang-reset-backups:

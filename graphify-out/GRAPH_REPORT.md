@@ -1,17 +1,17 @@
 # Graph Report - FSL-CA3P  (2026-10-30)
 
 ## Corpus Check
-- 435 files · ~346,095 words
+- 440 files · ~349,061 words
 - Verdict: corpus is large enough that graph structure adds value.
-- Unclassified: 36 file(s) not represented in the graph (top: (none) 13, .njk 13, .css 4)
+- Unclassified: 38 file(s) not represented in the graph (top: (none) 15, .njk 13, .css 4)
 
 ## Summary
-- 4006 nodes · 9765 edges · 199 communities (172 shown, 27 thin omitted)
-- Extraction: 94% EXTRACTED · 6% INFERRED · 0% AMBIGUOUS · INFERRED: 542 edges (avg confidence: 0.9)
+- 4093 nodes · 9932 edges · 220 communities (189 shown, 31 thin omitted)
+- Extraction: 95% EXTRACTED · 5% INFERRED · 0% AMBIGUOUS · INFERRED: 546 edges (avg confidence: 0.9)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `466ea650`
+- Built from commit: `5a626fa0`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -23,7 +23,7 @@
 - advisory_sync.py
 - device-deploy.mjs
 - createRunService
-- guardrail/src/index.js
+- matches_range
 - sllm-verdict.js
 - models/workspace-chat.mjs
 - pathlib
@@ -35,7 +35,7 @@
 - casper-db/tests/conftest.py
 - general-assessment.js
 - collect.test.mjs
-- ui-platform.test.mjs
+- ref_node_fs
 - steps
 - smoke.mjs
 - deepseek-config.js
@@ -44,16 +44,16 @@
 - PortalController
 - test_collect.py
 - device-deploy-verification.mjs
-- json
+- subprocess
 - dashboard
 - adapters/integrations/knowledge-db.mjs
 - protocol.js
 - general-model-planner.js
 - collector.py
 - collect
-- hwpx.py
+- _finding
 - README.md
-- ref_node_child_process
+- ref_node_path
 - createGeneralRuntime
 - device-db.py
 - application/ci-results.mjs
@@ -67,12 +67,12 @@
 - ci.mjs
 - verifier/index.mjs
 - deepseek-client.js
-- pytest
+- test_verification_handoff.py
 - test_build_loop.py
 - template-catalog.mjs
 - review.js
 - StoredEvent
-- createRunService
+- reset-supervisor.py
 - digest
 - tools.py
 - idor-probe.mjs
@@ -90,7 +90,7 @@
 - daehan-reset-supervisor.mjs
 - runner.test.mjs
 - loop.py
-- experiment-reset.test.mjs
+- AI verifier 계약
 - device-fixtures.mjs
 - 파서 → 취약점 DB 입력 계약
 - casper-db/README.md
@@ -102,7 +102,7 @@
 - chat-files.mjs
 - external-target.mjs
 - ui-runtime-client.test.mjs
-- run_store.py
+- ReportIntake
 - run-once.test.js
 - 펜테스팅 에이전트 개발 계획
 - db-management.test.mjs
@@ -121,41 +121,41 @@
 - agent-dashboard/package.json
 - environment
 - repeater.test.mjs
-- general-assessment.test.js
+- hashlib
 - serve-external.mjs
 - vul-web-1/package.json
 - 범용 취약점 점검 파이프라인 전환 계획과 구현 상태
 - general-results.test.mjs
 - agent/package.json
-- test_history_review.py
+- environment
 - jobs
 - intruder.mjs
-- 대한대학교·원창대학교 웹사이트 사전 침해분석 및 취약점 보고서
+- test_run_sources.py
 - general-assessment.test.js
 - capture/package.json
 - web-parser/package.json
 - SiteCatalog
 - attack-tool/package.json
 - 대시보드에서 취약점 DB 사용하기
-- guardrail-integration.test.mjs
+- createWorkspaceChatService
 - 재점검 기록의 저장과 검토
 - networks
 - steps
 - with
-- demo.py
+- hwp.py
 - SpringHeaderFilter.java
 - ci.yml
 - guardrail/package.json
 - sLLM Guardrail
-- 외부 모듈 JSON 계약
+- chat-store/index.mjs
 - general-runtime.test.mjs
 - CA3P Agent Loop — 로컬 통합 대시보드
 - test_boundaries.py
 - attack-module/package.json
 - observeStoredXssExecution
 - 이 Mac에서 팀 대시보드 외부 접속
-- 대한대학교·원창대학교 웹사이트 사전 침해분석 및 취약점 보고서
-- ref_node_fs
+- pytest
+- daehan-reset-supervisor.test.mjs
 - 리피터 (Repeater) — 에이전트 사용 설명서
 - 모델 변경 시 실험 초기화
 - updates
@@ -169,7 +169,7 @@
 - 2. 입력과 출력
 - contracts/package.json
 - evaluation/package.json
-- 1. 목표와 범위
+- intruder.mjs
 - run-store/package.json
 - CA3P 취약한 바닐라 JS 게시판
 - 보고서 생성 모듈(Report Agent) — 조사 결과 및 개발 PLAN
@@ -177,10 +177,10 @@
 - public/js/site.js
 - deployment-check.mjs
 - static/js/site.js
-- build_report_draft
+- 보고서 기반 DB 처리와 모듈 연결
 - run-local-sllm.js
 - WonchangApplication.java
-- 보고서 생성 모듈(Report Agent) — 조사 결과 및 개발 PLAN
+- module-management.mjs
 - attack-module/README.md
 - mock-report-template.md
 - previous-month-xss-report.md
@@ -195,14 +195,35 @@
 - run-service.mjs
 - CA3P 펜테스팅 에이전트 코어
 - ref_node_module
-- db.mjs
+- contract.mjs
 - run-notion-vulnerability-matrix.js
 - attack-tool
-- report-handoff.mjs
+- e2e.test.mjs
 - scripts
 - setup-report-llm.mjs
 - PR 규칙
 - 인트루더 (Intruder) — 에이전트 사용 설명서
+- narrative.py
+- board
+- lab-session-registry.mjs
+- run-repeater.mjs
+- write_html
+- test_matching.py
+- re
+- casper-db/client.mjs
+- test_cli.py
+- attack-tool.js
+- GuardrailEvaluator
+- browser.mjs
+- agent-dashboard/server.mjs
+- guardrail.test.js
+- browser.test.mjs
+- sandbox.test.mjs
+- 1차 DB 검증 기록
+- environment
+- normalizer.js
+- index.test.mjs
+- 보고서 접수·검토·등록
 
 ## God Nodes (most connected - your core abstractions)
 1. `CaseStore` - 88 edges
@@ -231,55 +252,55 @@
 ## Import Cycles
 - None detected.
 
-## Communities (199 total, 27 thin omitted)
+## Communities (220 total, 31 thin omitted)
 
 ### Community 0 - "CaseStore"
 Cohesion: 0.07
-Nodes (39): main(), main(), output(), Case, CaseRecord, Check, CheckRecord, CaseStore (+31 more)
+Nodes (42): main(), main(), store_knowledge(), Case, CaseQuery, CaseRecord, Check, CheckRecord (+34 more)
 
 ### Community 1 - "ref_node_crypto"
 Cohesion: 0.06
-Nodes (46): auth, ciResults, port, publicOrigins, runtime, server, createAttackTemplateRoutes(), configuredProxyIps() (+38 more)
+Nodes (45): serve(), { chromium }, event, idle, resetModels, setup(), snapshot(), wrap() (+37 more)
 
 ### Community 2 - "createStubRuntime"
-Cohesion: 0.38
-Nodes (6): createStubRuntime(), close(), start(), step(), stop(), serve()
+Cohesion: 0.47
+Nodes (5): createStubRuntime(), close(), start(), step(), stop()
 
 ### Community 3 - "casper_db/cli.py"
 Cohesion: 0.05
-Nodes (24): _parts(), same_reviewed_route(), validate_applicability(), validate_route_template(), inspect_evidence(), assess_observation(), CandidateMatch, ObservationAssessment (+16 more)
+Nodes (25): _parts(), same_reviewed_route(), validate_applicability(), validate_route_template(), output(), inspect_evidence(), assess_observation(), CandidateMatch (+17 more)
 
 ### Community 4 - "advisory_sync.py"
-Cohesion: 0.07
-Nodes (30): _github_params(), sync_knowledge(), collect(), knowledge_sync(), collect_external(), external_connection(), ExternalBundle, NoRedirect (+22 more)
+Cohesion: 0.05
+Nodes (41): _github_params(), KnowledgeSync, sync_knowledge(), collect(), assess_database(), assess_record(), _cpe_parts(), discover_advisories() (+33 more)
 
 ### Community 5 - "device-deploy.mjs"
 Cohesion: 0.15
-Nodes (30): execute(), acquireLock(), atomicJson(), checkApplication(), database(), delay(), deploy(), deploymentTransaction() (+22 more)
+Nodes (28): execute(), acquireLock(), atomicJson(), checkApplication(), database(), delay(), deploy(), deploymentTransaction() (+20 more)
 
 ### Community 6 - "createRunService"
-Cohesion: 0.07
-Nodes (59): ACTIVE, createExternalGeneralRuntime(), appendEvent(), close(), getState(), publish(), runTask(), probeEvidence() (+51 more)
+Cohesion: 0.06
+Nodes (78): ACTIVE, createExternalGeneralRuntime(), appendEvent(), close(), getState(), publish(), runTask(), probeEvidence() (+70 more)
 
-### Community 7 - "guardrail/src/index.js"
-Cohesion: 0.13
-Nodes (15): _all(), _any(), _cpe_parts(), _ecosystem(), _github(), _nvd(), entry(), _nvd_name_candidates() (+7 more)
+### Community 7 - "matches_range"
+Cohesion: 0.28
+Nodes (9): _all(), _any(), _nvd(), entry(), node(), compare_versions(), matches_range(), UnresolvedVersion (+1 more)
 
 ### Community 8 - "sllm-verdict.js"
 Cohesion: 0.08
 Nodes (46): KNOWN_ERROR_CODES, makeErrorResult(), buildJudgmentPrompt(), buildVulnerabilityGuidelinesText(), JUDGMENT_CRITERIA, VULNERABILITY_GUIDELINES, buildScopeChecks(), buildSllmInput() (+38 more)
 
 ### Community 9 - "models/workspace-chat.mjs"
-Cohesion: 0.06
-Nodes (68): fixture(), createWorkspaceChatService(), availableModel(), compactInternal(), contextFor(), getSession(), listModels(), managed() (+60 more)
+Cohesion: 0.13
+Nodes (25): configured(), localEnv, CHAT_APPLICATION_BUDGET_TOKENS, CHAT_COMPACTION_THRESHOLD_TOKENS, CHAT_MODEL_IDS, createWorkspaceChatModel(), complete(), contextBudget() (+17 more)
 
 ### Community 10 - "pathlib"
-Cohesion: 0.07
-Nodes (34): KnowledgeSync, create_app(), attack_info_query(), attack_patterns(), attack_template(), knowledge_query(), assess_record(), discover_advisories() (+26 more)
+Cohesion: 0.08
+Nodes (33): create_app(), attack_info_query(), attack_patterns(), attack_template(), knowledge_query(), knowledge_sync(), references(), AttackInfoQuery (+25 more)
 
 ### Community 11 - "src/server.mjs"
-Cohesion: 0.18
-Nodes (14): configuredPorts, createApp(), markdown, redirectWithFlash(), requireAdmin(), requireLogin(), requirePartner(), root (+6 more)
+Cohesion: 0.15
+Nodes (19): daehanDatabasePath(), daysBefore(), openDatabase(), root, sha1(), configuredPorts, createApp(), markdown (+11 more)
 
 ### Community 13 - "device-fixtures.mjs"
 Cohesion: 0.37
@@ -290,8 +311,8 @@ Cohesion: 0.05
 Nodes (42): context, dockerfile, build, cap_drop, environment, image, init, driver (+34 more)
 
 ### Community 15 - "adapters/integrations/casper-db.mjs"
-Cohesion: 0.14
-Nodes (20): 에이전트 연결과 재현성, 사례·권고 통합 조회, main(), absoluteDatabasePath(), DEFAULT_DB, matchCasperHistory(), observationsFromParser(), parserReferenceLocations() (+12 more)
+Cohesion: 0.10
+Nodes (28): adapterSource, casperSource, CONCURRENT_COMMIT, pythonEnvironment, report, 에이전트 연결과 재현성, 제품용 실행 명령, 최신 web-parser 입력 (+20 more)
 
 ### Community 17 - "casper-db/tests/conftest.py"
 Cohesion: 0.38
@@ -303,11 +324,11 @@ Nodes (25): aborted(), assertPort(), assertSafeToolInput(), boundedString(), bui
 
 ### Community 19 - "collect.test.mjs"
 Cohesion: 0.06
-Nodes (39): abortError(), bounded(), checkOptions(), collect(), collectEach(), documentChain(), evaluate(), evaluateIn() (+31 more)
+Nodes (35): bounded(), collect(), documentChain(), evaluate(), evaluateIn(), extractPage(), extractSettled(), indexPaths() (+27 more)
 
-### Community 20 - "ui-platform.test.mjs"
-Cohesion: 0.13
-Nodes (14): { chromium }, event, idle, resetModels, setup(), snapshot(), wrap(), importLegacyRuns() (+6 more)
+### Community 20 - "ref_node_fs"
+Cohesion: 0.09
+Nodes (14): deploymentStatus(), getPlatform(), git(), readJson(), root, importLegacyRuns(), commitSha, example (+6 more)
 
 ### Community 21 - "steps"
 Cohesion: 0.06
@@ -327,71 +348,71 @@ Nodes (32): VCS_REF, args, context, dockerfile, build, env_file, environment, he
 
 ### Community 25 - "RuleReasoningEngine"
 Cohesion: 0.07
-Nodes (28): 10. 테스트 계획, 11. Opt-in live contract demo, 12. 단계적 rollout과 rollback, 13. 완료 기준, 1. 목적과 범위, 2. 공식 API 사실과 프로젝트 정책, 3. 목표 구조, 4. 설정과 `.env` (+20 more)
+Nodes (27): 11. Opt-in live contract demo, 12. 단계적 rollout과 rollback, 13. 완료 기준, 1. 목적과 범위, 2. 공식 API 사실과 프로젝트 정책, 3. 목표 구조, 4. 설정과 `.env`, 5. `deepseek-client.js` (+19 more)
 
 ### Community 27 - "test_collect.py"
 Cohesion: 0.16
-Nodes (19): make_trigger(), pentest_trigger(), run_cli(), run_cli_raw(), test_bundle_is_write_once(), test_collects_a_sealed_bundle(), test_deeply_nested_json_is_a_json_error(), test_deeply_nested_trigger_is_a_json_error() (+11 more)
+Nodes (20): make_trigger(), pentest_trigger(), run_cli(), run_cli_raw(), test_bundle_is_write_once(), test_collects_a_sealed_bundle(), test_concurrent_collections_cannot_both_seal(), test_deeply_nested_json_is_a_json_error() (+12 more)
 
 ### Community 28 - "device-deploy-verification.mjs"
-Cohesion: 0.13
-Nodes (30): apiIdentifier(), assertLatestRun(), assertRun(), attempt(), count(), COUNTS, identifier(), INDEX_KEYS (+22 more)
+Cohesion: 0.14
+Nodes (29): apiIdentifier(), assertLatestRun(), assertRun(), attempt(), count(), COUNTS, identifier(), INDEX_KEYS (+21 more)
 
-### Community 29 - "json"
-Cohesion: 0.07
-Nodes (33): _paragraph_text(), walk(), parse_hwp_report(), parse_report(), _read_document(), _reader_xml(), current_session(), _guide() (+25 more)
+### Community 29 - "subprocess"
+Cohesion: 0.14
+Nodes (9): casper_db(), linked_entry(), _node_ready(), run_id(), stored_run(), tree_digest(), write_sources(), test_matches_contracts() (+1 more)
 
 ### Community 30 - "dashboard"
 Cohesion: 0.07
 Nodes (28): env_file, environment, healthcheck, image, init, ports, restart, shm_size (+20 more)
 
 ### Community 31 - "adapters/integrations/knowledge-db.mjs"
-Cohesion: 0.23
-Nodes (10): absolutePath(), createKnowledgeDb(), initialize(), DEFAULT_DATABASE, exchangePython(), PROGRAM, readKnowledgeCatalog(), readKnowledgeCatalogReadOnly() (+2 more)
+Cohesion: 0.19
+Nodes (12): MULTI_CATALOG, request(), absolutePath(), createKnowledgeDb(), initialize(), DEFAULT_DATABASE, exchangePython(), PROGRAM (+4 more)
 
 ### Community 32 - "protocol.js"
-Cohesion: 0.23
-Nodes (15): request(), request(), 폐기된 단일 검사, assertModuleSuccess(), createEnvelope(), gatewayError(), invokeJson(), isNonEmptyString() (+7 more)
+Cohesion: 0.26
+Nodes (14): request(), 폐기된 단일 검사, assertModuleSuccess(), createEnvelope(), gatewayError(), invokeJson(), isNonEmptyString(), isObject() (+6 more)
 
 ### Community 33 - "general-model-planner.js"
-Cohesion: 0.28
-Nodes (20): boundedString(), EVIDENCE_KEYS, evidenceForPrompt(), exactKeys(), identifier(), isPlainObject(), isRecord(), modelText() (+12 more)
+Cohesion: 0.23
+Nodes (22): boundedString(), createGeneralModelPlanner(), EVIDENCE_KEYS, evidenceForPrompt(), exactKeys(), GeneralModelPlanner, identifier(), isPlainObject() (+14 more)
 
 ### Community 34 - "collector.py"
-Cohesion: 0.14
-Nodes (12): CollectResult, _verification(), _ids(), _rows(), select_finding(), CollectError, RunRecord, _digest() (+4 more)
+Cohesion: 0.10
+Nodes (19): CollectResult, _verification(), _ids(), _rows(), select_finding(), CollectError, RunRecord, _digest() (+11 more)
 
 ### Community 35 - "collect"
 Cohesion: 0.19
-Nodes (7): BundleExistsError, BundleWriter, _bytes(), OutputError, _write_exclusive(), test_concurrent_collections_cannot_both_seal(), test_bundle_add_bytes_is_sealed_and_write_once()
+Nodes (6): BundleExistsError, BundleWriter, _bytes(), OutputError, _write_exclusive(), test_bundle_add_bytes_is_sealed_and_write_once()
 
-### Community 36 - "hwpx.py"
-Cohesion: 0.13
-Nodes (21): has_supplied_value(), is_unknown(), _finding(), issue(), _has_value(), _payloads(), _query(), refresh_field_status() (+13 more)
+### Community 36 - "_finding"
+Cohesion: 0.20
+Nodes (11): has_supplied_value(), _finding(), issue(), _has_value(), _payloads(), _query(), refresh_field_status(), has_review_evidence() (+3 more)
 
 ### Community 37 - "README.md"
 Cohesion: 0.12
 Nodes (12): Attack tool protocol v1, CA3P 모듈 경계, 공격 도구 통신, 통합 취약점 DB, CA3P 통합 및 배포, Docker 실행 및 영속화, GitHub Actions, 신뢰된 배포 runner (+4 more)
 
-### Community 38 - "ref_node_child_process"
-Cohesion: 0.07
-Nodes (38): getPlatform(), git(), readJson(), root, CASE_FIXTURES, prepareCaseSnapshot(), SNAPSHOT_CODE, runWithFindings() (+30 more)
+### Community 38 - "ref_node_path"
+Cohesion: 0.05
+Nodes (43): runWithFindings(), setup(), waitFor(), setup(), generalDocumentsStatus(), runWorker(), tick(), storeReportPreviews() (+35 more)
 
 ### Community 39 - "createGeneralRuntime"
-Cohesion: 0.20
-Nodes (23): createGeneralRuntime(), appendEvent(), authenticatedObservation(), checkedRequest(), close(), execute(), fixedSessionSpecs(), getState() (+15 more)
+Cohesion: 0.21
+Nodes (22): createGeneralRuntime(), appendEvent(), authenticatedObservation(), checkedRequest(), close(), execute(), fixedSessionSpecs(), getState() (+14 more)
 
 ### Community 40 - "device-db.py"
 Cohesion: 0.26
 Nodes (17): backup_command(), columns(), connect_readonly(), digest(), fsync_directory(), fsync_file(), inspect_command(), inspect_db() (+9 more)
 
 ### Community 41 - "application/ci-results.mjs"
-Cohesion: 0.21
-Nodes (17): count(), createCiResultsService(), sync(), DEFAULT_CACHE, fetchActionsFallback(), fetchJson(), JOB_STATUS, normalizedStatus() (+9 more)
+Cohesion: 0.28
+Nodes (15): count(), createCiResultsService(), sync(), DEFAULT_CACHE, fetchActionsFallback(), fetchJson(), JOB_STATUS, normalizedStatus() (+7 more)
 
 ### Community 42 - "general-runtime.mjs"
-Cohesion: 0.19
-Nodes (19): ACTIVE, DEMO_PASSWORDS, eventCount(), eventIdentifier(), eventIdentifiers(), eventMetadataText(), FIXTURES, htmlAttribute() (+11 more)
+Cohesion: 0.21
+Nodes (18): ACTIVE, DEMO_PASSWORDS, eventCount(), eventIdentifier(), eventIdentifiers(), eventMetadataText(), FIXTURES, htmlAttribute() (+10 more)
 
 ### Community 43 - "_run"
 Cohesion: 0.22
@@ -406,40 +427,40 @@ Cohesion: 0.17
 Nodes (15): _absolute(), parse_trigger(), _record(), _refuse_output_inside_sources(), _resolved(), _source(), SourceRef, Trigger (+7 more)
 
 ### Community 46 - "adapters/integrations/guardrail.mjs"
-Cohesion: 0.26
-Nodes (10): newGuardrail(), createGuardrailForRun(), createLocalGuardrail(), exactKeys(), isRecord(), localOrigin(), PROFILES, projectedCurl() (+2 more)
+Cohesion: 0.15
+Nodes (15): newGuardrail(), 사용, createGuardrailForRun(), createLocalGuardrail(), authorizeAction(), trustedContext(), exactKeys(), GuardrailDeniedError (+7 more)
 
 ### Community 47 - "fingerprint.mjs"
-Cohesion: 0.12
-Nodes (20): 2. 입력 — endpoint는 Agent가 정한다, allTechnologies(), analyzePage(), DATA, detect(), fingerprint(), fingerprintWithin(), hostPath() (+12 more)
+Cohesion: 0.13
+Nodes (19): allTechnologies(), analyzePage(), DATA, detect(), fingerprint(), fingerprintWithin(), hostPath(), KEYED (+11 more)
 
 ### Community 48 - "writer.py"
-Cohesion: 0.19
-Nodes (15): _caption(), _load_png(), write_html(), write_hwpx(), write_markdown(), model(), section_xml(), test_body_has_no_hashes() (+7 more)
+Cohesion: 0.29
+Nodes (12): write_hwpx(), image_root(), model(), section_xml(), test_body_has_no_hashes(), test_failed_run_renders_the_failure_variant(), test_html_preview_renders_tables_and_intact_images_without_executing_payload(), test_hwpx_saves_validates_and_carries_the_outline() (+4 more)
 
 ### Community 49 - "ci.mjs"
 Cohesion: 0.12
 Nodes (16): args, dryRun, manifest, nodeOnly, completeSuiteCoverage(), createSuitePlan(), testFiles(), report (+8 more)
 
 ### Community 50 - "verifier/index.mjs"
-Cohesion: 0.05
-Nodes (63): childEnv(), executeCurl(), executePinnedCurl(), executeUniversityRead(), failure(), findHeaderEnd(), isJsonValue(), isPlainObject() (+55 more)
+Cohesion: 0.22
+Nodes (17): bodyDigest(), evidenceItem(), attackEvidence(), attackView(), cookiesFor(), createDefaultModel(), cutExchange(), cutUtf8() (+9 more)
 
 ### Community 51 - "deepseek-client.js"
-Cohesion: 0.15
-Nodes (19): 9. 공개 API와 기존 계약 영향, boundedInteger(), cancelBody(), configError(), declaredContentLength(), DeepSeekClient, DeepSeekError, normalizeBaseUrl() (+11 more)
+Cohesion: 0.17
+Nodes (17): 9. 공개 API와 기존 계약 영향, boundedInteger(), cancelBody(), configError(), declaredContentLength(), DeepSeekClient, DeepSeekError, normalizeBaseUrl() (+9 more)
 
-### Community 52 - "pytest"
-Cohesion: 0.06
-Nodes (54): test_disk_round_trip_preserves_unicode_payload_and_lists(), test_duplicate_requires_explicit_update_and_preserves_created_at(), test_failed_reads_do_not_create_database(), test_initialization_preserves_existing_data_and_rejects_foreign_database(), test_invalid_contract_is_rejected(), test_invalid_update_does_not_change_existing_record(), test_lookup_excludes_drafts_and_matches_target_path_and_method_exactly(), test_ready_prior_report_requires_its_core_fields() (+46 more)
+### Community 52 - "test_verification_handoff.py"
+Cohesion: 0.25
+Nodes (17): copy_handoff_images(), _image(), _image_path(), load_verification_handoff(), VerificationHandoffError, _digest(), _handoff(), test_absolute_path_is_rejected() (+9 more)
 
 ### Community 53 - "test_build_loop.py"
 Cohesion: 0.15
-Nodes (12): envelope(), stored_xss_events(), stored_xss_report(), _bundle(), _call(), FakeLLM, model_for(), test_captured_ref_is_embedded_in_hwpx() (+4 more)
+Nodes (11): _bundle(), _call(), FakeLLM, model_for(), test_captured_ref_is_embedded_in_hwpx(), complete(), fake_capture(), test_fake_llm_reads_bundle_then_finishes() (+3 more)
 
 ### Community 54 - "template-catalog.mjs"
-Cohesion: 0.08
-Nodes (47): createAttackTemplateManagement(), describe(), createAttackToolClient(), createAttackTool(), dispatch(), registerPrincipal(), createTools(), fault() (+39 more)
+Cohesion: 0.07
+Nodes (50): createAttackTemplateManagement(), describe(), createAttackToolClient(), createAttackTool(), dispatch(), registerPrincipal(), createTools(), fault() (+42 more)
 
 ### Community 55 - "review.js"
 Cohesion: 0.30
@@ -449,48 +470,48 @@ Nodes (20): badge(), downloadJSON(), endpointTitle(), fieldView(), findingList()
 Cohesion: 0.20
 Nodes (13): _attack_body_keys(), _attacker_account(), capture_hints(), _event(), _input_forms(), _parser_report(), _path_of(), _session_switch() (+5 more)
 
-### Community 57 - "createRunService"
-Cohesion: 0.10
-Nodes (33): fault(), ISOLATED_FIXTURES, isReadOnlyExternalRun(), managementOrigin(), prepareTargetReset(), REQUIRED_SCOPES, targetResetObligationsForRuns(), UNIVERSITY_FIXTURES (+25 more)
+### Community 57 - "reset-supervisor.py"
+Cohesion: 0.08
+Nodes (22): 10. 테스트 계획, authorized(), Backup, Config, copy_private(), create_backup(), file_digest(), main() (+14 more)
 
 ### Community 58 - "digest"
-Cohesion: 0.09
-Nodes (27): assess_database(), lookup_assessments(), AttackTemplate, bundled_catalogs(), register_attack_template(), _extract(), load_external(), read_json() (+19 more)
+Cohesion: 0.06
+Nodes (38): SoftwareComponent, AttackTarget, AutomationConfig, ExternalInput, _extract(), load_external(), read_json(), ReportInput (+30 more)
 
 ### Community 59 - "tools.py"
-Cohesion: 0.13
-Nodes (15): _dispatch(), _form_encode(), is_secret_key(), redact(), redact_string(), _replace_url(), _file_entry(), FinishResult (+7 more)
+Cohesion: 0.19
+Nodes (9): _dispatch(), _file_entry(), FinishResult, ReportTools, ToolError, _validate_origin(), test_capture_origin_must_be_loopback(), test_read_bundle_masks_plain_text_headers_without_rewriting_evidence() (+1 more)
 
 ### Community 60 - "idor-probe.mjs"
-Cohesion: 0.11
-Nodes (30): ACTIVE, CHECKS, createIdorRuntime(), appendEvent(), close(), execute(), getState(), publish() (+22 more)
+Cohesion: 0.05
+Nodes (58): fault(), ISOLATED_FIXTURES, isReadOnlyExternalRun(), managementOrigin(), prepareTargetReset(), REQUIRED_SCOPES, targetResetObligationsForRuns(), UNIVERSITY_FIXTURES (+50 more)
 
 ### Community 61 - "CASPER 취약점 DB"
-Cohesion: 0.12
-Nodes (17): CASPER 취약점 DB, DB 버전 전환, pentest-db 통합과 폐기, 기능, 다른 모듈에 검토 상태 전달, 보고서 접수·검토·등록, 설치, 외부 취약점 정보·일괄 처리 (+9 more)
+Cohesion: 0.13
+Nodes (15): CASPER 취약점 DB, DB 버전 전환, pentest-db 통합과 폐기, 기능, 사례·권고 통합 조회, 설치, 외부 취약점 정보·일괄 처리, 이후 공격 툴 연결 계약 (+7 more)
 
 ### Community 62 - "publish-ci-summary.mjs"
 Cohesion: 0.21
 Nodes (16): 로컬 검증, changedModuleIds(), changedModules(), commitSha(), count(), measured(), mergeIndex(), outcome() (+8 more)
 
 ### Community 64 - "ReportIntake"
-Cohesion: 0.07
-Nodes (40): _actor(), _archive_case(), _case_audit(), _case_detail(), _case_state(), dispatch(), _intake_item(), _list_audit() (+32 more)
+Cohesion: 0.10
+Nodes (31): _actor(), _archive_case(), _case_audit(), _case_detail(), _case_state(), dispatch(), _list_audit(), _list_cases() (+23 more)
 
 ### Community 65 - "대한대학교 · 원창대학교 웹사이트"
-Cohesion: 0.11
-Nodes (15): 대한대학교 최종 프롬프트, 메인 캠퍼스 이미지 제작 기록, 원창대학교 최종 프롬프트, 1. 장애 원인과 조치, 2. 재검증 결과, 3. 검증 범위, Docker 장애 원인 및 두 대학 사이트 기능 재검증, ARTEX 사건을 참고한 평가 시나리오 (+7 more)
+Cohesion: 0.07
+Nodes (27): 1. 요약과 판정 기준, 2. 서비스 구성과 정상 기능, 3.1 대한대학교: 선정한 CVE 세 건, 3.2 원창대학교: 선정한 CVE 세 건, 3. 외부 의존성 및 CVE 평가, 4. OWASP Top 10:2025별 사전 분석, 5. 중점 시나리오: 게시글 삭제와 사이트 가용성, 6. ARTEX 사건을 참고한 부속 업무 위험 (+19 more)
 
 ### Community 66 - "guardrail/src/index.js"
-Cohesion: 0.07
-Nodes (38): createAttackToolGuardrail(), denied(), exactOrigin(), exactPath(), keys(), record(), bodyKeys(), ConditionEvaluator (+30 more)
+Cohesion: 0.26
+Nodes (10): bodyKeys(), ConditionEvaluator, queryKeys(), loadRuleset(), validateRuleset(), containsKeyDeep(), deepEqual(), getField() (+2 more)
 
 ### Community 67 - "ref_node_crypto"
-Cohesion: 0.27
-Nodes (8): parse_hwpx_report(), _read_document(), _section_names(), _sha(), _tag(), _text(), walk(), _xml()
+Cohesion: 0.19
+Nodes (12): build_report_draft(), _fields(), _label(), _labeled_sections(), parse_hwpx_report(), _read_document(), _section_names(), _sha() (+4 more)
 
 ### Community 68 - "experiment-targets.mjs"
-Cohesion: 0.30
+Cohesion: 0.25
 Nodes (9): normalize_filename(), test_control_chars_are_removed_and_text_is_nfc(), test_empty_or_invalid_falls_back_to_run_id(), test_extension_is_forced_to_a_single_hwpx(), test_overlong_name_is_capped_at_120(), test_reserved_prefix_inside_longer_name_is_allowed(), test_traversal_keeps_the_readable_part(), test_traversal_never_leaves_a_separator_or_dotdot() (+1 more)
 
 ### Community 69 - "collect"
@@ -498,8 +519,8 @@ Cohesion: 0.15
 Nodes (19): history_refs(), read_history(), reference_context(), unavailable(), collect(), _asset_path(), build_general_model(), _text() (+11 more)
 
 ### Community 70 - "hashlib"
-Cohesion: 0.14
-Nodes (13): extract_local_ocr(), _hwp_raster(), _is_raster(), image_previews(), Check, Citation, Claim, Comparison (+5 more)
+Cohesion: 0.24
+Nodes (8): Check, Citation, Claim, Comparison, enrich_report(), Extraction, grounded_claim(), OutputModel
 
 ### Community 71 - "env"
 Cohesion: 0.12
@@ -510,20 +531,20 @@ Cohesion: 0.16
 Nodes (21): authorized(), backupRuntimeFiles(), configFrom(), existingRuntimeFiles(), exitWithin(), port(), removeRuntimeFiles(), requestBody() (+13 more)
 
 ### Community 73 - "runner.test.mjs"
-Cohesion: 0.18
-Nodes (13): executeReportProcess(), failure(), generateReportDocument(), PYTHON_ROOT, readVerifiedFile(), terminate(), env, htmlPreview (+5 more)
+Cohesion: 0.11
+Nodes (18): executeReportProcess(), failure(), generateReportDocument(), PYTHON_ROOT, readVerifiedFile(), terminate(), env, htmlPreview (+10 more)
 
 ### Community 74 - "loop.py"
-Cohesion: 0.13
+Cohesion: 0.14
 Nodes (9): LLMError, _bundle_summary(), run_build(), build_system_prompt(), tool_schemas(), Profile, resolve_profile(), test_llm_failure_propagates() (+1 more)
 
-### Community 75 - "experiment-reset.test.mjs"
-Cohesion: 0.14
-Nodes (19): assertRegularDatabase(), fault(), historyOperation(), prepareExperimentCleanup(), prepareHistoryReset(), PROGRAM, fault(), info() (+11 more)
+### Community 75 - "AI verifier 계약"
+Cohesion: 0.15
+Nodes (11): 1. 입력: AttackRecord (`attack-record/1`), 2. 모델 프로토콜 (최대 3라운드), 4. 출력: `verifier/1`, AI verifier 계약, packages/verifier, 모델 지정, 테스트, 현재 한계 (+3 more)
 
 ### Community 76 - "device-fixtures.mjs"
-Cohesion: 0.16
-Nodes (23): spawn(), activateFixtures(), assertStoppedVolumes(), backupFixtures(), command(), compose(), copyArgs(), defaultExecute() (+15 more)
+Cohesion: 0.18
+Nodes (24): activateFixtures(), assertStoppedVolumes(), backupFixtures(), command(), compose(), copyArgs(), defaultExecute(), execFileAsync (+16 more)
 
 ### Community 77 - "파서 → 취약점 DB 입력 계약"
 Cohesion: 0.29
@@ -535,15 +556,15 @@ Nodes (4): 공개 권고와 대상 소프트웨어의 영향 범위 비교, 비�
 
 ### Community 79 - "idor-runtime.mjs"
 Cohesion: 0.13
-Nodes (17): Box, Line, ocr_cache_identity(), OcrImage, OcrModel, Recognition, Word, cache_identity() (+9 more)
+Nodes (18): Box, extract_local_ocr(), _is_raster(), Line, OcrImage, OcrModel, Recognition, Word (+10 more)
 
 ### Community 81 - "scripts"
 Cohesion: 0.12
 Nodes (16): description, engines, node, name, private, scripts, check:boundaries, ci:plan (+8 more)
 
 ### Community 82 - "report — CA3P 보고서 Agent"
-Cohesion: 0.25
-Nodes (5): report — CA3P 보고서 Agent, 구현 현황, 수집 단계, 테스트, 통합 대시보드
+Cohesion: 0.13
+Nodes (12): Report Agent — 현재 구현과 플랫폼 연동, 검증 범위, 계층과 책임, 실행·보호 경계와 한계, 실행 흐름, 입력과 출력, 플랫폼 상태와 다운로드, report — CA3P 보고서 Agent (+4 more)
 
 ### Community 83 - "ca3p_report/cli.py"
 Cohesion: 0.20
@@ -554,8 +575,8 @@ Cohesion: 0.18
 Nodes (15): build(), capped(), CAPS, collectWebInfo(), compact(), DEFAULT_TIMEOUT_MS, EVIDENCE_SUMMARY_BYTES, evidenceFromTargetInfo() (+7 more)
 
 ### Community 85 - "chat-files.mjs"
-Cohesion: 0.18
-Nodes (14): allowedExtensions, allowedNames, blockedDirectories, CHAT_FILE_LIMITS, components(), confirm(), inspect(), defaultRoot (+6 more)
+Cohesion: 0.14
+Nodes (17): createWorkspaceChatRoutes(), allowedExtensions, allowedNames, blockedDirectories, CHAT_FILE_LIMITS, components(), createChatFiles(), confirm() (+9 more)
 
 ### Community 86 - "external-target.mjs"
 Cohesion: 0.22
@@ -565,9 +586,9 @@ Nodes (15): currentUser(), ensureDataFile(), handleApi(), handler(), initialPost
 Cohesion: 0.13
 Nodes (3): envelope, session, Source
 
-### Community 88 - "run_store.py"
-Cohesion: 0.29
-Nodes (7): _core_event(), _general_events(), _legacy_event(), _load(), read_run(), _stored(), _structured()
+### Community 88 - "ReportIntake"
+Cohesion: 0.19
+Nodes (5): _intake_item(), _open(), _setup_intake_metadata(), run_command(), ReportIntake
 
 ### Community 89 - "run-once.test.js"
 Cohesion: 0.13
@@ -582,8 +603,8 @@ Cohesion: 0.35
 Nodes (9): createDbManagement(), DbManagementError, PUBLIC_ERRORS, PYTHON_SOURCE, readLimited(), readMultipart(), reportName(), ROOT (+1 more)
 
 ### Community 92 - "device-deploy-verification.test.mjs"
-Cohesion: 0.20
-Nodes (5): GitHubRateLimitError, api(), candidate, headSha, json()
+Cohesion: 0.16
+Nodes (8): 실제 파서 결과 → GitHub/NVD → 같은 DB 저장·조회, GitHubRateLimitError, api(), candidate, headSha, job(), jobs(), json()
 
 ### Community 93 - "vul-web2/package.json"
 Cohesion: 0.11
@@ -594,8 +615,8 @@ Cohesion: 0.30
 Nodes (12): json(), main(), bodyText(), CaptureError, DEFAULT_TIMEOUT_MS, normalizeSwitch(), normalizeSwitches(), openSandbox() (+4 more)
 
 ### Community 95 - "report_llm_client.py"
-Cohesion: 0.23
-Nodes (4): endpoint_address(), generation_schema(), LocalLlmError, LocalReportLlm
+Cohesion: 0.21
+Nodes (5): endpoint_address(), generation_schema(), local_llm_status(), LocalLlmError, LocalReportLlm
 
 ### Community 96 - "install-device-deploy.mjs"
 Cohesion: 0.28
@@ -634,12 +655,12 @@ Cohesion: 0.17
 Nodes (11): environment, networks, CASPER_DB_REPORT_LLM_MODEL, CASPER_DB_REPORT_LLM_SUBNET, CASPER_DB_REPORT_LLM_URL, networks, report-private, external (+3 more)
 
 ### Community 106 - "repeater.test.mjs"
-Cohesion: 0.12
-Nodes (20): lookupAttackInfoSync(), PROGRAM, readAttackCatalogSync(), requestKnowledgeSync(), ROOT, createGuardedRequest(), createRuleset(), escapeRegex() (+12 more)
+Cohesion: 0.26
+Nodes (11): createGuardedRequest(), createRuleset(), escapeRegex(), exactLoopbackOrigin(), findingStatus(), loadPlan(), normalizeRequest(), RepeaterDeniedError (+3 more)
 
-### Community 107 - "general-assessment.test.js"
-Cohesion: 0.27
-Nodes (4): inspect_hwp(), main(), image_root(), png()
+### Community 107 - "hashlib"
+Cohesion: 0.26
+Nodes (5): inspect_hwp(), main(), _hwp_raster(), image_previews(), finding_sources()
 
 ### Community 108 - "serve-external.mjs"
 Cohesion: 0.21
@@ -661,21 +682,21 @@ Nodes (8): result(), API와 다중 포트, Issue #32: attack-tool 구조와 구�
 Cohesion: 0.20
 Nodes (9): description, engines, node, name, private, scripts, test, test:general (+1 more)
 
-### Community 113 - "test_history_review.py"
-Cohesion: 0.29
-Nodes (7): Report Agent — 현재 구현과 플랫폼 연동, 검증 범위, 계층과 책임, 실행·보호 경계와 한계, 실행 흐름, 입력과 출력, 플랫폼 상태와 다운로드
+### Community 113 - "environment"
+Cohesion: 0.08
+Nodes (24): command, environment, volumes, CA3P_DAEHAN_RESET_BACKUP_ROOT, CA3P_DAEHAN_RESET_BIND, CA3P_DAEHAN_RESET_PORT, CA3P_DAEHAN_RESET_TOKEN, CA3P_DAEHAN_TARGET_BIND (+16 more)
 
 ### Community 114 - "jobs"
 Cohesion: 0.17
 Nodes (12): runs-on, timeout-minutes, if, name, needs, runs-on, jobs, container-smoke (+4 more)
 
 ### Community 115 - "intruder.mjs"
-Cohesion: 0.19
-Nodes (12): ocr_fingerprint(), OcrBundle, validate_recognition(), apply_ocr_evidence(), evidence(), ocr_ref(), CaseDraft, DraftModel (+4 more)
-
-### Community 116 - "대한대학교·원창대학교 웹사이트 사전 침해분석 및 취약점 보고서"
 Cohesion: 0.17
-Nodes (12): 1. 요약과 판정 기준, 2. 서비스 구성과 정상 기능, 3.1 대한대학교: 선정한 CVE 세 건, 3.2 원창대학교: 선정한 CVE 세 건, 3. 외부 의존성 및 CVE 평가, 4. OWASP Top 10:2025별 사전 분석, 5. 중점 시나리오: 게시글 삭제와 사이트 가용성, 6. ARTEX 사건을 참고한 부속 업무 위험 (+4 more)
+Nodes (14): ocr_fingerprint(), OcrBundle, validate_recognition(), evidence(), apply_ocr_evidence(), evidence(), ocr_ref(), CaseDraft (+6 more)
+
+### Community 116 - "test_run_sources.py"
+Cohesion: 0.17
+Nodes (17): envelope(), stored_xss_events(), stored_xss_report(), as_set(), run_dir(), test_events_without_final_report(), test_pentest_db_ignores_foreign_files(), test_pentest_db_reads_events_and_final_report() (+9 more)
 
 ### Community 118 - "capture/package.json"
 Cohesion: 0.18
@@ -693,9 +714,9 @@ Nodes (10): description, engines, node, name, private, scripts, start, test (+2 
 Cohesion: 0.22
 Nodes (9): DB 운영 상태와 설정, 대시보드에서 취약점 DB 사용하기, 로컬 Docker로 확인하기, 로컬 LLM으로 문맥 추출과 원문 대조, 보고서 접수와 검토, 실행과 개인정보 경계, 외부 취약점 정보, 이미지의 글자 읽기 (+1 more)
 
-### Community 123 - "guardrail-integration.test.mjs"
-Cohesion: 0.31
-Nodes (4): createStoredXssCanary(), storedXssCanaryContent(), authorizeAction(), GuardrailDeniedError
+### Community 123 - "createWorkspaceChatService"
+Cohesion: 0.25
+Nodes (22): fixture(), createWorkspaceChatService(), availableModel(), compactInternal(), contextFor(), getSession(), listModels(), managed() (+14 more)
 
 ### Community 124 - "재점검 기록의 저장과 검토"
 Cohesion: 0.15
@@ -713,9 +734,9 @@ Nodes (11): steps, steps, steps, steps, continue-on-error, id, if, name (+3 more
 Cohesion: 0.18
 Nodes (11): with, cache, cache-dependency-path, fetch-depth, if-no-files-found, name, node-version-file, path (+3 more)
 
-### Community 128 - "demo.py"
-Cohesion: 0.33
-Nodes (4): escaped(), pretty(), render(), _md()
+### Community 128 - "hwp.py"
+Cohesion: 0.14
+Nodes (8): escaped(), pretty(), render(), _paragraph_text(), walk(), parse_hwp_report(), _read_document(), _reader_xml()
 
 ### Community 130 - "ci.yml"
 Cohesion: 0.22
@@ -726,16 +747,16 @@ Cohesion: 0.20
 Nodes (9): description, engines, node, main, name, private, scripts, test (+1 more)
 
 ### Community 132 - "sLLM Guardrail"
-Cohesion: 0.20
-Nodes (9): package.json script 설명, sLLM Guardrail, 네 가지 기능 파일, 사용 예시, 실행 흐름, 입력 형식, 코드 읽기 가이드, 테스트 (+1 more)
+Cohesion: 0.18
+Nodes (10): package.json script 설명, sLLM Guardrail, sLLM의 고정 출력 JSON, 네 가지 기능 파일, 사용 예시, 실행 흐름, 입력 형식, 코드 읽기 가이드 (+2 more)
 
-### Community 133 - "외부 모듈 JSON 계약"
-Cohesion: 0.22
-Nodes (5): 공통 envelope, 오류, 외부 모듈 JSON 계약, 전송 포트, 통합 DB의 공격 정보와 실행 기록
+### Community 133 - "chat-store/index.mjs"
+Cohesion: 0.16
+Nodes (20): assertSchema(), CHAT_STORE_SCHEMA_VERSION, CHAT_STORE_TABLES, columns, createChatRepository(), sessionRow(), transaction(), DEFAULT_CHAT_STORE_PATH (+12 more)
 
 ### Community 134 - "general-runtime.test.mjs"
-Cohesion: 0.22
-Nodes (9): attackRecord, fakeTargetInfo(), heavyTargetInfo(), largeTargetInfo(), runtimeWith(), runWebInfoBudget(), scriptedVerdicts(), terminal() (+1 more)
+Cohesion: 0.16
+Nodes (14): recordForProbe(), attackRecord, fakeTargetInfo(), heavyTargetInfo(), largeTargetInfo(), runtimeWith(), runWebInfoBudget(), scriptedVerdicts() (+6 more)
 
 ### Community 135 - "CA3P Agent Loop — 로컬 통합 대시보드"
 Cohesion: 0.22
@@ -750,28 +771,24 @@ Cohesion: 0.22
 Nodes (8): description, engines, node, name, private, scripts, test, version
 
 ### Community 138 - "observeStoredXssExecution"
-Cohesion: 0.47
-Nodes (8): abortError(), loadChromium(), localOrigin(), observeStoredXssExecution(), parserFailure(), requireBrowserDependency, validateObservation(), waitForBinding()
+Cohesion: 0.35
+Nodes (10): createStoredXssCanary(), storedXssCanaryContent(), abortError(), loadChromium(), localOrigin(), observeStoredXssExecution(), parserFailure(), requireBrowserDependency (+2 more)
 
 ### Community 139 - "이 Mac에서 팀 대시보드 외부 접속"
 Cohesion: 0.22
 Nodes (9): 검증된 develop 자동 배포, 대학 사이트 실습 반영, 상태·실패·재시도, 설치, 이 Mac에서 팀 대시보드 외부 접속, 이 장치의 서버 운영, 임시 Cloudflare 경로, 자동 배포 중지·재개 (+1 more)
 
-### Community 140 - "대한대학교·원창대학교 웹사이트 사전 침해분석 및 취약점 보고서"
-Cohesion: 0.29
-Nodes (7): pentestDb, replies, requests, require, root, spec, storageRequest()
-
-### Community 142 - "ref_node_fs"
-Cohesion: 0.04
-Nodes (34): adapterSource, casperSource, CONCURRENT_COMMIT, pythonEnvironment, report, MULTI_CATALOG, builtin, { chromium } (+26 more)
+### Community 140 - "pytest"
+Cohesion: 0.19
+Nodes (14): test_disk_round_trip_preserves_unicode_payload_and_lists(), test_duplicate_requires_explicit_update_and_preserves_created_at(), test_failed_reads_do_not_create_database(), test_initialization_preserves_existing_data_and_rejects_foreign_database(), test_invalid_contract_is_rejected(), test_invalid_update_does_not_change_existing_record(), test_lookup_excludes_drafts_and_matches_target_path_and_method_exactly(), test_ready_prior_report_requires_its_core_fields() (+6 more)
 
 ### Community 143 - "리피터 (Repeater) — 에이전트 사용 설명서"
 Cohesion: 0.29
 Nodes (6): 결과, 동작, 리피터 (Repeater) — 에이전트 사용 설명서, 새 공격 유형 추가, 어떻게 호출하나, 언제 쓰나
 
 ### Community 144 - "모델 변경 시 실험 초기화"
-Cohesion: 0.25
-Nodes (8): 검증 계획, 구현 순서와 실패 처리, 대학 실습 관리 훅, 로컬 대한대 실습 실행, 모델 변경 시 실험 초기화, 사용 흐름, 연구 해석과 범위의 한계, 영향 범위 조사와 처리
+Cohesion: 0.20
+Nodes (10): Docker 로컬 대학 실험, 검증 계획, 구현 순서와 실패 처리, 대학 실습 관리 훅, 로컬 대한대 실습 실행, 모델 변경 시 실험 초기화, 사용 흐름, 연구 해석과 범위의 한계 (+2 more)
 
 ### Community 145 - "updates"
 Cohesion: 0.25
@@ -782,8 +799,8 @@ Cohesion: 0.25
 Nodes (8): if, needs, secrets, uses, with, deploy-staging, environment, image
 
 ### Community 148 - "맥 미니에서 설치하고 직접 검증하기"
-Cohesion: 0.14
-Nodes (14): Docker를 사용하는 경우, 맥 미니에서 설치하고 직접 검증하기, 설치 환경, 실제 보고서 접수·검토·등록, 실제 파서 결과 → GitHub/NVD → 같은 DB 저장·조회, 실행 환경 확인, 에이전트와 서비스 실행, 통합 DB를 사용하는 공격 툴 확인 (+6 more)
+Cohesion: 0.29
+Nodes (7): Docker를 사용하는 경우, 맥 미니에서 설치하고 직접 검증하기, 설치 환경, 실제 보고서 접수·검토·등록, 실행 환경 확인, 에이전트와 서비스 실행, 통합 DB를 사용하는 공격 툴 확인
 
 ### Community 149 - "make_review_server"
 Cohesion: 0.38
@@ -817,21 +834,21 @@ Nodes (6): engines, node, name, private, type, version
 Cohesion: 0.29
 Nodes (6): engines, node, name, private, type, version
 
-### Community 157 - "1. 목표와 범위"
-Cohesion: 0.29
-Nodes (7): 1.1 보고서가 답해야 할 것, 1.2 전체 흐름, 1.3 하는 일, 1.4.1 운영 전제 — 보고서는 사람이 최종 검토한다, 1.4 하지 않는 일, 1.5 프레이밍 지침 (프롬프트로 LLM에 유도, 코드 강제 아님), 1. 목표와 범위
+### Community 157 - "intruder.mjs"
+Cohesion: 0.23
+Nodes (14): buildPath(), countField(), createGuardedRequest(), createRuleset(), escapeRegex(), exactLoopbackOrigin(), IntruderDeniedError, loadIntruderPlan() (+6 more)
 
 ### Community 158 - "run-store/package.json"
 Cohesion: 0.29
 Nodes (6): engines, node, name, private, type, version
 
 ### Community 159 - "CA3P 취약한 바닐라 JS 게시판"
-Cohesion: 0.29
-Nodes (6): 1. 저장형 XSS, 2. 파라미터 변조로 관리자 글 삭제, CA3P 취약한 바닐라 JS 게시판, 계정과 게시판, 실행, 취약점 재현
+Cohesion: 0.25
+Nodes (7): 1. 저장형 XSS, 2. 파라미터 변조로 관리자 글 삭제, CA3P 취약한 바닐라 JS 게시판, Docker Compose로 실행, 계정과 게시판, 실행, 취약점 재현
 
 ### Community 160 - "보고서 생성 모듈(Report Agent) — 조사 결과 및 개발 PLAN"
-Cohesion: 0.25
-Nodes (8): 0.1 실행 보고서와 이벤트 — pentest-db 디스크 저장 규약, 0.3 보고서 양식, 0.5 실습 게시판 수명과 촬영 관련 사실 (develop, 10-19 확인), 0. 조사 요약 (근거), 5. 마일스톤, 6. 테스트 전략, 7. 미해결 질문과 요청 항목, 보고서 생성 모듈(Report Agent) — 조사 결과 및 개발 PLAN
+Cohesion: 0.11
+Nodes (19): 0.1 실행 보고서와 이벤트 — pentest-db 디스크 저장 규약, 0.3 보고서 양식, 0.5 실습 게시판 수명과 촬영 관련 사실 (develop, 10-19 확인), 0. 조사 요약 (근거), 1.1 보고서가 답해야 할 것, 1.2 전체 흐름, 1.3 하는 일, 1.4.1 운영 전제 — 보고서는 사람이 최종 검토한다 (+11 more)
 
 ### Community 161 - "evaluation/index.mjs"
 Cohesion: 0.27
@@ -849,49 +866,49 @@ Nodes (4): expect(), login(), request(), sites
 Cohesion: 0.60
 Nodes (4): clearResults(), performSearch(), renderResults(), resultUrl()
 
-### Community 165 - "build_report_draft"
-Cohesion: 0.18
-Nodes (10): build_report_draft(), _fields(), _label(), _labeled_sections(), 검토와 등록, 공개 취약점 정보, 문서 접수와 후보 추출, 보고서 기반 DB 처리와 모듈 연결 (+2 more)
+### Community 165 - "보고서 기반 DB 처리와 모듈 연결"
+Cohesion: 0.33
+Nodes (6): 검토와 등록, 공개 취약점 정보, 문서 접수와 후보 추출, 보고서 기반 DB 처리와 모듈 연결, 조회·재점검·보고서 연결, 팀 환경에서 확인할 사항
 
 ### Community 166 - "run-local-sllm.js"
 Cohesion: 0.60
 Nodes (4): buildSafeFixture(), DEFAULT_MODULE_DIRECTORY, loadVerdictModule(), main()
 
-### Community 168 - "보고서 생성 모듈(Report Agent) — 조사 결과 및 개발 PLAN"
-Cohesion: 0.40
-Nodes (5): references(), 4.1 트리거: `ReportTrigger` (main Agent → Report Agent), 4.2 결과: `ReportResult` (Report Agent → main Agent), 4.3 내부 계약, 4. 인터페이스와 계약
+### Community 168 - "module-management.mjs"
+Cohesion: 0.20
+Nodes (10): createModuleManagement(), definition(), fault(), MODULES, fields, GENERAL_LOOP_BUDGET_CAPS, GENERAL_LOOP_BUDGET_DEFAULTS, invalid() (+2 more)
 
 ### Community 177 - "web-parser — 모듈 계약 (초안)"
-Cohesion: 0.12
-Nodes (18): 1차 DB 검증 기록, 2026-10-01 추가 검증, 2026-10-06 v5 변경 검증, 2026-10-06 공유 전 재검증, sLLM의 고정 출력 JSON, targetInfo(), body(), 10. xss-parser 폐기(완료) (+10 more)
+Cohesion: 0.15
+Nodes (18): targetInfo(), 3. 브라우저 관찰 (`browserObservation`), body(), abortError(), checkOptions(), collectEach(), 10. xss-parser 폐기(완료), 1. 역할 (+10 more)
 
 ### Community 183 - "attack-tool/package.json"
-Cohesion: 0.25
-Nodes (7): Agent Loop 연결, CA3P Guardrail Evaluator, 구성, 사용, 실행, trustedContext(), stageIteration()
+Cohesion: 0.40
+Nodes (4): Agent Loop 연결, CA3P Guardrail Evaluator, 구성, 실행
 
 ### Community 184 - "adapters/local-lab-gateway.mjs"
-Cohesion: 0.08
-Nodes (32): browserInstalled(), browserRequire, alive(), exists(), failure(), inspect(), plainPath(), prepareLabSessionCleanup() (+24 more)
+Cohesion: 0.19
+Nodes (10): browserInstalled(), browserRequire, awaitBoardOrigin(), BOARD_SERVER, closedProcess(), isDirectTempChild(), removePrivateBoardData(), startLocalLab() (+2 more)
 
 ### Community 185 - "curl"
-Cohesion: 0.17
-Nodes (12): 실행, curl(), Attack Module, 1. 변경 전 로컬 검증, 2. PR 및 배포 확인, 3. 대시보드 기능 테스트, 4. 이 장치에서 외부 접속 테스트, CI/CD 및 대시보드 테스트 가이드 (+4 more)
+Cohesion: 0.12
+Nodes (17): 실행, curl(), Attack Module, 공통 envelope, 오류, 외부 모듈 JSON 계약, 전송 포트, 통합 DB의 공격 정보와 실행 기록 (+9 more)
 
 ### Community 186 - "run-service.mjs"
-Cohesion: 0.06
-Nodes (47): definition(), fault(), MODULES, safeLog(), IDOR_FIXTURES, READABLE_RUN_MODES, RETIRED_PROFILES, UNIVERSITY_ORIGIN_ENV (+39 more)
+Cohesion: 0.07
+Nodes (49): safeLog(), CASE_FIXTURES, prepareCaseSnapshot(), SNAPSHOT_CODE, assertRegularDatabase(), fault(), historyOperation(), prepareExperimentCleanup() (+41 more)
 
 ### Community 187 - "CA3P 펜테스팅 에이전트 코어"
-Cohesion: 0.33
+Cohesion: 0.20
 Nodes (6): CA3P 펜테스팅 에이전트 코어, DeepSeek 클라이언트, finding 식별과 중복 처리, Production 파일, 범용 점검 코어와 운영 연결, 실행과 검증
 
 ### Community 188 - "ref_node_module"
-Cohesion: 0.12
-Nodes (13): { chromium }, report, run, { chromium }, context, first(), idle, setup() (+5 more)
+Cohesion: 0.06
+Nodes (25): { chromium }, report, run, builtin, { chromium }, { chromium }, context, first() (+17 more)
 
-### Community 189 - "db.mjs"
-Cohesion: 0.53
-Nodes (5): daehanDatabasePath(), daysBefore(), openDatabase(), root, sha1()
+### Community 189 - "contract.mjs"
+Cohesion: 0.27
+Nodes (13): fail(), httpOrigin(), ID, invalidRecord(), isObject(), LIMITS, parseUrl(), redactExchange() (+5 more)
 
 ### Community 190 - "run-notion-vulnerability-matrix.js"
 Cohesion: 0.28
@@ -901,9 +918,9 @@ Nodes (6): cases, DEFAULT_MODULE_DIRECTORY, main(), runCase(), timeoutMs, worker
 Cohesion: 0.40
 Nodes (5): AI 연결, attack-tool, Workspace 템플릿 관리, 대시보드 연결, 독립 실행
 
-### Community 192 - "report-handoff.mjs"
-Cohesion: 0.80
-Nodes (4): checkImage(), integrityError(), readReportHandoff(), writeReportHandoff()
+### Community 192 - "e2e.test.mjs"
+Cohesion: 0.28
+Nodes (13): bodyText(), executeCurlRecorded(), 6. 연결 구조, verifyAttack(), 흐름, createPost(), getText(), login() (+5 more)
 
 ### Community 193 - "scripts"
 Cohesion: 0.25
@@ -921,25 +938,97 @@ Nodes (4): Attack tool, PR 규칙, 브랜치, 수정
 Cohesion: 0.33
 Nodes (6): 결과, 동작, 새 공격 유형 추가, 어떻게 호출하나, 언제 쓰나, 인트루더 (Intruder) — 에이전트 사용 설명서
 
+### Community 197 - "narrative.py"
+Cohesion: 0.24
+Nodes (8): is_unknown(), apply_narrative_analysis(), issue(), classify_paragraph(), _parameter_names(), Segment, _spans(), ReviewIssue
+
+### Community 198 - "board"
+Cohesion: 0.14
+Nodes (13): build, cap_drop, image, init, ports, read_only, security_opt, tmpfs (+5 more)
+
+### Community 199 - "lab-session-registry.mjs"
+Cohesion: 0.45
+Nodes (11): alive(), exists(), failure(), inspect(), plainPath(), prepareLabSessionCleanup(), privateJson(), registerLabSession() (+3 more)
+
+### Community 200 - "run-repeater.mjs"
+Cohesion: 0.17
+Nodes (5): child, dataDir, dataFile, serverPath, appDir
+
+### Community 201 - "write_html"
+Cohesion: 0.27
+Nodes (5): _caption(), _load_png(), _md(), write_html(), write_markdown()
+
+### Community 204 - "test_matching.py"
+Cohesion: 0.39
+Nodes (7): observed(), test_changed_method_or_parameter_requires_manual_review(), test_draft_is_not_used_for_normal_candidate_matching(), test_exact_location_is_a_retest_candidate_but_never_a_finding(), test_input_location_mismatch_or_missing_location_requires_review(), test_parser_contract_rejects_ambiguous_or_extra_input(), test_weak_location_similarity_is_not_promoted()
+
+### Community 205 - "re"
+Cohesion: 0.44
+Nodes (5): _form_encode(), is_secret_key(), redact(), redact_string(), _replace_url()
+
+### Community 206 - "casper-db/client.mjs"
+Cohesion: 0.39
+Nodes (6): lookupAttackInfoSync(), PROGRAM, readAttackCatalogSync(), requestKnowledgeSync(), ROOT, loadAttackInfo()
+
+### Community 207 - "test_cli.py"
+Cohesion: 0.46
+Nodes (7): run_cli(), test_cli_adds_and_lists_check(), test_cli_matches_parser_observations_and_explains_decisions(), test_cli_preserves_report_history_and_detects_stale_revision(), test_cli_review_and_evidence_verification(), test_cli_round_trip_and_error_exit_codes(), test_schema_export_and_invalid_json_do_not_create_database()
+
+### Community 208 - "attack-tool.js"
+Cohesion: 0.39
+Nodes (6): createAttackToolGuardrail(), denied(), exactOrigin(), exactPath(), keys(), record()
+
+### Community 210 - "browser.mjs"
+Cohesion: 0.46
+Nodes (7): abortError(), clipBytes(), openVerifierBrowser(), originOf(), pushCapped(), sessionError(), sleep()
+
+### Community 211 - "agent-dashboard/server.mjs"
+Cohesion: 0.29
+Nodes (6): auth, ciResults, port, publicOrigins, runtime, server
+
+### Community 213 - "browser.test.mjs"
+Cohesion: 0.29
+Nodes (3): CHROMIUM_AVAILABLE, PAGES, seen
+
+### Community 214 - "sandbox.test.mjs"
+Cohesion: 0.47
+Nodes (4): sandboxOrSkip(), SWITCH, target(), withTarget()
+
+### Community 215 - "1차 DB 검증 기록"
+Cohesion: 0.40
+Nodes (4): 1차 DB 검증 기록, 2026-10-01 추가 검증, 2026-10-06 v5 변경 검증, 2026-10-06 공유 전 재검증
+
+### Community 216 - "environment"
+Cohesion: 0.40
+Nodes (4): environment, CA3P_EXPERIMENT_RESET_TARGETS, services, dashboard
+
+### Community 217 - "normalizer.js"
+Cohesion: 0.60
+Nodes (4): classify(), decodeHtmlEntities(), NAMED_ENTITIES, normalizeString()
+
+### Community 219 - "보고서 접수·검토·등록"
+Cohesion: 0.50
+Nodes (4): 다른 모듈에 검토 상태 전달, 보고서 접수·검토·등록, 파일만 사용하는 검토, pending()
+
 ## Knowledge Gaps
 - **3 isolated node(s):** `casper-case-db`, `ca3p-report`, `edu.wonchang:wonchang-university`
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1432 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **27 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1466 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **31 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `createRunRepository()` connect `run-service.mjs` to `CaseStore`, `ref_node_crypto`, `ref_node_child_process`, `ref_node_fs`, `createRunService`?**
-  _High betweenness centrality (0.247) - this node is a cross-community bridge._
+- **Why does `2.2 수집기 (환경 의존 부분을 전부 여기에 모은다)` connect `CaseStore` to `guardrail/src/index.js`, `ref_node_path`, `2. 입력과 출력`?**
+  _High betweenness centrality (0.242) - this node is a cross-community bridge._
 - **What connects `casper-case-db`, `ca3p-report`, `edu.wonchang:wonchang-university` to the rest of the system?**
   _3 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `CaseStore` be split into smaller, more focused modules?**
-  _Cohesion score 0.07028112449799197 - nodes in this community are weakly interconnected._
-- **Why does `2.2 수집기 (환경 의존 부분을 전부 여기에 모은다)` connect `CaseStore` to `run-service.mjs`, `guardrail/src/index.js`, `2. 입력과 출력`?**
-  _High betweenness centrality (0.247) - this node is a cross-community bridge._
+  _Cohesion score 0.07023411371237458 - nodes in this community are weakly interconnected._
+- **Why does `createRunRepository()` connect `ref_node_path` to `CaseStore`, `createRunService`, `module-management.mjs`, `runner.test.mjs`, `run-service.mjs`?**
+  _High betweenness centrality (0.235) - this node is a cross-community bridge._
 - **Should `ref_node_crypto` be split into smaller, more focused modules?**
-  _Cohesion score 0.05909351692484223 - nodes in this community are weakly interconnected._
-- **Why does `CaseStore` connect `CaseStore` to `ReportIntake`, `casper_db/cli.py`, `advisory_sync.py`, `collect`, `DeviceDatabaseTests`, `pathlib`, `casper-db/tests/conftest.py`, `pytest`, `web-parser.mjs`, `digest`?**
-  _High betweenness centrality (0.169) - this node is a cross-community bridge._
+  _Cohesion score 0.06228281208233093 - nodes in this community are weakly interconnected._
+- **Why does `CaseStore` connect `CaseStore` to `ReportIntake`, `casper_db/cli.py`, `advisory_sync.py`, `collect`, `DeviceDatabaseTests`, `pathlib`, `pytest`, `casper-db/tests/conftest.py`, `web-parser.mjs`, `ReportIntake`, `digest`?**
+  _High betweenness centrality (0.171) - this node is a cross-community bridge._
 - **Should `casper_db/cli.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.050957481337228175 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.04792792792792793 - nodes in this community are weakly interconnected._

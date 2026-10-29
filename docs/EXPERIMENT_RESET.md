@@ -66,7 +66,13 @@
 { "status": "clean", "fixtureId": "vul-web2-daehan", "targetOrigin": "http://127.0.0.1:4101", "scopes": ["database", "sessions", "process", "files"] }
 ```
 
-대학을 접촉한 이력이 있는데 훅이 없으면 초기화를 완료할 수 없다. dashboard 컨테이너에 Docker socket을 노출하거나 임의 서버에 삭제 요청을 보내는 우회는 하지 않는다. 대학 전체 복원 서비스 배포는 운영 환경에 맞춰 별도로 준비해야 한다.
+대학을 접촉한 이력이 있는데 훅이 없으면 초기화를 완료할 수 없다. dashboard 컨테이너에 Docker socket을 노출하거나 임의 서버에 삭제 요청을 보내는 우회는 하지 않는다. 일반 `vul-web2/compose.yaml`만으로 실행한 대학 사이트에는 관리 훅이 없으며, 운영 배포의 전체 복원 서비스는 해당 환경에 맞춰 별도로 준비해야 한다.
+
+### Docker 로컬 대학 실험
+
+Windows에서는 프로젝트 루트에서 `./scripts/start-local-internal-experiment.ps1`을 실행한다. 스크립트는 `vul-web2/compose.reset.yaml`을 기존 대학 Compose에 겹쳐 대한대·원창대 서버를 자식 프로세스로 소유하는 관리자를 시작한다. 관리 주소 `http://daehan:54101`, `http://wonchang:54102`는 각각의 전용 Docker 네트워크에서만 접근하고 호스트에 포트를 공개하지 않는다. 별도 4175 대시보드는 `docker-compose.vul-web2-reset.yml`로 두 관리 훅과 대상 원점 `http://daehan:4101`, `http://wonchang:4102`를 등록한다. 토큰은 Git에서 제외한 `.runtime/experiment-reset.env`에 무작위로 생성하고 재사용한다. Docker socket은 공유하지 않는다.
+
+관리 훅은 사이트 프로세스를 중지하고 알려진 SQLite 파일을 전용 백업 볼륨에 복사한 뒤 삭제한다. 새 프로세스가 기준 DB를 생성하면 상태·세션·DB 기준값을 확인하고 네 scope(`database`, `sessions`, `process`, `files`)를 반환한다. 대시보드는 두 관리 응답을 검증한 후 나머지 실험 기록을 정리한다. 백업 볼륨의 이전 DB는 자동 실험 입력으로 사용하지 않으며, 보존·폐기는 운영자가 별도로 관리한다. 중간 실패는 초기화 성공으로 표시하지 않으며 신규 실행을 차단한다. 이전에 다른 원점(예: 호스트의 `127.0.0.1`)으로 기록된 대학 실행은 Docker 서비스 원점과 일치하지 않아 자동 초기화 대상이 되지 않는다.
 
 ### 로컬 대한대 실습 실행
 

@@ -33,6 +33,8 @@ npm run probe:idor
 
 대시보드도 Docker라면 루트의 `docker-compose.vul-web2.yml` overlay로 대학 네트워크에 연결하고 `daehan:4101` / `wonchang:4102`를 사용합니다. 사용자 PC의 IP가 아닌 worker에서 접근 가능한 원점을 입력하세요. 내부 IPv4·루프백과 등록된 Docker 별칭의 HTTP 주소만 허용하며 URL 경로·인증정보·쿼리는 입력하지 않습니다.
 
+대학 검사 후 대시보드의 **전체 실험 초기화**까지 사용하려면 프로젝트 루트에서 `./scripts/start-local-internal-experiment.ps1`을 실행하세요. 이 경로는 `compose.reset.yaml`로 두 사이트의 비공개 관리 프로세스를 시작하고 별도 4175 실험 대시보드에 관리 훅을 등록합니다. 일반 `docker compose up`에는 관리 훅이 없으므로 대학 실행 이력이 있으면 전체 초기화가 차단됩니다. 초기화는 해당 대시보드의 실행 기록과 대학 실습 데이터를 제거하므로 필요한 결과를 먼저 내보내세요.
+
 대시보드는 CLI와 동일한 알려진 레코드 IDOR 검증을 수행합니다. 진행 이벤트와 HTTP 상태·소유자 ID, `confirmed` / `not_confirmed` / `inconclusive` 판정이 실행 이력과 JSON 보고서에 보존됩니다. 통신·로그인 실패는 실패 상태로 기록되며 `not_confirmed`와 구분합니다. 규칙 실행만 지원하고 모델 호출·HWPX 생성·XSS 과거 사례 DB 기록은 수행하지 않습니다. 범용 CERT 조사나 전체 취약점 스캔은 별도 구현이 필요합니다.
 
 `compose.yaml`은 **서로 다른 이미지·컨테이너**에 각 사이트를 실행합니다. 대한대학교와 원창대학교는 각각 전용 브리지 네트워크와 `daehan-data`, `wonchang-data` 볼륨을 사용합니다. 호스트 공개 포트는 `127.0.0.1`에만 묶여 있습니다. 컨테이너 안에서는 서비스가 `0.0.0.0`에 바인딩되어 Compose 포트 전달을 받습니다. 대한대학교 이미지는 Node.js 패키지를 `package-lock.json`으로 설치하고, 원창대학교 이미지는 Maven으로 Spring Boot JAR을 빌드합니다.
