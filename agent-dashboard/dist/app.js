@@ -768,7 +768,8 @@ function renderPreview() {
     $('target-preview-pages').innerHTML = '<p>표시할 파싱 결과가 없습니다.</p>';
   } else {
     const tech = (page.technologies || []).map(item => `${item.name || ''}${item.version ? ' ' + item.version : ''}`);
-    const libs = (page.libraries || []).map(item => `${item.name || ''}${item.version ? ' ' + item.version : ''}`);
+    const libs = (page.libraries || []).map(item => `${item.name || ''}${item.version ? ' ' + item.version : ''}`
+      + (item.source === 'indicator' ? ' (파일명·주석 단서)' : ''));
     const forms = (page.forms || []).map(form => `${form.method || 'GET'} ${form.action || ''} (${(form.fields || []).map(field => field.name || field.type).join(', ')})`);
     const paths = (page.paths || []).map(path => path.url || path).filter(Boolean);
     const pageErrors = (page.errors || []).map(error => error.code || String(error));

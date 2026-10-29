@@ -86,7 +86,8 @@ test('general run renders and supported targets launch the bounded model assessm
       try { return await json({ previewId: 'preview-ui', targetKind: 'lab', fixtureId: 'vul-web2-daehan',
         origin: 'http://127.0.0.1:4101', entryUrl: 'http://127.0.0.1:4101/', expiresAt: '2099-01-01T00:00:00Z',
         pages: [{ url: 'http://127.0.0.1:4101/', status: 200, contentType: 'text/html', title: '대한대학교',
-          technologies: [{ name: 'Bootstrap', version: '5' }], libraries: [{ name: 'jQuery', version: '3' }],
+          technologies: [{ name: 'Bootstrap', version: '5' }], libraries: [{ name: 'jQuery', version: '3' },
+            { name: 'Axios', version: '1.6.8', source: 'indicator' }],
           forms: [], paths: [{ url: 'http://127.0.0.1:4101/about', sources: ['link'] }], errors: [], truncated: false, mode: 'browser' },
           { url: 'http://127.0.0.1:4101/about', status: 200, contentType: 'text/html', title: '소개',
             technologies: [{ name: 'Vue' }], libraries: [], forms: [], paths: [], errors: [], truncated: false, mode: 'browser' },
@@ -167,6 +168,7 @@ test('general run renders and supported targets launch the bounded model assessm
   await page.locator('#parse-start-button').click();
   await page.locator('#target-preview-pages .parser-preview-card').first().waitFor();
   assert.match(await page.locator('#target-preview-pages .parser-preview-card').first().textContent(), /대한대학교.*Bootstrap 5.*jQuery 3/s);
+  assert.match(await page.locator('#target-preview-pages .parser-preview-card').first().textContent(), /Axios 1\.6\.8 \(파일명·주석 단서\)/u);
   assert.equal(await page.locator('#target-preview-paths button').count(), 3);
   assert.match(await page.locator('#target-preview-coverage').textContent(), /등록 대학 · 브라우저 관찰.*방문 3개.*최대 48개 URL.*부분 수집.*미수집 후보 2개/);
   assert.equal(await page.locator('#engine-step').isVisible(), true);

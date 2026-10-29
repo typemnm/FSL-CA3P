@@ -18,7 +18,8 @@ const MAX_COMPONENTS = 40;
 const MAX_FORMS = 20;
 const MAX_FIELDS = 20;
 const MAX_ERRORS = 8;
-const EVIDENCE_FIELDS = new Set(['headers', 'meta', 'html', 'scriptSrc', 'scripts', 'xhr', 'url', 'js', 'dom', 'cookies', 'implies']);
+const EVIDENCE_FIELDS = new Set(['headers', 'meta', 'html', 'scriptSrc', 'stylesheetHref', 'resourceComment',
+  'scripts', 'xhr', 'url', 'js', 'dom', 'cookies', 'implies']);
 const PATH_SOURCES = new Set(['redirect', 'form', 'formaction', 'link', 'area', 'script', 'iframe',
   'frame', 'embed', 'object', 'meta-refresh', 'srcset', 'sitemap', 'sitemap-index']);
 const AUTO_PAGE_SOURCES = new Set(['link', 'area', 'html:link', 'sitemap']);
@@ -78,6 +79,7 @@ function component(value, library = false) {
     item.categories = list(value.categories).slice(0, 8).map(category => bounded(category, 80)).filter(Boolean);
     item.confidence = Number.isFinite(value.confidence) ? Math.max(0, Math.min(100, Math.round(value.confidence))) : null;
   }
+  if (library && value.source === 'indicator') item.source = 'indicator';
   item.evidenceFields = [...new Set([...list(value.evidenceFields),
     ...list(value.evidence).map(evidence => evidence?.field)]
     .filter(field => EVIDENCE_FIELDS.has(field)))].slice(0, 8);

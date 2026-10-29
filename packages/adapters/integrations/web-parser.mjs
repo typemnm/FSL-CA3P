@@ -19,7 +19,7 @@ export const DEFAULT_TIMEOUT_MS = 15000;
 // Section count caps for the model summary; a truncated section carries { shown, total }.
 export const MAX_SUMMARY_BYTES = 40 * 1024;
 const CAPS = Object.freeze({ redirectChain: 20, headers: 50, cookies: 30, meta: 30,
-  technologies: 40, forms: 20, formFields: 20, links: 50, resources: 60, paths: 80 });
+  technologies: 40, libraries: 40, forms: 20, formFields: 20, links: 50, resources: 60, paths: 80 });
 
 /** A plain array when nothing was dropped, else { shown, total, items } so truncation is visible. */
 function section(list, cap, map = value => value) {
@@ -52,6 +52,10 @@ function build(info, caps) {
     meta: section(info.meta, caps.meta),
     technologies: section(info.technologies, caps.technologies, tech => ({ name: tech.name,
       version: tech.version ?? null, categories: tech.categories, confidence: tech.confidence })),
+    libraries: section(info.libraries, caps.libraries, library => ({ name: library.name,
+      version: library.version ?? null, source: library.source ?? 'fingerprint',
+      evidenceFields: [...new Set((Array.isArray(library.evidence) ? library.evidence : [])
+        .map(item => item?.field).filter(field => EVIDENCE_FIELDS.has(field)))] })),
     forms: section(structure.forms, caps.forms, form => ({ action: form.action, method: form.method,
       fields: section(form.fields, caps.formFields, field => ({ name: field.name, type: field.type })) })),
     links: section(structure.links, caps.links, link => link.href),
@@ -151,7 +155,7 @@ export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRol
   const finalUrl = info.target?.finalUrl;
   const title = extractTitle(info.html);
   const counts = { headers: list(info.headers).length, cookies: list(info.cookies).length,
-    technologies: list(info.technologies).length, forms: list(structure.forms).length,
+    technologies: list(info.technologies).length, libraries: list(info.libraries).length, forms: list(structure.forms).length,
     links: list(structure.links).length, frames: frames.length, resources: list(info.resources).length,
     paths: list(info.paths).length, errors: list(info.errors).length };
   const status = `HTTP ${navigation.status ?? 'no response'} `
@@ -170,6 +174,8 @@ export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRol
       .map(hop => encode(compact({ kind: hop.kind, status: hop.status }))) },
     { label: 'technologies', items: list(info.technologies).map(tech => encode(compact({
       name: tech.name, version: tech.version, categories: tech.categories }))) },
+    { label: 'libraries', items: list(info.libraries).map(library => encode(compact({
+      name: library.name, version: library.version, source: library.source }))) },
     { label: 'error stages', items: [...new Set(list(info.errors).map(error => error.stage))]
       .map(stage => encode(stage)) },
   ]);
@@ -217,7 +223,8 @@ const HTTP_SIGNAL_COUNT = 64;
 const HTTP_COMPONENT_COUNT = 40;
 const HTTP_FINGERPRINT_TIMEOUT_MS = 3000;
 const PRIVATE_HEADER = /^(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)$/iu;
-const EVIDENCE_FIELDS = new Set(['headers', 'meta', 'html', 'scriptSrc', 'scripts', 'xhr', 'url', 'js', 'dom', 'cookies', 'implies']);
+const EVIDENCE_FIELDS = new Set(['headers', 'meta', 'html', 'scriptSrc', 'stylesheetHref', 'resourceComment',
+  'scripts', 'xhr', 'url', 'js', 'dom', 'cookies', 'implies']);
 
 function attributes(tag) {
   const found = Object.create(null);
@@ -230,9 +237,13 @@ function attributes(tag) {
 function htmlFingerprintInputs(body, url) {
   const meta = [];
   const scriptSrc = [];
+  const stylesheetHref = [];
   // A script tag inside an HTML comment is text, not a loaded resource.
-  const activeMarkup = body.replace(/<!--[\s\S]*?(?:-->|$)/gu, '');
-  for (const match of activeMarkup.matchAll(/<(meta|script)\b([^>]{0,2048})>/giu)) {
+  const activeMarkup = body.replace(/<!--[\s\S]*?(?:-->|$)/gu, '')
+    .replace(/<template\b[^>]*>[\s\S]*?(?:<\/template\s*>|$)/giu, '')
+    .replace(/(<script\b[^>]*>)[\s\S]*?(<\/script\s*>|$)/giu, '$1$2')
+    .replace(/<style\b[^>]*>[\s\S]*?(?:<\/style\s*>|$)/giu, '');
+  for (const match of activeMarkup.matchAll(/<(meta|script|link)\b([^>]{0,2048})>/giu)) {
     const attrs = attributes(match[2]);
     if (match[1].toLowerCase() === 'meta' && meta.length < HTTP_SIGNAL_COUNT) {
       const name = attrs.name ?? attrs.property;
@@ -244,8 +255,19 @@ function htmlFingerprintInputs(body, url) {
         if (['http:', 'https:'].includes(src.protocol) && !src.username && !src.password) scriptSrc.push(src.href);
       } catch { /* An invalid script URL cannot identify a library. */ }
     }
+    if (match[1].toLowerCase() === 'link' && attrs.href) {
+      const rel = (attrs.rel ?? '').toLowerCase().split(/\s+/u);
+      const kind = rel.includes('stylesheet') ? 'stylesheet' : rel.includes('modulepreload') ? 'script' : null;
+      if (!kind) continue;
+      try {
+        const href = new URL(attrs.href, url);
+        if (!['http:', 'https:'].includes(href.protocol) || href.username || href.password) continue;
+        if (kind === 'stylesheet' && stylesheetHref.length < HTTP_SIGNAL_COUNT) stylesheetHref.push(href.href);
+        if (kind === 'script' && scriptSrc.length < HTTP_SIGNAL_COUNT) scriptSrc.push(href.href);
+      } catch { /* An invalid resource URL cannot identify a library. */ }
+    }
   }
-  return { meta, scriptSrc };
+  return { meta, scriptSrc, stylesheetHref };
 }
 
 function observedComponent(item, library = false) {
@@ -256,7 +278,8 @@ function observedComponent(item, library = false) {
     ? item.version : null;
   const evidenceFields = [...new Set(list(item.evidence).map(row => row?.field)
     .filter(field => EVIDENCE_FIELDS.has(field)))].slice(0, 8);
-  if (library) return { name, version, evidenceFields };
+  if (library) return { name, version, evidenceFields,
+    ...(item.source === 'indicator' ? { source: 'indicator' } : {}) };
   const categories = list(item.categories).filter(value => typeof value === 'string')
     .slice(0, 8).map(value => value.replace(/[\u0000-\u001f\u007f]/gu, ' ').slice(0, 80));
   const confidence = Number.isFinite(item.confidence)
@@ -283,17 +306,19 @@ export async function fingerprintObservedResponse(url, response, { timeoutMs = H
   });
   const contentType = response.contentType ?? headers.find(header => header.name.toLowerCase() === 'content-type')?.value;
   const html = !contentType || /(?:text\/html|application\/xhtml\+xml)/iu.test(contentType) ? response.body : '';
-  const { meta, scriptSrc } = htmlFingerprintInputs(html, target);
+  const { meta, scriptSrc, stylesheetHref } = htmlFingerprintInputs(html, target);
   const matchUrl = new URL(target);
   matchUrl.search = ''; // Query values can contain credentials; pathname and host are sufficient for passive URL matching.
   matchUrl.hash = '';
   const found = await fingerprintWithin({ url: matchUrl.href, headers, cookies: [], meta, html,
-    scriptSrc, scripts: [], xhr: [], js: {}, dom: {} }, Math.min(timeoutMs, HTTP_FINGERPRINT_TIMEOUT_MS));
+    scriptSrc, stylesheetHref, scripts: [], resourceBodies: [], xhr: [], js: {}, dom: {} },
+  Math.min(timeoutMs, HTTP_FINGERPRINT_TIMEOUT_MS));
   return {
     mode: 'http-response',
     technologies: list(found.technologies).slice(0, HTTP_COMPONENT_COUNT)
       .map(item => observedComponent(item)).filter(Boolean),
     libraries: list(found.libraries).slice(0, HTTP_COMPONENT_COUNT)
       .map(item => observedComponent(item, true)).filter(Boolean),
+    dependencies: found.dependencies ?? null,
   };
 }

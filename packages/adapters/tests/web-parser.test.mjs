@@ -48,6 +48,17 @@ test('summary carries observed fields as-is and stays within the byte budget', (
   assert.ok(Buffer.byteLength(JSON.stringify(summary), 'utf8') <= MAX_SUMMARY_BYTES);
 });
 
+test('model summary carries library versions and distinguishes indicator-only evidence', () => {
+  const info = targetInfo({ libraries: [{ name: 'Axios', version: '1.6.8', source: 'indicator',
+    evidence: [{ field: 'resourceComment', key: 'https://example.org/vendor.js?token=PRIVATE' }] }] });
+  const summary = summarizeTargetInfo(info);
+  assert.deepEqual(summary.libraries, [{ name: 'Axios', version: '1.6.8', source: 'indicator',
+    evidenceFields: ['resourceComment'] }]);
+  assert.doesNotMatch(JSON.stringify(summary.libraries), /PRIVATE/u);
+  const overview = evidenceFromTargetInfo(info, evidenceOptions)[0].summary;
+  assert.deepEqual(listIn(overview, 'libraries').items, [{ name: 'Axios', version: '1.6.8', source: 'indicator' }]);
+});
+
 test('a truncated section keeps { shown, total } so nothing is dropped silently', () => {
   const headers = Array.from({ length: 70 }, (_, i) => ({ name: 'X-H-' + i, value: 'v' + i }));
   const links = Array.from({ length: 120 }, (_, i) => ({ href: 'http://127.0.0.1/p' + i, text: 't' + i }));
@@ -215,17 +226,20 @@ test('an observed HTTP response identifies libraries without a second request or
       ],
       body: '<html><head><meta name="generator" content="WordPress 6.5">'
         + '<script src="/assets/jquery-3.6.0.min.js?token=SCRIPT-SECRET"></script>'
+        + '<link rel="modulepreload" href="/axios-1.6.8.min.js?token=MODULE-SECRET">'
         + '</head><body>BODY-SECRET</body></html>',
     });
     assert.equal(result.mode, 'http-response');
     const jquery = result.libraries.find(item => item.name === 'jQuery');
     assert.deepEqual(jquery, { name: 'jQuery', version: '3.6.0', evidenceFields: ['scriptSrc'] });
+    const axios = result.libraries.find(item => item.name === 'Axios');
+    assert.deepEqual(axios, { name: 'Axios', version: '1.6.8', evidenceFields: ['scriptSrc'], source: 'indicator' });
     assert.ok(result.technologies.some(item => item.name === 'Express'
       && item.evidenceFields.includes('headers')));
     assert.ok(result.technologies.some(item => item.name === 'WordPress'
       && item.evidenceFields.includes('meta')));
     const serialized = JSON.stringify(result);
-    assert.doesNotMatch(serialized, /URL-SECRET|COOKIE-SECRET|SCRIPT-SECRET|BODY-SECRET|Set-Cookie|X-Powered-By|match/u);
+    assert.doesNotMatch(serialized, /URL-SECRET|COOKIE-SECRET|SCRIPT-SECRET|MODULE-SECRET|BODY-SECRET|Set-Cookie|X-Powered-By|match/u);
   } finally {
     globalThis.fetch = previousFetch;
   }
@@ -248,4 +262,14 @@ test('a script URL inside an HTML comment is not reported as a loaded library', 
     body: '<!-- <script src="/jquery-3.6.0.min.js"></script> -->',
   });
   assert.equal(result.libraries.some(item => item.name === 'jQuery'), false);
+});
+
+test('resource-like text inside scripts, styles and templates is not a library reference', async () => {
+  const result = await fingerprintObservedResponse('https://example.org/', {
+    headers: [], contentType: 'text/html',
+    body: '<script>const markup = "<link rel=modulepreload href=/axios-1.6.8.min.js>";</script>'
+      + '<style>/* <script src="/moment-2.30.1.min.js"></script> */</style>'
+      + '<template><script src="/react-dom-18.2.0.min.js"></script></template>',
+  });
+  assert.equal(result.libraries.some(item => ['Axios', 'Moment.js', 'ReactDOM'].includes(item.name)), false);
 });

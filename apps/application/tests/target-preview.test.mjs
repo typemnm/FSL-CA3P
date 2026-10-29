@@ -48,6 +48,20 @@ test('registered university preview returns a per-URL browser summary without ra
   assert.equal(service.getPreview(first.previewId).pages[0].title, 'University');
 });
 
+test('preview shows indicator-only libraries without exposing resource URLs or bodies', async () => {
+  const service = createTargetPreviewService({ universityOrigins: { 'vul-web2-daehan': LAB },
+    labCollect: async url => {
+      const info = labInfo(url);
+      info.libraries = [{ name: 'Axios', version: '1.6.8', source: 'indicator',
+        evidence: [{ field: 'resourceComment', key: `${LAB}/vendor.js?token=PRIVATE` }] }];
+      return { info };
+    } });
+  const result = await service.preview({ url: `${LAB}/` });
+  assert.deepEqual(result.pages[0].libraries, [{ name: 'Axios', version: '1.6.8', source: 'indicator',
+    evidenceFields: ['resourceComment'] }]);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE|vendor\.js/u);
+});
+
 test('external preview fingerprints one pinned GET response without launching the browser', async () => {
   const requests = [];
   const service = createTargetPreviewService({ universityOrigins: { 'vul-web2-daehan': LAB },
