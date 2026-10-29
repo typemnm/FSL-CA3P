@@ -130,10 +130,19 @@ function serviceEnvironment(config, release, overrides = {}) {
     ...overrides };
 }
 
-async function database(config, python, args) {
-  const output = await execute(python, [join(here, 'device-db.py'), ...args], { timeoutMs: 60_000 });
-  const result = JSON.parse(output);
-  if (!result.ok) throw new Error('Device database operation failed.');
+export async function database(config, python, args, { targetSha, phase = args[0], env = process.env } = {}) {
+  if (!/^[a-f0-9]{40}$/.test(targetSha ?? '') || !/^[a-z]+(?:-[a-z]+)*$/.test(phase ?? '')
+    || !['inspect', 'backup', 'migrate', 'restore'].includes(args[0])) throw new Error('Invalid database diagnostic context.');
+  const directory = join(config.deployRoot, 'logs', targetSha, 'database');
+  await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
+  // A retry or crash recovery must retain the diagnostic from each prior attempt.
+  const logFile = join(directory, `${phase}-${randomBytes(12).toString('hex')}.log`);
+  const output = await execute(python, [join(here, 'device-db.py'), ...args],
+    { timeoutMs: 60_000, env, logFile, stdoutOnly: true });
+  let result;
+  try { result = JSON.parse(output); }
+  catch { throw new Error('Device database response was invalid; see private deployment log.'); }
+  if (!result?.ok) throw new Error('Device database operation failed; see private deployment log.');
   return result;
 }
 
@@ -196,7 +205,8 @@ async function recoverTransaction(config, journal, update) {
     await control.stop();
     await stopFixtures(journal.fixtures, { execute });
     if (journal.backup) {
-      await database(config, config.pythonPath, ['restore', '--run-db', join(config.runtimeDir, 'runs.sqlite'), '--case-db', config.caseDbPath, '--backup', journal.backup]);
+      await database(config, config.pythonPath, ['restore', '--run-db', join(config.runtimeDir, 'runs.sqlite'), '--case-db', config.caseDbPath, '--backup', journal.backup],
+        { targetSha: journal.targetSha, phase: 'recovery-restore' });
       await restoreAuthentication(config, journal.backup);
       await restoreFixtures(journal.backup, journal.fixtures, { execute });
     }
@@ -331,10 +341,11 @@ export async function prepareRelease(config, candidate, phase) {
   await rm(probe, { recursive: true, force: true }); await mkdir(probe, { recursive: true, mode: 0o700 });
   // The trial migration reads online backups, never the production run queue.
   const copied = join(probe, 'source-backup');
-  await database(config, config.pythonPath, ['backup', '--run-db', join(config.runtimeDir, 'runs.sqlite'), '--case-db', config.caseDbPath, '--output', copied]);
+  await database(config, config.pythonPath, ['backup', '--run-db', join(config.runtimeDir, 'runs.sqlite'), '--case-db', config.caseDbPath, '--output', copied],
+    { targetSha: candidate.sha, phase: 'trial-backup' });
   const casePath = join(copied, 'case.sqlite3');
-  await execute(join(release, '.venv/bin/python'), [join(here, 'device-db.py'), 'migrate', '--case-db', casePath],
-    { env: { ...env, PYTHONPATH: join(release, 'casper-db/src') }, timeoutMs: 60_000, logFile: join(logs, 'trial-migration.log') });
+  await database(config, join(release, '.venv/bin/python'), ['migrate', '--case-db', casePath],
+    { targetSha: candidate.sha, phase: 'trial-migrate', env: { ...env, PYTHONPATH: join(release, 'casper-db/src') } });
   const password = randomBytes(24).toString('base64url'); const salt = randomBytes(16).toString('hex');
   await atomicJson(join(probe, 'auth.json'), { version: 1, users: [{ username: 'deploy-probe', role: 'admin', salt,
     hash: scryptSync(password, salt, 64).toString('hex') }] });
@@ -465,15 +476,16 @@ export async function deploy(config, { retry = false, checkOnly = false, prepare
     await deploymentTransaction({ stop,
       backup: async () => {
         const path = join(config.deployRoot, 'backups', `${stamp().replace(/[:.]/g, '-')}-${candidate.sha.slice(0, 12)}`);
-        await database(config, config.pythonPath, ['backup', '--run-db', join(config.runtimeDir, 'runs.sqlite'), '--case-db', config.caseDbPath, '--output', path]);
+        await database(config, config.pythonPath, ['backup', '--run-db', join(config.runtimeDir, 'runs.sqlite'), '--case-db', config.caseDbPath, '--output', path],
+          { targetSha: candidate.sha, phase: 'live-backup' });
         await copyFile(join(config.runtimeDir, 'auth.json'), join(path, 'auth.json')); await chmod(join(path, 'auth.json'), 0o600);
         await atomicJson(join(path, 'auth-checksum.json'), { sha256: hash(await readFile(join(path, 'auth.json'))) });
         await backupFixtures(path, fixtures, { execute });
         journal.backup = path; await atomicJson(join(config.deployRoot, 'transaction.json'), journal);
         return path;
       },
-      migrate: () => execute(join(release, '.venv/bin/python'), [join(here, 'device-db.py'), 'migrate', '--case-db', config.caseDbPath],
-        { env: { ...serviceEnvironment(config, release), PYTHONPATH: join(release, 'casper-db/src') }, timeoutMs: 60_000 }),
+      migrate: () => database(config, join(release, '.venv/bin/python'), ['migrate', '--case-db', config.caseDbPath],
+        { targetSha: candidate.sha, phase: 'live-migrate', env: { ...serviceEnvironment(config, release), PYTHONPATH: join(release, 'casper-db/src') } }),
       activate: async () => {
         await activateFixtures(fixtures, { execute });
         if (fixtures.enabled) await execute(config.nodePath, [join(release, 'vul-web2/scripts/deployment-check.mjs')], { timeoutMs: 60_000 });
@@ -484,7 +496,8 @@ export async function deploy(config, { retry = false, checkOnly = false, prepare
         if (hash(await readFile(join(config.runtimeDir, 'auth.json'))) !== authHash) throw new Error('Existing authentication accounts changed during deployment.');
       },
       restore: async path => {
-        await database(config, config.pythonPath, ['restore', '--run-db', join(config.runtimeDir, 'runs.sqlite'), '--case-db', config.caseDbPath, '--backup', path]);
+        await database(config, config.pythonPath, ['restore', '--run-db', join(config.runtimeDir, 'runs.sqlite'), '--case-db', config.caseDbPath, '--backup', path],
+          { targetSha: candidate.sha, phase: 'rollback-restore' });
         await restoreAuthentication(config, path);
         await restoreFixtures(path, fixtures, { execute });
       },

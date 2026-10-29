@@ -36,7 +36,7 @@ test('workspace navigation, external target preflight and report preview use the
     const body = await readFile(new URL(`../dist/${file}`, import.meta.url));
     return route.fulfill({ contentType: ({ html: 'text/html', js: 'text/javascript', css: 'text/css', svg: 'image/svg+xml' })[file.split('.').pop()], body });
   });
-  await page.route('**/api/**', route => {
+  await page.route('**/api/**', async route => {
     const request = route.request(); const path = new URL(request.url()).pathname;
     const json = value => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
     if (request.method() === 'POST' && path !== '/api/db/intakes') requests.push({ path, body: request.postDataJSON() });
@@ -47,8 +47,11 @@ test('workspace navigation, external target preflight and report preview use the
     if (path === '/api/ci-results') return json({ runs: [] });
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs: [run], total: 1 });
     if (path === '/api/runs/stored-report') return json({ run });
-    if (path === '/api/targets/preflight') return json({ ready: true, allowed: true, normalizedUrl: 'https://example.org/start',
-      scope: { origin: 'https://example.org', pathPrefix: '/', methods: ['GET','HEAD'], maxRequests: 20 }, token: 'token-1', message: '준비 완료' });
+    if (path === '/api/targets/preflight') {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return json({ ready: true, allowed: true, normalizedUrl: 'https://example.org/start',
+        scope: { origin: 'https://example.org', pathPrefix: '/', methods: ['GET','HEAD'], maxRequests: 20 }, token: 'token-1', message: '준비 완료' });
+    }
     if (path === '/api/runs' && request.method() === 'POST') return json({ instanceId: 'workspace-test', mode: idle.mode, run: idle, lab: { available: true, generalSupported: true, generalAvailable: false } });
     if (path === '/api/runs/stored-report/report-preview/finding-1') return json({
       markdown: '# 보고서 본문\n\n검증 근거', html: '<!doctype html><html><body><h1>보고서 본문</h1><table><tr><td>검증 근거</td></tr></table></body></html>',
@@ -90,7 +93,8 @@ test('workspace navigation, external target preflight and report preview use the
   await page.locator('#external-url').fill('https://example.org/start');
   await page.locator('#external-authorization').check();
   await page.locator('#external-preflight-button').click();
-  await page.locator('#external-run-button').waitFor({ state: 'visible' });
+  // The button is visible while preflight is pending; wait for its result.
+  await page.waitForFunction(() => document.querySelector('#external-run-button')?.disabled === false);
   assert.equal(await page.locator('#external-run-button').isEnabled(), true);
   await page.locator('#external-run-button').click();
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
