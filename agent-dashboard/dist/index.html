@@ -65,12 +65,12 @@
         <section class="view" id="view-chat" hidden><div id="workspace-chat-root"></div></section>
         <section class="view" id="view-assets" hidden>
           <section class="panel external-target-panel" aria-labelledby="target-preview-title">
-            <div class="panel-heading"><div><h2 id="target-preview-title"><span data-icon="globe"></span>1. URL 파싱</h2><span class="panel-subtitle">시작 URL을 입력하면 발견된 페이지 경로를 한 번에 수집합니다.</span></div></div>
+            <div class="panel-heading"><div><h2 id="target-preview-title"><span data-icon="globe"></span>1. URL 파싱</h2><span class="panel-subtitle">시작 URL을 입력하고 파싱 결과를 경로별로 확인한 뒤 판단 엔진을 선택합니다.</span></div></div>
             <form id="target-preview-form" class="parser-url-form">
               <label for="start-url">시작 URL <input id="start-url" type="url" placeholder="http://127.0.0.1:4101/ 또는 https://example.org/" autocomplete="off" required></label>
               <button class="button secondary" id="parse-start-button" type="submit">파싱하기</button>
             </form>
-            <p class="external-scope-note">파싱은 판단 엔진 호출 전에 실행됩니다. 외부 URL은 동일 원점의 공개 HTTP 응답만 읽습니다.</p>
+            <p class="external-scope-note">파싱은 판단 엔진 호출 전에 실행됩니다. 외부 URL은 동일 원점의 공개 HTTP 응답만 읽습니다. 진단을 시작하면 진행 상황은 공격 탭에 표시됩니다.</p>
             <div id="target-preview-status" role="status" aria-live="polite">URL을 입력하고 파싱 결과를 확인하세요.</div>
             <div id="target-preview-results" hidden>
               <p id="target-preview-coverage" class="parser-preview-coverage"></p>

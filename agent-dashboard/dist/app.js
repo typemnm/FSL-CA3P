@@ -216,7 +216,7 @@ function describeModule(id, item = currentRun()) { if (isGeneralAssessment(item)
 function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : isGeneralAssessment(item) ? '범용 점검 · 증거 기반 결과' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
 const viewMeta = {
   chat: ['AI 채팅', 'AI <span>채팅</span>', '모델과 대화하며 실행 결과와 로컬 코드를 함께 살펴봅니다.'],
-  assets: ['자산', '점검 <span>자산</span>', 'URL별 파싱 결과를 확인한 뒤 판단 엔진을 선택합니다.'],
+  assets: ['자산', '점검 <span>자산</span>', 'URL을 파싱하고 경로별 결과를 확인한 뒤 판단 엔진을 선택해 진단을 시작합니다.'],
   dashboard: ['공격', '공격 <span>작업공간</span>', '선택한 대상의 점검 과정과 기록을 확인합니다.'],
   sessions: ['실행 이력', 'Every run. <span>Remembered.</span>', '중앙에 저장된 실행과 모듈별 증거를 다시 살펴보세요.'],
   compare: ['실행 비교', 'Inspect the <span>difference.</span>', '코드·모델·입력 조건과 결과 차이를 함께 확인하세요.'],
@@ -388,9 +388,9 @@ function renderStats() {
   $('connection-notice').textContent = `${connectionLabel}. 표시된 상태를 보존하고 실행 제어를 잠급니다.`;
   $('stop-button').disabled = !canOperate() || !!inspectedRun || !connected || controlPending || !['queued','preparing','running'].includes(run.status);
   const ready = previewReady();
-  $('asset-summary-detail').textContent = parserPreview
-    ? `${parserPreview.entryUrl} · 파싱 결과 ${parserPreview.pages?.length || 0}개`
-    : `시작 URL · ${$('start-url').value.trim() || '아직 지정하지 않음'}`;
+  const selectedTarget = $('start-url').value.trim()
+    || (typeof item.target === 'string' ? item.target : '');
+  $('asset-summary-detail').textContent = `선택한 대상 URL · ${selectedTarget || '아직 지정하지 않음'}`;
   const model = selectedModel();
   $('engine-step').hidden = !previewAvailable();
   $('lab-run-button').disabled = !ready || !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || (parserPreview.targetKind === 'lab' && model.provider === 'deepseek' && (!labReadiness.generalSupported || !labReadiness.generalAvailable));

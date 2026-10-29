@@ -137,6 +137,8 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.equal(await page.locator('#history-banner').isVisible(), true);
   await page.locator('[data-view=assets]').click();
   assert.equal(await page.locator('#view-assets').isVisible(), true);
+  assert.match(await page.locator('#page-subtitle').textContent(), /URL을 파싱하고 경로별 결과를 확인한 뒤 판단 엔진을 선택해 진단을 시작합니다/);
+  assert.match(await page.locator('#view-assets .external-scope-note').textContent(), /진행 상황은 공격 탭에 표시됩니다/);
   assert.equal(await page.locator('#engine-step').isHidden(), true);
   assert.equal(await page.locator('#model-select').isVisible(), false);
   assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #target-form').count(), 0);
@@ -186,6 +188,8 @@ test('general run renders and supported targets launch the bounded model assessm
   await page.locator('#lab-run-button').click();
   await launch;
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#asset-summary-detail').textContent(), /선택한 대상 URL · http:\/\/127\.0\.0\.1:4101\//);
+  assert.doesNotMatch(await page.locator('#asset-summary-detail').textContent(), /파싱 결과/);
   assert.deepEqual(posts.at(-1), { path: '/api/runs', body: { mode: 'local-lab-general', modelId: 'deepseek-test',
     fixtureId: 'vul-web2-daehan', target: 'http://127.0.0.1:4101', previewId: 'preview-ui' } });
   await page.locator('[data-view=assets]').click();
