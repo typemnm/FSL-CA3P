@@ -65,9 +65,16 @@
         <section class="view" id="view-chat" hidden><div id="workspace-chat-root"></div></section>
         <section class="view" id="view-assets" hidden>
           <section class="panel external-target-panel" aria-labelledby="target-preview-title">
-            <div class="panel-heading"><div><h2 id="target-preview-title"><span data-icon="globe"></span>1. URL 파싱</h2><span class="panel-subtitle">시작 URL을 입력하고 파싱 결과를 경로별로 확인한 뒤 판단 엔진을 선택합니다.</span></div></div>
+            <div class="panel-heading"><div><h2 id="target-preview-title"><span data-icon="globe"></span>1. 점검 대상 선택과 파싱</h2><span class="panel-subtitle">vul-web2 실습 대상 또는 외부 URL을 선택하고, 파싱 결과를 경로별로 확인합니다.</span></div></div>
+            <div class="target-kind-switch" role="group" aria-label="대상 유형"><button type="button" class="active" id="target-kind-lab" aria-pressed="true">vul-web2 실습 대상</button><button type="button" id="target-kind-external" aria-pressed="false">외부 URL</button></div>
             <form id="target-preview-form" class="parser-url-form">
-              <label for="start-url">시작 URL <input id="start-url" type="url" placeholder="http://127.0.0.1:4101/ 또는 https://example.org/" autocomplete="off" required></label>
+              <div id="lab-preview-controls" class="parser-target-controls">
+                <label for="fixture-select">실습 대상 <select id="fixture-select"><option value="vul-web2-daehan">vul-web2 · 대한대학교</option><option value="vul-web2-wonchang">vul-web2 · 원창대학교</option></select></label>
+                <label for="start-url">시작 URL <input id="start-url" type="url" value="http://127.0.0.1:4101/" placeholder="http://127.0.0.1:4101/" autocomplete="off" required></label>
+              </div>
+              <div id="external-preview-controls" class="parser-target-controls" hidden>
+                <label for="external-url">외부 시작 URL <input id="external-url" type="url" placeholder="https://example.org/" autocomplete="off" disabled></label>
+              </div>
               <button class="button secondary" id="parse-start-button" type="submit">파싱하기</button>
             </form>
             <p class="external-scope-note">파싱은 판단 엔진 호출 전에 실행됩니다. 외부 URL은 동일 원점의 공개 HTTP 응답만 읽습니다. 진단을 시작하면 진행 상황은 공격 탭에 표시됩니다.</p>

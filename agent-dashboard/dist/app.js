@@ -150,6 +150,8 @@ let selectedModule = 'parser';
 let selectedEventId = null;
 let activeTab = 'request';
 let activeView = 'dashboard';
+let targetKind = 'lab';
+let labDefaultUrl = 'http://127.0.0.1:4101/';
 let parserPreview = null;
 let previewPending = false;
 let previewCancelPending = false;
@@ -289,6 +291,8 @@ function acceptState(envelope) {
       generalSupported: envelope.lab.generalSupported === true, generalAvailable: envelope.lab.generalAvailable === true,
       targetOrigins: isObject(envelope.lab.targetOrigins) ? envelope.lab.targetOrigins : {} }
     : { available: false };
+  if (syncLabStartUrl() && parserPreview && targetKind === 'lab')
+    invalidatePreview('실습 대상 URL 설정이 바뀌었습니다. 다시 파싱하세요.');
   run = structuredClone(next);
   if (resetViews) renderAllExperimentViews();
   saveRun();
@@ -388,13 +392,17 @@ function renderStats() {
   $('connection-notice').textContent = `${connectionLabel}. 표시된 상태를 보존하고 실행 제어를 잠급니다.`;
   $('stop-button').disabled = !canOperate() || !!inspectedRun || !connected || controlPending || !['queued','preparing','running'].includes(run.status);
   const ready = previewReady();
-  const selectedTarget = $('start-url').value.trim()
+  const selectedTarget = activePreviewUrl()
     || (typeof item.target === 'string' ? item.target : '');
   $('asset-summary-detail').textContent = `선택한 대상 URL · ${selectedTarget || '아직 지정하지 않음'}`;
   const model = selectedModel();
   $('engine-step').hidden = !previewAvailable();
   $('lab-run-button').disabled = !ready || !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || (parserPreview.targetKind === 'lab' && model.provider === 'deepseek' && (!labReadiness.generalSupported || !labReadiness.generalAvailable));
   $('parse-start-button').disabled = !canOperate() || !connected || controlPending || active || previewPending;
+  const targetControlsDisabled = !canOperate() || controlPending || active;
+  $('fixture-select').disabled = targetKind !== 'lab' || targetControlsDisabled;
+  $('start-url').disabled = targetKind !== 'lab' || targetControlsDisabled;
+  $('external-url').disabled = targetKind !== 'external' || targetControlsDisabled;
   $('model-select').disabled = !ready || controlPending || active || !canOperate() || parserPreview?.targetKind === 'external';
   $('model-reset-toggle').checked = settings.confirmModelReset;
   $('model-reset-toggle').disabled = controlPending || !!pendingModelChange;
@@ -645,11 +653,54 @@ async function submitControl(action) {
   catch (error) { showRuntimeError(error.message); notify('로컬 런타임 요청에 실패했습니다. 오류 내용을 확인하세요.'); }
   finally { controlPending = false; render(); }
 }
+function labFixtureUrl() {
+  const id = $('fixture-select').value;
+  const origin = labReadiness.targetOrigins?.[id] || `http://127.0.0.1:${IDOR_FIXTURES[id]?.port || 4101}`;
+  try { return new URL('/', origin).href; }
+  catch { return `http://127.0.0.1:${IDOR_FIXTURES[id]?.port || 4101}/`; }
+}
+function syncLabStartUrl(force = false) {
+  const next = labFixtureUrl();
+  const field = $('start-url');
+  let changed = false;
+  if (force || !field.value || field.value === labDefaultUrl) {
+    changed = field.value !== next;
+    field.value = next;
+  }
+  labDefaultUrl = next;
+  return changed;
+}
+function activePreviewInput() { return $(targetKind === 'external' ? 'external-url' : 'start-url'); }
+function activePreviewUrl() { return activePreviewInput().value.trim(); }
+function isRegisteredLabOrigin(origin) {
+  return Object.keys(IDOR_FIXTURES).some(id => {
+    const configured = labReadiness.targetOrigins?.[id] || `http://127.0.0.1:${IDOR_FIXTURES[id].port}`;
+    try { return new URL(configured).origin === origin; }
+    catch { return false; }
+  });
+}
+function setTargetKind(kind) {
+  const next = kind === 'external' ? 'external' : 'lab';
+  if (targetKind === next) return;
+  targetKind = next;
+  $('target-kind-lab').classList.toggle('active', next === 'lab');
+  $('target-kind-external').classList.toggle('active', next === 'external');
+  $('target-kind-lab').setAttribute('aria-pressed', String(next === 'lab'));
+  $('target-kind-external').setAttribute('aria-pressed', String(next === 'external'));
+  $('lab-preview-controls').hidden = next !== 'lab';
+  $('external-preview-controls').hidden = next !== 'external';
+  $('start-url').required = next === 'lab';
+  $('external-url').required = next === 'external';
+  invalidatePreview('대상 유형이 바뀌었습니다. 선택한 대상의 URL을 다시 파싱하세요.');
+}
 function previewAvailable() {
   return !!parserPreview && Date.parse(parserPreview.expiresAt) > Date.now()
     && Array.isArray(parserPreview.pages) && parserPreview.pages.some(page => page.status >= 200
       && page.status < (parserPreview.targetKind === 'external' ? 300 : 400))
-    && $('start-url').value.trim() === parserPreview.entryUrl;
+    && parserPreview.targetKind === targetKind
+    && (targetKind !== 'lab' || parserPreview.fixtureId === $('fixture-select').value)
+    && (targetKind !== 'lab' || parserPreview.origin === new URL(labFixtureUrl()).origin)
+    && activePreviewUrl() === parserPreview.entryUrl;
 }
 function previewReady() {
   return previewAvailable() && !previewPending;
@@ -752,7 +803,7 @@ function invalidatePreview(message = '시작 URL이 바뀌었습니다. 새 URL�
 function acceptPreview(result) {
   parserPreview = result;
   selectedPreviewPageIndex = 0;
-  if (result.entryUrl) $('start-url').value = result.entryUrl;
+  if (result.entryUrl) activePreviewInput().value = result.entryUrl;
   const externalRedirect = result.targetKind === 'external' && (result.pages || []).some(page => page.status >= 300 && page.status < 400)
     && !(result.pages || []).some(page => page.status >= 200 && page.status < 300);
   $('target-preview-status').textContent = externalRedirect
@@ -765,7 +816,14 @@ function acceptPreview(result) {
   if (Number.isFinite(remaining)) previewExpiryTimer = setTimeout(() => invalidatePreview('파싱 결과가 만료됐습니다. 다시 파싱하세요.'), Math.max(0, Math.min(remaining, 2147483647)));
   renderPreview();
 }
+$('target-kind-lab').addEventListener('click', () => setTargetKind('lab'));
+$('target-kind-external').addEventListener('click', () => setTargetKind('external'));
+$('fixture-select').addEventListener('change', () => {
+  syncLabStartUrl(true);
+  invalidatePreview('실습 대상이 바뀌었습니다. 다시 파싱하세요.');
+});
 $('start-url').addEventListener('input', () => invalidatePreview());
+$('external-url').addEventListener('input', () => invalidatePreview());
 $('target-preview-paths').addEventListener('click', event => {
   const button = event.target.closest('[data-preview-page-index]');
   if (!button || !parserPreview) return;
@@ -777,7 +835,25 @@ $('target-preview-paths').addEventListener('click', event => {
 $('target-preview-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (!canOperate() || connection !== 'connected' || previewPending) return;
-  const url = $('start-url').value.trim();
+  const url = activePreviewUrl();
+  const selectedKind = targetKind;
+  const selectedFixtureId = $('fixture-select').value;
+  if (selectedKind === 'lab') {
+    let validOrigin = false;
+    try { validOrigin = new URL(url).origin === new URL(labFixtureUrl()).origin; }
+    catch { /* The URL field reports invalid syntax. */ }
+    if (!validOrigin) {
+      $('target-preview-status').textContent = '선택한 대학의 시작 URL만 사용할 수 있습니다. 대학을 다시 선택하거나 해당 대학의 URL을 입력하세요.';
+      return;
+    }
+  } else {
+    try {
+      if (isRegisteredLabOrigin(new URL(url).origin)) {
+        $('target-preview-status').textContent = '등록된 대학 URL입니다. vul-web2 실습 대상 탭에서 선택하세요.';
+        return;
+      }
+    } catch { /* The URL field reports invalid syntax. */ }
+  }
   const generation = ++previewGeneration;
   previewAbortController?.abort();
   const controller = new AbortController();
@@ -804,7 +880,12 @@ $('target-preview-form').addEventListener('submit', async event => {
         if (controller.signal.aborted) throw new DOMException('수집 요청이 취소됐습니다.', 'AbortError');
       }
     }
-    if (generation !== previewGeneration || $('start-url').value.trim() !== url) return;
+    if (generation !== previewGeneration || targetKind !== selectedKind || activePreviewUrl() !== url) return;
+    if (result.targetKind !== selectedKind || selectedKind === 'lab' && result.fixtureId !== selectedFixtureId) {
+      throw new Error(selectedKind === 'lab'
+        ? '이 URL은 선택한 대학의 등록된 시작 URL이 아닙니다. 대학 선택과 시작 URL을 확인하세요.'
+        : '이 URL은 등록된 대학입니다. vul-web2 실습 대상 탭에서 선택하세요.');
+    }
     acceptPreview(result);
   } catch (error) {
     if (generation === previewGeneration) $('target-preview-status').textContent = `파싱 실패: ${error.message}`;
@@ -861,7 +942,7 @@ $('new-session-button').addEventListener('click', async () => {
     window.scrollTo(0, 0);
     notify('자산 메뉴에서 점검 대상을 확인하고 새 실행을 시작하세요.');
   });
-  if (run.status === 'idle') $('start-url').focus();
+  if (run.status === 'idle') (targetKind === 'external' ? $('external-url') : $('fixture-select')).focus();
 });
 function chooseModule(id, eventId = null) {
   selectedModule = id;
@@ -941,7 +1022,7 @@ $('settings-button').addEventListener('click', () => { $('motion-setting').check
 document.addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault(); navigate('assets');
-    const field = $('start-url');
+    const field = targetKind === 'external' ? $('external-url') : $('fixture-select');
     field.focus(); field.select?.();
   }
   if (event.key === 'Escape') {

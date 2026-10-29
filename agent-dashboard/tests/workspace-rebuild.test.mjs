@@ -109,7 +109,10 @@ test('workspace navigation, external target preflight and report preview use the
   await page.reload();
   await page.locator('#view-assets').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#engine-step').isHidden(), true);
-  await page.locator('#start-url').fill('https://example.org/start');
+  await page.locator('#target-kind-external').click();
+  assert.equal(await page.locator('#external-url').isVisible(), true);
+  assert.equal(await page.locator('#lab-preview-controls').isHidden(), true);
+  await page.locator('#external-url').fill('https://example.org/start');
   await page.locator('#parse-start-button').click();
   await page.locator('.parser-preview-card').first().waitFor();
   assert.match(await page.locator('.parser-preview-card').first().textContent(), /Bootstrap.*jQuery/s);

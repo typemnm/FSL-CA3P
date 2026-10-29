@@ -448,8 +448,10 @@ button.ops-row:hover{background:#1c3324}
 /* URL별 파싱 결과를 판단 엔진 선택 전에 검토합니다. */
 .lab-launch[hidden],#target-preview-results[hidden]{display:none!important}
 .parser-url-form{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:12px 0}
+.parser-target-controls{display:flex;align-items:end;gap:12px;flex:1 1 520px;min-width:0;flex-wrap:wrap}
+.parser-target-controls[hidden]{display:none!important}
 .parser-url-form label{display:flex;flex:1 1 320px;flex-direction:column;gap:7px;min-width:0;color:var(--text-muted,#a8b7ae)}
-.parser-url-form input{width:100%;min-width:0;padding:11px 12px;border:1px solid #355745;border-radius:7px;background:#091a12;color:#e6f6eb}
+.parser-url-form input,.parser-url-form select{width:100%;min-width:0;padding:11px 12px;border:1px solid #355745;border-radius:7px;background:#091a12;color:#e6f6eb;font:inherit}
 .parser-url-form button{flex:0 0 auto}
 #target-preview-status{margin:12px 0;color:#bce8cb}
 .parser-preview-coverage{margin:12px 0;color:#bce8cb;font-size:.9rem}

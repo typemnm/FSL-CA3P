@@ -140,7 +140,11 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.equal(await page.locator('#engine-step').isHidden(), true);
   assert.equal(await page.locator('#model-select').isVisible(), false);
   assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #target-form').count(), 0);
-  assert.equal(await page.locator('#fixture-select').count(), 0);
+  assert.equal(await page.locator('#target-kind-lab').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#fixture-select').inputValue(), 'vul-web2-daehan');
+  assert.deepEqual(await page.locator('#fixture-select option').evaluateAll(options => options.map(option => option.value)),
+    ['vul-web2-daehan', 'vul-web2-wonchang']);
+  assert.equal(await page.locator('#external-preview-controls').isHidden(), true);
   await page.locator('#start-url').fill('http://127.0.0.1:4101/');
   const delayedStart = new Promise(resolve => { delayedPreviewStarted = resolve; });
   delayNextPreview = true;
@@ -171,6 +175,15 @@ test('general run renders and supported targets launch the bounded model assessm
   await page.locator('[data-preview-page-index="2"]').click();
   assert.match(await page.locator('#target-preview-pages .parser-preview-card').textContent(), /PARSER_TIMEOUT/);
   assert.equal(posts.filter(item => item.path === '/api/targets/preview').length, 2);
+  await page.locator('#target-kind-external').click();
+  assert.equal(await page.locator('#target-kind-external').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#external-url').isVisible(), true);
+  assert.equal(await page.locator('#lab-preview-controls').isHidden(), true);
+  assert.equal(await page.locator('#engine-step').isHidden(), true);
+  assert.equal(await page.locator('#target-preview-paths button').count(), 0);
+  await page.locator('#target-kind-lab').click();
+  assert.equal(await page.locator('#start-url').isVisible(), true);
+  assert.equal(await page.locator('#engine-step').isHidden(), true);
   await page.locator('#start-url').fill('http://127.0.0.1:4102/');
   assert.equal(await page.locator('#engine-step').isHidden(), true);
   assert.equal(await page.locator('#target-preview-pages .parser-preview-card').count(), 0);

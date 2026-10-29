@@ -134,6 +134,7 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   await page.locator('[data-view=assets]').click();
   await page.locator('#view-assets').waitFor({ state: 'visible' });
   if (role !== 'viewer' && !['queued','preparing','running','stopping'].includes(reportOptions.state?.status)) {
+    assert.equal(await page.locator('#fixture-select').inputValue(), 'vul-web2-daehan');
     await page.locator('#start-url').fill('http://127.0.0.1:4101/');
     await page.locator('#parse-start-button').click();
     await page.locator('#engine-step').waitFor({ state: 'visible' });
@@ -272,12 +273,13 @@ test('browser cache deletion failure blocks model switching and execution after 
   assert.deepEqual(errors, []);
 });
 
-test('changing the start URL invalidates its parsed result and previous model choice', async t => {
+test('changing the selected university invalidates its parsed result and previous model choice', async t => {
   const { page, resets, errors } = await setup(t, 'operator', null, { models: resetModels });
   await page.locator('#model-reset-toggle').uncheck();
   await page.locator('#model-select').selectOption('deepseek-flash');
   await page.locator('#model-reset-toggle').check();
-  await page.locator('#start-url').fill('http://127.0.0.1:4102/');
+  await page.locator('#fixture-select').selectOption('vul-web2-wonchang');
+  assert.equal(await page.locator('#start-url').inputValue(), 'http://127.0.0.1:4102/');
   assert.equal(await page.locator('#engine-step').isHidden(), true);
   assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
   await page.locator('#parse-start-button').click();
@@ -396,6 +398,9 @@ test('registered universities launch general assessments from parsed URL', async
   const { page, mutations, errors } = await setup(t);
   assert.match(await page.locator('.parser-preview-card').first().textContent(), /실습 페이지/);
   assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-primary');
+  await page.locator('#fixture-select').selectOption('vul-web2-wonchang');
+  assert.equal(await page.locator('#engine-step').isHidden(), true);
+  assert.equal(await page.locator('#start-url').inputValue(), 'http://127.0.0.1:4102/');
   await page.locator('#start-url').fill('http://127.0.0.1:4102/about');
   assert.equal(await page.locator('#engine-step').isHidden(), true);
   await page.locator('#parse-start-button').click();
@@ -410,7 +415,7 @@ test('registered universities launch general assessments from parsed URL', async
   assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary',
     fixtureId: 'vul-web2-wonchang', target: 'http://127.0.0.1:4102', previewId: 'preview-test' }, csrf: 'csrf-live' });
   await page.locator('[data-view=assets]').click();
-  assert.equal(await page.locator('#fixture-select').count(), 0);
+  assert.equal(await page.locator('#fixture-select').inputValue(), 'vul-web2-wonchang');
   assert.equal(await page.locator('#engine-step').isVisible(), true);
   assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #target-form, #settings-speed').count(), 0);
   assert.deepEqual(errors, []);
@@ -436,8 +441,9 @@ test('saved IDOR evidence remains readable after single-check launch controls ar
   assert.deepEqual(errors, []);
 });
 
-test('URL-only input accepts registered university paths and binds the parsed origin', async t => {
+test('registered university URL accepts paths and binds the parsed origin', async t => {
   const { page, mutations, errors } = await setup(t, 'operator', null, { lab: { available: true } });
+  await page.locator('#fixture-select').selectOption('vul-web2-wonchang');
   await page.locator('#start-url').fill('http://127.0.0.1:4102/private');
   assert.equal(await page.locator('#engine-step').isHidden(), true);
   assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
