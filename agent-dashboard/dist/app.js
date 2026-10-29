@@ -347,6 +347,7 @@ function navigate(view) {
   $('page-title').innerHTML = viewMeta[view][1];
   $('page-subtitle').textContent = viewMeta[view][2];
   document.querySelector('.heading-actions').hidden = ['db', 'chat', 'templates'].includes(view) || view.startsWith('module-') || moduleOverview;
+  $('export-button').hidden = view === 'assets';
   $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded', 'false');
   if (location.hash !== `#${viewToRoute[view]}`) historyReplace(view);
   render();

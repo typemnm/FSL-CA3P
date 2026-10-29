@@ -450,6 +450,7 @@ button.ops-row:hover{background:#1c3324}
 .parser-url-form{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:12px 0}
 .parser-target-controls{display:flex;align-items:end;gap:12px;flex:1 1 520px;min-width:0;flex-wrap:wrap}
 .parser-target-controls[hidden]{display:none!important}
+#export-button[hidden]{display:none!important}
 .parser-url-form label{display:flex;flex:1 1 320px;flex-direction:column;gap:7px;min-width:0;color:var(--text-muted,#a8b7ae)}
 .parser-url-form input,.parser-url-form select{width:100%;min-width:0;padding:11px 12px;border:1px solid #355745;border-radius:7px;background:#091a12;color:#e6f6eb;font:inherit}
 .parser-url-form button{flex:0 0 auto}
