@@ -30,6 +30,7 @@ jobs:
           cache-dependency-path: |
             web-parser/package-lock.json
             packages/report/capture/package-lock.json
+            packages/verifier/package-lock.json
             vul-web2/package-lock.json
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -38,6 +39,7 @@ jobs:
         run: |
           npm ci --prefix web-parser
           npm ci --prefix packages/report/capture
+          npm ci --prefix packages/verifier
           npm ci --prefix vul-web2 --no-audit --no-fund
           python -m pip install -r casper-db/requirements-ci.lock
           python -m pip install -r packages/report/requirements-ci.lock
