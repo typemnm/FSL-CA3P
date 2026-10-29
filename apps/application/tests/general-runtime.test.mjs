@@ -131,44 +131,119 @@ test('general university run uses multiple model hypotheses and confirms only th
   await runtime.close();
 });
 
-test('reviewed university paths enter the initial model inventory and remain available for later probes', async () => {
+test('the first real planner request contains a bounded summary row for every pre-parsed URL', async () => {
   const origin = 'http://127.0.0.1:53987';
   const entryUrl = `${origin}/admissions?year=2026`;
   const discovered = `${origin}/admissions/detail`;
   const parserPreview = { previewId: 'general-reviewed-1', targetKind: 'lab',
     fixtureId: 'vul-web2-daehan', origin, entryUrl, expiresAt: '2099-01-01T00:00:00.000Z',
+    crawl: { maxPages: 48, visited: 48, queued: 7, truncated: true, stopReason: 'page-limit' },
     discoveredPaths: [discovered], pages: [{ url: entryUrl, status: 200,
       title: 'Admissions', technologies: [{ name: 'jQuery' }], libraries: [{ name: 'jQuery' }],
-      forms: [], paths: [{ url: discovered, sources: ['html:link'] }], errors: [] }] };
-  for (let index = 1; index < 12; index += 1) parserPreview.pages.push({
+      forms: [{ action: `${origin}/notices`, method: 'GET', fields: [{ name: 'q' }] }],
+      paths: [{ url: discovered, sources: ['html:link'] }], errors: [] }] };
+  for (let index = 1; index < 48; index += 1) parserPreview.pages.push({
     url: `${origin}/reviewed/${index}`, status: 200, title: 'Reviewed page',
-    technologies: Array.from({ length: 40 }, () => ({ name: 'Technology '.repeat(8) })),
-    libraries: Array.from({ length: 40 }, () => ({ name: 'Library '.repeat(8) })),
-    forms: [], paths: [], errors: [] });
-  let observed;
+    technologies: index === 47
+      ? Array.from({ length: 40 }, (_, offset) => ({ name: `Long technology ${offset}` }))
+      : [{ name: 'Node.js' }, { name: 'Express' }, { name: 'Google Font API' }],
+    libraries: [{ name: 'Express' }],
+    forms: [{ action: `${origin}/notices`, method: 'GET', fields: [{ name: 'q' }] }],
+    paths: [{ url: `${origin}/reviewed/${index}/detail`, sources: ['html:link'] }],
+    errors: [] });
+  let modelPayload;
   const runtime = createGeneralRuntime({ fixtureId: 'vul-web2-daehan', targetOrigin: origin,
     modelId: 'deepseek-flash', runIdFactory: () => 'general-reviewed', parserPreview,
     unavailableInputs: ['casper-db'],
     catalogReader: async () => { throw new Error('No case snapshot'); },
     fetchImpl: async url => response(new URL(url).pathname),
-    plannerFactory: () => ({ async propose(context) {
-      observed = { pages: context.inventory.preParsedPages,
-        evidence: context.evidence.filter(item => item.source === 'web-parser/operator-preview') };
-      return { done: true, hypotheses: [], probes: [], modelMetadata: {
-        provider: 'deepseek', model: 'deepseek-flash' } };
+    plannerFactory: () => plannerModule.createGeneralModelPlanner({ client: {
+      async completeJson({ userPayload }) {
+        modelPayload = userPayload;
+        return { value: { done: true, hypotheses: [], probes: [] },
+          metadata: { provider: 'deepseek', model: 'deepseek-flash', finishReason: 'stop' } };
+      },
     } }) });
   try {
     const done = terminal(runtime);
     runtime.startLab();
     const run = await done;
     assert.equal(run.status, 'completed', run.error);
-    assert.equal(observed.pages[0].url, entryUrl);
-    assert.deepEqual(observed.pages[0].libraries, ['jQuery']);
-    assert.equal(observed.pages.length, 12);
-    assert.ok(Buffer.byteLength(JSON.stringify(observed.pages), 'utf8') <= 5000);
-    assert.equal(observed.evidence.length, 1);
+    const observed = modelPayload.inventory;
+    assert.equal(observed.preParsedPages.length, 48);
+    assert.deepEqual(observed.preParsedPages.map(page => page.path),
+      ['/admissions', ...Array.from({ length: 47 }, (_, index) => `/reviewed/${index + 1}`)]);
+    assert.deepEqual(observed.preParsedPages[0].queryParameterNames, ['year']);
+    assert.deepEqual(observed.preParsedPages[0].libraries, ['jQuery']);
+    assert.ok(observed.preParsedPages.every(page => page.status === 200));
+    assert.ok(observed.preParsedPages.every(page => page.technologies.length >= 1
+      && page.libraries.length >= 1));
+    assert.ok(observed.preParsedPages.every(page => page.forms.length >= 1
+      && page.paths.length >= 1));
+    assert.ok(observed.preParsedPages[47].omitted.technologies > 0);
+    assert.equal(observed.operatorPreview.collectedPageCount, 48);
+    assert.deepEqual(observed.operatorPreview.crawl,
+      { maxPages: 48, visited: 48, queued: 7, truncated: true, stopReason: 'page-limit' });
+    assert.ok(observed.operatorPreview.modelSummaryBytes <= 24 * 1024);
+    assert.ok(observed.operatorPreview.modelSummaryBytes > 6800);
+    assert.equal(observed.operatorPreview.modelSummaryOmittedDetails, true);
+    assert.equal(JSON.stringify(modelPayload).includes('year=2026'), false);
+    assert.equal(modelPayload.evidence.filter(item => item.source === 'web-parser/operator-preview').length, 1);
     assert.ok(run.report.scope.allowedPaths.includes('/admissions/detail'));
     assert.deepEqual(run.report.parserPreview, parserPreview);
+  } finally { await runtime.close(); }
+});
+
+test('forty-eight long URL rows survive prompt-budget fallback with explicit omissions', async () => {
+  const origin = 'http://127.0.0.1:53987';
+  const opaqueToken = 'A1'.repeat(30);
+  const longPrefix = `/long/${opaqueToken}/${'section/'.repeat(43)}`;
+  const parserPreview = { previewId: 'general-long-urls', targetKind: 'lab',
+    fixtureId: 'vul-web2-daehan', origin, entryUrl: `${origin}${longPrefix}0`,
+    expiresAt: '2099-01-01T00:00:00.000Z', discoveredPaths: [],
+    crawl: { maxPages: 48, visited: 48, queued: 3, truncated: true,
+      stopReason: 'candidate-limit' },
+    pages: Array.from({ length: 48 }, (_, index) => ({
+      url: `${origin}${longPrefix}${index}?${'q'.repeat(24)}=${'private-value'.repeat(4)}`,
+      status: index === 0 ? null : 200, title: 'Long path page',
+      technologies: [{ name: 'Node.js' }], libraries: [{ name: 'Express' }],
+      forms: [], paths: [], errors: index === 0 ? [{ code: 'PARSER_TIMEOUT' }] : [],
+    })) };
+  let accepted;
+  const runtime = createGeneralRuntime({ fixtureId: 'vul-web2-daehan', targetOrigin: origin,
+    modelId: 'deepseek-flash', runIdFactory: () => 'general-long-urls', parserPreview,
+    unavailableInputs: ['casper-db'],
+    catalogReader: async () => { throw new Error('No case snapshot'); },
+    fetchImpl: async url => response(new URL(url).pathname),
+    plannerFactory: () => ({ async propose(context) {
+      if (context.inventory.operatorPreview.modelSummaryLimitBytes > 6800) {
+        throw Object.assign(new Error('Context too large'), {
+          code: 'GENERAL_PLANNER_CONTEXT_TOO_LARGE' });
+      }
+      accepted = context.inventory;
+      return { done: true, hypotheses: [], probes: [] };
+    } }),
+  });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    assert.equal(accepted.preParsedPages.length, 48);
+    assert.deepEqual(accepted.preParsedPages.map(page => page.index),
+      Array.from({ length: 48 }, (_, index) => index + 1));
+    assert.ok(accepted.preParsedPages.every(page => page.pathTruncated === true));
+    assert.equal(accepted.preParsedPages[0].errors[0], 'PARSER_TIMEOUT');
+    assert.equal(accepted.operatorPreview.crawl.stopReason, 'candidate-limit');
+    assert.equal(accepted.operatorPreview.modelSummaryLimitBytes, 6800);
+    assert.equal(run.report.inventory.operatorPreview.modelSummaryLimitBytes, 6800);
+    assert.equal(accepted.operatorPreview.modelSummaryFormat, 'compact-omissions');
+    assert.deepEqual(accepted.operatorPreview.modelSummaryOmittedFields,
+      ['queryParameterNames', 'title', 'technologies', 'libraries', 'forms', 'paths', 'errors']);
+    assert.ok(accepted.operatorPreview.modelSummaryBytes <= 6800);
+    assert.ok(accepted.preParsedPages.some(page => page.omitted[2] > 0));
+    assert.equal(JSON.stringify(accepted.preParsedPages).includes('private-value'), false);
+    assert.equal(JSON.stringify(accepted.preParsedPages).includes(opaqueToken), false);
   } finally { await runtime.close(); }
 });
 
@@ -740,6 +815,40 @@ test('web_info observes declared paths, extends scope, and rejects off-scope or 
   await runtime.close();
 });
 
+test('reviewed URL inventory does not consume the later web_info detail budget', async () => {
+  const origin = 'http://127.0.0.1:4101';
+  const parserPreview = { previewId: 'web-info-after-preview', targetKind: 'lab',
+    fixtureId: 'vul-web2-daehan', origin, entryUrl: `${origin}/`,
+    expiresAt: '2099-01-01T00:00:00.000Z', discoveredPaths: [],
+    crawl: { maxPages: 48, visited: 48, queued: 0, truncated: false, stopReason: null },
+    pages: Array.from({ length: 48 }, (_, index) => ({ url: `${origin}/page/${index}`,
+      status: 200, title: 'Reviewed', technologies: [{ name: 'jQuery' }],
+      libraries: [{ name: 'jQuery' }], forms: [], paths: [], errors: [] })) };
+  const runtime = createGeneralRuntime({ fixtureId: 'vul-web2-daehan', targetOrigin: origin,
+    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-after-preview', parserPreview,
+    fetchImpl: universityLoginFetch(),
+    webParserCollect: async url => ({ info: largeTargetInfo(url), summary: {} }),
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration',
+        asset: '/', rationale: 'Observe current browser details.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'w-after-preview', hypothesisId: 'h-web', tool: 'web_info',
+        input: { path: '/' } }] };
+    } }),
+  });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    const probe = run.report.probes.find(item => item.id === 'w-after-preview');
+    const byId = new Map(run.report.evidence.map(item => [item.id, item]));
+    assert.deepEqual(probe.evidenceIds.map(id => byId.get(id).kind),
+      ['web-info', 'web-info-paths', 'web-info-surface']);
+    assert.equal(run.report.inventory.preParsedPages.length, 48);
+  } finally { await runtime.close(); }
+});
+
 test('web_info honors cancellation mid-run', async () => {
   const collected = [];
   let runtime;
@@ -823,12 +932,26 @@ function heavyTargetInfo(url) {
 
 test('web_info on heavy pages up to maxProbes keeps the real planner prompt under its limit', async () => {
   const promptBytes = [];
+  const modelPageCounts = [];
+  const origin = 'http://127.0.0.1:4101';
+  const parserPreview = { previewId: 'heavy-web-info-after-preview', targetKind: 'lab',
+    fixtureId: 'vul-web2-daehan', origin, entryUrl: `${origin}/`,
+    expiresAt: '2099-01-01T00:00:00.000Z', discoveredPaths: [],
+    crawl: { maxPages: 48, visited: 48, queued: 0, truncated: false, stopReason: null },
+    pages: Array.from({ length: 48 }, (_, index) => ({ url: `${origin}/reviewed/${index}`,
+      status: 200, title: 'Reviewed page',
+      technologies: Array.from({ length: 5 }, (_, item) => ({ name: `Framework-${item}` })),
+      libraries: Array.from({ length: 5 }, (_, item) => ({ name: `Library-${item}` })),
+      forms: [{ action: `${origin}/reviewed/${index}/submit`, method: 'POST', fields: [{ name: 'q' }] }],
+      paths: [{ url: `${origin}/reviewed/${index}/next` }], errors: [] })) };
   const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
-    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-prompt-budget', fetchImpl: universityLoginFetch(),
+    fixtureId: 'vul-web2-daehan', targetOrigin: origin,
+    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-prompt-budget',
+    parserPreview, fetchImpl: universityLoginFetch(),
     webParserCollect: async url => ({ info: heavyTargetInfo(url), summary: {} }),
     plannerFactory: () => plannerModule.createGeneralModelPlanner({ client: { async completeJson({ systemPrompt, userPayload }) {
       promptBytes.push(Buffer.byteLength(systemPrompt, 'utf8') + Buffer.byteLength(JSON.stringify(userPayload), 'utf8'));
+      modelPageCounts.push(userPayload.inventory.preParsedPages.length);
       const { iteration, evidence } = userPayload;
       return { value: { done: false, hypotheses: [{ id: 'h' + iteration, category: 'configuration', asset: '/',
         rationale: 'Observe a heavy page.', evidenceIds: [evidence[0].id] }],
@@ -842,6 +965,8 @@ test('web_info on heavy pages up to maxProbes keeps the real planner prompt unde
     const run = await done;
     assert.equal(run.status, 'completed', run.error);
     assert.equal(promptBytes.length, 6);
+    assert.deepEqual(modelPageCounts, Array(6).fill(48));
+    assert.ok(promptBytes.every(bytes => bytes <= 64 * 1024));
     const probes = run.report.probes.filter(item => item.tool === 'web_info');
     assert.equal(probes.length, 24);
     const byId = new Map(run.report.evidence.map(item => [item.id, item]));

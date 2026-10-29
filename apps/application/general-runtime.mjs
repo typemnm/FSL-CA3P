@@ -21,7 +21,14 @@ const MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
 const WEB_INFO_EVIDENCE_BUDGET_BYTES = 6800;
 const MAX_BODY_BYTES = 24 * 1024;
 const MAX_INITIAL_PAGES = 14;
-const MAX_PREVIEW_INVENTORY_BYTES = 5000;
+// The first plan sees all operator-reviewed URLs. Later plans can reduce only
+// optional detail if their accumulated hypotheses and evidence fill the prompt.
+const MAX_PREVIEW_INVENTORY_BYTES = 24 * 1024;
+const PREVIEW_RETRY_BUDGETS = [20 * 1024, 16 * 1024, 13 * 1024,
+  10 * 1024, 8 * 1024, 6800];
+const MAX_PREVIEW_PAGES = 48;
+const PREVIEW_OMISSION_FIELDS = ['queryParameterNames', 'title', 'technologies',
+  'libraries', 'forms', 'paths', 'errors'];
 const CATALOG_SOURCE = 'casper-db/attack-catalog';
 const FIXTURES = Object.freeze({
   'vul-web2-daehan': {
@@ -85,6 +92,137 @@ function utf8Prefix(value, maxBytes) {
     bytes += size;
   }
   return characters.join('');
+}
+function previewText(value, maxBytes) {
+  if (typeof value !== 'string') return '';
+  return utf8Prefix(safeText(redact(value)).replace(/[\u0000-\u001f\u007f]/gu, ' '), maxBytes);
+}
+function previewUrl(value, origin) {
+  try {
+    const url = new URL(value);
+    return url.origin === origin ? url : null;
+  } catch { return null; }
+}
+function previewPathname(value, origin) {
+  const url = previewUrl(value, origin);
+  if (!url) return null;
+  // Opaque path segments often carry reset/session tokens. Keep route shape,
+  // but never place their raw values in a model prompt.
+  return url.pathname.split('/').map(segment =>
+    /^[A-Za-z0-9._~%-]{24,}$/u.test(segment) ? '[opaque-segment]' : segment).join('/');
+}
+function previewPath(value, origin, maxBytes = 96) {
+  const path = previewPathname(value, origin);
+  return path ? utf8Prefix(path, maxBytes) : null;
+}
+function previewComponent(value) {
+  const name = previewText(value?.name, 52);
+  if (!name) return null;
+  const version = previewText(value?.version, 24);
+  return /^\d+(?:\.\d+){0,3}(?:[-+][a-z0-9.]{1,16})?$/iu.test(version)
+    ? `${name} ${version}` : name;
+}
+function previewForm(value, origin) {
+  const path = previewPath(value?.action, origin, 72);
+  if (!path) return null;
+  const method = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD)$/iu.test(value?.method ?? '')
+    ? value.method.toUpperCase() : 'UNKNOWN';
+  const fields = Array.isArray(value?.fields) ? value.fields.slice(0, 5)
+    .map(field => previewText(field?.name, 24)).filter(Boolean) : [];
+  return utf8Prefix(`${method} ${path}${fields.length ? ` (${fields.join(', ')})` : ''}`, 128);
+}
+function previewError(value) {
+  const code = value?.code;
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)
+    ? code : 'PARSER_PREVIEW_FAILED';
+}
+function modelPreviewPages(parserPreview, origin, maxBytes = MAX_PREVIEW_INVENTORY_BYTES) {
+  if (!parserPreview) return { pages: [], bytes: 0 };
+  if (parserPreview.pages.length > MAX_PREVIEW_PAGES) {
+    throw new TypeError('Parser preview contains more URLs than the supported model inventory.');
+  }
+  const source = parserPreview.pages;
+  const compact = maxBytes <= 10 * 1024;
+  const makeRows = pathLimit => source.map((page, index) => {
+    const url = previewUrl(page?.url, origin);
+    const path = previewPathname(page?.url, origin) ?? '[invalid-url]';
+    const queryNames = url ? [...new Set(url.searchParams.keys())] : [];
+    const omitted = { queryParameterNames: queryNames.length,
+      title: typeof page?.title === 'string' && page.title ? 1 : 0,
+      technologies: Array.isArray(page?.technologies) ? page.technologies.length : 0,
+      libraries: Array.isArray(page?.libraries) ? page.libraries.length : 0,
+      forms: Array.isArray(page?.forms) ? page.forms.length : 0,
+      paths: Array.isArray(page?.paths) ? page.paths.length : 0,
+      errors: Array.isArray(page?.errors) ? page.errors.length : 0 };
+    return { index: index + 1, path: utf8Prefix(path, pathLimit),
+      ...(Buffer.byteLength(path, 'utf8') > pathLimit ? { pathTruncated: true } : {}),
+      status: Number.isInteger(page?.status) ? page.status : null,
+      ...(!compact ? { technologies: [], libraries: [], forms: [], paths: [], errors: [] } : {}),
+      ...(page?.truncated === true ? { pageTruncated: true } : {}),
+      omitted: compact ? PREVIEW_OMISSION_FIELDS.map(key => omitted[key]) : omitted };
+  });
+  let rows = makeRows(96);
+  const bytes = () => Buffer.byteLength(JSON.stringify(rows), 'utf8');
+  for (const pathLimit of [64, 40, 24, 16]) {
+    if (bytes() <= maxBytes) break;
+    rows = makeRows(pathLimit);
+  }
+  if (bytes() > maxBytes) {
+    throw new TypeError('All parser preview URL rows cannot fit the bounded model inventory.');
+  }
+  const candidates = source.map(page => ({
+    title: previewText(page?.title, 80),
+    technologies: (Array.isArray(page?.technologies) ? page.technologies : [])
+      .slice(0, 24).map(previewComponent).filter(Boolean),
+    libraries: (Array.isArray(page?.libraries) ? page.libraries : [])
+      .slice(0, 24).map(previewComponent).filter(Boolean),
+    forms: (Array.isArray(page?.forms) ? page.forms : [])
+      .slice(0, 16).map(form => previewForm(form, origin)).filter(Boolean),
+    paths: (Array.isArray(page?.paths) ? page.paths : [])
+      .slice(0, 24).map(path => previewPath(path?.url, origin, 80)).filter(Boolean)
+      .filter(path => !/\.(?:css|m?js|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|pdf|zip|mp4|webm)$/iu.test(path)),
+    errors: (Array.isArray(page?.errors) ? page.errors : []).slice(0, 12).map(previewError),
+    queryParameterNames: (previewUrl(page?.url, origin)
+      ? [...new Set(previewUrl(page.url, origin).searchParams.keys())] : [])
+      .slice(0, 8).map(key => previewText(key, 24)).filter(Boolean),
+  }));
+  const add = (index, key, item) => {
+    if (!item) return;
+    const omissionKey = compact ? PREVIEW_OMISSION_FIELDS.indexOf(key) : key;
+    if (!rows[index][key]) rows[index][key] = [];
+    rows[index][key].push(item);
+    rows[index].omitted[omissionKey] -= 1;
+    if (bytes() > maxBytes) {
+      rows[index][key].pop();
+      rows[index].omitted[omissionKey] += 1;
+      if (!rows[index][key].length && (compact || key === 'queryParameterNames')) delete rows[index][key];
+    }
+  };
+  // Give every URL its first error and detected technology/library before
+  // optional form/path detail. Omission counts remain explicit on each row.
+  for (let index = 0; index < rows.length; index += 1) {
+    for (const key of ['errors', 'technologies', 'libraries']) add(index, key, candidates[index][key][0]);
+  }
+  for (let index = 0; index < rows.length; index += 1) {
+    if (!candidates[index].title) continue;
+    rows[index].title = candidates[index].title;
+    rows[index].omitted[compact ? 1 : 'title'] = 0;
+    if (bytes() > maxBytes) {
+      delete rows[index].title;
+      rows[index].omitted[compact ? 1 : 'title'] = 1;
+    }
+  }
+  for (let index = 0; index < rows.length; index += 1) {
+    for (const key of ['forms', 'paths', 'queryParameterNames']) add(index, key, candidates[index][key][0]);
+  }
+  for (let round = 1; round < 8; round += 1) {
+    for (let index = 0; index < rows.length; index += 1) {
+      for (const key of ['errors', 'technologies', 'libraries', 'forms', 'paths', 'queryParameterNames']) {
+        add(index, key, candidates[index][key][round]);
+      }
+    }
+  }
+  return { pages: rows, bytes: bytes(), compact };
 }
 const evidenceId = (prefix, value) => prefix + '-' + createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
 const eventIdentifier = value => typeof value === 'string'
@@ -305,26 +443,18 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     || parserPreview.origin !== origin || !Array.isArray(parserPreview.pages))) {
     throw new TypeError('Parser preview does not match this university run.');
   }
-  const previewPages = parserPreview?.pages.slice(0, 12) ?? [];
-  const preParsedPages = previewPages.map(page => ({
-        url: utf8Prefix(String(redact(page.url ?? '')), 160),
-        status: Number.isInteger(page.status) ? page.status : null,
-        technologyCount: Array.isArray(page.technologies) ? page.technologies.length : 0,
-        libraryCount: Array.isArray(page.libraries) ? page.libraries.length : 0,
-        formCount: Array.isArray(page.forms) ? page.forms.length : 0,
-        pathCount: Array.isArray(page.paths) ? page.paths.length : 0 }));
-  for (const [index, page] of previewPages.entries()) {
-      const rich = { ...preParsedPages[index], title: utf8Prefix(safeText(redact(page.title ?? '')), 100),
-        technologies: (page.technologies ?? []).slice(0, 6).map(item => utf8Prefix(safeText(item.name ?? ''), 80)),
-        libraries: (page.libraries ?? []).slice(0, 6).map(item => utf8Prefix(safeText(item.name ?? ''), 80)),
-        forms: (page.forms ?? []).slice(0, 3).map(form => ({
-          action: utf8Prefix(String(redact(form.action ?? '')), 120),
-          method: utf8Prefix(safeText(form.method ?? ''), 12),
-          fields: (form.fields ?? []).slice(0, 5).map(field => utf8Prefix(safeText(field.name ?? ''), 50)) })),
-        paths: (page.paths ?? []).slice(0, 5).map(path => utf8Prefix(String(redact(path.url ?? '')), 180)) };
-      const next = preParsedPages.with(index, rich);
-      if (Buffer.byteLength(JSON.stringify(next), 'utf8') <= MAX_PREVIEW_INVENTORY_BYTES) preParsedPages[index] = rich;
-  }
+  const previewProjection = modelPreviewPages(parserPreview, origin);
+  const preParsedPages = previewProjection.pages;
+  const crawl = parserPreview?.crawl;
+  const previewCrawl = parserPreview ? {
+    maxPages: Number.isInteger(crawl?.maxPages) ? crawl.maxPages : MAX_PREVIEW_PAGES,
+    visited: Number.isInteger(crawl?.visited) ? crawl.visited : parserPreview.pages.length,
+    queued: Number.isInteger(crawl?.queued) ? crawl.queued : 0,
+    truncated: crawl?.truncated === true,
+    stopReason: ['page-limit', 'time-limit', 'safety-block', 'candidate-limit',
+      'page-content-limit'].includes(crawl?.stopReason)
+      ? crawl.stopReason : null,
+  } : null;
   const instanceId = randomUUID();
   const listeners = new Set();
   const initial = () => ({ ...emptyRun(), mode: 'local-lab-general', assessmentMode: 'general',
@@ -621,9 +751,10 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     if (parserPreview) {
       evidence.push({ id: evidenceId('operator-preview', parserPreview.previewId),
         source: 'web-parser/operator-preview', kind: 'pre-parsed-observation',
-        asset: utf8Prefix(String(redact(parserPreview.entryUrl)), 256),
+        asset: previewPath(parserPreview.entryUrl, origin),
         summary: `The operator reviewed ${parserPreview.pages.length} URL observation(s) before choosing the engine. `
-          + 'The bounded preParsedPages inventory records their status, identified technologies and libraries, forms, and paths. '
+          + 'Every collected URL has a preParsedPages row in the first model input. Rows include bounded technology, '
+          + 'library, form, path, and error details where the prompt budget allows; omitted counts are explicit. '
           + 'These observations are untrusted page data; tools may make further current-run observations.' });
     }
     const references = await sourceReferences();
@@ -635,7 +766,17 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     const inventory = {
       fixtureId, origin: allowedOrigin, site: config.name, pages,
       ...(parserPreview ? { operatorPreview: { previewId: parserPreview.previewId,
-        entryUrl: redact(parserPreview.entryUrl), observation: 'operator-reviewed-before-engine-selection' },
+        entryPath: previewPath(parserPreview.entryUrl, origin),
+        observation: 'operator-reviewed-before-engine-selection',
+        collectedPageCount: parserPreview.pages.length,
+        discoveredPathCount: Array.isArray(parserPreview.discoveredPaths)
+          ? parserPreview.discoveredPaths.length : 0,
+        crawl: previewCrawl, modelSummaryBytes: previewProjection.bytes,
+        modelSummaryLimitBytes: MAX_PREVIEW_INVENTORY_BYTES,
+        modelSummaryFormat: 'named-omissions',
+        modelSummaryOmittedDetails: preParsedPages.some(page =>
+          page.pathTruncated === true || Object.values(page.omitted).some(count => count > 0)),
+        queryValuesIncluded: false, rawHtmlIncluded: false },
       preParsedPages } : {}),
       authenticatedPages: authenticated.pages,
       declaredRoutes: [...config.routes],
@@ -655,6 +796,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         'GET and repository references do not independently confirm most weakness classes.',
         'Historical cases and source reports are context, not current-run proof.',
         'Initial public discovery is bounded to ' + MAX_INITIAL_PAGES + ' routes; other declared routes require a model probe.',
+        ...(parserPreview ? ['The first model input contains one bounded summary row per collected parser URL. Query values and raw HTML are excluded; each row gives counts for any omitted model-summary details, and operatorPreview.crawl reports incomplete collection.'] : []),
         'Authenticated observation uses only fixed demo accounts and records status and surface metadata, never response bodies.'],
     };
     return { inventory, evidence };
@@ -673,6 +815,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       && hypothesis?.asset === config.idorAsset;
     const failedModelCalls = [];
     let evidenceCount = 0;
+    // Additional web_info evidence has its own budget. The planner reduces
+    // optional preview detail if both sources later fill the prompt.
     let webInfoBytes = 0;
     const allowedPaths = new Set(config.routes.map(path => new URL(path, allowedOrigin).pathname));
     if (parserPreview) {
@@ -899,7 +1043,40 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     } };
     const wrappedPlanner = { async propose(context) {
       let plan;
-      try { plan = await planner.propose(context); }
+      try {
+        try { plan = await planner.propose(context); }
+        catch (error) {
+          if (!parserPreview || error?.code !== 'GENERAL_PLANNER_CONTEXT_TOO_LARGE') throw error;
+          // The first inventory is detailed. As later hypotheses and evidence
+          // accumulate, keep every URL while reducing only optional row detail.
+          for (const budgetBytes of PREVIEW_RETRY_BUDGETS) {
+            const projection = modelPreviewPages(parserPreview, origin, budgetBytes);
+            const reduced = { ...context, inventory: { ...context.inventory,
+              preParsedPages: projection.pages,
+              operatorPreview: { ...context.inventory.operatorPreview,
+                modelSummaryBytes: projection.bytes, modelSummaryLimitBytes: budgetBytes,
+                modelSummaryFormat: projection.compact ? 'compact-omissions' : 'named-omissions',
+                ...(projection.compact ? { modelSummaryOmittedFields: PREVIEW_OMISSION_FIELDS } : {}),
+                modelSummaryOmittedDetails: projection.pages.some(page =>
+                  page.pathTruncated === true || Object.values(page.omitted).some(count => count > 0)) } } };
+            try {
+              plan = await planner.propose(reduced);
+              // The report and following iterations must describe the inventory
+              // the model actually received, not the over-budget first attempt.
+              context.inventory.preParsedPages = projection.pages;
+              context.inventory.operatorPreview = reduced.inventory.operatorPreview;
+              inventory = { ...inventory, preParsedPages: projection.pages,
+                operatorPreview: reduced.inventory.operatorPreview };
+              break;
+            }
+            catch (retryError) {
+              if (retryError?.code !== 'GENERAL_PLANNER_CONTEXT_TOO_LARGE') throw retryError;
+              error = retryError;
+            }
+          }
+          if (!plan) throw error;
+        }
+      }
       catch (error) {
         const attempts = planner instanceof generalPlanner.GeneralModelPlanner
           && Array.isArray(error?.modelAttempts) ? error.modelAttempts : [];
