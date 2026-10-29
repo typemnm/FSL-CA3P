@@ -18,12 +18,16 @@ function sql(path, program) {
   return result.stdout.trim();
 }
 
-function setup(t, options = {}) {
+// Queues a startable isolated board run. No worker runs, so the synthetic key is never sent anywhere.
+const LAB_RUN = { mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId: 'vul-web-1' };
+const LAB_ENV = { DEEPSEEK_API_KEY: 'synthetic-test-only', CASPER_DB_PYTHON: 'missing-python-for-reset-test' };
+
+function setup(t, { env: envOverrides, ...options } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-experiment-reset-'));
   const storePath = join(directory, 'runs.sqlite'); const services = [];
   const calls = [];
   const defaults = { autoStartWorker: false, importLegacy: false, envFile: null,
-    env: { ...process.env, DEEPSEEK_API_KEY: '', CASPER_DB_PATH: join(directory, 'absent-cases.sqlite3') },
+    env: { ...process.env, ...LAB_ENV, CASPER_DB_PATH: join(directory, 'absent-cases.sqlite3'), ...envOverrides },
     experimentFileOptions: { legacyReportsDir: join(directory, 'legacy-reports') },
     experimentCleanupFactory: async input => { calls.push(input); return { execute: async () => ({ files: 3 }) }; } };
   const open = extra => { const service = createRunService({ storePath, ...defaults, ...options, ...extra }); services.push(service); return service; };
@@ -46,7 +50,7 @@ function recordReadOnlyExternalObservation(service, id) {
 
 test('confirmed reset removes all central history and publishes a new experiment epoch', async t => {
   const { service, open, calls } = setup(t);
-  const first = await service.start({ mode: 'core-fixture' });
+  const first = await service.start(LAB_RUN);
   service.stop(first.run.id);
   service.store.importLegacyRun({ runId: 'legacy-old', report: { runId: 'legacy-old', status: 'completed' } });
   assert.equal(service.experimentResetPreview().runCount, 2);
@@ -58,7 +62,7 @@ test('confirmed reset removes all central history and publishes a new experiment
   assert.equal(result.experiment.epoch, 1); assert.equal(notices.at(-1).experiment.epoch, 1);
   const restarted = open({ importLegacy: true }); await restarted.ready;
   assert.equal(restarted.listRuns().total, 0);
-  const fresh = await service.start({ mode: 'core-fixture' });
+  const fresh = await service.start(LAB_RUN);
   assert.equal(fresh.run.manifest.experiment.epoch, 1);
   assert.equal(fresh.run.manifest.experiment.previousRunCount, 0);
   assert.equal(fresh.run.manifest.experiment.lastResetAt, result.experimentReset.completedAt);
@@ -69,8 +73,8 @@ test('unconfirmed requests and any queued run leave all data untouched', async t
   for (const body of [undefined, {}, [], { confirmed: false }, { confirmed: 'true' }, { confirmed: true, target: '/' }]) {
     await assert.rejects(service.resetExperiment(body), { status: 400 });
   }
-  await service.start({ mode: 'core-fixture' });
-  const latest = await service.start({ mode: 'core-fixture' }); service.stop(latest.run.id);
+  await service.start(LAB_RUN);
+  const latest = await service.start(LAB_RUN); service.stop(latest.run.id);
   // The selected run is terminal, but another queued run must still block deletion.
   await assert.rejects(service.resetExperiment({ confirmed: true }), { code: 'RUN_ACTIVE' });
   assert.equal(calls.length, 0); assert.equal(service.listRuns().total, 2);
@@ -81,13 +85,13 @@ test('partial cleanup failure survives restart and blocks execution until a succ
   let fails = true;
   const factory = async () => ({ execute: async () => { if (fails) throw new Error('fixture reset failed'); return { files: 1 }; } });
   const { service, open } = setup(t, { experimentCleanupFactory: factory });
-  const run = await service.start({ mode: 'core-fixture' }); service.stop(run.run.id);
+  const run = await service.start(LAB_RUN); service.stop(run.run.id);
   await assert.rejects(service.resetExperiment({ confirmed: true }), { status: 503 });
   assert.equal(service.getState().experiment.status, 'failed');
   assert.equal(service.listRuns().total, 1);
   const restarted = open();
   assert.equal(restarted.getState().experiment.status, 'failed');
-  await assert.rejects(restarted.start({ mode: 'core-fixture' }), { status: 409 });
+  await assert.rejects(restarted.start(LAB_RUN), { status: 409 });
   fails = false;
   await restarted.resetExperiment({ confirmed: true });
   assert.equal(service.getState().experiment.status, 'ready'); assert.equal(service.listRuns().total, 0);
@@ -103,7 +107,7 @@ test('reset excludes concurrent resets, new runs and external reviews across ser
   try {
     await assert.rejects(service.resetExperiment({ confirmed: true }), { status: 409 });
     await assert.rejects(second.resetExperiment({ confirmed: true }), { code: 'EXPERIMENT_BUSY' });
-    await assert.rejects(second.start({ mode: 'core-fixture' }), { status: 409 });
+    await assert.rejects(second.start(LAB_RUN), { status: 409 });
     await assert.rejects(second.withMutationLock(async () => {}), { status: 409 });
   } finally { allowCleanup(); }
   await pending;
@@ -120,7 +124,7 @@ test('an in-flight history review prevents reset until its external write finish
 
 test('real cleanup removes run-derived files, preserves credentials and never resurrects deleted history', async t => {
   const { service, open, directory, storePath } = setup(t, { experimentCleanupFactory: prepareExperimentCleanup });
-  const started = await service.start({ mode: 'core-fixture' }); const id = started.run.id; const hash = digest(id);
+  const started = await service.start(LAB_RUN); const id = started.run.id; const hash = digest(id);
   const lease = service.store.claimNext('test-worker');
   const artifact = service.store.writeArtifact(id, 'run-report', { marker: 'prior-model-output' });
   service.store.saveState(lease, { ...started.run, coreRunId: 'old-core-alias', status: 'completed', events: [] });
@@ -144,12 +148,12 @@ test('real cleanup removes run-derived files, preserves credentials and never re
   assert.equal(existsSync(storePath), true);
   await service.close(); const reopened = open({ importLegacy: true }); await reopened.ready;
   assert.equal(reopened.listRuns().total, 0); assert.equal(reopened.getState().run.status, 'idle');
-  const next = await reopened.start({ mode: 'core-fixture' });
+  const next = await reopened.start(LAB_RUN);
   assert.equal(next.run.manifest.experiment.previousRunCount, 0);
 });
 
 test('history clear removes linked files and checks while preserving the later target reset obligation', async t => {
-  const { service, open, calls, directory } = setup(t);
+  const { service, open, calls, directory } = setup(t, { env: { CASPER_DB_PYTHON: python } });
   const casesPath = join(directory, 'absent-cases.sqlite3');
   sql(casesPath, String.raw`
 import sqlite3,sys
@@ -217,17 +221,17 @@ test('a failed Daehan reset can use a newly configured management hook before an
     error.status === 409 && /vul-web2-daehan.*관리 훅/.test(error.message));
   assert.equal(service.getState().experiment.status, 'failed');
   assert.equal(service.listRuns().total, 1);
-  await assert.rejects(service.start({ mode: 'core-fixture' }), { status: 409 });
+  await assert.rejects(service.start(LAB_RUN), { status: 409 });
   for (const path of Object.values(resources)) assert.equal(readFileSync(path, 'utf8'), 'experiment-changed');
 
   await service.close();
   const token = 'daehan-test-reset-token-'.repeat(2);
   const managementOrigin = 'http://127.0.0.1:54101';
-  const env = { ...process.env, DEEPSEEK_API_KEY: '', CASPER_DB_PATH: join(directory, 'absent-cases.sqlite3'),
+  const env = { ...process.env, ...LAB_ENV, CASPER_DB_PATH: join(directory, 'absent-cases.sqlite3'),
     CA3P_EXPERIMENT_RESET_TARGETS: JSON.stringify({ [fixtureId]: { origin: managementOrigin, targetOrigin, token } }) };
   const restarted = open({ env });
   assert.equal(restarted.getState().experiment.status, 'failed');
-  await assert.rejects(restarted.start({ mode: 'core-fixture' }), { status: 409 });
+  await assert.rejects(restarted.start(LAB_RUN), { status: 409 });
 
   const requests = [];
   const originalFetch = globalThis.fetch;
@@ -250,19 +254,19 @@ test('a failed Daehan reset can use a newly configured management hook before an
       { confirmation: 'reset-experiment-target', fixtureId, targetOrigin });
     for (const [scope, path] of Object.entries(resources)) assert.equal(readFileSync(path, 'utf8'), `clean-${scope}`);
     assert.equal(readFileSync(unrelated, 'utf8'), 'preserve');
-    const next = await restarted.start({ mode: 'core-fixture' });
+    const next = await restarted.start(LAB_RUN);
     assert.equal(next.run.manifest.experiment.epoch, 1);
   } finally { globalThis.fetch = originalFetch; }
 });
 
 test('history clear of isolated runs advances the epoch and permits another run', async t => {
   const { service } = setup(t);
-  const first = await service.start({ mode: 'core-fixture' }); service.stop(first.run.id);
+  const first = await service.start(LAB_RUN); service.stop(first.run.id);
   const result = await service.clearRunHistory({ confirmed: true });
   assert.equal(result.experiment.status, 'ready');
   assert.equal(result.experiment.epoch, 1);
   assert.equal(service.listRuns().total, 0);
-  const next = await service.start({ mode: 'core-fixture' });
+  const next = await service.start(LAB_RUN);
   assert.equal(next.run.manifest.experiment.epoch, 1);
 });
 
@@ -275,7 +279,7 @@ test('read-only external observation can be fully reset without a target hook', 
   assert.deepEqual(reset.experimentReset.targets.targets, []);
   assert.equal(service.listRuns().total, 0);
   assert.deepEqual(service.store.pendingTargetResets(), []);
-  const next = await service.start({ mode: 'core-fixture' });
+  const next = await service.start(LAB_RUN);
   assert.equal(next.run.manifest.experiment.epoch, 1);
 });
 
@@ -290,7 +294,7 @@ test('a previous failed reset of a read-only external run can be retried', async
   const reset = await restarted.resetExperiment({ confirmed: true });
   assert.equal(reset.experiment.status, 'ready');
   assert.equal(restarted.listRuns().total, 0);
-  const next = await restarted.start({ mode: 'core-fixture' });
+  const next = await restarted.start(LAB_RUN);
   assert.equal(next.run.manifest.experiment.epoch, 1);
 });
 
@@ -301,7 +305,7 @@ test('clearing read-only external history leaves no target restoration obligatio
   assert.equal(service.getState().experiment.status, 'ready');
   assert.equal(service.listRuns().total, 0);
   assert.deepEqual(service.store.pendingTargetResets(), []);
-  const next = await service.start({ mode: 'core-fixture' });
+  const next = await service.start(LAB_RUN);
   assert.equal(next.run.manifest.experiment.epoch, 1);
 });
 

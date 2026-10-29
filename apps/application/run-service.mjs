@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository, DEFAULT_STORE_PATH } from '../../packages/run-store/index.mjs';
 import { createRunManifest } from '../../packages/contracts/manifest.mjs';
-import { emptyRun, RUN_MODES, ACTIVE_STATUSES, redact } from '../../packages/contracts/index.mjs';
+import { emptyRun, RUN_MODES, RETIRED_RUN_MODES, ACTIVE_STATUSES, redact } from '../../packages/contracts/index.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import { normalizeExternalTarget, resolvePublicAddresses, verifyExternalPreflightToken } from './external-target.mjs';
 import { compareRunRecords } from '../../packages/evaluation/index.mjs';
@@ -15,6 +15,9 @@ import { prepareRunFileCleanup } from './experiment-files.mjs';
 import { targetResetObligationsForRuns } from './experiment-targets.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
+// History keeps showing stored runs of retired modes; only start validation uses RUN_MODES.
+const READABLE_RUN_MODES = Object.freeze([...RUN_MODES, ...RETIRED_RUN_MODES]);
+const RETIRED_PROFILES = Object.freeze(['stored_xss_canary', 'agent_cross_user_delete_canary']);
 const workerFile = fileURLToPath(new URL('../worker/worker.mjs', import.meta.url));
 const IDOR_FIXTURES = Object.freeze({
   'vul-web2-daehan': 'http://127.0.0.1:4101',
@@ -40,7 +43,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     let offset = 0;
     while (true) {
       const page = store.listRuns({ limit: 200, offset });
-      const recent = page.items.find(item => RUN_MODES.includes(item.mode));
+      const recent = page.items.find(item => READABLE_RUN_MODES.includes(item.mode));
       if (recent) return recent.id;
       offset += page.items.length;
       if (offset >= page.total) return null;
@@ -54,7 +57,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
   function listModels() { return registryModels({ envFile, env }); }
   function getState() {
     const selected = selectedRunId ? store.getRun(selectedRunId) : null;
-    const run = selected && RUN_MODES.includes(selected.mode) ? selected : idleRun;
+    const run = selected && READABLE_RUN_MODES.includes(selected.mode) ? selected : idleRun;
     const models = listModels(); const remote = models.find(model => model.provider === 'deepseek' && model.available);
     const experiment = store.experimentState();
     return { run, mode: run.mode, instanceId, experiment: { epoch: experiment.epoch, lastResetAt: experiment.lastResetAt, status: experiment.status },
@@ -104,6 +107,10 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
         'scope', 'preflightToken', 'authorizationConfirmed'].includes(key))) {
       throw fault(400, 'Unsupported run options.');
     }
+    if (RETIRED_RUN_MODES.includes(body.mode) || RETIRED_PROFILES.includes(body.testProfile)) {
+      throw Object.assign(fault(400, 'The single stored-XSS/BOLA check was retired. Start a general assessment instead.'),
+        { code: RETIRED_RUN_MODES.includes(body.mode) ? 'RETIRED_MODE' : 'RETIRED_PROFILE' });
+    }
     if (body.mode === 'external-general') {
       if (body.fixtureId !== undefined || body.testProfile !== undefined || body.delayMs !== undefined
         || body.authorizationConfirmed !== true) throw fault(400, 'Confirm the external target and use the external profile.');
@@ -136,9 +143,12 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (typeof fixtureId !== 'string') throw fault(400, 'Choose a registered local fixture.');
     const idorOrigin = Object.hasOwn(universityOrigins, fixtureId) ? universityOrigins[fixtureId] : null;
     if (fixtureId !== 'vul-web-1' && !idorOrigin) throw fault(400, 'Choose a registered local fixture.');
-    const mode = body.mode ?? (idorOrigin ? 'local-lab-rule'
-      : body.modelId && body.modelId !== 'rule-baseline' ? 'local-lab-deepseek' : 'core-fixture');
+    const mode = body.mode ?? (idorOrigin ? 'local-lab-rule' : 'local-lab-general');
     if (!RUN_MODES.includes(mode)) throw fault(400, 'Unsupported run mode.');
+    if (mode === 'local-lab-rule' && !idorOrigin) {
+      throw Object.assign(fault(400, 'The rule lab now runs only the university IDOR check. Use a general assessment for vul-web-1.'),
+        { code: 'RETIRED_MODE' });
+    }
     const general = mode === 'local-lab-general';
     const modelId = body.modelId ?? (mode === 'local-lab-deepseek' || general ? 'deepseek-flash' : 'rule-baseline');
     if (idorOrigin && !general && (mode !== 'local-lab-rule' || modelId !== 'rule-baseline')) {
@@ -343,7 +353,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     return closeTask;
   }
   return { getState, start, startLab: ({ modelId = 'rule-baseline', ...options } = {}) => start({ ...options,
-    modelId, mode: modelId === 'rule-baseline' ? 'local-lab-rule' : 'local-lab-deepseek' }),
+    modelId, mode: modelId === 'rule-baseline' ? 'local-lab-rule' : 'local-lab-general' }),
     stop, reset, resetExperiment, clearRunHistory, experimentResetPreview, withMutationLock, close, listModels, store, ready,
     getGeneralLoopBudget: () => store.getGeneralLoopBudget(),
     setGeneralLoopBudget: limits => store.setGeneralLoopBudget(limits),

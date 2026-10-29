@@ -25,6 +25,7 @@ test('remote deployment polls state and submits general assessments with CSRF an
   assert.equal(streams, 0);
   assert.ok(calls.filter(call => call.path === '/api/state').length >= 3);
   assert.ok(connections.some(([state, transport]) => state === 'connected' && transport === 'polling'));
+  assert.equal(client.start, undefined, 'the retired core-fixture start must not be reachable');
   await client.startAssessment('deepseek-flash');
   const start = calls.find(call => call.path === '/api/runs');
   assert.deepEqual(JSON.parse(start.options.body), { mode: 'local-lab-general', modelId: 'deepseek-flash' });

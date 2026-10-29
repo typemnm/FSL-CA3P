@@ -458,8 +458,7 @@ else if(req.url==='/api/platform')value={source:{commitSha:sha,dirty:false},modu
 else if(req.url==='/api/models')value={models:[{id:'deepseek-flash',available:modelAvailable}]};
 else if(req.url==='/api/chat/models')value={models:[{id:'deepseek-flash',available:modelAvailable}]};
 else if(req.url==='/api/chat/sessions')value={sessions:[]};
-else if(req.url==='/api/runs'&&req.method==='POST')value={run:{id:'synthetic-fixture'}};
-else if(req.url==='/api/runs/synthetic-fixture')value={run:{status:'completed',simulated:true,targetContacted:false}};
+else if(req.url.startsWith('/api/runs')&&req.method!=='GET')res.statusCode=500;
 res.setHeader('Content-Type','application/json');res.end(JSON.stringify(value));});
 server.listen(Number(process.env.PORT),'127.0.0.1');
 process.once('SIGTERM',()=>server.close());
