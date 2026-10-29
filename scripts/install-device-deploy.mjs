@@ -40,6 +40,7 @@ export function buildDashboardPlist(original, config) {
     EnvironmentVariables: { ...original.EnvironmentVariables,
       CASPER_DB_PYTHON: join(current, '.venv/bin/python'), CA3P_REPORT_PYTHON: join(current, '.venv/bin/python'),
       CASPER_DB_PATH: config.caseDbPath, CA3P_STORE_PATH: join(config.runtimeDir, 'runs.sqlite'),
+      CA3P_CHAT_DB_PATH: join(config.runtimeDir, 'chat.sqlite'),
       DASHBOARD_DEPLOYMENT_LOCK_FILE: join(config.deployRoot, 'maintenance.json'),
       DASHBOARD_DEPLOYMENT_STATUS_FILE: join(config.deployRoot, 'status.json') } };
 }

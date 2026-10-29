@@ -157,10 +157,11 @@ test('database failures keep helper output out of public errors while retaining 
     const python = join(directory, 'synthetic-python');
     const localConfig = { ...config, deployRoot: directory };
     const targetSha = 'c'.repeat(40);
+    await writeFile(join(directory, 'manifest.json'), JSON.stringify({ databases: { run: {}, case: {} } }));
     for (const [output, code] of [['{"ok":false,"error":"synthetic-private-database-value"}', 1],
       ['{"ok":false,"error":"synthetic-private-database-value"}', 0], ['synthetic-private-database-value', 0]]) {
       await writeFile(python, `#!/bin/sh\nprintf '%s\\n' '${output}'\nexit ${code}\n`, { mode: 0o700 });
-      await assert.rejects(database(localConfig, python, ['restore'], { targetSha, phase: 'rollback-restore' }), error => {
+      await assert.rejects(database(localConfig, python, ['restore', '--backup', directory], { targetSha, phase: 'rollback-restore' }), error => {
         assert.match(error.message, /private deployment log/);
         assert.doesNotMatch(error.message, /synthetic-private-database-value/);
         return true;
@@ -326,6 +327,106 @@ async function availablePort() {
   return port;
 }
 
+async function webParserReleaseFixture(t, { malformedDataset = false, emptyProbes = false, modulePath = 'web-parser' } = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'ca3p-parser-prepare-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const repoDir = join(directory, 'repo'); const deployRoot = join(directory, 'deploy');
+  await mkdir(repoDir);
+  const files = {
+    'integration-manifest.json': JSON.stringify({ modules: [
+      { id: 'xss-parser', path: 'xss-parser', status: 'active' },
+      { id: 'web-parser', path: modulePath, status: 'active' },
+      { id: 'report', path: 'packages/report', status: 'active' },
+    ] }),
+    'xss-parser/package-lock.json': '{}', 'web-parser/package-lock.json': '{}',
+    'packages/report/capture/package-lock.json': '{}', 'packages/report/requirements-ci.lock': '# fixture',
+    'packages/report/pyproject.toml': '# fixture',
+    'web-parser/scripts/fetch-dataset.mjs': `import {mkdir,writeFile} from 'node:fs/promises';
+const root=new URL('../data/webappanalyzer/',import.meta.url);await mkdir(new URL('technologies/',root),{recursive:true});
+for(const file of ['categories.json','groups.json',...'_abcdefghijklmnopqrstuvwxyz'.split('').map(c=>'technologies/'+c+'.json')]){
+await writeFile(new URL(file,root),${malformedDataset ? "file==='technologies/x.json'?'':" : ''}JSON.stringify({fixture:{name:'Synthetic'}}));}
+`,
+    'web-parser/fingerprint.mjs': `import {readFileSync} from 'node:fs';
+export function pageProbes(){JSON.parse(readFileSync(new URL('./data/webappanalyzer/categories.json',import.meta.url),'utf8'));
+return ${emptyProbes ? '{js:[],dom:{}}' : "{js:['Synthetic.version'],dom:{'body':{text:true,attributes:[]}}}"};}
+`,
+  };
+  for (const [name, content] of Object.entries(files)) {
+    await mkdir(join(repoDir, name, '..'), { recursive: true }); await writeFile(join(repoDir, name), content);
+  }
+  const git = args => execFileSync('/usr/bin/git', args, { cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(['init', '-q']); git(['add', '.']); git(['-c', 'user.name=CA3P fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Parser deployment fixture']);
+  const sha = git(['rev-parse', 'HEAD']); const release = join(deployRoot, 'releases', sha);
+  git(['worktree', 'add', '--detach', release, sha]);
+  const localConfig = { ...config, repoDir, deployRoot, runtimeDir: join(directory, 'runtime'),
+    nodePath: process.execPath, pythonPath: join(directory, 'synthetic-python'), npmCli: join(directory, 'synthetic-npm-cli.mjs') };
+  const commands = []; const phases = [];
+  const runCommand = async (executable, args, options) => {
+    const name = options.logFile.split('/').at(-1).replace(/\.log$/u, '');
+    commands.push({ name, executable, args });
+    if (name === 'venv') {
+      await mkdir(join(release, '.venv/bin'), { recursive: true }); await writeFile(join(release, '.venv/bin/python'), 'fixture');
+    }
+    if (name.startsWith('npm-')) {
+      assert.ok(args.includes('--ignore-scripts'), 'arbitrary npm lifecycle scripts remain disabled');
+      const prefix = args[args.indexOf('--prefix') + 1];
+      for (const dependency of prefix.endsWith('/web-parser') ? ['playwright', 'wapalyzer-core'] : ['playwright']) {
+        const path = join(prefix, 'node_modules', dependency); await mkdir(path, { recursive: true }); await writeFile(join(path, 'package.json'), '{}');
+      }
+    }
+    if (['web-parser-dataset', 'web-parser-dataset-check'].includes(name)) return execute(executable, args, options);
+    return '';
+  };
+  const phase = async value => {
+    phases.push(value);
+    if (value === 'isolated-smoke') throw new Error('fixture stopped before database or service operations');
+  };
+  return { directory, localConfig, release, sha, commands, phases, phase, runCommand };
+}
+
+test('fresh device releases explicitly fetch and validate parser data despite disabled npm scripts', async t => {
+  const f = await webParserReleaseFixture(t);
+  await assert.rejects(stat(join(f.release, 'web-parser/data/webappanalyzer')), { code: 'ENOENT' });
+  await assert.rejects(prepareRelease(f.localConfig, { sha: f.sha }, f.phase, { execute: f.runCommand }), /fixture stopped before database or service operations/);
+  assert.deepEqual(f.commands.map(item => item.name), ['venv', 'npm-0', 'npm-1', 'npm-2', 'python-requirements',
+    'python-packages', 'chromium', 'web-parser-dataset', 'web-parser-dataset-check', 'preflight']);
+  assert.deepEqual(f.phases, ['dependencies', 'web-parser-dataset', 'isolated-smoke']);
+  const download = f.commands.find(item => item.name === 'web-parser-dataset');
+  assert.equal(download.executable, process.execPath);
+  assert.deepEqual(download.args, [join(f.release, 'web-parser/scripts/fetch-dataset.mjs')]);
+  assert.equal(JSON.parse(await readFile(join(f.localConfig.deployRoot, 'prepared', `${f.sha}.json`), 'utf8')).sha, f.sha);
+  assert.match(await readFile(join(f.localConfig.deployRoot, 'logs', f.sha, 'web-parser-dataset-check.log'), 'utf8'), /dataset ready/);
+  // Prepared dependencies do not imply that ignored runtime data still exists.
+  await rm(join(f.release, 'web-parser/data'), { recursive: true }); f.commands.length = 0; f.phases.length = 0;
+  await assert.rejects(prepareRelease(f.localConfig, { sha: f.sha }, f.phase, { execute: f.runCommand }), /fixture stopped before database or service operations/);
+  assert.deepEqual(f.commands.map(item => item.name), ['web-parser-dataset', 'web-parser-dataset-check']);
+  assert.deepEqual(f.phases, ['web-parser-dataset', 'isolated-smoke']);
+  assert.ok((await stat(join(f.release, 'web-parser/data/webappanalyzer/technologies/x.json'))).size > 0);
+});
+
+test('empty dataset files and unusable matcher probes stop preparation before the prepared marker or smoke', async t => {
+  for (const settings of [{ malformedDataset: true }, { emptyProbes: true }]) {
+    const f = await webParserReleaseFixture(t, settings);
+    await assert.rejects(prepareRelease(f.localConfig, { sha: f.sha }, f.phase, { execute: f.runCommand }), /private deployment log/);
+    assert.equal(f.commands.at(-1).name, 'web-parser-dataset-check');
+    assert.equal(f.commands.some(item => item.name === 'preflight'), false);
+    assert.equal(f.phases.includes('isolated-smoke'), false);
+    await assert.rejects(stat(join(f.localConfig.deployRoot, 'prepared', `${f.sha}.json`)), { code: 'ENOENT' });
+  }
+});
+
+test('parser setup rejects another module path and linked data directories before executing the downloader', async t => {
+  const wrong = await webParserReleaseFixture(t, { modulePath: '../outside' });
+  await assert.rejects(prepareRelease(wrong.localConfig, { sha: wrong.sha }, wrong.phase, { execute: wrong.runCommand }), /fixed release directory/);
+  assert.equal(wrong.commands.length, 0);
+  const linked = await webParserReleaseFixture(t);
+  const outside = join(linked.directory, 'outside-data'); await mkdir(outside);
+  await symlink(outside, join(linked.release, 'web-parser/data'));
+  await assert.rejects(prepareRelease(linked.localConfig, { sha: linked.sha }, linked.phase, { execute: linked.runCommand }), /directories must stay inside/);
+  assert.equal(linked.commands.some(item => item.name === 'web-parser-dataset'), false);
+  assert.deepEqual(await readdir(outside), []);
+});
+
 test('isolated preparation masks inherited/file model keys and never uses production runtime paths', { timeout: 30_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'ca3p-isolated-'));
   const previous = { key: process.env.DEEPSEEK_API_KEY, observation: process.env.CA3P_SMOKE_TEST_OBSERVATION };
@@ -337,6 +438,7 @@ test('isolated preparation masks inherited/file model keys and never uses produc
     const observation = join(directory, 'smoke-observation.json');
     await mkdir(repoDir); await mkdir(runtimeDir); await mkdir(reports);
     await writeFile(join(runtimeDir, 'sentinel'), 'production-data');
+    await writeFile(join(runtimeDir, 'chat.sqlite'), 'production-chat-sentinel');
     const configModule = fileURLToPath(new URL('../../agent/src/deepseek-config.js', import.meta.url));
     // A minimal candidate HTTP app records the real child's environment and uses
     // the real model-option resolver with a synthetic agent/.env symlink.
@@ -347,13 +449,15 @@ import {createRequire} from 'node:module';
 import {join} from 'node:path';
 const config=createRequire(import.meta.url)(${JSON.stringify(configModule)});
 let modelAvailable=false;try{config.resolveDeepSeekOptions({env:process.env,envFile:join(process.cwd(),'agent/.env')});modelAvailable=true;}catch{}
-writeFileSync(process.env.CA3P_SMOKE_TEST_OBSERVATION,JSON.stringify({modelAvailable,store:process.env.CA3P_STORE_PATH,caseDb:process.env.CASPER_DB_PATH,auth:process.env.DASHBOARD_AUTH_FILE,envFile:process.env.CA3P_MODEL_ENV_FILE,keyBlank:process.env.DEEPSEEK_API_KEY==='',runtimeLink:process.cwd()+'/.runtime'}));
+writeFileSync(process.env.CA3P_SMOKE_TEST_OBSERVATION,JSON.stringify({modelAvailable,store:process.env.CA3P_STORE_PATH,chat:process.env.CA3P_CHAT_DB_PATH,caseDb:process.env.CASPER_DB_PATH,auth:process.env.DASHBOARD_AUTH_FILE,envFile:process.env.CA3P_MODEL_ENV_FILE,keyBlank:process.env.DEEPSEEK_API_KEY==='',runtimeLink:process.cwd()+'/.runtime'}));
 const sha=execFileSync('/usr/bin/git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
 const server=createServer((req,res)=>{let value={};
 if(req.url==='/api/health')value={status:'ok'};
 else if(req.url==='/api/auth/login'){res.setHeader('Set-Cookie','ca3p_session=synthetic; Path=/');value={authenticated:true,csrfToken:'synthetic-csrf'};}
-else if(req.url==='/api/platform')value={source:{commitSha:sha,dirty:false}};
+else if(req.url==='/api/platform')value={source:{commitSha:sha,dirty:false},modules:[{id:'chat-store',status:'active'}]};
 else if(req.url==='/api/models')value={models:[{id:'deepseek-flash',available:modelAvailable}]};
+else if(req.url==='/api/chat/models')value={models:[{id:'deepseek-flash',available:modelAvailable}]};
+else if(req.url==='/api/chat/sessions')value={sessions:[]};
 else if(req.url==='/api/runs'&&req.method==='POST')value={run:{id:'synthetic-fixture'}};
 else if(req.url==='/api/runs/synthetic-fixture')value={run:{status:'completed',simulated:true,targetContacted:false}};
 res.setHeader('Content-Type','application/json');res.end(JSON.stringify(value));});
@@ -388,12 +492,14 @@ process.once('SIGTERM',()=>server.close());
     assert.equal(observed.modelAvailable, false);
     assert.equal(observed.keyBlank, true);
     assert.equal(observed.store, join(probe, 'probe.sqlite'));
+    assert.equal(observed.chat, join(probe, 'chat.sqlite'));
     assert.equal(observed.caseDb, join(probe, 'source-backup/case.sqlite3'));
     assert.equal(observed.auth, join(probe, 'auth.json'));
     assert.equal(observed.envFile, join(probe, 'no-model.env'));
     assert.equal(await readlink(join(release, '.runtime')), runtimeDir);
     assert.equal(await readlink(join(release, 'reports/pentest-db-runs')), reports);
     assert.equal(await readFile(join(runtimeDir, 'sentinel'), 'utf8'), 'production-data');
+    assert.equal(await readFile(join(runtimeDir, 'chat.sqlite'), 'utf8'), 'production-chat-sentinel');
     assert.equal(await readFile(envFile, 'utf8'), 'DEEPSEEK_API_KEY=synthetic-file-key\n');
   } finally {
     if (previous.key === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = previous.key;

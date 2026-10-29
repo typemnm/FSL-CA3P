@@ -21,6 +21,7 @@ class DeviceDatabaseTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.run_db = self.root / "runtime/runs.sqlite"
         self.case_db = self.root / "data/cases.sqlite3"
+        self.chat_db = self.root / "runtime/chat.sqlite"
         self.backup = self.root / "backup"
 
     def cli(self, command, *arguments, success=True):
@@ -293,6 +294,51 @@ class DeviceDatabaseTests(unittest.TestCase):
         output = self.cli("migrate", "--case-db", self.case_db, success=False)
         self.assertIn("unrelated", output["error"])
         self.assertEqual(self.case_db.read_bytes(), original)
+
+    def create_chat(self):
+        module_url = (ROOT / "packages/chat-store/index.mjs").as_uri()
+        script = (f"import {{createChatRepository}} from {json.dumps(module_url)};"
+                  f"const r=createChatRepository({{path:{json.dumps(str(self.chat_db))}}});"
+                  "const s=r.createSession({owner:'fixture',modelId:'deepseek-flash',title:'보존할 대화'});"
+                  "r.appendMessage('fixture',s.id,{role:'user',content:'보존할 질문'});"
+                  "r.appendMessage('fixture',s.id,{role:'assistant',content:'보존할 답변'});"
+                  "r.compactSession('fixture',s.id,{summary:'보존할 요약',throughSequence:1});r.close();")
+        result = subprocess.run([os.environ.get("CA3P_NODE", "node"), "--input-type=module", "-e", script],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_chat_sessions_messages_and_summary_survive_three_store_rollback(self):
+        self.create_chat()
+        with sqlite3.connect(self.chat_db) as connection:
+            expected = {table: connection.execute(f'SELECT * FROM "{table}"').fetchall()
+                        for table in ("chat_sessions", "chat_messages")}
+        args = [*self.both(), "--chat-db", self.chat_db]
+        backed_up = self.cli("backup", *args, "--output", self.backup)
+        self.assertEqual(backed_up["databases"]["chat"]["info"]["counts"],
+                         {table: len(rows) for table, rows in expected.items()})
+        self.chat_db.write_bytes(b"failed candidate")
+        restored = self.cli("restore", *args, "--backup", self.backup)
+        self.assertEqual(restored["databases"]["chat"]["quickCheck"], "ok")
+        with sqlite3.connect(self.chat_db) as connection:
+            for table, rows in expected.items():
+                self.assertEqual(connection.execute(f'SELECT * FROM "{table}"').fetchall(), rows)
+
+    def test_chat_first_install_rollback_restores_absence(self):
+        args = [*self.both(), "--chat-db", self.chat_db]
+        self.cli("backup", *args, "--output", self.backup)
+        self.create_chat()
+        self.cli("restore", *args, "--backup", self.backup)
+        self.assertFalse(self.chat_db.exists())
+
+    def test_chat_backup_rejects_unrelated_database_without_modifying_it(self):
+        self.chat_db.parent.mkdir(parents=True)
+        with sqlite3.connect(self.chat_db) as connection:
+            connection.execute("CREATE TABLE unrelated(secret TEXT)")
+        original = self.chat_db.read_bytes()
+        failed = self.cli("backup", *self.both(), "--chat-db", self.chat_db,
+                          "--output", self.backup, success=False)
+        self.assertIn("unknown tables", failed["error"])
+        self.assertEqual(self.chat_db.read_bytes(), original)
 
     def test_missing_databases_restore_to_absence_after_failed_first_install(self):
         self.cli("backup", *self.both(), "--output", self.backup)

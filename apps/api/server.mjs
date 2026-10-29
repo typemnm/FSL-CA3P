@@ -12,6 +12,7 @@ import { preflightExternalTarget } from '../application/external-target.mjs';
 import { reviewRunCheck } from '../../packages/history/check-sync.mjs';
 import { redact } from '../../packages/contracts/index.mjs';
 import { deploymentPaused, deploymentStatus } from './deployment.mjs';
+import { createWorkspaceChatRoutes } from './workspace-chat-routes.mjs';
 
 const root = fileURLToPath(new URL('../../agent-dashboard/dist/', import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
@@ -77,12 +78,14 @@ function readJson(req, maxBody = MAX_BODY) {
 
 export function createDashboardServer({ runtime = createLocalRuntime(), auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform, ciResults = null,
   maintenanceCheck = deploymentPaused, deploymentStatusProvider = deploymentStatus, moduleManagement = null,
-  dbManagement = null, targetPreflight = preflightExternalTarget } = {}) {
+  dbManagement = null, targetPreflight = preflightExternalTarget, workspaceChat = null } = {}) {
   const configured = publicOrigins.map(value => new URL(value));
   if (configured.some(url => url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/')) throw new Error('Public origins must be plain HTTPS origins.');
   if (configured.length && !auth.enabled) throw new Error('External dashboard access requires authentication.');
   const db = dbManagement ?? createDbManagement();
   const modules = moduleManagement ?? createModuleManagement({ runtime, platformProvider, dbManagement: db });
+  const chatRoutes = createWorkspaceChatRoutes({ service: workspaceChat,
+    runProvider: id => runtime.getRun?.(id), platformProvider });
   let dbInit;
   const ensureDb = () => dbInit ??= Promise.resolve().then(() => db.bootstrap?.()).catch(failure => {
     dbInit = null;
@@ -117,6 +120,7 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
           if (paused) return json(res, 503, { error: '배포를 적용하고 있습니다. 잠시 후 다시 실행하세요.' }, { 'Retry-After': '30' });
         }
         if (pathname === '/api/deployment' && req.method === 'GET') return json(res, 200, await deploymentStatusProvider());
+        if (await chatRoutes.handle({ req, res, pathname, origin: expectedOrigin, currentUser, json, readJson })) return;
         if (pathname === '/api/targets/preflight') {
           if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
           const body = await readJson(req);
@@ -436,13 +440,14 @@ export function createDashboardServer({ runtime = createLocalRuntime(), auth = c
       res.writeHead(200, { ...headers, 'Content-Type': mime[extname(file)] || 'application/octet-stream' });
       res.end(req.method === 'HEAD' ? undefined : data);
     } catch (failure) {
+      if (res.destroyed) return;
       if (res.headersSent) return res.end();
       const status = failure.status ?? (['ENOENT', 'EISDIR'].includes(failure.code) ? 404 : 400);
       json(res, status, { error: failure.status ? failure.message : status === 404 ? 'Not found.' : 'Invalid request.' });
     }
   });
   let runtimeCloseTask;
-  const closeRuntime = () => runtimeCloseTask ??= Promise.all([runtime.close(), ciResults?.close?.()]);
+  const closeRuntime = () => runtimeCloseTask ??= Promise.all([runtime.close(), ciResults?.close?.(), chatRoutes.close()]);
   server.on('close', () => { for (const stream of streams) stream.end(); void closeRuntime(); });
   let shutdownTask;
   server.shutdown = () => {

@@ -3,6 +3,7 @@ import { initStarfield } from './starfield.js';
 import { createRuntimeClient } from './runtime-client.js';
 import { generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun, renderGeneralLoop, renderGeneralReport } from './general-results.js';
 import { createOperationsPages } from './operations-pages.js';
+import { createWorkspaceChat } from './workspace-chat.js';
 
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -215,6 +216,7 @@ function describeModule(id, item = currentRun()) { if (isGeneralAssessment(item)
   return isLab(item) && !isAiLab(item) ? text.replace('DeepSeek의 제한된 POST 선택', '규칙 엔진의 제한된 POST 선택') : text; }
 function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : isGeneralAssessment(item) ? '범용 점검 · 증거 기반 결과' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
 const viewMeta = {
+  chat: ['AI 채팅', 'AI <span>채팅</span>', '모델과 대화하며 실행 결과와 로컬 코드를 함께 살펴봅니다.'],
   assets: ['자산', '점검 <span>자산</span>', '등록 실습 대상과 외부 URL을 선택하고 점검을 시작합니다.'],
   dashboard: ['공격', '공격 <span>작업공간</span>', '선택한 대상의 점검 과정과 기록을 확인합니다.'],
   sessions: ['실행 이력', 'Every run. <span>Remembered.</span>', '중앙에 저장된 실행과 모듈별 증거를 다시 살펴보세요.'],
@@ -234,6 +236,7 @@ const routeToView = {
   'workspace/assets': 'assets',
   'workspace/attack': 'dashboard', 'workspace/attack/history': 'sessions', 'workspace/attack/compare': 'compare',
   'workspace/reports': 'reports', 'workspace/db': 'db',
+  'workspace/chat': 'chat',
   modules: 'modules', 'modules/ci': 'ci', 'modules/platform': 'platform',
   'modules/attack': 'module-attack', 'modules/web-parser': 'module-web-parser',
   'modules/guardrail': 'module-guardrail', 'modules/llm': 'module-llm', 'modules/db': 'module-db',
@@ -315,6 +318,7 @@ const runtime = createRuntimeClient({
   onAuthRequired: requireLogin,
 });
 const operations = createOperationsPages({ runtime, canEdit: () => authSession?.user?.role === 'admin', notify });
+const workspaceChat = createWorkspaceChat({ api: runtime.api, canEdit: canOperate, notify, getRuns: () => history });
 function persistSettings() { try { localStorage.setItem(SETTINGS, JSON.stringify(settings)); } catch { notify('설정을 브라우저에 저장할 수 없습니다.'); } }
 function updateStars() {
   if (settings.motion && !stars) stars = initStarfield($('starfield'));
@@ -339,15 +343,16 @@ function navigate(view) {
   $('module-tabs').hidden = !moduleOverview;
   const navKey = attackView ? 'attack' : moduleOverview ? 'modules' : view === 'reports' ? 'reports' : view === 'db' ? 'db' : view;
   document.querySelectorAll('[data-nav]').forEach((el) => el.classList.toggle('current-group', el.dataset.nav === navKey));
-  $('breadcrumb-group').textContent = attackView || ['assets', 'reports', 'db'].includes(view) ? 'Workspace' : 'Modules';
+  $('breadcrumb-group').textContent = attackView || ['assets', 'reports', 'db', 'chat'].includes(view) ? 'Workspace' : 'Modules';
   $('breadcrumb-title').textContent = viewMeta[view][0];
   $('page-title').innerHTML = viewMeta[view][1];
   $('page-subtitle').textContent = viewMeta[view][2];
-  document.querySelector('.heading-actions').hidden = view === 'db' || view.startsWith('module-') || moduleOverview;
+  document.querySelector('.heading-actions').hidden = ['db', 'chat'].includes(view) || view.startsWith('module-') || moduleOverview;
   $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded', 'false');
   if (location.hash !== `#${viewToRoute[view]}`) historyReplace(view);
   render();
   if (view === 'db') void operations.showDb();
+  if (view === 'chat' && authSession && (!authSession.authRequired || authSession.authenticated)) void workspaceChat.show();
   if (view.startsWith('module-')) void operations.showModule(view.slice('module-'.length));
 }
 function historyReplace(view) { window.history.replaceState(null, '', `#${viewToRoute[view] || 'workspace/attack'}`); }
@@ -370,7 +375,7 @@ function renderStats() {
   const connected = connection === 'connected';
   const connectionLabel = { connecting: '런타임 연결 중', connected: connectionTransport === 'polling' ? '1초 간격 상태 연결됨' : 'SSE 연결됨', disconnected: '연결 끊김 · 자동 재연결 중' }[connection];
   $('history-banner').hidden = !inspectedRun || !['dashboard', 'sessions', 'compare', 'reports'].includes(activeView);
-  $('execution-label').textContent = isExternalRun(item) ? 'EXTERNAL / READ ONLY' : general ? 'GENERAL / EVIDENCE' : isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
+  $('execution-label').textContent = activeView === 'chat' ? 'WORKSPACE / AI CHAT' : isExternalRun(item) ? 'EXTERNAL / READ ONLY' : general ? 'GENERAL / EVIDENCE' : isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
   $('dashboard-mode').textContent = isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : general ? '범용 점검 결과 · 지원된 관측 범위' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
   $('progress-label').textContent = general
     ? generalCounts ? `가설 ${generalCounts.totalHypotheses}건 · ${statusNames[item.status] || item.status}`
@@ -1000,6 +1005,7 @@ function requireLogin() {
   $('trace-code').textContent = '';
   $('notification-list').textContent = '';
   operations.reset();
+  workspaceChat.reset();
   if (!$('login-dialog').open) $('login-dialog').showModal();
   render();
 }
@@ -1012,6 +1018,8 @@ function acceptSession(value) {
   if (value.authRequired && !value.authenticated) { requireLogin(); return; }
   $('login-dialog').close(); $('login-error').hidden = true;
   void loadWorkspace();
+  workspaceChat.refreshPermissions();
+  if (activeView === 'chat') void workspaceChat.show();
   if (activeView === 'db') void operations.showDb();
   if (activeView.startsWith('module-')) void operations.showModule(activeView.slice('module-'.length));
 }
@@ -1066,6 +1074,7 @@ async function refreshHistory() {
       reportDocuments: inspectedUpdate.reportDocuments };
     if (run.id && isRun(run) && !history.some(item => item.id === run.id)) history.unshift(structuredClone(run));
     centralHistoryLoaded = true; historyError = ''; updateComparisonSelectors(); render();
+    if (activeView === 'chat') workspaceChat.refreshReferences();
   } catch (error) { historyError = error.message; if (activeView === 'sessions') renderSessions(); }
   finally { historyRefreshPending = false; }
 }

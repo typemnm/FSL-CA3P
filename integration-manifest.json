@@ -133,6 +133,15 @@
       ]
     },
     {
+      "id": "chat-store",
+      "path": "packages/chat-store",
+      "layer": "persistence",
+      "status": "active",
+      "dependencies": [
+        "contracts"
+      ]
+    },
+    {
       "id": "evaluation",
       "path": "packages/evaluation",
       "layer": "evaluation",
@@ -202,7 +211,8 @@
         "models",
         "agent",
         "worker",
-        "adapters"
+        "adapters",
+        "chat-store"
       ]
     },
     {
@@ -233,7 +243,8 @@
         "models",
         "history",
         "application",
-        "report"
+        "report",
+        "chat-store"
       ]
     },
     {

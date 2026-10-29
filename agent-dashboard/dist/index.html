@@ -22,6 +22,7 @@
         <button class="nav-item" data-view="assets" data-nav="assets"><span data-icon="layers"></span><span>자산</span></button>
         <button class="nav-item active" data-view="dashboard" data-nav="attack"><span data-icon="globe"></span><span>공격</span><span class="nav-count" id="history-count">0</span></button>
         <button class="nav-item" data-view="reports" data-nav="reports"><span data-icon="file"></span><span>보고서</span></button>
+        <button class="nav-item" data-view="chat" data-nav="chat"><span data-icon="brain"></span><span>AI 채팅</span></button>
         <button class="nav-item" data-view="db" data-nav="db"><span data-icon="database"></span><span>DB</span></button>
       </nav>
       <button class="nav-caption nav-group-button" data-view="modules" data-nav="modules">MODULES <span class="nav-count" id="ci-count">—</span></button>
@@ -60,6 +61,7 @@
         <p class="runtime-error" id="runtime-error" role="alert" hidden></p>
         <nav class="workspace-tabs" id="attack-tabs" aria-label="공격 작업공간" hidden><button data-route-view="dashboard">진행 상황</button><button data-route-view="sessions">실행 이력</button><button data-route-view="compare">실행 비교</button></nav>
         <nav class="workspace-tabs" id="module-tabs" aria-label="모듈 통합 상태" hidden><button data-route-view="modules">모듈 개요</button><button data-route-view="ci">통합 테스트</button><button data-route-view="platform">통합 상태</button></nav>
+        <section class="view" id="view-chat" hidden><div id="workspace-chat-root"></div></section>
         <section class="view" id="view-assets" hidden>
           <section class="panel external-target-panel" aria-labelledby="external-target-title">
             <div class="panel-heading"><div><h2 id="external-target-title"><span data-icon="globe"></span>점검 대상 지정</h2><span class="panel-subtitle">등록 실습 대상 또는 외부 URL을 선택합니다.</span></div></div>

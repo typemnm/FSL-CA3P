@@ -25,7 +25,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     clearTimeout(timer); timer = null;
   }
 
-  async function api(path, { method = 'GET', body, formData } = {}) {
+  async function api(path, { method = 'GET', body, formData, signal } = {}) {
     const headers = { Accept: 'application/json' };
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -34,7 +34,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     const response = await fetchImpl(path, {
       method, headers,
       ...(body === undefined ? formData === undefined ? {} : { body: formData } : { body: JSON.stringify(body) }),
-      credentials: 'same-origin', cache: 'no-store',
+      credentials: 'same-origin', cache: 'no-store', ...(signal ? { signal } : {}),
     });
     let payload;
     try { payload = response.status === 204 ? {} : await response.json(); }
