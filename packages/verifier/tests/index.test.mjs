@@ -211,13 +211,38 @@ test('the model may take a second browser visit after a wrong page, but not a th
   const model = scriptedModel([
     { verdict: 'unknown', reason: 'look', browser: { path: '/posts/4' } },
     { verdict: 'unknown', reason: '404, try the board', browser: { path: '/' } },
-    { verdict: 'unknown', reason: 'still want more', browser: { path: '/again' } },
+    { reason: 'still want more', browser: { path: '/again' } },
+    { verdict: 'invalid', reason: 'no execution was observed on the board' },
   ]);
   const result = await verifyAttack(record(), { model, outDir: 'out', browserFactory: factory });
   assert.deepEqual(calls.goto.map(call => call.path), ['/posts/4', '/']);
-  assert.equal(model.payloads.length, 3);
+  assert.equal(model.payloads.length, 4);
   assert.equal(model.payloads[2].visitsLeft, 0);
   assert.equal(model.payloads[2].previousVisits.length, 1);
+  assert.equal(model.payloads[3].mustDecide, true);
   assert.equal(result.artifacts.length, 2);
+  assert.equal(result.status, 'not_reproduced');
+});
+
+test('an answer without a valid/invalid verdict is asked once more and the model then decides', async () => {
+  const model = scriptedModel([{ verdict: 'unknown', reason: 'not sure' }, { verdict: 'valid', reason: 'the response shows the data' }]);
+  const result = await verifyAttack(record(), { model });
+  assert.equal(model.payloads.length, 2);
+  assert.equal(model.payloads[1].mustDecide, true);
+  assert.equal(result.status, 'confirmed');
+});
+
+test('a failed model call is not retried and is the only undecided outcome', async () => {
+  const model = scriptedModel([new Error('down')]);
+  const result = await verifyAttack(record(), { model });
+  assert.equal(model.payloads.length, 1);
   assert.equal(result.status, 'inconclusive');
+  assert.match(result.reason, /^model_unavailable/u);
+});
+
+test('a record without a request URL (a source read) is judged', async () => {
+  const model = scriptedModel([{ verdict: 'invalid', reason: 'the excerpt shows input escaping' }]);
+  const result = await verifyAttack(record({ request: { method: 'READ', file: 'server.js', headers: {} } }), { model });
+  assert.equal(result.status, 'not_reproduced');
+  assert.equal(result.evidence[0].asset, 'server.js');
 });

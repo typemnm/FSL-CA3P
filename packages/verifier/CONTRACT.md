@@ -1,6 +1,6 @@
 # AI verifier 계약
 
-verifier는 공격 모듈이 실행한 공격 한 건이 실제로 먹혔는지 AI 모델이 판정하게 하는 경계다. 코드에는 유형별 규칙, 허용 kind 목록, 결정적 판정 규칙이 없다. 모델이 `valid` / `invalid` / `unknown`을 정하고, 코드는 입력을 검증하고 증거를 모아 status로 옮긴다.
+verifier는 공격 모듈이 실행한 공격 한 건이 실제로 먹혔는지 AI 모델이 판정하게 하는 경계다. 코드에는 유형별 규칙, 허용 kind 목록, 결정적 판정 규칙이 없다. 모델은 반드시 `valid`(유효) 또는 `invalid`(무효)로 정한다. 코드는 입력을 검증하고 증거를 모아 status로 옮길 뿐이다. 최종 판단은 보고서를 읽는 사람이 한다.
 ## 1. 입력: AttackRecord (`attack-record/1`)
 
 `executeCurlRecorded`(`packages/adapters/attack-recorder.mjs`)가 만든다.
@@ -35,13 +35,13 @@ system prompt는 `VERIFIER_SYSTEM_PROMPT`(`index.mjs`)다. 프롬프트가 모�
 응답 `{ verdict, reason, browser? }`:
 - `valid` 또는 `invalid`: 끝. `method: 'ai'`.
 - `browser`가 있으면: 브라우저로 관찰한 뒤 다음 라운드로 간다. `method: 'ai+browser'`.
-- `unknown`만: 끝. `status: 'inconclusive'`.
+- verdict도 browser도 없거나 `valid`/`invalid`가 아니면: `mustDecide: true`로 한 번 더 묻는다.
 
 `browser` 요청은 `{ path, role?, waitFor? }`다. `path`는 `target.origin` 기준 경로(`/`로 시작, `//` 아님)이거나 절대 http(s) URL이다. `role`은 세션 쿠키 묶음의 키이고, `waitFor`는 CSS 선택자다.
 
-**Round 2, 3** 입력: `{ round, attack, browserRequest, browserObservation, visitsLeft, previousVisits? }`. 남은 방문이 있으면 모델은 다른 페이지를 한 번 더 요청할 수 있다. 방문을 다 쓴 뒤의 `unknown`은 `inconclusive`다. 결과의 `browser`는 마지막 방문이고, 스크린샷은 방문마다 한 장씩 `artifacts`에 남는다.
+**Round 2, 3** 입력: `{ round, attack, browserRequest, browserObservation, visitsLeft, previousVisits? }`. 남은 방문이 있으면 모델은 다른 페이지를 한 번 더 요청할 수 있다. 방문을 다 쓴 뒤에도 판정이 없으면 `mustDecide: true`로 한 번 더 묻는다. 결과의 `browser`는 마지막 방문이고, 스크린샷은 방문마다 한 장씩 `artifacts`에 남는다.
 
-`reason`은 최대 1024바이트로 자른다. 모델 호출 실패, JSON 형식 오류, 허용되지 않은 verdict는 `verdict: null`이 되어 `inconclusive`로 끝난다.
+`reason`은 최대 1024바이트로 자른다. 판정이 없는 결과(`verdict: null`, `inconclusive`)는 모델 호출 자체가 실패했거나, 다시 물어도 형식에 맞는 답이 없을 때뿐이다.
 
 ## 3. 브라우저 관찰 (`browserObservation`)
 
@@ -64,7 +64,7 @@ system prompt는 `VERIFIER_SYSTEM_PROMPT`(`index.mjs`)다. 프롬프트가 모�
 |---|---|
 | `schemaVersion` | `verifier/1` |
 | `attackId`, `kind` | 입력 기록의 id와 kind |
-| `verdict` | `valid` / `invalid` / `unknown` / `null` |
+| `verdict` | `valid` / `invalid`. 모델 호출 실패 때만 `null` |
 | `status` | 아래 표 |
 | `reason`, `method` | 모델 사유, `ai` 또는 `ai+browser` |
 | `evidence` | 최대 2개. `attack-exchange`(경로, status, body 다이제스트)와 `ai-verdict`(verdict, reason, 관찰 배열 길이). 각 summary 2048바이트 이내 |
@@ -78,7 +78,7 @@ system prompt는 `VERIFIER_SYSTEM_PROMPT`(`index.mjs`)다. 프롬프트가 모�
 |---|---|
 | `valid` | `confirmed` |
 | `invalid` | `not_reproduced` |
-| `unknown`, `null` | `inconclusive` |
+| `null`(모델 호출 실패) | `inconclusive` |
 
 ## 5. 보고서 핸드오프 (`verification-handoff/1`)
 
@@ -99,7 +99,9 @@ system prompt는 `VERIFIER_SYSTEM_PROMPT`(`index.mjs`)다. 프롬프트가 모�
 | 보고서 읽기 | `load_verification_handoff(dir)`, `copy_handoff_images(handoff, bundle_dir)` | handoff 디렉터리 → 검증된 dict, 번들 `evidence/images/` |
 
 연결된 흐름(범용 점검):
-1. **attack → verifier**: 범용 런타임의 `verifier` 포트(`apps/application/general-runtime.mjs`)는 도구 실행 결과에 `attackRecord`가 있으면, 도구 종류와 관계없이 `judgeAttackRecord`로 AI 판정을 받는다. `judgeAttackRecord`는 `verifyAttack`을 부르고 handoff를 쓴 뒤, 결과를 `{ status, completed, evidenceIds: [probe 증거 id], reason }`으로 바꾼다. 코어는 그 probe의 증거 id를 참조해야 판정을 받아 준다(`UNSUPPORTED_VERDICT`). verifier 오류는 `inconclusive: verifier_failed`, 빈 사유는 `verifier_no_reason`이다. 판정 칸에는 다른 판정 경로가 없다. 실습 대상 전용 고정 도구(`known_cross_user_delete_canary`, `known_record_idor_read`)와 그 고정 판정은 범용 점검에서 없앴다. verifier와 범용 점검이 실습 대상에 의존하지 않게 하려는 것이다.
+1. **attack → verifier**: 범용 런타임의 `verifier` 포트(`apps/application/general-runtime.mjs`)는 실행된 모든 probe를 도구 종류와 관계없이 AI에 넘긴다. `recordForProbe`가 가설(분류·자산·근거), 도구와 입력, 도구가 돌려준 증거, 같은 가설에서 앞서 모인 증거(`info.relatedEvidence`)로 AttackRecord를 만든다. 실행 결과에 attack-tool 등이 만든 `attackRecord`가 있으면 그 교환을 그대로 쓴다. `judgeAttackRecord`가 `verifyAttack`을 부르고 handoff를 쓴 뒤, 결과를 `{ status, completed, evidenceIds: [probe 증거 id], reason }`으로 바꾼다. 실습 대상 전용 도구와 고정 판정은 없다.
+   - 코어(`agent/src/general-assessment.js`)는 가설마다 **가장 최근의 AI 판정**을 finding의 결과로 쓴다. 유효·무효가 섞였다고 코드가 "판단 불가"로 바꾸지 않는다.
+   - 판정이 없는 경우는 모델 호출이 실패했을 때(`verifier_failed`, `model_unavailable`)와, probe가 실행되지 않았을 때(정책 차단, 증거 없음, 계획되지 않은 가설의 `not_tested`)뿐이다.
 2. **handoff 위치**: worker가 `verificationRoot = <store 디렉터리>/artifacts/<digest(runId)>/verifications`를 런타임에 넘기고, 런타임은 probe마다 `<verificationRoot>/<probeId>/`에 handoff를 쓴다. 이 경로는 실행 기록을 지울 때 `prepareRunFileCleanup`이 함께 지운다.
 3. **verifier → 보고서**: worker가 confirmed finding마다 그 가설의 confirmed probe 중 handoff가 있는 것을 찾아 `generateReportDocument({ ..., verificationDir })`로 넘긴다. 보고서 trigger에는 `sources.verification: { kind: 'handoff-dir', location }`가 들어간다. collector는 handoff를 검사한다(attackId가 confirmed probe인지, 해시가 맞는지). 그리고 `run/verification.json`과 `evidence/images/<file>`을 봉인된 번들에 넣는다. 범용 보고서 모델은 AI 판정 사유를 문자 증거로, 스크린샷을 `images`로 싣는다.
 

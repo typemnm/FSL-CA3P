@@ -54,7 +54,8 @@ export function validateAttackRecord(record) {
   targetOrigin(record.target?.origin);
   const { request, response } = record;
   if (!isObject(request) || typeof request.method !== 'string') throw invalidRecord('request.method is required');
-  if (!['http:', 'https:'].includes(parseUrl(request.url).protocol)) throw invalidRecord('request.url must be an http(s) URL');
+  // A tool that reads something other than a URL (for example a source file) leaves request.url out.
+  if (request.url !== undefined && !['http:', 'https:'].includes(parseUrl(request.url).protocol)) throw invalidRecord('request.url must be an http(s) URL');
   if (!isObject(response) || !(Number.isInteger(response.status) || response.status === null)) {
     throw invalidRecord('response.status must be an integer or null');
   }

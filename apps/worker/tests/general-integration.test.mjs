@@ -5,6 +5,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunService } from '../../application/run-service.mjs';
 import { runWorker } from '../worker.mjs';
+import { createGeneralRuntime } from '../../application/general-runtime.mjs';
+
+// The AI verifier is scripted so these runs never reach a real model.
+const scriptedRuntime = status => options => createGeneralRuntime({ ...options,
+  verifyAttackImpl: async record => ({ schemaVersion: 'verifier/1', attackId: record.id, status,
+    reason: 'scripted ' + status, artifacts: [] }) });
 
 async function waitFor(check) {
   const deadline = Date.now() + 30_000;
@@ -16,7 +22,7 @@ async function waitFor(check) {
   assert.fail('general integration run did not finish');
 }
 
-test('service, worker, and general runtime finish a general run and skip HWPX when nothing is confirmed',
+test('service, worker, and general runtime turn an AI-confirmed probe into a real HWPX without a report model API',
   { timeout: 60_000 }, async () => {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   mkdirSync(runtimeRoot, { recursive: true });
@@ -72,17 +78,19 @@ test('service, worker, and general runtime finish a general run and skip HWPX wh
         status: 'completed', usage: { prompt_tokens: 12, completion_tokens: 5 } } };
     } });
     worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 20,
-      env, generalPlannerFactory, generalFetchImpl });
+      env, generalPlannerFactory, generalFetchImpl, generalRuntimeFactory: scriptedRuntime('confirmed') });
     const final = await waitFor(() => { const run = service.getRun(id); return run.status === 'completed' && run; });
     assert.equal(final.assessmentMode, 'general');
     assert.equal(final.report.schemaVersion, 'general-assessment/1');
     assert.equal(final.report.findings.length, 2);
-    assert.equal(final.report.findings.find(item => item.hypothesisId === 'h-access').status, 'inconclusive');
+    assert.equal(final.report.findings.find(item => item.hypothesisId === 'h-access').status, 'confirmed');
     assert.equal(final.report.findings.find(item => item.hypothesisId === 'h-xss').status, 'not_tested');
     assert.equal(final.modelCalls.length, 2);
-    // Nothing is confirmed without an attack record, so no HWPX is written.
-    assert.equal(final.reportDocuments.status, 'skipped', JSON.stringify(final.reportDocuments));
-    assert.equal(final.reportDocuments.errorCode, 'NO_CONFIRMED_FINDINGS');
+    assert.equal(final.reportDocuments.status, 'ready', JSON.stringify(final.reportDocuments));
+    assert.deepEqual(final.reportDocuments.items.map(item => [item.findingId, item.status]),
+      [['finding:h-access', 'ready']]);
+    assert.match(final.reportDocuments.items[0].filename, /\.hwpx$/);
+    assert.equal(worker.store.getArtifact(final.reportDocuments.items[0].artifactId).kind, 'hwpx-report');
     assert.equal(final.historyWrite.status, 'skipped');
     assert.ok(final.artifacts.some(item => item.kind === 'run-report'));
     assert.ok(fetchCalls.length >= 2);
@@ -97,7 +105,7 @@ test('service, worker, and general runtime finish a general run and skip HWPX wh
       envFile: null, env: {} });
     const saved = reopened.getRun(id);
     assert.equal(saved.report.findings.length, 2);
-    assert.equal(saved.reportDocuments.items.length, 0);
+    assert.equal(saved.reportDocuments.items.length, 1);
     assert.equal(saved.modelCalls.length, 2);
     assert.equal(reopened.listRuns().items[0].id, id);
   } finally {
@@ -123,6 +131,7 @@ test('general worker starts the real isolated board and records a bounded read w
       modelId: 'deepseek-flash', fixtureId: 'vul-web-1' });
     const id = queued.run.id;
     worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 20, env,
+      generalRuntimeFactory: scriptedRuntime('not_reproduced'),
       generalPlannerFactory: () => ({ async propose(context) {
         if (context.iteration > 1) return { done: true, hypotheses: [], probes: [],
           modelMetadata: { provider: 'deepseek', requestedModel: 'deepseek-flash' } };
@@ -139,7 +148,7 @@ test('general worker starts the real isolated board and records a bounded read w
     assert.equal(final.targetContacted, true);
     assert.equal(final.report.schemaVersion, 'general-assessment/1');
     assert.equal(final.report.findings.length, 1);
-    assert.equal(final.report.findings[0].status, 'inconclusive');
+    assert.equal(final.report.findings[0].status, 'not_reproduced');
     assert.equal(final.modelCalls.length, 2);
     assert.deepEqual(final.manifest.data.caseRevisions, []);
     assert.equal(final.reportDocuments.status, 'skipped');

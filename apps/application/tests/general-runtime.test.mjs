@@ -5,10 +5,19 @@ import { mkdtempSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGeneralRuntime, judgeAttackRecord } from '../general-runtime.mjs';
+import { createGeneralRuntime, judgeAttackRecord, recordForProbe } from '../general-runtime.mjs';
 import { readReportHandoff } from '../../../packages/verifier/report-handoff.mjs';
 import plannerModule from '../../../agent/src/general-model-planner.js';
 import { readKnowledgeCatalog } from '../../../packages/adapters/integrations/knowledge-db.mjs';
+
+// Every executed probe goes to the AI verifier; tests script it so no real model is ever called.
+const scriptedVerdicts = (status = 'not_reproduced', seen = []) => async (record, options) => {
+  seen.push({ record, options });
+  return { schemaVersion: 'verifier/1', attackId: record.id, status, reason: 'scripted ' + status, artifacts: [] };
+};
+function runtimeWith(options) {
+  return createGeneralRuntime({ verifyAttackImpl: scriptedVerdicts(), ...options });
+}
 
 function terminal(runtime) {
   return new Promise(resolve => {
@@ -30,13 +39,13 @@ function response(path) {
   });
 }
 
-test('general university run uses multiple model hypotheses and confirms nothing without an attack record', async () => {
+test('general university run uses multiple model hypotheses and the AI verifier decides each executed probe', async () => {
   const origin = 'http://127.0.0.1:53987';
   const calls = [];
   const modelCalls = [];
   const hooks = [];
   let liveVerify;
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: origin,
     modelId: 'deepseek-flash', runIdFactory: () => 'general-university-test',
     unavailableInputs: ['casper-db'],
@@ -77,7 +86,7 @@ test('general university run uses multiple model hypotheses and confirms nothing
   assert.equal(run.status, 'completed');
   assert.equal(run.report.schemaVersion, 'general-assessment/1');
   assert.equal(run.report.assessmentMode, 'general');
-  assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-idor').status, 'inconclusive');
+  assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-idor').status, 'not_reproduced');
   assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-xss').status, 'not_tested');
   assert.equal(run.report.modelCalls.length, 2);
   assert.equal(modelCalls.length, 2);
@@ -112,7 +121,7 @@ test('general university run uses multiple model hypotheses and confirms nothing
   assert.equal(plan.response.progress.hypothesisCount, 2);
   assert.equal(liveVerify.event.request.hypothesisId, 'h-idor');
   assert.equal(liveVerify.event.request.tool, 'http_get');
-  assert.equal(liveVerify.event.response.status, 'inconclusive');
+  assert.equal(liveVerify.event.response.status, 'not_reproduced');
   assert.deepEqual(liveVerify.event.response.evidenceIds,
     run.report.probes.find(item => item.id === 'p-idor').evidenceIds);
   assert.equal(liveVerify.event.response.progress.confirmedProbeCount, 0);
@@ -128,7 +137,7 @@ test('general board run stays isolated and rejects off-origin model probes', asy
   const urls = [];
   const catalogReads = [];
   let boardClosed = false;
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web-1', modelId: 'deepseek-v4-pro',
     runIdFactory: () => 'general-board-test',
     boardFactory: async () => ({ origin: 'http://127.0.0.1:49678',
@@ -172,9 +181,9 @@ test('general board run stays isolated and rejects off-origin model probes', asy
   const run = await done;
   assert.equal(run.status, 'completed');
   assert.equal(run.report.probes.find(item => item.id === 'p1').status, 'blocked');
-  assert.equal(run.report.probes.find(item => item.id === 'p2').status, 'inconclusive');
+  assert.equal(run.report.probes.find(item => item.id === 'p2').status, 'not_reproduced');
   assert.equal(run.report.probes.find(item => item.id === 'p3').status, 'blocked');
-  assert.equal(run.report.findings[0].status, 'inconclusive');
+  assert.equal(run.report.findings[0].status, 'not_reproduced');
   assert.ok(urls.every(url => url.startsWith('http://127.0.0.1:49678/')));
   assert.ok(run.report.inventory.referenceSources.some(item =>
     item.source === 'casper-db/case-snapshot' && item.summaries[0].caseId === 'old-case'));
@@ -194,7 +203,7 @@ test('general board run stays isolated and rejects off-origin model probes', asy
 
 test('general university catalog uses its frozen snapshot and excludes other targets', async () => {
   const reads = [];
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
     modelId: 'deepseek-flash', runIdFactory: () => 'university-catalog-snapshot',
     caseSnapshot: { path: '/frozen/university-catalog.sqlite', caseRevisions: [] },
@@ -240,7 +249,7 @@ test('general runtime default catalog reader preserves the frozen database', asy
     const seeded = await readKnowledgeCatalog({ databasePath });
     assert.equal(seeded.status, 'ok');
     const before = await readFile(databasePath);
-    runtime = createGeneralRuntime({
+    runtime = runtimeWith({
       fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
       modelId: 'deepseek-flash', runIdFactory: () => 'general-catalog-readonly',
       caseSnapshot: { path: databasePath, caseRevisions: [] },
@@ -265,7 +274,7 @@ test('general runtime default catalog reader preserves the frozen database', asy
 });
 
 test('multibyte repository excerpts stay within the core evidence byte limit', async () => {
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
     runIdFactory: () => 'multibyte-source-excerpt',
     boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
@@ -283,7 +292,7 @@ test('multibyte repository excerpts stay within the core evidence byte limit', a
   runtime.startLab();
   const run = await done;
   assert.equal(run.status, 'completed', run.error);
-  assert.equal(run.report.probes[0].status, 'inconclusive');
+  assert.equal(run.report.probes[0].status, 'not_reproduced');
   const excerpt = run.report.evidence.find(item => item.kind === 'source-excerpt'
     && item.source === 'repository/vul-web-1/README.md');
   assert.ok(excerpt);
@@ -293,16 +302,16 @@ test('multibyte repository excerpts stay within the core evidence byte limit', a
 });
 
 test('general runtime rejects unregistered targets and rule-only models', () => {
-  assert.throws(() => createGeneralRuntime({ fixtureId: 'outside', modelId: 'deepseek-flash' }));
-  assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web-1', modelId: 'rule-baseline' }));
-  assert.throws(() => createGeneralRuntime({ fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
+  assert.throws(() => runtimeWith({ fixtureId: 'outside', modelId: 'deepseek-flash' }));
+  assert.throws(() => runtimeWith({ fixtureId: 'vul-web-1', modelId: 'rule-baseline' }));
+  assert.throws(() => runtimeWith({ fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     targetOrigin: 'http://8.8.8.8:4101' }));
 });
 
 test('wrong private service fails identity binding before the model or general probes run', async () => {
   let modelUsed = false;
   const paths = [];
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     targetOrigin: 'http://192.168.0.42:53987', runIdFactory: () => 'wrong-site',
     fetchImpl: async url => {
@@ -325,7 +334,7 @@ test('wrong private service fails identity binding before the model or general p
 
 test('a timed-out secondary page is recorded as unavailable without ending the assessment', async () => {
   let sawUnavailable = false;
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     runIdFactory: () => 'page-timeout',
     fetchImpl: async url => {
@@ -348,7 +357,7 @@ test('a timed-out secondary page is recorded as unavailable without ending the a
 });
 
 test('fixed demo sessions add bounded authenticated surfaces without exposing credentials', async () => {
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     runIdFactory: () => 'authenticated-inventory',
     fetchImpl: async url => {
@@ -378,7 +387,7 @@ test('form and safe header metadata are bounded while model role reads reuse onl
     + '<input name="q" type="search" value="' + secretValue + '">'
     + '<input name="password" type="password" value="' + secretValue + '">'
     + '<select name="faculty"><option value="private-option">A</option></select></form></html>';
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     runIdFactory: () => 'fixed-role-followup',
     beforeProbe: async probe => { hooks.push(probe); },
@@ -428,7 +437,7 @@ test('form and safe header metadata are bounded while model role reads reuse onl
   runtime.startLab();
   const run = await done;
   assert.equal(run.status, 'completed', run.error);
-  assert.equal(run.report.probes.find(item => item.id === 'p-owner').status, 'inconclusive');
+  assert.equal(run.report.probes.find(item => item.id === 'p-owner').status, 'not_reproduced');
   assert.equal(run.report.probes.find(item => item.id === 'p-unknown').status, 'blocked');
   assert.equal(run.report.probes.find(item => item.id === 'p-headers').status, 'blocked');
   assert.ok(hooks.some(item => item.id === 'p-owner' && item.session === 'owner'));
@@ -453,7 +462,7 @@ test('registered university backend excerpts are available with seed passwords m
     const at = source.indexOf('Welcome2026');
     assert.ok(at > 0);
     const offset = Math.max(0, at - 120);
-    const runtime = createGeneralRuntime({ fixtureId: fixture.id, modelId: 'deepseek-flash',
+    const runtime = runtimeWith({ fixtureId: fixture.id, modelId: 'deepseek-flash',
       runIdFactory: () => 'source-' + fixture.id,
       fetchImpl: async url => {
         const path = new URL(url).pathname;
@@ -489,7 +498,7 @@ test('registered university backend excerpts are available with seed passwords m
 
 test('failed model proposal is recorded once without invented token usage', async () => {
   const recorded = [];
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
     runIdFactory: () => 'failed-model',
     boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
@@ -515,7 +524,7 @@ test('failed model proposal is recorded once without invented token usage', asyn
 
 test('planner schema failures retain only a fixed validation message, not model output', async () => {
   const recorded = [];
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
     runIdFactory: () => 'invalid-plan-diagnostic',
     boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
@@ -543,7 +552,7 @@ test('planner schema failures retain only a fixed validation message, not model 
 test('corrected planner schema produces one log entry per actual model call', async () => {
   const recorded = [];
   let attempts = 0;
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
     runIdFactory: () => 'corrected-plan-diagnostic',
     boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
@@ -574,7 +583,7 @@ test('corrected planner schema produces one log entry per actual model call', as
 
 test('a custom planner cannot forge extra model call attempts', async () => {
   const recorded = [];
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
     runIdFactory: () => 'custom-plan-attempts',
     boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
@@ -632,7 +641,7 @@ function universityLoginFetch() {
 
 test('web_info observes declared paths, extends scope, and rejects off-scope or off-origin paths', async () => {
   const collected = [];
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
     modelId: 'deepseek-flash', runIdFactory: () => 'web-info-scope',
     fetchImpl: universityLoginFetch(),
@@ -667,9 +676,9 @@ test('web_info observes declared paths, extends scope, and rejects off-scope or 
   const run = await done;
   assert.equal(run.status, 'completed', run.error);
   const probe = id => run.report.probes.find(item => item.id === id);
-  assert.equal(probe('w-pub').status, 'inconclusive');
-  assert.equal(probe('w-role').status, 'inconclusive');
-  assert.equal(probe('w-discovered').status, 'inconclusive', 'the discovered same-origin path was authorized');
+  assert.equal(probe('w-pub').status, 'not_reproduced');
+  assert.equal(probe('w-role').status, 'not_reproduced');
+  assert.equal(probe('w-discovered').status, 'not_reproduced', 'the discovered same-origin path was authorized');
   assert.equal(probe('w-wild').status, 'blocked');
   assert.equal(probe('w-offorigin').status, 'blocked');
   assert.equal(probe('w-wild').reason, 'path_out_of_scope');
@@ -693,7 +702,7 @@ test('web_info observes declared paths, extends scope, and rejects off-scope or 
 test('web_info honors cancellation mid-run', async () => {
   const collected = [];
   let runtime;
-  runtime = createGeneralRuntime({
+  runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
     modelId: 'deepseek-flash', runIdFactory: () => 'web-info-cancel',
     fetchImpl: universityLoginFetch(),
@@ -755,7 +764,7 @@ async function loopbackBoard() {
 
 test('web_info evidence shows the planner real page details from a browser without cookie values', async () => {
   const contexts = [];
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web-1', modelId: 'deepseek-flash', runIdFactory: () => 'web-info-evidence',
     boardFactory: loopbackBoard,
     plannerFactory: () => ({ async propose(context) {
@@ -814,7 +823,7 @@ function largeTargetInfo(url) {
 }
 
 async function runWebInfoBudget({ limits, probes, onEvidence }) {
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
     modelId: 'deepseek-flash', runIdFactory: () => 'web-info-budget', fetchImpl: universityLoginFetch(), limits,
     webParserCollect: async url => ({ info: largeTargetInfo(url), summary: {} }),
@@ -858,7 +867,7 @@ function heavyTargetInfo(url) {
 
 test('web_info on heavy pages up to maxProbes keeps the real planner prompt under its limit', async () => {
   const promptBytes = [];
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
     modelId: 'deepseek-flash', runIdFactory: () => 'web-info-prompt-budget', fetchImpl: universityLoginFetch(),
     webParserCollect: async url => ({ info: heavyTargetInfo(url), summary: {} }),
@@ -916,7 +925,7 @@ test('web_info fits the remaining evidence budget with one and then zero free sl
 
 test('general runtime routes vulnerability workers through two daemon ports and closes them after completion', async t => {
   let advertised;
-  const runtime = createGeneralRuntime({
+  const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:53988',
     modelId: 'deepseek-flash', runIdFactory: () => 'general-attack-tool-workers',
     fetchImpl: async url => response(new URL(url).pathname),
@@ -988,4 +997,53 @@ test('judgeAttackRecord turns verifier errors into inconclusive and lets cancell
   { status: 'inconclusive', evidenceIds: ['ev-1'], reason: 'verifier_failed' });
   await assert.rejects(judgeAttackRecord(attackRecord, { evidenceId: 'ev-1',
     verify: async () => { throw Object.assign(new Error('stop'), { name: 'AbortError' }); } }), { name: 'AbortError' });
+});
+
+test('recordForProbe builds a tool-agnostic record from the hypothesis, the tool input and its evidence', () => {
+  const hypothesis = { id: 'h1', category: 'access_control', asset: '/api/x/:id', rationale: 'compare roles', evidenceIds: [] };
+  const evidence = [{ id: 'ev-1', source: 'http/t', kind: 'http-response', asset: '/api/x/2', summary: 'GET /api/x/2: HTTP 200' }];
+  const read = recordForProbe({ probe: { id: 'p1', tool: 'http_get', input: { path: '/api/x/2', sessionRole: 'student' } },
+    hypothesis, execution: { kind: 'http_get', result: { status: 200 }, evidence }, origin: 'http://127.0.0.1:4101',
+    relatedEvidence: [{ id: 'ev-0', kind: 'surface-observation', summary: 'GET / returned HTTP 200' }] });
+  assert.equal(read.request.url, 'http://127.0.0.1:4101/api/x/2');
+  assert.equal(read.response.status, 200);
+  assert.deepEqual(JSON.parse(read.response.bodyText)[0].id, 'ev-1');
+  assert.equal(read.info.session, 'student');
+  assert.equal(read.info.relatedEvidence[0].id, 'ev-0');
+  assert.equal(read.kind, 'access_control');
+  const source = recordForProbe({ probe: { id: 'p2', tool: 'repository_read', input: { file: 'a/server.js' } },
+    hypothesis, execution: { kind: 'repository_read', evidence }, origin: 'http://127.0.0.1:4101' });
+  assert.deepEqual(source.request, { method: 'READ', file: 'a/server.js', headers: {}, body: null });
+  const attack = recordForProbe({ probe: { id: 'p3', tool: 'x', input: {} }, hypothesis, origin: 'http://127.0.0.1:4101',
+    execution: { evidence, attackRecord: { schemaVersion: 'attack-record/1', id: 'p3', info: { goal: 'own goal' },
+      target: { origin: 'http://127.0.0.1:4101' }, request: { method: 'POST', url: 'http://127.0.0.1:4101/a' },
+      response: { status: 201 } } } });
+  assert.equal(attack.request.method, 'POST');
+  assert.equal(attack.info.goal, 'own goal');
+  assert.equal(attack.info.hypothesis.id, 'h1');
+});
+
+test('the AI verdict on any executed probe decides the finding, and the latest verdict wins', async () => {
+  const seen = [];
+  const verdicts = ['confirmed', 'not_reproduced'];
+  const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
+    runIdFactory: () => 'general-ai-latest', fetchImpl: async url => response(new URL(url).pathname),
+    verifyAttackImpl: async (record, options) => { seen.push(record); return scriptedVerdicts(verdicts[seen.length - 1])(record, options); },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-search', category: 'information_disclosure', asset: '/api/search',
+        rationale: 'The search API may leak records.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-a', hypothesisId: 'h-search', tool: 'http_get', input: { path: '/api/search' } },
+        { id: 'p-b', hypothesisId: 'h-search', tool: 'http_get', input: { path: '/' } }] };
+    } }) });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  assert.deepEqual(run.report.probes.map(item => item.status), ['confirmed', 'not_reproduced']);
+  assert.equal(run.report.findings[0].status, 'not_reproduced');
+  assert.equal(run.report.findings[0].reason, 'scripted not_reproduced');
+  assert.equal(seen.length, 2);
+  assert.ok(seen[1].info.relatedEvidence.some(item => item.asset === '/api/search'),
+    'the second judgment sees the first probe evidence');
 });

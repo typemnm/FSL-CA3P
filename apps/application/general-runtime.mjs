@@ -274,7 +274,27 @@ function responseSummary(path, response, body, origin) {
 }
 
 /**
- * Judges one tool result that carries an AttackRecord with the AI verifier and maps the result to the core verdict.
+ * Builds a tool-agnostic AttackRecord from one executed probe: the hypothesis, the tool and its input, and the
+ * tool's own bounded evidence. A result that already carries an AttackRecord keeps its exchanges.
+ */
+export function recordForProbe({ probe, hypothesis, execution, origin, relatedEvidence = [] }) {
+  const summaries = items => items.map(({ id, kind, asset, summary }) => ({ id, kind, ...(asset ? { asset } : {}), summary }));
+  const info = { goal: 'Decide whether the hypothesis ' + hypothesis.category + ' at ' + hypothesis.asset + ' is valid',
+    hypothesis: { id: hypothesis.id, category: hypothesis.category, asset: hypothesis.asset, rationale: hypothesis.rationale },
+    tool: probe.tool, input: probe.input, relatedEvidence: summaries(relatedEvidence).slice(-8),
+    ...(typeof probe.input?.sessionRole === 'string' ? { session: probe.input.sessionRole } : {}) };
+  if (execution.attackRecord) return { ...execution.attackRecord, info: { ...info, ...execution.attackRecord.info } };
+  const url = typeof probe.input?.path === 'string' ? new URL(probe.input.path, origin).href : undefined;
+  return { schemaVersion: 'attack-record/1', id: probe.id, kind: String(hypothesis.category).slice(0, 64),
+    target: { origin }, info,
+    request: { method: url ? 'GET' : 'READ', ...(url ? { url } : { file: String(probe.input?.file ?? probe.tool) }),
+      headers: {}, body: null },
+    response: { status: Number.isInteger(execution.result?.status) ? execution.result.status : null,
+      bodyText: JSON.stringify(summaries(execution.evidence ?? [])) } };
+}
+
+/**
+ * Judges one AttackRecord with the AI verifier and maps the result to the core verdict.
  * The core accepts a non-inconclusive verdict only when it cites this probe's evidence, and rejects an empty reason.
  */
 export async function judgeAttackRecord(record, { evidenceId, outDir, sessions = {}, verify = verifyAttack,
@@ -634,7 +654,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); once the cumulative web_info evidence budget of the run is spent, returns only a one-line overview (status, content type, list counts); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
         repository_read: 'input {file,offset?}: read only an allowlisted local source or reference excerpt',
       },
-      limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; no independent browser-execution verifier is connected for this general run.',
+      limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; an AI verifier judges every executed probe as valid or invalid for its hypothesis and may open a read-only browser.',
         'GET and repository references do not independently confirm most weakness classes.',
         'Historical cases and source reports are context, not current-run proof.',
         'Initial public discovery is bounded to ' + MAX_INITIAL_PAGES + ' routes; other declared routes require a model probe.',
@@ -792,17 +812,21 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       }
       return { kind: probe.tool, evidence: [] };
     } };
-    const verifier = { async verify({ execution, probe, signal }) {
-      const id = execution.evidence?.[0]?.id;
-      // Any tool whose result carries an AttackRecord is judged by the AI verifier; nothing else is confirmed here.
-      if (execution.attackRecord && id) {
-        const sessions = Object.fromEntries([...sessionCookies].map(([role, cookie]) => [role,
-          [{ name: cookie.slice(0, cookie.indexOf('=')), value: cookie.slice(cookie.indexOf('=') + 1) }]]));
-        return judgeAttackRecord(execution.attackRecord, { evidenceId: id, sessions, verify: verifyAttackImpl,
-          outDir: verificationRoot ? join(verificationRoot, probe.id) : undefined, model: verifierModel,
-          env, envFile, signal });
-      }
-      return { status: 'inconclusive', reason: 'independent_verification_unavailable', evidenceIds: id ? [id] : [] };
+    // Evidence already judged per hypothesis, so each verdict covers everything known so far.
+    const judgedEvidence = new Map();
+    const verifier = { async verify({ hypothesis, probe, execution, evidence, signal }) {
+      const id = execution.evidence[0].id;
+      const own = new Set(execution.evidence.map(item => item.id));
+      const earlier = judgedEvidence.get(hypothesis.id) ?? [];
+      const cited = evidence.filter(item => hypothesis.evidenceIds.includes(item.id) && !own.has(item.id));
+      judgedEvidence.set(hypothesis.id, [...earlier, ...execution.evidence]);
+      const sessions = Object.fromEntries([...sessionCookies].map(([role, cookie]) => [role,
+        [{ name: cookie.slice(0, cookie.indexOf('=')), value: cookie.slice(cookie.indexOf('=') + 1) }]]));
+      // Every executed result goes to the AI verifier, which decides valid or invalid for the hypothesis.
+      return judgeAttackRecord(recordForProbe({ probe, hypothesis, execution, origin: allowedOrigin,
+        relatedEvidence: [...cited, ...earlier] }), { evidenceId: id, sessions, verify: verifyAttackImpl,
+        outDir: verificationRoot ? join(verificationRoot, probe.id) : undefined, model: verifierModel,
+        env, envFile, signal });
     } };
     const wrappedPlanner = { async propose(context) {
       let plan;
