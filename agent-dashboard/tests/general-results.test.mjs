@@ -81,6 +81,26 @@ test('external report displays observed scope, rejections and response receipt s
   assert.doesNotMatch(html, /모델 제안|가설 기준/);
 });
 
+test('external report shows observed technologies and libraries without rendering page text as HTML', () => {
+  const report = { ...result(), inspectionMode: 'external-read-only',
+    scope: { origin: 'https://example.org', pathPrefix: '/', methods: ['GET'], maxRequests: 8 },
+    inventory: { pages: [{ url: 'https://example.org/', status: 200, contentType: 'text/html',
+      parser: { status: 'observed', mode: 'http-response',
+        technologies: [{ name: 'React <script>', version: '18.2.0', evidenceFields: ['html'] }],
+        libraries: [{ name: 'jQuery', version: '3.6.0', evidenceFields: ['scriptSrc'] }] } },
+    { url: 'https://example.org/other', status: 200, contentType: 'text/html',
+      parser: { status: 'unavailable' } }] },
+    findings: [], hypotheses: [], probes: [], evidence: [], modelCalls: [] };
+  const html = renderGeneralReport({ mode: 'external-general', target: 'https://example.org/', report });
+  assert.match(html, /Web Parser · HTTP 응답 지문/);
+  assert.match(html, /외부 라이브러리 단서 1건/);
+  assert.match(html, /jQuery 3\.6\.0/);
+  assert.match(html, /근거 유형: scriptSrc/);
+  assert.match(html, /React &lt;script&gt; 18\.2\.0/);
+  assert.doesNotMatch(html, /React <script>/);
+  assert.match(html, /지문 분석을 완료하지 못했습니다/);
+});
+
 test('general report shows evidence, incomplete coverage, model usage and escapes untrusted text', () => {
   const item = { report: result(), events: [{ stage: 'probe.verify' }] };
   const summary = generalSummary(item);

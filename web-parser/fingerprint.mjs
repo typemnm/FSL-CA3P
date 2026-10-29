@@ -167,6 +167,15 @@ export function fingerprint(input) {
     evidence: evidence.get(t.name) ?? [{ field: 'implies', match: impliedBy.get(t.name) ?? null }],
     categoryIds: t.categories.map((c) => c.id),
   }));
+  // The pinned Wappalyzer data has no Spring Boot entry. Its explicit public
+  // X-Powered-By header is a useful framework hint for the Wonchang fixture.
+  const springHeader = items.headers['x-powered-by']?.map((value) =>
+    /^Spring Boot(?:[ /](\d+(?:\.\d+){0,3}))?$/iu.exec(value.trim())).find(Boolean);
+  if (springHeader && !technologies.some((t) => t.name === 'Spring Boot')) {
+    technologies.push({ name: 'Spring Boot', categories: ['Web frameworks'],
+      version: springHeader[1] ?? null, confidence: 75,
+      evidence: [{ field: 'headers', key: 'x-powered-by', match: 'Spring Boot' }], categoryIds: [18] });
+  }
   return {
     technologies: technologies.map(({ categoryIds, ...t }) => t),
     libraries: technologies.filter((t) => t.categoryIds.some((id) => LIBRARY_CATEGORIES.has(id)))

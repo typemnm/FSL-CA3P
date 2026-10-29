@@ -60,3 +60,32 @@ test('external worker observes public pages, stores the report, and skips HWPX w
   assert.equal(final.reportDocuments.status, 'skipped');
   assert.equal(final.reportDocuments.errorCode, 'NO_CONFIRMED_FINDINGS');
 });
+
+test('external worker rejects a changed Web Parser fingerprint dataset before requesting the target', async t => {
+  const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
+  mkdirSync(runtimeRoot, { recursive: true });
+  const directory = mkdtempSync(join(runtimeRoot, 'ca3p-external-dataset-'));
+  const storePath = join(directory, 'runs.sqlite3');
+  const { normalizedUrl, scope } = normalizeExternalTarget('https://8.8.8.8/start');
+  const id = 'external-stale-dataset';
+  const store = createRunRepository({ path: storePath });
+  store.createRun({ id, mode: 'external-general', modelId: 'rule-baseline',
+    manifest: { runId: id, modules: {}, shared: {}, data: { datasetDigest: 'stale' },
+      target: { kind: 'external', origin: scope.origin } },
+    state: { id, mode: 'external-general', assessmentMode: 'general', modelId: 'rule-baseline',
+      status: 'queued', events: [] },
+    options: { mode: 'external-general', modelId: 'rule-baseline', target: normalizedUrl, scope,
+      testProfile: 'external-read-only', fixtureId: null, delayMs: 0 } });
+  store.close();
+  let requests = 0;
+  const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10,
+    externalRequestImpl: async () => { requests += 1; throw new Error('unexpected request'); } });
+  t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+  const final = await waitFor(() => {
+    const value = worker.store.getRun(id);
+    return ['completed', 'failed', 'cancelled'].includes(value.status) && value;
+  });
+  assert.equal(final.status, 'failed');
+  assert.match(final.error, /CONDITION_CHANGED/);
+  assert.equal(requests, 0);
+});

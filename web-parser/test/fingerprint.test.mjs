@@ -74,6 +74,19 @@ test('header/cookie/meta names are normalized; prototype-like names are ordinary
   assert.ok(tech['Vue.js']);
 });
 
+test('a public Spring Boot header identifies the framework without source access', T, () => {
+  const input = { headers: [{ name: 'X-Powered-By', value: 'Spring Boot' }] };
+  assert.deepEqual(run(input)['Spring Boot'], {
+    name: 'Spring Boot', categories: ['Web frameworks'], version: null, confidence: 75,
+    evidence: [{ field: 'headers', key: 'x-powered-by', match: 'Spring Boot' }],
+  });
+  assert.deepEqual(fingerprint({ ...EMPTY, ...input }).libraries.find(item => item.name === 'Spring Boot'), {
+    name: 'Spring Boot', version: null, source: 'fingerprint',
+    evidence: [{ field: 'headers', key: 'x-powered-by', match: 'Spring Boot' }],
+  });
+  assert.equal(run({ headers: [{ name: 'X-Powered-By', value: 'Spring Boot; token=secret' }] })['Spring Boot'], undefined);
+});
+
 test('html matcher input is sampled to a bounded head + tail', T, () => {
   const pad = 'x'.repeat(MATCH_SAMPLE_LENGTH);
   assert.ok(!run({ html: `${pad}<link rel="amphtml">${pad}` }).AMP, 'the dropped middle is not matched');

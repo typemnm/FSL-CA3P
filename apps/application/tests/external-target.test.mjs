@@ -105,6 +105,75 @@ test('external runtime observes only in-scope public links and leaves findings u
   } finally { await runtime.close(); }
 });
 
+test('external URL fingerprints the bounded HTTP response without another request or storing secrets', async () => {
+  const requested = [];
+  const runtime = createExternalRuntime({ targetUrl: 'https://8.8.8.8/start',
+    scope: { pathPrefix: '/start' }, runIdFactory: () => 'external-fingerprint',
+    requestImpl: async url => {
+      requested.push(url);
+      return { status: 200, contentType: 'text/html', durationMs: 2, truncated: false,
+        headers: [{ name: 'content-type', value: 'text/html' },
+          { name: 'set-cookie', value: 'session=PRIVATE_COOKIE' },
+          { name: 'x-api-key', value: 'PRIVATE_KEY' }],
+        body: '<title>Public</title><script src="/start/jquery-3.6.0.min.js"></script>PRIVATE_BODY' };
+    } });
+  try {
+    const completed = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('external fingerprint timeout')), 5000);
+      const detach = runtime.subscribe(state => {
+        if (['completed', 'failed', 'stopped'].includes(state.run.status)) {
+          clearTimeout(timer); detach(); resolve(state.run);
+        }
+      });
+    });
+    runtime.startLab();
+    const run = await completed;
+    assert.equal(run.status, 'completed', run.error);
+    assert.deepEqual(requested, ['https://8.8.8.8/start']);
+    const parser = run.report.inventory.pages[0].parser;
+    assert.equal(parser.status, 'observed');
+    assert.equal(parser.mode, 'http-response');
+    assert.deepEqual(parser.libraries.find(item => item.name === 'jQuery'), {
+      name: 'jQuery', version: '3.6.0', evidenceFields: ['scriptSrc'] });
+    const saved = JSON.stringify(run);
+    for (const secret of ['PRIVATE_COOKIE', 'PRIVATE_KEY', 'PRIVATE_BODY', 'jquery-3.6.0.min.js']) {
+      assert.equal(saved.includes(secret), false, secret);
+    }
+  } finally { await runtime.close(); }
+});
+
+test('stopping during HTTP fingerprinting cannot complete the external run', async () => {
+  let releaseAnalysis;
+  let analysisStarted;
+  const entered = new Promise(resolve => { analysisStarted = resolve; });
+  const analysis = new Promise(resolve => { releaseAnalysis = resolve; });
+  const runtime = createExternalRuntime({ targetUrl: 'https://8.8.8.8/start',
+    runIdFactory: () => 'external-stopped-during-parser',
+    requestImpl: async () => ({ status: 200, contentType: 'text/html', durationMs: 1,
+      truncated: false, body: '<title>Start</title>' }),
+    analyzeImpl: async () => { analysisStarted(); await analysis;
+      return { mode: 'http-response', technologies: [], libraries: [] }; },
+  });
+  try {
+    const completed = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('external stop timeout')), 5000);
+      const detach = runtime.subscribe(state => {
+        if (['completed', 'failed', 'stopped'].includes(state.run.status)) {
+          clearTimeout(timer); detach(); resolve(state.run);
+        }
+      });
+    });
+    runtime.startLab();
+    await entered;
+    runtime.stop('external-stopped-during-parser');
+    releaseAnalysis();
+    const run = await completed;
+    assert.equal(run.status, 'stopped');
+    assert.equal(Object.hasOwn(run, 'report'), false);
+    assert.equal(run.events.some(event => event.stage === 'parser.observe'), false);
+  } finally { releaseAnalysis(); await runtime.close(); }
+});
+
 test('external runtime records redirects without following or persisting their locations', async () => {
   for (const [index, location, destinationReason] of [
     [1, '/start/next', 'in_scope'],
@@ -227,6 +296,9 @@ test('run service persists an external run only after bound preflight and confir
     assert.equal(state.run.mode, 'external-general');
     assert.equal(state.run.manifest.target.kind, 'external');
     assert.equal(state.run.manifest.policy.methods[0], 'GET');
+    assert.ok(state.run.manifest.modules['web-parser']);
+    assert.ok(state.run.manifest.modules['packages/adapters']);
+    assert.ok(state.run.manifest.data.datasetDigest);
     assert.equal(service.getRun(state.run.id).target, checked.normalizedUrl);
   } finally { await service.close(); rmSync(directory, { recursive: true, force: true }); }
 });

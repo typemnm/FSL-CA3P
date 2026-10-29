@@ -11,6 +11,7 @@
  */
 
 import { collect as collectDefault } from '../../../web-parser/collect.mjs';
+import { fingerprintWithin } from '../../../web-parser/fingerprint.mjs';
 
 // Keep an abort that lands during Wappalyzer analysis bounded: the Worker match
 // finishes within timeoutMs before the call rejects (CONTRACT §2), so cap at 15s.
@@ -207,4 +208,92 @@ export async function collectWebInfo(url, { cookies, signal, timeoutMs = DEFAULT
   const info = await collectImpl(url, { timeoutMs: budget,
     ...(cookies ? { cookies } : {}), ...(signal ? { signal } : {}) });
   return { info, summary: summarizeTargetInfo(info) };
+}
+
+const HTTP_BODY_BYTES = 64 * 1024;
+const HTTP_HEADER_COUNT = 80;
+const HTTP_HEADER_VALUE_LENGTH = 2048;
+const HTTP_SIGNAL_COUNT = 64;
+const HTTP_COMPONENT_COUNT = 40;
+const HTTP_FINGERPRINT_TIMEOUT_MS = 3000;
+const PRIVATE_HEADER = /^(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)$/iu;
+const EVIDENCE_FIELDS = new Set(['headers', 'meta', 'html', 'scriptSrc', 'scripts', 'xhr', 'url', 'js', 'dom', 'cookies', 'implies']);
+
+function attributes(tag) {
+  const found = Object.create(null);
+  for (const match of tag.matchAll(/\b([a-z][a-z0-9:_-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>`=]+))/giu)) {
+    found[match[1].toLowerCase()] = match[2] ?? match[3] ?? match[4];
+  }
+  return found;
+}
+
+function htmlFingerprintInputs(body, url) {
+  const meta = [];
+  const scriptSrc = [];
+  // A script tag inside an HTML comment is text, not a loaded resource.
+  const activeMarkup = body.replace(/<!--[\s\S]*?(?:-->|$)/gu, '');
+  for (const match of activeMarkup.matchAll(/<(meta|script)\b([^>]{0,2048})>/giu)) {
+    const attrs = attributes(match[2]);
+    if (match[1].toLowerCase() === 'meta' && meta.length < HTTP_SIGNAL_COUNT) {
+      const name = attrs.name ?? attrs.property;
+      if (name && attrs.content !== undefined) meta.push({ name: name.slice(0, 128), content: attrs.content.slice(0, 2048) });
+    }
+    if (match[1].toLowerCase() === 'script' && attrs.src && scriptSrc.length < HTTP_SIGNAL_COUNT) {
+      try {
+        const src = new URL(attrs.src, url);
+        if (['http:', 'https:'].includes(src.protocol) && !src.username && !src.password) scriptSrc.push(src.href);
+      } catch { /* An invalid script URL cannot identify a library. */ }
+    }
+  }
+  return { meta, scriptSrc };
+}
+
+function observedComponent(item, library = false) {
+  if (!item || typeof item.name !== 'string' || !item.name.trim()) return null;
+  // Product names/categories are dataset labels. Versions are page-controlled, so keep only short version syntax.
+  const name = item.name.replace(/[\u0000-\u001f\u007f]/gu, ' ').slice(0, 120);
+  const version = typeof item.version === 'string' && /^\d+(?:\.\d+){0,3}(?:[-+][a-z0-9.]{1,16})?$/iu.test(item.version)
+    ? item.version : null;
+  const evidenceFields = [...new Set(list(item.evidence).map(row => row?.field)
+    .filter(field => EVIDENCE_FIELDS.has(field)))].slice(0, 8);
+  if (library) return { name, version, evidenceFields };
+  const categories = list(item.categories).filter(value => typeof value === 'string')
+    .slice(0, 8).map(value => value.replace(/[\u0000-\u001f\u007f]/gu, ' ').slice(0, 80));
+  const confidence = Number.isFinite(item.confidence)
+    ? Math.max(0, Math.min(100, Math.round(item.confidence))) : null;
+  return { name, version, categories, confidence, evidenceFields };
+}
+
+/** Fingerprint an already received HTTP response without opening a browser or making another request. */
+export async function fingerprintObservedResponse(url, response, { timeoutMs = HTTP_FINGERPRINT_TIMEOUT_MS } = {}) {
+  const target = new URL(url);
+  if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) {
+    throw new TypeError('Expected an HTTP(S) URL without credentials.');
+  }
+  if (!response || !Array.isArray(response.headers) || typeof response.body !== 'string') {
+    throw new TypeError('Expected response headers and a text body.');
+  }
+  if (Buffer.byteLength(response.body, 'utf8') > HTTP_BODY_BYTES) throw new RangeError('Response body exceeds 64 KiB.');
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new TypeError('timeoutMs must be a positive integer.');
+
+  const headers = response.headers.slice(0, HTTP_HEADER_COUNT).flatMap(header => {
+    if (!header || typeof header.name !== 'string' || typeof header.value !== 'string'
+      || !/^[a-z0-9-]{1,80}$/iu.test(header.name) || PRIVATE_HEADER.test(header.name)) return [];
+    return [{ name: header.name, value: header.value.slice(0, HTTP_HEADER_VALUE_LENGTH) }];
+  });
+  const contentType = response.contentType ?? headers.find(header => header.name.toLowerCase() === 'content-type')?.value;
+  const html = !contentType || /(?:text\/html|application\/xhtml\+xml)/iu.test(contentType) ? response.body : '';
+  const { meta, scriptSrc } = htmlFingerprintInputs(html, target);
+  const matchUrl = new URL(target);
+  matchUrl.search = ''; // Query values can contain credentials; pathname and host are sufficient for passive URL matching.
+  matchUrl.hash = '';
+  const found = await fingerprintWithin({ url: matchUrl.href, headers, cookies: [], meta, html,
+    scriptSrc, scripts: [], xhr: [], js: {}, dom: {} }, Math.min(timeoutMs, HTTP_FINGERPRINT_TIMEOUT_MS));
+  return {
+    mode: 'http-response',
+    technologies: list(found.technologies).slice(0, HTTP_COMPONENT_COUNT)
+      .map(item => observedComponent(item)).filter(Boolean),
+    libraries: list(found.libraries).slice(0, HTTP_COMPONENT_COUNT)
+      .map(item => observedComponent(item, true)).filter(Boolean),
+  };
 }

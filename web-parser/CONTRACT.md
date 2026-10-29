@@ -196,7 +196,7 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
     있으면 렌더러는 계속 바쁘고, 뒤 단계(DOM probe)도 `timeout`이 된다.
   - 문서가 되지 않는 메인 프레임 내비게이션(204/205 응답, 다운로드)도 문서 사이에 `kind:"client"` 홉으로 들어간다.
 - **html**: 추출한 커밋 문서의 `outerHTML`을 격리 world에서 받은 그대로(위 상한까지).
-- **technologies / libraries** (§7): 수집 후 Wappalyzer 분석. 매처 입력 = `url`(finalUrl), `headers`(원본 배열 → 어댑터가
+- **technologies / libraries** (§7): 수집 후 Wappalyzer 분석과 명시된 헤더 보완 규칙 적용. 매처 입력 = `url`(finalUrl), `headers`(원본 배열 → 어댑터가
   `{소문자이름:[값...]}`로 변환, 출력 `headers`는 원본 유지), `cookies`(분석 문서 URL `finalUrl`에 적용되는 쿠키의 이름+값만;
   출력 `cookies`는 jar 전체), `meta`(name 없으면 property), `html`·`scripts`(`structure.scripts` 인라인을 이은 문자열) — 둘 다
   `MATCH_SAMPLE_LENGTH`(50,000자, 이 모듈 자체 상한: 데이터셋 패턴 `<[^>]{1,250}`의 페이지 통제 최악 비용(V5)을 묶기 위함) 초과 시
@@ -272,6 +272,9 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
 - **구현**: 매처는 `wapalyzer-core`의 매칭·`implies`/`excludes`·버전 해석을 재사용하고(패키지 번들 데이터는 쓰지 않음), 코어에
   없는 `js`/`dom` 매칭과 `requires`/`requiresCategory` 고정점 반복(§3)은 `fingerprint.mjs` 어댑터가 수행하며, 매칭은
   `fingerprint-worker.mjs`(Worker)에서 돈다. 수집 중 런타임 네트워크 접근 없음.
+- **헤더 보완 규칙**: 데이터셋에 없는 `Spring Boot`는 공개 `X-Powered-By` 값이 정확히 `Spring Boot` 또는
+  `Spring Boot/버전`·`Spring Boot 버전` 형식일 때 `Web frameworks`로 기록한다. 근거는 헤더 이름과 고정 문자열만
+  남기고 신뢰도는 75로 표시한다. 이 값은 서버가 보낸 단서이며 서버 내부 패키지 설치를 확인한 증거는 아니다.
 
 ## 8. 단계 계획
 - **P1 (모듈 단독, 의존성 없음)**: `collect()` + CLI + `TargetInfo` 출력 + 세션 격리 + 테스트

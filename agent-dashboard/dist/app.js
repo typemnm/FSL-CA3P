@@ -54,6 +54,8 @@ function readJSON(key, fallback) { try { return JSON.parse(localStorage.getItem(
 function isObject(value) { return value && typeof value === 'object' && !Array.isArray(value); }
 const EVENT_CHANNELS = {
   agent: { id: 'agent', name: 'Agent', role: '계획과 검증', icon: 'brain' },
+  'web-parser': { id: 'web-parser', name: 'Web Parser', role: 'HTTP 응답 기술 식별', icon: 'scan' },
+  'external-observer': { id: 'external-observer', name: 'External Observer', role: '공개 페이지 관찰', icon: 'globe' },
   webpage: { id: 'webpage', name: 'Webpage', role: '실습 대상', icon: 'globe' },
   browser: { id: 'browser', name: '웹페이지 읽기 (이전 실행)', role: '사이트 읽기', icon: 'globe' },
   knowledge: { id: 'knowledge', name: '지식 조회 (이전 실행)', role: '지식 조회', icon: 'database' },
@@ -502,7 +504,7 @@ function renderModules() {
       : snapshot.source === 'scripted-gateway' ? 'FIXTURE'
         : snapshot.source === 'core-internal-event' ? 'CORE EVENT'
           : snapshot.source === 'local-loopback-board' ? 'LOCAL BOARD'
-            : isLab(item) ? 'LOCAL MODULE' : 'FIXTURE';
+          : isExternalRun(item) ? 'EXTERNAL HTTP' : isLab(item) ? 'LOCAL MODULE' : 'FIXTURE';
     return `<article class="panel module-card"><div class="module-card-top"><span data-icon="${module.icon}"></span><span class="local-chip">${source}</span></div><h2>${escape(module.name)}</h2><p>${escape(describeModule(module.id, item))}</p><div class="module-metrics"><span><strong>${String(count).padStart(2,'0')}</strong>EVENTS</span><span><strong>${escape(snapshot?.latency ?? '—')}</strong>ELAPSED MS</span></div><button class="button secondary" data-open-module="${escape(module.id)}">데이터 확인 ${icon('code')}</button></article>`;
   }).join('') : '<section class="panel empty-state"><h3>수신한 도구 이벤트 없음</h3><p>이번 실행에서 실제로 사용한 도구만 여기에 표시합니다.</p></section>';
   hydrateIcons($('module-grid'));

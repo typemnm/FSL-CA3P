@@ -1,11 +1,41 @@
 import { randomUUID } from 'node:crypto';
 import { emptyRun, assertIdentifier, redact } from '../../packages/contracts/index.mjs';
 import { externalScopeRejectionReason, normalizeExternalTarget, requestExternalHttp } from './external-target.mjs';
+import { fingerprintObservedResponse } from '../../packages/adapters/integrations/web-parser.mjs';
 
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const safeText = value => String(value ?? '').replace(/[\u0000-\u001f]/gu, ' ').slice(0, 180);
 const MAX_LINK_CANDIDATES = 64;
+const EVIDENCE_FIELDS = new Set(['url', 'headers', 'meta', 'html', 'scriptSrc', 'scripts',
+  'xhr', 'js', 'dom', 'implies']);
+function visibleComponents(items, technology = false) {
+  if (!Array.isArray(items)) return [];
+  return items.slice(0, 40).flatMap(item => {
+    if (!item || typeof item.name !== 'string') return [];
+    const name = safeText(redact(item.name)).slice(0, 120);
+    if (!name) return [];
+    const version = typeof item.version === 'string'
+      ? safeText(redact(item.version)).slice(0, 80) : null;
+    const evidenceFields = Array.isArray(item.evidenceFields)
+      ? [...new Set(item.evidenceFields.filter(field => EVIDENCE_FIELDS.has(field)))].slice(0, 10) : [];
+    return [{ name, version, evidenceFields,
+      ...(technology ? { categories: Array.isArray(item.categories)
+        ? item.categories.slice(0, 8).filter(value => typeof value === 'string')
+          .map(value => safeText(redact(value)).slice(0, 80)) : [],
+      confidence: Number.isInteger(item.confidence) && item.confidence >= 0 && item.confidence <= 100
+        ? item.confidence : null } : {}) }];
+  });
+}
+function visibleParserResult(value) {
+  if (!value || value.mode !== 'http-response'
+    || !Array.isArray(value.technologies) || !Array.isArray(value.libraries)) {
+    throw new TypeError('Invalid web-parser HTTP observation.');
+  }
+  return { status: 'observed', mode: 'http-response',
+    technologies: visibleComponents(value.technologies, true),
+    libraries: visibleComponents(value.libraries) };
+}
 const REJECTION_LABELS = Object.freeze({
   invalid_url: '올바르지 않은 링크', unsupported_scheme: '지원하지 않는 URL 방식',
   credential_userinfo: '인증 정보가 포함된 링크', credential_query: '인증 쿼리가 포함된 링크',
@@ -49,14 +79,15 @@ function redirectDestinationReason(location, base, scope) {
 
 export function createExternalRuntime({ targetUrl, scope: suppliedScope, modelId = 'rule-baseline',
   runIdFactory = () => 'external-' + randomUUID(), requestImpl = requestExternalHttp,
-  signal, beforeProbe, afterProbe } = {}) {
+  analyzeImpl = fingerprintObservedResponse, signal, beforeProbe, afterProbe } = {}) {
   const { normalizedUrl, scope } = normalizeExternalTarget({ target: targetUrl,
     scope: { pathPrefix: suppliedScope?.pathPrefix ?? '/' } });
   if (suppliedScope?.origin && JSON.stringify(suppliedScope) !== JSON.stringify(scope)) {
     throw new TypeError('External scope changed after run preparation.');
   }
   if (modelId !== 'rule-baseline') throw new TypeError('Initial external observation uses the rule baseline.');
-  if (typeof requestImpl !== 'function' || typeof runIdFactory !== 'function') throw new TypeError('Invalid external runtime dependency.');
+  if (typeof requestImpl !== 'function' || typeof analyzeImpl !== 'function'
+    || typeof runIdFactory !== 'function') throw new TypeError('Invalid external runtime dependency.');
   const listeners = new Set();
   const instanceId = randomUUID();
   const initial = () => ({ ...emptyRun(), mode: 'external-general', assessmentMode: 'general',
@@ -79,12 +110,13 @@ export function createExternalRuntime({ targetUrl, scope: suppliedScope, modelId
     const row = { id: run.id + ':event-' + (run.events.length + 1), time: new Date().toISOString(),
       module: 'external-observer', type: 'info', source: 'apps/application/external-runtime',
       simulated: false, targetContacted: run.targetContacted, ...event };
-    run.events.push(row); run.snapshots['external-observer'] = row;
+    run.events.push(row); run.snapshots[row.module] = row;
     run.step = run.events.length; run.totalSteps = Math.max(1, run.step); publish();
   }
   async function runTask() {
     const begunAt = new Date().toISOString();
     const budgetSignal = AbortSignal.timeout(scope.maxDurationMs);
+    const deadlineAt = Date.now() + scope.maxDurationMs;
     const pages = []; const evidence = []; const queue = [normalizedUrl]; const queued = new Set(queue);
     const rejectionCounts = {};
     let requestsUsed = 0;
@@ -130,6 +162,22 @@ export function createExternalRuntime({ targetUrl, scope: suppliedScope, modelId
           const title = html ? safeText(response.body.match(/<title\b[^>]*>([^<]{0,300})<\/title>/iu)?.[1] ?? '') : '';
           const page = { url: redact(url), status: response.status, contentType: safeText(response.contentType),
             title, linksDiscovered: links.length, truncated: !!response.truncated, durationMs: response.durationMs };
+          if (html && !response.truncated && !budgetSignal.aborted) {
+            try {
+              const observed = await analyzeImpl(url,
+                { ...response, headers: Array.isArray(response.headers) ? response.headers : [] },
+                { timeoutMs: Math.min(3000, Math.max(1, deadlineAt - Date.now())) });
+              runSignal.throwIfAborted();
+              page.parser = visibleParserResult(observed);
+              appendEvent({ module: 'web-parser', stage: 'parser.observe', title: '웹 기술 식별',
+                detail: `기술 ${page.parser.technologies.length}건, 라이브러리 ${page.parser.libraries.length}건` });
+            } catch {
+              page.parser = { status: 'unavailable', mode: 'http-response' };
+              errors.push({ url: redact(url), code: 'WEB_PARSER_UNAVAILABLE' });
+              appendEvent({ module: 'web-parser', stage: 'parser.failed', title: '웹 기술 식별 실패',
+                type: 'warning' });
+            }
+          }
           pages.push(page);
           evidence.push({ id: 'external-page-' + pages.length, source: 'http/public', kind: 'observed-page',
             asset: redact(url), summary: `GET returned HTTP ${response.status}; ${redirect
@@ -155,6 +203,7 @@ export function createExternalRuntime({ targetUrl, scope: suppliedScope, modelId
           await afterProbe?.(probe, { status: response?.status ?? 'failed' }, reservation);
         }
       }
+      runSignal.throwIfAborted();
       const rejectedTotal = Object.values(rejectionCounts).reduce((sum, count) => sum + count, 0);
       run.report = { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
         inspectionMode: 'external-read-only', runId: run.id, status: 'completed',
@@ -170,7 +219,8 @@ export function createExternalRuntime({ targetUrl, scope: suppliedScope, modelId
           notTested: 0, observedPages: pages.length, requestsUsed, discoveredInScope: queued.size,
           rejectedCandidates: rejectedTotal,
           supportedIndependentChecks: 0, unobservedPages: Math.max(0, queued.size - pages.length),
-          limitations: ['No independent verifier is available for arbitrary external targets.'] },
+          limitations: ['No independent verifier is available for arbitrary external targets.',
+            'Technology fingerprints use only bounded HTTP response headers and HTML; browser JavaScript and DOM were not analyzed.'] },
         partial: errors.length > 0 || queued.size > pages.length || budgetSignal.aborted
           || pages.some(page => page.truncated)
           || !!rejectionCounts.redirect_not_followed,

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { collectWebInfo, summarizeTargetInfo, evidenceFromTargetInfo, MAX_SUMMARY_BYTES,
+import { collectWebInfo, fingerprintObservedResponse, summarizeTargetInfo, evidenceFromTargetInfo, MAX_SUMMARY_BYTES,
   EVIDENCE_SUMMARY_BYTES } from '../integrations/web-parser.mjs';
 
 function targetInfo(overrides = {}) {
@@ -200,4 +200,52 @@ test('collectWebInfo observes a real loopback page and forwards a cookie to it',
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+test('an observed HTTP response identifies libraries without a second request or storing raw secrets', async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('Unexpected network request'); };
+  try {
+    const result = await fingerprintObservedResponse('https://nonexistent.invalid/page?token=URL-SECRET', {
+      contentType: 'text/html',
+      headers: [
+        { name: 'Content-Type', value: 'text/html' },
+        { name: 'X-Powered-By', value: 'Express' },
+        { name: 'Set-Cookie', value: 'sid=COOKIE-SECRET' },
+      ],
+      body: '<html><head><meta name="generator" content="WordPress 6.5">'
+        + '<script src="/assets/jquery-3.6.0.min.js?token=SCRIPT-SECRET"></script>'
+        + '</head><body>BODY-SECRET</body></html>',
+    });
+    assert.equal(result.mode, 'http-response');
+    const jquery = result.libraries.find(item => item.name === 'jQuery');
+    assert.deepEqual(jquery, { name: 'jQuery', version: '3.6.0', evidenceFields: ['scriptSrc'] });
+    assert.ok(result.technologies.some(item => item.name === 'Express'
+      && item.evidenceFields.includes('headers')));
+    assert.ok(result.technologies.some(item => item.name === 'WordPress'
+      && item.evidenceFields.includes('meta')));
+    const serialized = JSON.stringify(result);
+    assert.doesNotMatch(serialized, /URL-SECRET|COOKIE-SECRET|SCRIPT-SECRET|BODY-SECRET|Set-Cookie|X-Powered-By|match/u);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('HTTP response fingerprint input is bounded and never evaluates page scripts', async () => {
+  await assert.rejects(fingerprintObservedResponse('file:///tmp/x', { headers: [], body: '' }), /HTTP\(S\)/u);
+  await assert.rejects(fingerprintObservedResponse('https://example.org/', { headers: [], body: 'x'.repeat(64 * 1024 + 1) }), /64 KiB/u);
+  await assert.rejects(fingerprintObservedResponse('https://example.org/', { headers: [], body: '',
+    contentType: 'text/html' }, { timeoutMs: 0 }), /positive integer/u);
+  const result = await fingerprintObservedResponse('https://example.org/', { headers: [], contentType: 'text/html',
+    body: '<script>window.jQuery = { fn: { jquery: "3.6.0" } }</script>' });
+  assert.equal(result.libraries.some(item => item.name === 'jQuery'), false,
+    'inline page JavaScript is never executed or supplied as a script signal');
+});
+
+test('a script URL inside an HTML comment is not reported as a loaded library', async () => {
+  const result = await fingerprintObservedResponse('https://example.org/', {
+    headers: [], contentType: 'text/html',
+    body: '<!-- <script src="/jquery-3.6.0.min.js"></script> -->',
+  });
+  assert.equal(result.libraries.some(item => item.name === 'jQuery'), false);
 });

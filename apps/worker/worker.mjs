@@ -79,6 +79,10 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
           throw Object.assign(new Error('Shared execution conditions changed after this run was queued.'), { code: 'CONDITION_CHANGED' });
         }
       }
+      if (externalRun && frozen.data?.datasetDigest
+        && treeDigest(join(PROJECT_ROOT, 'web-parser/data/webappanalyzer')) !== frozen.data.datasetDigest) {
+        throw Object.assign(new Error('Web Parser fingerprint data changed after this run was queued.'), { code: 'CONDITION_CHANGED' });
+      }
       if (lease.options.caseSnapshot && treeDigest(lease.options.caseSnapshot.path) !== lease.options.caseSnapshot.fileDigest) {
         throw Object.assign(new Error('Historical-case snapshot changed after preparation.'), { code: 'CASE_SNAPSHOT_CHANGED' });
       }

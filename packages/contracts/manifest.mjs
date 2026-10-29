@@ -45,7 +45,8 @@ function attackCatalogSnapshot(path) {
 }
 export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
   if (mode === 'external-general') {
-    const moduleNames = ['apps/application', 'apps/worker', 'packages/contracts', 'packages/run-store'];
+    const moduleNames = ['apps/application', 'apps/worker', 'packages/adapters',
+      'packages/contracts', 'packages/run-store', 'web-parser'];
     const modules = Object.fromEntries(moduleNames.map(name => [name,
       { contentDigest: treeDigest(join(PROJECT_ROOT, name)), packageVersion: null }]));
     return { schemaVersion: CONTRACT_VERSIONS.runManifest, runId, createdAt: new Date().toISOString(),
@@ -62,7 +63,8 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
         snapshot: null, adapterDigest: null, promptTemplateDigest: null, settings: model.settings ?? {},
         actualPromptDigests: [], executionRole: 'not-used-read-only-observation' },
       data: { logicalInputDigest: digest({ mode, target: options.target, scope: options.scope }),
-        datasetDigest: null, catalogDigest: null, caseSnapshotDigest: null, caseRevisions: [],
+        datasetDigest: treeDigest(join(PROJECT_ROOT, 'web-parser/data/webappanalyzer')),
+        catalogDigest: null, caseSnapshotDigest: null, caseRevisions: [],
         unavailableInputs: ['casper-db', 'authenticated-sessions', 'independent-verifiers'] },
       target: { kind: 'external', fixtureId: null, entryUrl: redact(options.target),
         origin: options.scope.origin, scope: options.scope, initialStateDigest: null,

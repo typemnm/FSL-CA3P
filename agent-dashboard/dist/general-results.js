@@ -294,6 +294,29 @@ export function renderGeneralLiveResults(item) {
     + '<p class="general-live-note">발견한 가설 기준입니다. 미점검과 판정 불가는 안전 판정이 아닙니다.</p></div>';
 }
 
+function externalFingerprintMarkup(parser) {
+  if (!object(parser)) return '';
+  if (parser.status === 'unavailable') return '<p>Web Parser 지문 분석을 완료하지 못했습니다.</p>';
+  if (parser.status !== 'observed') return '';
+  const componentList = (label, values) => {
+    const items = list(values).filter(object).slice(0, 40);
+    const rows = items.map(value => {
+      const version = text(value.version);
+      const fields = list(value.evidenceFields).filter(field => typeof field === 'string').slice(0, 8);
+      return '<li>' + escape(text(value.name) || '이름 미기록')
+        + (version ? ' ' + escape(version) : '')
+        + (fields.length ? ' <small>근거 유형: ' + fields.map(escape).join(', ') + '</small>' : '')
+        + '</li>';
+    }).join('');
+    return '<div><strong>' + label + ' ' + items.length + '건</strong>'
+      + (rows ? '<ul>' + rows + '</ul>' : '<p>관찰된 항목이 없습니다.</p>') + '</div>';
+  };
+  return '<div class="web-parser-results"><h4>Web Parser · HTTP 응답 지문</h4>'
+    + '<p>이 페이지의 HTTP 헤더·HTML·스크립트 URL만 분석했습니다. 브라우저에서 실행된 JavaScript와 DOM은 분석하지 않았습니다.</p>'
+    + componentList('기술 단서', parser.technologies)
+    + componentList('외부 라이브러리 단서', parser.libraries) + '</div>';
+}
+
 export function renderGeneralReport(item) {
   const summary = generalSummary(item);
   if (!summary) return '';
@@ -310,7 +333,7 @@ export function renderGeneralReport(item) {
     const rejected = Object.entries(rejections).filter(([, value]) => count(value) !== null && value > 0);
     return `<section class="panel report-top general-report-top"><div><div class="eyebrow">EXTERNAL / READ ONLY REPORT</div><h2>외부 공개 페이지 관찰${summary.partial ? ' · 부분 결과' : ''}</h2><p>${escape(target)}</p><small>허용 범위 ${escape(scope.origin || '—')}${escape(scope.pathPrefix || '/')} · 메서드 ${escape(list(scope.methods).join(', ') || 'GET, HEAD')} · 최대 ${escape(scope.maxRequests ?? '—')}요청</small></div><div class="report-count"><strong>${count(coverage.observedPages) ?? pages.length}</strong><span>응답 페이지</span></div></section>
       <section class="panel general-coverage"><h3>관찰 범위와 한계</h3><div class="general-overview-counts"><span>요청 시도 <strong>${report.requestAttempted === true || item.requestAttempted === true ? '예' : '아니오'}</strong></span><span>HTTP 응답 수신 <strong>${report.targetContacted === true || item.targetContacted === true ? '예' : '아니오'}</strong></span><span>사용 요청 <strong>${count(coverage.requestsUsed) ?? 0}</strong></span><span>거부 후보 <strong>${count(coverage.rejectedCandidates) ?? 0}</strong></span></div><p>인증 없는 공개 페이지에 읽기 요청만 수행했습니다. 독립 검증기가 없어 확정 취약점을 주장하지 않습니다. 관찰하지 못한 페이지는 안전 판정이 아닙니다.</p>${summary.partial ? '<p>부분 결과입니다. 아래 관찰 실패 또는 응답 제한을 확인하세요.</p>' : ''}${text(report.stopReason) ? `<p>종료 사유: ${escape(report.stopReason)}</p>` : ''}</section>
-      <section class="panel general-coverage"><h3>관찰 페이지 ${pages.length}건</h3>${pages.length ? `<ul>${pages.map(page => `<li>${escape(text(page.url) || 'URL 미기록')} · HTTP ${escape(page.status ?? '—')} · ${escape(text(page.contentType) || '형식 미기록')}${page.truncated ? ' · 본문 제한으로 일부만 수신' : ''}${text(page.title) ? ` · ${escape(page.title)}` : ''}</li>`).join('')}</ul>` : '<p>읽을 수 있었던 페이지가 없습니다.</p>'}</section>
+      <section class="panel general-coverage"><h3>관찰 페이지 ${pages.length}건</h3>${pages.length ? `<ul>${pages.map(page => `<li>${escape(text(page.url) || 'URL 미기록')} · HTTP ${escape(page.status ?? '—')} · ${escape(text(page.contentType) || '형식 미기록')}${page.truncated ? ' · 본문 제한으로 일부만 수신' : ''}${text(page.title) ? ` · ${escape(page.title)}` : ''}${externalFingerprintMarkup(page.parser)}</li>`).join('')}</ul>` : '<p>읽을 수 있었던 페이지가 없습니다.</p>'}</section>
       <section class="panel general-coverage"><h3>범위 정책과 관찰 오류</h3>${rejected.length ? `<ul>${rejected.map(([reason, value]) => `<li>${escape(reason)} ${escape(value)}건</li>`).join('')}</ul>` : '<p>거부된 링크 후보가 없습니다.</p>'}${errors.length ? `<ul>${errors.map(row => `<li>${escape(text(row.code) || 'REQUEST_FAILED')} · ${escape(text(row.url) || 'URL 미기록')}</li>`).join('')}</ul>` : ''}</section>`;
   }
   const findingCards = findings.map((finding, index) => {
