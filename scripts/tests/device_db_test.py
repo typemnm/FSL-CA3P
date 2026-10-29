@@ -36,7 +36,7 @@ class DeviceDatabaseTests(unittest.TestCase):
         return ["--run-db", self.run_db, "--case-db", self.case_db]
 
     def create_run(self, wal=False):
-        self.run_db.parent.mkdir(parents=True)
+        self.run_db.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.run_db)
         self.addCleanup(connection.close)
         if wal:
@@ -111,6 +111,68 @@ class DeviceDatabaseTests(unittest.TestCase):
         for name in ("manifest.json", "run.sqlite3"):
             self.assertEqual((self.backup / name).stat().st_mode & 0o777, 0o600)
 
+    def assert_run_tables_restored(self, expected):
+        output = self.cli("backup", *self.both(), "--output", self.backup)
+        for table, rows in expected.items():
+            self.assertEqual(output["databases"]["run"]["info"]["counts"][table], len(rows))
+        self.run_db.write_bytes(b"failed deployment")
+        self.cli("restore", *self.both(), "--backup", self.backup)
+        with sqlite3.connect(self.run_db) as restored:
+            for table, rows in expected.items():
+                self.assertEqual(restored.execute(f'SELECT * FROM "{table}"').fetchall(), rows)
+
+    def test_experiment_control_extension_is_backed_up_and_restored(self):
+        connection = self.create_run()
+        connection.executescript("""
+            CREATE TABLE experiment_control (
+                id INTEGER PRIMARY KEY, status TEXT, owner TEXT, epoch INTEGER,
+                last_reset_at TEXT, summary_json TEXT, error TEXT);
+            INSERT INTO experiment_control VALUES (1,'failed',NULL,3,NULL,'{}','preserve');
+        """)
+        rows = connection.execute("SELECT * FROM experiment_control").fetchall()
+        connection.close()
+        self.assert_run_tables_restored({"experiment_control": rows})
+
+    def test_current_run_repository_schema_and_pending_reset_state_survive_rollback(self):
+        # Use the actual application's schema so future extensions cannot silently
+        # pass tests against only a historical hand-written fixture.
+        module_url = (ROOT / "packages/run-store/index.mjs").as_uri()
+        script = (f"import {{createRunRepository}} from {json.dumps(module_url)};"
+                  f"const r=createRunRepository({{path:{json.dumps(str(self.run_db))}}});r.close();")
+        result = subprocess.run([os.environ.get("CA3P_NODE", "node"), "--input-type=module", "-e", script],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with sqlite3.connect(self.run_db) as connection:
+            connection.execute("UPDATE experiment_control SET epoch=4,summary_json='{}' WHERE id=1")
+            connection.execute("INSERT OR REPLACE INTO pending_target_resets VALUES (1,?)",
+                               ('[{"targetId":"isolated-lab","reason":"preserve"}]',))
+            expected = {table: connection.execute(f'SELECT * FROM "{table}"').fetchall()
+                        for table in ("experiment_control", "pending_target_resets")}
+        self.assert_run_tables_restored(expected)
+
+    def test_unknown_run_tables_are_rejected_without_altering_the_source(self):
+        connection = self.create_run()
+        connection.execute("CREATE TABLE unrelated(secret TEXT)")
+        connection.commit()
+        connection.close()
+        original = self.run_db.read_bytes()
+        output = self.cli("backup", *self.both(), "--output", self.backup, success=False)
+        self.assertIn("unknown tables", output["error"])
+        self.assertEqual(self.run_db.read_bytes(), original)
+
+    def test_malformed_optional_run_tables_are_rejected(self):
+        for table in ("experiment_control", "pending_target_resets"):
+            with self.subTest(table=table):
+                connection = self.create_run()
+                connection.execute(f'CREATE TABLE "{table}"(unrelated TEXT)')
+                connection.commit()
+                connection.close()
+                original = self.run_db.read_bytes()
+                output = self.cli("backup", *self.both(), "--output", self.backup / table, success=False)
+                self.assertIn(table, output["error"])
+                self.assertEqual(self.run_db.read_bytes(), original)
+                self.run_db.unlink()
+
     def test_v5_to_v7_preserves_cases_checks_and_revision_snapshots(self):
         self.create_v5_case()
         with sqlite3.connect(self.case_db) as connection:
@@ -128,6 +190,95 @@ class DeviceDatabaseTests(unittest.TestCase):
         second = self.cli("migrate", "--case-db", self.case_db)
         self.assertFalse(second["changed"])
         self.assertEqual(self.case_db.stat().st_mode & 0o777, 0o600)
+
+    def test_current_case_extensions_survive_backup_migration_and_rollback(self):
+        # Exercise the actual feature owners rather than duplicating their DDL.
+        from casper_db import CaseStore
+        from casper_db.attack_catalog import prepare_catalog_database
+        from casper_db.external_vulnerabilities import normalize_external, store_external
+        from casper_db.applicability import assess_database
+        from casper_db.sync_journal import begin_sync
+        from casper_db.dashboard_api import _setup_case_metadata
+
+        prepare_catalog_database(self.case_db)
+        case = json.loads((ROOT / "casper-db/examples/case.example.json").read_text())
+        CaseStore(self.case_db).add(case)
+        bundle = normalize_external("nvd", {"vulnerabilities": [{"cve": {
+            "id": "CVE-2026-10000", "descriptions": [{"lang": "en", "value": "Disposable advisory"}],
+        }}]})
+        self.assertFalse(bundle.rejected_items)
+        store_external(self.case_db, [bundle])
+        assess_database(self.case_db, {
+            "schema_version": "casper-software-inventory-1", "target_id": "LAB-DEMO",
+            "observed_at": "2026-01-01T00:00:00+00:00",
+            "components": [{"ecosystem": "npm", "package": "disposable", "version": "1.0.0",
+                            "source_refs": ["fixture:device-backup"]}],
+        }, ["CVE-2026-10000"], apply=True)
+        begin_sync(self.case_db, {"target_id": "LAB-DEMO", "started_at": "2026-01-01T00:00:00+00:00",
+                                  "inventory_sha256": "a" * 64})
+        _setup_case_metadata(self.case_db)
+        with sqlite3.connect(self.case_db) as connection:
+            connection.execute("INSERT INTO dashboard_case_state VALUES (?,?,?,?)",
+                               (case["case_id"], "2026-01-01T00:00:00+00:00", "fixture", "preserve"))
+            connection.execute("INSERT INTO dashboard_case_audit VALUES (1,?,?,?,?,?)",
+                               (case["case_id"], "archive", "fixture", "2026-01-01T00:00:00+00:00", "{}"))
+            tables = [row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+            expected = {table: connection.execute(f'SELECT * FROM "{table}"').fetchall() for table in tables}
+        self.assertEqual(len(expected), 20)
+        backup = self.cli("backup", *self.both(), "--output", self.backup)
+        self.assertEqual(backup["databases"]["case"]["info"]["counts"],
+                         {table: len(rows) for table, rows in expected.items()})
+        migrated = self.cli("migrate", "--case-db", self.case_db)
+        self.assertFalse(migrated["changed"])
+        self.assertEqual(migrated["preservedCounts"], backup["databases"]["case"]["info"]["counts"])
+        self.case_db.write_bytes(b"failed deployment")
+        self.cli("restore", *self.both(), "--backup", self.backup)
+        with sqlite3.connect(self.case_db) as restored:
+            for table, rows in expected.items():
+                self.assertEqual(restored.execute(f'SELECT * FROM "{table}"').fetchall(), rows, table)
+
+    def test_malformed_optional_case_namespaces_are_rejected_without_source_changes(self):
+        from casper_db import initialize_database
+
+        for table in ("attack_payloads", "external_records", "external_sync_runs", "dashboard_case_state"):
+            with self.subTest(table=table):
+                initialize_database(self.case_db)
+                with sqlite3.connect(self.case_db) as connection:
+                    connection.execute(f'CREATE TABLE "{table}"(unrelated TEXT)')
+                original = self.case_db.read_bytes()
+                output = self.cli("backup", *self.both(), "--output", self.backup / table, success=False)
+                self.assertIn(table, output["error"])
+                self.assertEqual(self.case_db.read_bytes(), original)
+                self.case_db.unlink()
+
+    def test_case_namespace_markers_must_match_their_owners(self):
+        from casper_db import initialize_database
+
+        for table in ("attack_catalog_metadata", "external_metadata"):
+            for marker in (None, "unrelated-application"):
+                with self.subTest(table=table, marker=marker):
+                    initialize_database(self.case_db)
+                    with sqlite3.connect(self.case_db) as connection:
+                        connection.execute(f'CREATE TABLE "{table}"(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+                        if marker is not None:
+                            connection.execute(f'INSERT INTO "{table}" VALUES (?,?)', ("schema", marker))
+                    original = self.case_db.read_bytes()
+                    output = self.cli("migrate", "--case-db", self.case_db, success=False)
+                    self.assertIn("namespace marker", output["error"])
+                    self.assertEqual(self.case_db.read_bytes(), original)
+                    self.case_db.unlink()
+
+    def test_separate_intake_namespace_is_not_accepted_as_case_metadata(self):
+        from casper_db import initialize_database
+
+        initialize_database(self.case_db)
+        with sqlite3.connect(self.case_db) as connection:
+            connection.execute("CREATE TABLE dashboard_intake_audit(id INTEGER PRIMARY KEY)")
+        original = self.case_db.read_bytes()
+        output = self.cli("backup", *self.both(), "--output", self.backup, success=False)
+        self.assertIn("unknown tables", output["error"])
+        self.assertEqual(self.case_db.read_bytes(), original)
 
     def test_unrelated_case_database_is_not_migrated(self):
         self.case_db.parent.mkdir(parents=True)

@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, symlink, readlink, rm, stat, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, symlink, readlink, rm, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { deploymentTransaction, validateConfiguration, prepareRelease, execute, atomicJson, deploy, localRequest, normalizeTrackedModes } from '../device-deploy.mjs';
+import { deploymentTransaction, validateConfiguration, prepareRelease, execute, atomicJson, database, deploy, localRequest, normalizeTrackedModes } from '../device-deploy.mjs';
 
 const config = { repository: 'typemnm/FSL-CA3P', repoDir: '/repo', deployRoot: '/private/deploy',
   runtimeDir: '/private/runtime', caseDbPath: '/private/cases.sqlite', legacyReportsDir: '/private/reports',
@@ -123,6 +123,53 @@ test('JSON command stdout stays parseable while stderr warnings remain in privat
     const output = await execute(process.execPath, ['-e', 'console.error("diagnostic warning"); console.log(JSON.stringify({ready:true}))'], { logFile, stdoutOnly: true });
     assert.deepEqual(JSON.parse(output), { ready: true });
     assert.match(await readFile(logFile, 'utf8'), /diagnostic warning/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('database attempts retain private per-target diagnostics and parse only stdout', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ca3p-db-diagnostics-'));
+  try {
+    const python = join(directory, 'synthetic-python');
+    await writeFile(python, '#!/bin/sh\nprintf "%s\\n" "synthetic-private-warning" >&2\nprintf \'%s\\n\' \'{"ok":true,"command":"backup"}\'\n', { mode: 0o700 });
+    const localConfig = { ...config, deployRoot: directory };
+    const targetSha = 'a'.repeat(40), otherSha = 'b'.repeat(40);
+    for (const sha of [targetSha, targetSha, otherSha]) {
+      assert.deepEqual(await database(localConfig, python, ['backup'], { targetSha: sha, phase: 'trial-backup' }), { ok: true, command: 'backup' });
+    }
+    const logs = join(directory, 'logs', targetSha, 'database');
+    const files = await readdir(logs);
+    assert.equal(files.length, 2, 'retried operations keep separate diagnostics');
+    assert.equal((await stat(logs)).mode & 0o777, 0o700);
+    for (const name of files) {
+      assert.match(name, /^trial-backup-[a-f0-9]{24}\.log$/);
+      assert.equal((await stat(join(logs, name))).mode & 0o777, 0o600);
+      assert.match(await readFile(join(logs, name), 'utf8'), /synthetic-private-warning/);
+    }
+    assert.equal((await readdir(join(directory, 'logs', otherSha, 'database'))).length, 1);
+    await assert.rejects(database(localConfig, python, ['backup'], { targetSha: '../escape' }), /Invalid database diagnostic context/);
+    await assert.rejects(database(localConfig, python, ['backup'], { targetSha, phase: '../escape' }), /Invalid database diagnostic context/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('database failures keep helper output out of public errors while retaining the private cause', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ca3p-db-failure-log-'));
+  try {
+    const python = join(directory, 'synthetic-python');
+    const localConfig = { ...config, deployRoot: directory };
+    const targetSha = 'c'.repeat(40);
+    for (const [output, code] of [['{"ok":false,"error":"synthetic-private-database-value"}', 1],
+      ['{"ok":false,"error":"synthetic-private-database-value"}', 0], ['synthetic-private-database-value', 0]]) {
+      await writeFile(python, `#!/bin/sh\nprintf '%s\\n' '${output}'\nexit ${code}\n`, { mode: 0o700 });
+      await assert.rejects(database(localConfig, python, ['restore'], { targetSha, phase: 'rollback-restore' }), error => {
+        assert.match(error.message, /private deployment log/);
+        assert.doesNotMatch(error.message, /synthetic-private-database-value/);
+        return true;
+      });
+    }
+    const logs = join(directory, 'logs', targetSha, 'database');
+    const files = await readdir(logs);
+    assert.equal(files.length, 3);
+    for (const name of files) assert.match(await readFile(join(logs, name), 'utf8'), /synthetic-private-database-value/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

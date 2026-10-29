@@ -67,6 +67,8 @@ chmod 600 "$CA3P_DEPLOY_CONFIG"
 
 `--check-only`는 현재 HEAD의 CI를 확인하고, `--prepare-only`는 의존성·복제 DB·격리 smoke·이미지 준비까지 수행하며 실행 서비스로 전환하지 않는다. 두 옵션도 기존 미완료 transaction이 있으면 먼저 복구하고 상태 파일을 갱신한다. 정상 설치 뒤 updater가 다음 120초 확인에서 배포한다. 새 controller 버전은 리뷰된 소스에서 설치기를 다시 실행해 갱신한다.
 
+Run Store 또는 Case DB에 테이블을 추가할 때는 `scripts/device-db.py`의 DB 식별·백업 호환성도 함께 갱신한다. 기존 스키마는 롤백 대상으로 계속 지원하고, 새 선택 테이블은 예상 열과 소유 표식을 검증한다. `scripts/tests/device_db_test.py`는 실제 Run Store 생성 코드가 만든 DB의 백업·복원도 검사한다. 저장소 코드 변경만으로 이미 설치된 controller가 교체되지는 않으므로, controller 수정이 필요한 릴리스는 장치에 설치기를 다시 실행한 뒤 배포한다.
+
 ### 상태·실패·재시도
 
 **통합 상태**의 `source.commitSha`가 실제 실행 버전이다. 인증된 `/api/platform`의 `deployment`는 배포 상태·대상/실행 SHA·시각을 제공한다. 원시 오류·설정·파일 경로는 외부 응답에 노출하지 않는다. **통합 테스트**의 최신 CI 결과와 실제 실행 SHA는 배포 대기 중 다를 수 있다.
@@ -77,7 +79,7 @@ cat "$CA3P_DEPLOY_ROOT/status.json"
 tail -n 100 /Users/casper/dev/CA3P/FSL-CA3P/.runtime/device-deploy.err.log
 ```
 
-상태가 `waiting-ci`이면 CI/요약 게시 완료를 기다린다. 전체 테스트가 끝나도 같은 workflow의 이미지 게시·배포 작업이 진행 중이면 완료까지 기다린다. GitHub 비인증 API 한도(같은 공인 IP에서 공유)를 소진하면 `retryAt`까지 검증을 미루며 배포 실패로 처리하지 않는다. `deferred`이면 기존 검사 종료 또는 오류 재시도 대기를 확인한다. `failed`/`blocked`이면 private `status.json`, `.runtime/device-deploy.*.log`, `deployRoot/logs/<SHA>/`를 확인한다. Docker 작업별 출력과 실패한 후보 컨테이너 로그는 `logs/<SHA>/fixtures/`에 비공개로 기록한다. 전환 실패 SHA는 원인을 해결하기 전 자동 반복 배포하지 않는다. 네트워크·의존성 준비 오류에는 재시도 대기가 적용된다. 문제를 해결한 뒤 명시적으로 재시도한다.
+상태가 `waiting-ci`이면 CI/요약 게시 완료를 기다린다. 전체 테스트가 끝나도 같은 workflow의 이미지 게시·배포 작업이 진행 중이면 완료까지 기다린다. GitHub 비인증 API 한도(같은 공인 IP에서 공유)를 소진하면 `retryAt`까지 검증을 미루며 배포 실패로 처리하지 않는다. `deferred`이면 기존 검사 종료 또는 오류 재시도 대기를 확인한다. `failed`/`blocked`이면 private `status.json`, `.runtime/device-deploy.*.log`, `deployRoot/logs/<SHA>/`를 확인한다. DB 작업별 출력은 `logs/<SHA>/database/`, Docker 작업별 출력과 실패한 후보 컨테이너 로그는 `logs/<SHA>/fixtures/`에 비공개로 기록한다. DB 로그는 재시도마다 별도 파일로 보존하며 대시보드의 오류 메시지에는 DB 내용을 노출하지 않는다. 전환 실패 SHA는 원인을 해결하기 전 자동 반복 배포하지 않는다. 네트워크·의존성 준비 오류에는 재시도 대기가 적용된다. 문제를 해결한 뒤 명시적으로 재시도한다.
 
 LaunchAgent의 `Umask=077`은 유지한다. 이 설정으로 checkout된 Git 추적 소스 파일만 Git 모드에 따라 `0644`/`0755`로 정상화한다. 추적하지 않는 `.env`·인증·DB·설정과 심볼릭 링크 대상은 변경하지 않는다. 대한대 컨테이너는 root 소유 package manifest를 일반 사용자도 읽도록 `COPY --chmod=0644`를 명시한다.
 
