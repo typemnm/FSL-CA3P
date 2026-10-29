@@ -1,18 +1,38 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { listTemplates, renderTemplate, verifyTemplate, projectTemplateResponse } from './templates.mjs';
+import { listTemplates, renderTemplate, verifyTemplate, projectTemplateResponse, templateExecutionSupport } from './templates.mjs';
+import { defaultTemplateCatalog, filterTemplates } from './template-catalog.mjs';
 
 const MAX_BYTES = 128 * 1024;
+const TEMPLATE_PAGE_BYTES = MAX_BYTES - 4096;
+const templateFilters = ['attackType', 'runtime', 'framework', 'library'];
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fault = (code, message = code) => Object.assign(new Error(message), { code });
-const tools = [
-  { name: 'list_attack_templates', description: 'Find packet templates by vulnerability and dependency. Templates are references, never authorization.',
-    inputSchema: { type: 'object', properties: Object.fromEntries(['attackType', 'runtime', 'framework', 'library'].map(key => [key, { type: 'string' }])), additionalProperties: false } },
-  { name: 'execute_attack_template', description: 'Execute the fixed baseline and attack packets through the server-bound guardrail, then compare results.',
-    inputSchema: { type: 'object', required: ['templateId', 'payload'], properties: { templateId: { const: 'sqli-like-tautology' }, payload: { type: 'string', enum: listTemplates()[0].payloads } }, additionalProperties: false } },
-  { name: 'execute_probe', description: 'Execute an application capability through its server-bound policy and executor.',
-    inputSchema: { type: 'object', required: ['probe', 'hypothesis'], properties: { probe: { type: 'object' }, hypothesis: { type: 'object' } }, additionalProperties: false } },
-];
+function createTools(templates) {
+  const executable = templates.filter(template => templateExecutionSupport(template).supported);
+  return [
+    { name: 'list_attack_templates', description: 'Find packet templates by vulnerability and dependency. Templates are references, never authorization.',
+      inputSchema: { type: 'object', properties: {
+        ...Object.fromEntries(templateFilters.map(key => [key, { type: 'string', maxLength: 128 }])),
+        limit: { type: 'integer', minimum: 1, maximum: 100, default: 25 },
+        offset: { type: 'integer', minimum: 0, maximum: 1000, default: 0 },
+      }, additionalProperties: false } },
+    ...(executable.length ? [{ name: 'execute_attack_template', description: 'Execute a catalog template baseline and attack through the server-bound guardrail, then compare results.',
+      inputSchema: { type: 'object', required: ['templateId', 'payload'],
+        properties: { templateId: { type: 'string', maxLength: 128 }, payload: { type: 'string', maxLength: 4096 } },
+        additionalProperties: false } }] : []),
+    { name: 'execute_probe', description: 'Execute an application capability through its server-bound policy and executor.',
+      inputSchema: { type: 'object', required: ['probe', 'hypothesis'], properties: { probe: { type: 'object' }, hypothesis: { type: 'object' } }, additionalProperties: false } },
+  ];
+}
+
+function snapshotCatalog(catalog) {
+  const templates = structuredClone(listTemplates({}, catalog));
+  return {
+    list(filters = {}) { return filterTemplates(templates, filters); },
+    get(templateId) { return structuredClone(templates.find(template => template.templateId === templateId) ?? null); },
+  };
+}
 
 async function readJson(request) {
   const parts = []; let bytes = 0;
@@ -26,12 +46,16 @@ async function readJson(request) {
 }
 
 /** Host code registers principals and capabilities; none can be supplied by an AI request. */
-export async function createAttackTool({ host = '127.0.0.1', ports = [0, 0], principals = [], timeoutMs = 30_000 } = {}) {
+export async function createAttackTool({ host = '127.0.0.1', ports = [0, 0], principals = [], timeoutMs = 30_000,
+  catalog = defaultTemplateCatalog } = {}) {
   if (!['127.0.0.1', '::1', '0.0.0.0'].includes(host)
     || !Array.isArray(ports) || !ports.length || ports.length > 32
     || ports.some(port => !Number.isInteger(port) || port < 0 || port > 65535)
     || new Set(ports.filter(Boolean)).size !== ports.filter(Boolean).length
     || !Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) throw fault('INVALID_CONFIG');
+  // An assessment keeps the exact definitions it started with while administrators edit the catalog.
+  const templates = snapshotCatalog(catalog);
+  const tools = createTools(templates.list());
   const identities = new Map(), servers = [], controllers = new Set();
   const counters = { requests: 0, denied: 0 };
   let closed = false;
@@ -63,7 +87,7 @@ export async function createAttackTool({ host = '127.0.0.1', ports = [0, 0], pri
     if (message.method === 'initialize') return { protocolVersion: 'ca3p-attack-tool-1', agentId: principal.agentId,
       runId: principal.runId, capabilities: { tools: {} } };
     if (message.method === 'tools/list') return { tools: tools.filter(tool => tool.name === 'list_attack_templates'
-      || (tool.name === 'execute_probe' ? principal.authorize && principal.execute : principal.guardrail)) };
+      || (tool.name === 'execute_probe' ? principal.authorize && principal.execute : typeof principal.guardrail?.execute === 'function')) };
     if (message.method !== 'tools/call') throw fault('METHOD_NOT_FOUND');
     const params = message.params;
     if (!record(params) || Object.keys(params).some(key => !['name', 'arguments'].includes(key))
@@ -71,17 +95,31 @@ export async function createAttackTool({ host = '127.0.0.1', ports = [0, 0], pri
     const input = params.arguments;
     const context = { agentId: principal.agentId, runId: principal.runId, signal };
     if (params.name === 'list_attack_templates') {
-      if (Object.keys(input).some(key => !['attackType', 'runtime', 'framework', 'library'].includes(key))
-        || Object.values(input).some(value => typeof value !== 'string' || value.length > 128)) throw fault('INVALID_ARGUMENTS');
-      return { templates: listTemplates(input) };
+      if (Object.keys(input).some(key => ![...templateFilters, 'limit', 'offset'].includes(key))
+        || templateFilters.some(key => Object.hasOwn(input, key) && (typeof input[key] !== 'string' || input[key].length > 128))) throw fault('INVALID_ARGUMENTS');
+      const { limit = 25, offset = 0 } = input;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100
+        || !Number.isInteger(offset) || offset < 0 || offset > 1000) throw fault('INVALID_ARGUMENTS');
+      const matches = listTemplates(input, templates), page = [];
+      for (const template of matches.slice(offset, offset + limit)) {
+        const candidate = { templates: [...page, template], total: matches.length,
+          nextOffset: offset + page.length + 1 < matches.length ? offset + page.length + 1 : null };
+        if (Buffer.byteLength(JSON.stringify(candidate)) > TEMPLATE_PAGE_BYTES) {
+          if (!page.length) throw fault('RESPONSE_TOO_LARGE');
+          break;
+        }
+        page.push(template);
+      }
+      return { templates: page, total: matches.length,
+        nextOffset: offset + page.length < matches.length ? offset + page.length : null };
     }
     if (params.name === 'execute_attack_template') {
       if (typeof principal.guardrail?.execute !== 'function') throw fault('CAPABILITY_UNAVAILABLE');
-      const rendered = renderTemplate(input);
+      const rendered = renderTemplate(input, templates);
       const baseline = await principal.guardrail.execute(rendered.baseline, context);
       signal.throwIfAborted();
       const attack = await principal.guardrail.execute(rendered.packet, context);
-      const verification = verifyTemplate(baseline, attack);
+      const verification = verifyTemplate(baseline, attack, rendered.template);
       return { templateId: rendered.template.templateId,
         baseline: projectTemplateResponse(baseline), attack: projectTemplateResponse(attack), verification };
     }
@@ -141,6 +179,7 @@ export async function createAttackTool({ host = '127.0.0.1', ports = [0, 0], pri
   } catch (error) { await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve)))); throw error; }
   return {
     endpoints: servers.map(server => `http://${host === '0.0.0.0' ? '127.0.0.1' : host === '::1' ? '[::1]' : host}:${server.address().port}`),
+    get templates() { return templates.list(); },
     registerPrincipal,
     metrics: () => ({ ...counters, agents: identities.size, ports: servers.length }),
     async close() {
