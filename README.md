@@ -228,3 +228,7 @@ npm start
 `pentest-db` 독립 모듈은 `casper-db`로 대체했습니다. 기존 공격 정보는 같은 SQLite DB의 `attack_*` 테이블로 이관하며 향후 공격 템플릿은 그 revision과 검증 규칙을 참조해 등록합니다. 이관·템플릿 계약·호환 범위는 [DB 안내](casper-db/README.md#pentest-db-통합과-폐기)에 있습니다.
 
 HTTP 기반 공격 정의를 실행하는 [Repeater](vul-web-1/scripts/REPEATER.md)와 [Intruder](vul-web-1/scripts/INTRUDER.md)도 같은 DB를 조회합니다. 실행 결과에는 사용한 공격 정보의 ID·revision·내용 해시와 단계별 근거를 남깁니다. 호출은 CLI·Node API로 제공하며 범용 Agent의 자동 도구 선택과 sLLM 연결은 별도 범위입니다.
+
+### Attack tool
+
+여러 AI가 접근하는 복수 포트 attack-tool daemon과 SQLi 패킷 템플릿이 추가되었습니다. 일반 평가 실행은 Agent → attack-tool → Guardrail → 실행기 경로를 사용합니다. [모듈 사용법](attack-tool/README.md)과 [이슈 #32 구현 계획](docs/ATTACK_TOOL_PLAN.md)을 참고하세요.

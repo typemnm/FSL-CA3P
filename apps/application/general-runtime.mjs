@@ -9,6 +9,7 @@ import { probeSite } from '../../vul-web2/scripts/idor-probe.mjs';
 import { executeUniversityRead } from '../../packages/adapters/university-read.mjs';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
 import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
+import { createAttackToolBridge } from '../../packages/adapters/integrations/attack-tool.mjs';
 
 const { runGeneralAssessment } = generalCore;
 const { createGeneralModelPlannerFromEnv } = generalPlanner;
@@ -752,6 +753,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     if (!planner || typeof planner.propose !== 'function') throw new TypeError('General planner is unavailable.');
     let observed = false;
     let inventory;
+    const probeHypotheses = new Map();
     let usedIdor = false;
     let usedBoardDelete = false;
     const matchesIdorHypothesis = hypothesis =>
@@ -773,11 +775,18 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     const observer = { async observe() {
       if (observed) return { inventory, evidence: [] };
       const initial = await initialObservation(allowedOrigin, currentSignal);
-      observed = true; inventory = initial.inventory;
+      observed = true; inventory = { ...initial.inventory, attackTool: {
+        transport: 'http-json', flow: ['agent', 'attack-tool', 'guardrail', 'executor'],
+        endpoints: attackTool.endpoints, templates: attackTool.templates,
+        templateExecution: 'Only the registered runtime policy can enable a matching template; this run exposes reference templates.',
+      } };
       [...inventory.pages, ...inventory.authenticatedPages].forEach(extendPaths);
-      return initial;
+      return { ...initial, inventory };
     } };
     const policy = { async authorize({ probe, hypothesis }) {
+      // Bind the model hypothesis before crossing the daemon boundary. The daemon
+      // rechecks the host's policy with this trusted association on every call.
+      if (hypothesis) probeHypotheses.set(probe.id, structuredClone(hypothesis));
       if (probe.tool === 'http_get' || probe.tool === 'web_info') {
         const input = probe.input;
         if (!record(input) || Object.keys(input).some(key => !['path', 'sessionRole'].includes(key))
@@ -809,7 +818,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       }
       return { allowed: false, reason: 'tool_unavailable' };
     } };
-    const executor = { async execute({ probe }) {
+    const executor = { async execute({ probe, signal: executionSignal }) {
+      const probeSignal = executionSignal
+        ? AbortSignal.any([currentSignal, executionSignal].filter(Boolean)) : currentSignal;
       if (probe.tool === 'http_get') {
         const url = safePath(probe.input.path, allowedOrigin);
         const sessionRole = probe.input.sessionRole;
@@ -817,7 +828,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         try {
           const result = await checkedRequest(url, { id: probe.id, iteration: run.iterations,
             tool: probe.tool, session: sessionRole ?? 'public',
-            ...(cookie ? { headers: { cookie } } : {}), signal: currentSignal });
+            ...(cookie ? { headers: { cookie } } : {}), signal: probeSignal });
           extendPaths(result);
           const labelledResult = sessionRole === undefined ? result : { ...result, sessionRole };
           return { kind: 'http_get', result: labelledResult, evidence: [{ id: evidenceId('probe', probe.id),
@@ -829,7 +840,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
               + JSON.stringify(result.securityHeaderPresence) + '; values '
               + JSON.stringify(result.securityHeaderValues)), 1200) }] };
         } catch (error) {
-          if (currentSignal?.aborted || error?.fatalProbe) throw error;
+          if (probeSignal?.aborted || error?.fatalProbe) throw error;
           return { kind: 'http_get', error: 'request_unavailable',
             evidence: [{ id: evidenceId('probe', probe.id), source: 'http/' + fixtureId,
               kind: 'unavailable', asset: probe.input.path,
@@ -856,7 +867,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const bytes = items => items.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), 'utf8'), 0);
         try {
           const { info, summary } = await webParserCollect(url.href, {
-            ...(cookiePair ? { cookies: cookiePair } : {}), signal: currentSignal });
+            ...(cookiePair ? { cookies: cookiePair } : {}), signal: probeSignal });
           observedStatus = info.navigation.status ?? null;
           // Extend scope with the same-origin http(s) paths web-parser discovered (like extendPaths).
           for (const entry of info.paths ?? []) {
@@ -878,7 +889,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           webInfoBytes += bytes(evidence);
           return { kind: 'web_info', result: summary, evidence };
         } catch (error) {
-          if (currentSignal?.aborted || error?.fatalProbe) throw error;
+          if (probeSignal?.aborted || error?.fatalProbe) throw error;
           const evidence = [{ id: evidenceId('probe', probe.id), source: 'web-parser/' + fixtureId,
             kind: 'unavailable', asset: probe.input.path,
             summary: 'web_info browser observation failed or timed out; the hypothesis remains unverified.' }]
@@ -908,13 +919,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       if (probe.tool === 'known_cross_user_delete_canary') {
         usedBoardDelete = true;
         try {
-          const result = await boardCrossUserDeleteCanary(allowedOrigin, probe, currentSignal);
+          const result = await boardCrossUserDeleteCanary(allowedOrigin, probe, probeSignal);
           return { kind: probe.tool, verdictStatus: result.verdictStatus, result,
             evidence: [{ id: evidenceId('probe', probe.id),
               source: 'vul-web-1/isolated-board-canary', kind: 'cross-user-delete-comparison',
               asset: BOARD_ACCESS_ASSET, summary: result.summary }] };
         } catch (error) {
-          if (currentSignal?.aborted || error?.fatalProbe) throw error;
+          if (probeSignal?.aborted || error?.fatalProbe) throw error;
           return { kind: probe.tool, verdictStatus: 'inconclusive',
             evidence: [{ id: evidenceId('probe', probe.id),
               source: 'vul-web-1/isolated-board-canary', kind: 'unavailable',
@@ -925,7 +936,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       usedIdor = true;
       try {
         const result = await idorProbe({ siteKey: config.siteKey, origin: allowedOrigin,
-          runId: run.id, signal: currentSignal,
+          runId: run.id, signal: probeSignal,
           fetchImpl: async (url, options) => {
             const requestUrl = new URL(url);
             if (requestUrl.origin !== allowedOrigin) throw new Error('IDOR login origin changed.');
@@ -969,7 +980,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
               + result.evidence.map(item => item.check + '=' + item.status
                 + '/owner:' + item.ownerId).join(', ') + '; verifier=' + verdictStatus }] };
       } catch (error) {
-        if (currentSignal?.aborted || error?.fatalProbe) throw error;
+        if (probeSignal?.aborted || error?.fatalProbe) throw error;
         return { kind: 'known_record_idor_read', verdictStatus: 'inconclusive',
           evidence: [{ id: evidenceId('probe', probe.id),
             source: 'vul-web2/guarded-idor-read', kind: 'unavailable',
@@ -1036,17 +1047,38 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     } };
     const availableTools = ['http_get', 'web_info', 'repository_read',
       config.siteKey ? 'known_record_idor_read' : 'known_cross_user_delete_canary'];
-    const { report } = await runGeneralAssessment({
-      target: { fixtureId, origin: allowedOrigin }, observer, planner: wrappedPlanner,
-      policy, executor, verifier, availableTools, limits, signal: currentSignal,
-      onEvent: async event => {
-        // The core reports its stored evidence count (initial observation included) before each probe.
-        evidenceCount = event.progress?.evidenceCount ?? evidenceCount;
-        const iteration = eventCount(event.iteration) ?? run.iterations;
-        run.iterations = Math.max(run.iterations, iteration);
-        appendEvent({ ...projectGeneralEvent(event, limits), iteration });
-      },
+    // Each vulnerability worker receives its own authenticated logical client.
+    // The daemon owns the transport, while target and policy authority remain in
+    // this runtime; model input cannot install an executor or change its scope.
+    const attackTool = await createAttackToolBridge({ runId: run.id, targetOrigin: allowedOrigin,
+      authorize: ({ probe }) => policy.authorize({ probe,
+        hypothesis: probeHypotheses.get(probe.id) }),
+      execute: input => executor.execute(input),
     });
+    const toolExecutor = { execute: ({ probe }) => attackTool.execute({ probe,
+      hypothesis: probeHypotheses.get(probe.id), signal: currentSignal }) };
+    let report;
+    try {
+      ({ report } = await runGeneralAssessment({
+        target: { fixtureId, origin: allowedOrigin }, observer, planner: wrappedPlanner,
+        policy, executor: toolExecutor, verifier, availableTools, limits, signal: currentSignal,
+        onEvent: async event => {
+          // The core reports its stored evidence count (initial observation included) before each probe.
+          evidenceCount = event.progress?.evidenceCount ?? evidenceCount;
+          const iteration = eventCount(event.iteration) ?? run.iterations;
+          run.iterations = Math.max(run.iterations, iteration);
+          appendEvent({ ...projectGeneralEvent(event, limits), iteration });
+        },
+      }));
+      report.attackTool = { transport: 'http-json',
+        flow: ['agent', 'attack-tool', 'guardrail', 'executor'],
+        endpoints: attackTool.endpoints, agentIds: [...attackTool.agentIds],
+        templateIds: attackTool.templates.map(template => template.templateId),
+        metrics: attackTool.metrics() };
+    } finally {
+      await attackTool.close();
+      probeHypotheses.clear();
+    }
     report.runId = run.id;
     report.modelCalls.push(...failedModelCalls);
     report.fixtureId = fixtureId;
