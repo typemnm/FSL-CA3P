@@ -1,8 +1,8 @@
 import { digest } from '../contracts/index.mjs';
 
 export const NORMALIZATION_VERSION = '1.0';
-export const CONTRACT_DEPENDENCIES = Object.freeze({ agent: ['xss-parser', 'attack-module', 'guardrail', 'casper-db'],
-  'casper-db': ['xss-parser'], 'attack-module': ['guardrail'] });
+export const CONTRACT_DEPENDENCIES = Object.freeze({ agent: ['attack-module', 'guardrail', 'casper-db'],
+  'attack-module': ['guardrail'] });
 export function affectedModules(changed) {
   const affected = new Set(changed); let expanded = true;
   while (expanded) {

@@ -6,7 +6,8 @@ test('module management shows deployed configuration and bounded run logs withou
   const modules = createModuleManagement({
     platformProvider: async () => ({ source: { commitSha: 'revision-test' }, modules: [
       { id: 'attack-module', status: 'active', version: '1.0', contentDigest: 'attack-digest', path: 'attack-module' },
-      { id: 'xss-parser', status: 'active', version: '2.0', contentDigest: 'parser-digest', path: 'xss-parser' },
+      { id: 'xss-parser', status: 'replaced', contentDigest: null, path: 'xss-parser' },
+      { id: 'web-parser', status: 'active', version: '2.0', contentDigest: 'parser-digest', path: 'web-parser' },
       { id: 'models', status: 'active', contentDigest: 'model-digest', path: 'packages/models' },
     ] }),
     runtime: {

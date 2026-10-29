@@ -4,7 +4,7 @@ import { MODULES, createRun, tickRun, validateTarget, formatElapsed } from '../d
 
 test('dashboard lists the five external modules without internal Agent stages', () => {
   assert.deepEqual(MODULES.map(({ id, name }) => [id, name]), [
-    ['parser', 'xss-parser'],
+    ['parser', 'web-parser'],
     ['casper', 'casper-db'],
     ['attack', 'attack-module'],
     ['guardrail', 'guardrail'],

@@ -345,7 +345,7 @@ export async function prepareRelease(config, candidate, phase, { execute: runCom
   const webParser = manifest?.modules?.find(item => item.id === 'web-parser' && item.status === 'active');
   if (webParser && webParser.path !== 'web-parser') throw new Error('The active web-parser must use its fixed release directory.');
   const needsDependencies = !await exists(join(config.deployRoot, 'prepared', `${candidate.sha}.json`))
-    || !await exists(join(release, '.venv/bin/python')) || !await exists(join(release, 'xss-parser/node_modules/playwright/package.json'))
+    || !await exists(join(release, '.venv/bin/python'))
     || !await exists(join(release, 'packages/report/capture/node_modules/playwright/package.json'))
     || (webParser && (!await exists(join(release, 'web-parser/node_modules/playwright/package.json'))
       || !await exists(join(release, 'web-parser/node_modules/wapalyzer-core/package.json'))));
@@ -363,7 +363,7 @@ export async function prepareRelease(config, candidate, phase, { execute: runCom
     await command('python-requirements', python, ['-m', 'pip', 'install', ...requirements.flatMap(file => ['-r', join(release, file)])]);
     const packages = tracked.filter(file => file.endsWith('/pyproject.toml') && included(file));
     await command('python-packages', python, ['-m', 'pip', 'install', '--no-deps', ...packages.map(file => dirname(join(release, file)))]);
-    await command('chromium', config.nodePath, [join(release, 'xss-parser/node_modules/playwright/cli.js'), 'install', 'chromium']);
+    await command('chromium', config.nodePath, [join(release, 'web-parser/node_modules/playwright/cli.js'), 'install', 'chromium']);
   }
   if (webParser) {
     for (const name of ['web-parser', 'web-parser/scripts', 'web-parser/data', 'web-parser/data/webappanalyzer', 'web-parser/data/webappanalyzer/technologies']) {

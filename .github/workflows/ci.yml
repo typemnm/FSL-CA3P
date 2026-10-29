@@ -28,7 +28,6 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: |
-            xss-parser/package-lock.json
             web-parser/package-lock.json
             packages/report/capture/package-lock.json
             vul-web2/package-lock.json
@@ -37,14 +36,13 @@ jobs:
           python-version: '3.11'
       - name: Install deterministic browser dependencies and Python test extras
         run: |
-          npm ci --prefix xss-parser
           npm ci --prefix web-parser
           npm ci --prefix packages/report/capture
           npm ci --prefix vul-web2 --no-audit --no-fund
           python -m pip install -r casper-db/requirements-ci.lock
           python -m pip install -r packages/report/requirements-ci.lock
           python -m pip install --no-deps -e ./casper-db -e ./packages/report/py
-          cd xss-parser
+          cd web-parser
           npx playwright install --with-deps chromium
       - name: Verify all modules, real browser integration and zero skips
         id: verify

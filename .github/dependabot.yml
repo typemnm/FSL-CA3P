@@ -6,7 +6,7 @@ updates:
       interval: weekly
     target-branch: develop
   - package-ecosystem: npm
-    directory: /xss-parser
+    directory: /web-parser
     schedule:
       interval: weekly
     target-branch: develop

@@ -13,16 +13,14 @@ ENV PATH="/opt/ca3p-venv/bin:${PATH}" \
 
 WORKDIR /app
 
-COPY xss-parser/package.json xss-parser/package-lock.json ./xss-parser/
 COPY packages/report/capture/package.json packages/report/capture/package-lock.json ./packages/report/capture/
 # web-parser's postinstall downloads the Wappalyzer dataset, so its scripts/ must be present in this layer.
 COPY web-parser/package.json web-parser/package-lock.json ./web-parser/
 COPY web-parser/scripts/ ./web-parser/scripts/
-RUN npm ci --prefix ./xss-parser --omit=dev
 RUN npm ci --prefix ./packages/report/capture --omit=dev
 RUN npm ci --prefix ./web-parser --omit=dev
-# Chromium is shared: xss-parser and web-parser pin the same Playwright version.
-RUN cd xss-parser && npx playwright install --with-deps chromium
+# Chromium is shared: web-parser and report capture pin the same Playwright version.
+RUN cd web-parser && npx playwright install --with-deps chromium
 
 COPY casper-db/ ./casper-db/
 COPY packages/report/requirements-ci.lock ./packages/report/requirements-ci.lock
