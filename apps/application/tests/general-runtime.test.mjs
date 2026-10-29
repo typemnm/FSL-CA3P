@@ -800,3 +800,125 @@ test('cancellation before candidate write prevents the delete and stops the run'
   assert.equal(candidateSent, 0);
   await runtime.close();
 });
+
+function fakeTargetInfo(url, extraPaths = []) {
+  const parsed = new URL(url);
+  return {
+    schemaVersion: 'web-parser-1',
+    target: { requestedUrl: url, finalUrl: url, origin: parsed.origin },
+    navigation: { status: 200, contentType: 'text/html', redirectChain: [], loadTimingMs: 5, securityDetails: null },
+    headers: [{ name: 'Content-Type', value: 'text/html' }],
+    cookies: [], meta: [], html: '<html><head><title>Fixture ' + parsed.pathname + '</title></head></html>', body: null,
+    technologies: [{ name: 'nginx', categories: ['Web servers'], version: null, confidence: 100, evidence: [] }],
+    libraries: [],
+    structure: { forms: [], links: [], scripts: [], iframes: [], inputs: [], linkTags: [],
+      areas: [], formActions: [], frames: [], embeds: [], objects: [], metaRefresh: [], media: [] },
+    resources: [{ kind: 'document', method: 'GET', url, status: 200 }],
+    paths: extraPaths,
+    errors: [],
+    truncated: false,
+  };
+}
+
+function universityLoginFetch() {
+  return async (url, init = {}) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === '/login') {
+      const account = init.body.get('username');
+      return new Response('', { status: 302, headers: { location: '/mypage',
+        'set-cookie': 'sess=' + account + 'TOKEN1234567; HttpOnly' } });
+    }
+    if (parsed.pathname === '/api/search') return new Response(JSON.stringify({ site: '대한대학교', results: [] }),
+      { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response('<html><title>대한대학교</title></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+}
+
+test('web_info observes declared paths, extends scope, and rejects off-scope or off-origin paths', async () => {
+  const collected = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-scope',
+    fetchImpl: universityLoginFetch(),
+    webParserCollect: async (url, opts = {}) => {
+      collected.push({ url, cookies: opts.cookies ?? null });
+      const origin = new URL(url).origin;
+      const extra = new URL(url).pathname === '/' ? [
+        { url: origin + '/discovered', sources: ['link'], methods: [], sameOrigin: true, params: [] },
+        { url: 'http://evil.example/x', sources: ['link'], methods: [], sameOrigin: false, params: [] },
+        { url: origin + '/wild', sources: ['robots:disallow'], methods: [], sameOrigin: true, params: [], wildcard: true },
+      ] : [];
+      const info = fakeTargetInfo(url, extra);
+      const { summarizeTargetInfo } = await import('../../../packages/adapters/integrations/web-parser.mjs');
+      return { info, summary: summarizeTargetInfo(info) };
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      const evidenceIds = [context.evidence[0].id];
+      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration',
+        asset: '/', rationale: 'Observe the selected origin with a browser.', evidenceIds }],
+      probes: [
+        { id: 'w-pub', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/' } },
+        { id: 'w-role', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/mypage', sessionRole: 'owner' } },
+        { id: 'w-discovered', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/discovered' } },
+        { id: 'w-wild', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/wild' } },
+        { id: 'w-offorigin', hypothesisId: 'h-web', tool: 'web_info', input: { path: 'http://evil.example/x' } },
+      ] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  const probe = id => run.report.probes.find(item => item.id === id);
+  assert.equal(probe('w-pub').status, 'inconclusive');
+  assert.equal(probe('w-role').status, 'inconclusive');
+  assert.equal(probe('w-discovered').status, 'inconclusive', 'the discovered same-origin path was authorized');
+  assert.equal(probe('w-wild').status, 'blocked');
+  assert.equal(probe('w-offorigin').status, 'blocked');
+  assert.equal(probe('w-wild').reason, 'path_out_of_scope');
+  assert.equal(probe('w-offorigin').reason, 'path_out_of_scope');
+  // web_info evidence is observation; the verifier never promotes it to a verdict.
+  const pubEvidence = run.report.evidence.find(item => item.id === probe('w-pub').evidenceIds[0]);
+  assert.equal(pubEvidence.kind, 'web-info');
+  assert.equal(pubEvidence.source, 'web-parser/vul-web2-daehan');
+  const roleEvidence = run.report.evidence.find(item => item.id === probe('w-role').evidenceIds[0]);
+  assert.equal(roleEvidence.source, 'web-parser/vul-web2-daehan/role:owner');
+  // The fixed owner session cookie reached web-parser as a { name, value } pair.
+  const roleCall = collected.find(item => new URL(item.url).pathname === '/mypage');
+  assert.deepEqual(roleCall.cookies, [{ name: 'sess', value: 'partner1TOKEN1234567' }]);
+  assert.ok(run.report.scope.allowedPaths.includes('/discovered'));
+  assert.ok(!run.report.scope.allowedPaths.includes('/wild'));
+  assert.ok(run.report.scope.toolIds.includes('web_info'));
+  assert.doesNotMatch(JSON.stringify(run.report), /TOKEN1234567/u);
+  await runtime.close();
+});
+
+test('web_info honors cancellation mid-run', async () => {
+  const collected = [];
+  let runtime;
+  runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-cancel',
+    fetchImpl: universityLoginFetch(),
+    beforeProbe: async probe => { if (probe.tool === 'web_info') runtime.stop('web-info-cancel'); },
+    webParserCollect: async (url, opts = {}) => {
+      collected.push(url);
+      if (opts.signal?.aborted) { const error = new Error('aborted'); error.name = 'AbortError'; throw error; }
+      const info = fakeTargetInfo(url);
+      return { info, summary: {} };
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration',
+        asset: '/', rationale: 'Observe the selected origin.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'w-abort', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/' } }] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'stopped');
+  assert.equal(run.report.status, 'cancelled');
+  await runtime.close();
+});
