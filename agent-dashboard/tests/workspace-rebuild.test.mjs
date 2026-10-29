@@ -97,7 +97,7 @@ test('workspace navigation, external target preflight and report preview use the
   await page.waitForFunction(() => document.querySelector('#connection-status')?.textContent.includes('연결됨'));
   if (process.env.CA3P_UI_PREVIEW) await page.screenshot({ path: process.env.CA3P_UI_PREVIEW.replace(/\.png$/i, '-attack.png'), fullPage: true });
   assert.deepEqual(await page.locator('.sidebar .primary-nav .nav-item').allTextContents().then(values => values.map(value => value.trim())),
-    ['자산', '공격1', '보고서', 'AI 채팅', 'DB', 'Attack Module', 'Web Parser', 'Guardrail', 'LLM', 'DB']);
+    ['자산', '공격1', '보고서', 'AI 채팅', 'DB', '템플릿', 'Attack Module', 'Web Parser', 'Guardrail', 'LLM', 'DB']);
   assert.equal(await page.locator('.external-target-panel').isHidden(), true);
   await page.locator('[data-view=assets]').click();
   assert.equal(new URL(page.url()).hash, '#workspace/assets');
