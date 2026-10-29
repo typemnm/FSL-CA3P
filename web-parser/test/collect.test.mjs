@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { getEventListeners } from 'node:events';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
@@ -10,9 +11,10 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import wt from 'node:worker_threads';
+import { chromium } from 'playwright';
 import {
-  collect, collectEach, MAX_BODY_LENGTH, MAX_HTML_LENGTH, MAX_PATHS, MAX_RESOURCES, MAX_STRUCTURE_ITEMS, MAX_TEXT_LENGTH, PROFILE_PREFIX,
-  SCHEMA_VERSION,
+  collect, collectEach, MAX_BODY_LENGTH, MAX_COOKIES, MAX_HTML_LENGTH, MAX_PATHS, MAX_RESOURCES, MAX_STRUCTURE_ITEMS, MAX_TEXT_LENGTH,
+  PROFILE_PREFIX, SCHEMA_VERSION,
 } from '../collect.mjs';
 
 // Per-test limit travels with the file (not only with the npm script flag).
@@ -27,6 +29,12 @@ wt.Worker = class extends wt.Worker {
   postMessage(m, ...rest) { posted.push(m?.html?.length ?? 0); return super.postMessage(m, ...rest); }
 };
 syncBuiltinESMExports(); // fingerprint.mjs's `Worker` import binding now points at the spy
+// Every profile a browser was launched on: pins "no browser started" and names a call's own Chromium for `ps`.
+const launches = [];
+const launch = chromium.launchPersistentContext;
+chromium.launchPersistentContext = function (profile, ...rest) { launches.push(profile); return launch.call(this, profile, ...rest); };
+const browsersOn = async (profile) => (await promisify(execFile)('ps', ['-axww', '-o', 'command='], { maxBuffer: 64 << 20 }))
+  .stdout.split('\n').filter((line) => line.includes(profile));
 // Small budgets can add a fingerprint timeout (cold Worker start); tests about other stages ignore it.
 const core = (info) => info.errors.filter((e) => e.stage !== 'fingerprint');
 
@@ -134,6 +142,7 @@ let server;
 let base;
 let deadPort;
 let dead;
+const cookieSeen = []; // [host, Cookie header] of each /cookie-probe and /to-localhost request
 before(async () => {
   // A port this suite keeps owning (no check-then-use race with other processes): every connection is dropped unanswered.
   dead = createServer().on('connection', (socket) => socket.destroy());
@@ -153,6 +162,14 @@ before(async () => {
         <script>addEventListener('load', () => { location.href = 'http://127.0.0.1:${deadPort}/'; })</script>`));
     }
     if (pathname === '/loop') return res.writeHead(302, { location: '/loop' }).end();
+    // Same server under another host name: localhost.
+    const local = `http://localhost:${server.address().port}`;
+    if (pathname === '/cookie-probe' || pathname === '/to-localhost') cookieSeen.push([req.headers.host.split(':')[0], req.headers.cookie ?? null]);
+    if (pathname === '/cookie-probe') return res.writeHead(204).end();
+    if (pathname === '/to-localhost') return res.writeHead(302, { location: `${local}/echo` }).end();
+    if (pathname === '/cross') {
+      return res.writeHead(200, { 'content-type': 'text/html' }).end(html(`<img src="/cookie-probe"><img src="${local}/cookie-probe">`));
+    }
     if (pathname === '/app.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end('window.app = 1;');
     if (pathname === '/vendor.js') {
       return res.writeHead(200, { 'content-type': 'text/javascript' }).end('window.jQuery = { fn: { jquery: "3.7.1" } };');
@@ -723,6 +740,118 @@ test('rejects only when no response arrived, and still removes the profile', T, 
   const before = await profiles();
   await assert.rejects(collect(`http://127.0.0.1:${deadPort}/`, { timeoutMs: 5000 }), DEAD_ERR);
   assert.equal(await profiles(), before);
+});
+
+// A server that never answers: `hits` lists the request paths, `arrived` resolves on the first one.
+async function silentServer() {
+  const hits = [];
+  let arrive;
+  const arrived = new Promise((r) => { arrive = r; });
+  const silent = createServer((req) => { hits.push(req.url); arrive(); });
+  await new Promise((r) => silent.listen(0, '127.0.0.1', r));
+  return { url: `http://127.0.0.1:${silent.address().port}`, hits, arrived, close: () => { silent.closeAllConnections(); silent.close(); } };
+}
+
+test('signal: an aborted signal rejects with AbortError before any browser starts; an abort after success changes nothing', T, async () => {
+  const launched = launches.length;
+  const reason = new Error('budget spent');
+  const aborted = (err) => err.name === 'AbortError' && err.cause === reason;
+  await assert.rejects(collect(`${base}/a`, { signal: AbortSignal.abort(reason) }), aborted);
+  await assert.rejects(collectEach([`${base}/a`, `${base}/b`], { signal: AbortSignal.abort(reason) }), aborted);
+  assert.equal(launches.length, launched, 'no browser started');
+
+  const ac = new AbortController();
+  const info = await collect(`${base}/a`, { signal: ac.signal });
+  assert.deepEqual(getEventListeners(ac.signal, 'abort'), [], 'no listener left behind');
+  ac.abort();
+  assert.equal(info.navigation.status, 200);
+  assert.deepEqual(core(info), []);
+});
+
+test('signal: an abort mid-navigation rejects within 2 s; that call\'s Chromium and profile are gone', T, async () => {
+  const silent = await silentServer();
+  try {
+    const ac = new AbortController();
+    const launched = launches.length;
+    const run = collect(`${silent.url}/`, { signal: ac.signal, timeoutMs: 60000 });
+    run.catch(() => {});
+    await silent.arrived;
+    const profile = launches[launched];
+    assert.ok((await browsersOn(profile)).length > 0, 'ps sees the running browser by its profile');
+    const t0 = Date.now();
+    ac.abort(new Error('cancelled'));
+    await assert.rejects(run, (err) => err.name === 'AbortError' && err.cause.message === 'cancelled');
+    const ms = Date.now() - t0;
+    assert.ok(ms < 2000, `${ms} ms`);
+    assert.deepEqual(await browsersOn(profile), []);
+    assert.equal(existsSync(profile), false);
+    assert.deepEqual(getEventListeners(ac.signal, 'abort'), []);
+  } finally {
+    silent.close();
+  }
+});
+
+test('collectEach: an abort rejects the whole call and the remaining URLs never start', T, async () => {
+  const silent = await silentServer();
+  try {
+    const ac = new AbortController();
+    const launched = launches.length;
+    const run = collectEach([`${base}/a`, `${silent.url}/second`, `${silent.url}/third`], { signal: ac.signal });
+    run.catch(() => {});
+    await silent.arrived;
+    ac.abort();
+    await assert.rejects(run, { name: 'AbortError' });
+    assert.deepEqual(silent.hits, ['/second']);
+    assert.equal(launches.length, launched + 2, 'the third URL never started');
+  } finally {
+    silent.close();
+  }
+});
+
+test('cookies: planted on the requested host only, sent with the navigation and in the jar as received', T, async () => {
+  const echo = await collect(`${base}/echo`, { cookies: [{ name: 'sid', value: 'lab-1' }, { name: 'pref', value: 'a=b' }] });
+  assert.deepEqual(echo.meta.find((m) => m.name === 'seen-cookie').content.split('; ').sort(), ['pref=a=b', 'sid=lab-1']);
+  assert.deepEqual(echo.cookies.map(({ name, value, domain, path }) => [name, value, domain, path]).sort(),
+    [['pref', 'a=b', '127.0.0.1', '/'], ['sid', 'lab-1', '127.0.0.1', '/']]);
+
+  const cookies = [{ name: 'sid', value: 'lab-1' }];
+  cookieSeen.length = 0;
+  await collect(`${base}/cross`, { cookies });
+  assert.deepEqual(Object.fromEntries(cookieSeen), { '127.0.0.1': 'sid=lab-1', localhost: null }, 'a localhost subresource gets none');
+
+  cookieSeen.length = 0;
+  const moved = await collect(`${base}/to-localhost`, { cookies });
+  assert.equal(moved.target.finalUrl, `http://localhost:${new URL(base).port}/echo`);
+  assert.deepEqual(cookieSeen, [['127.0.0.1', 'sid=lab-1']]);
+  assert.equal(moved.meta.find((m) => m.name === 'seen-cookie').content, '', 'not sent after the redirect to localhost');
+});
+
+test('cookies and signal: invalid values are rejected before any browser starts', T, async () => {
+  const launched = launches.length;
+  for (const [cookies, message] of [
+    ['sid=v', /cookies must be an array of at most 50/],
+    [null, /cookies must be an array/],
+    [Array.from({ length: MAX_COOKIES + 1 }, (_, i) => ({ name: `c${i}`, value: 'v' })), /cookies must be an array of at most 50/],
+    [[{ name: '', value: 'v' }], /cookies\[0\]\.name/],
+    [[{ name: 'sid', value: 'v' }, { name: 'a b', value: 'v' }], /cookies\[1\]\.name/],
+    [[{ name: 'a;b', value: 'v' }], /cookies\[0\]\.name/],
+    [[{ name: 'sid=x', value: 'v' }], /cookies\[0\]\.name/],
+    [[{ name: 1, value: 'v' }], /cookies\[0\]\.name/],
+    [[null], /cookies\[0\]\.name/],
+    [new Array(1), /cookies\[0\]\.name/],
+    [[{ name: 'sid' }], /cookies\[0\]\.value/],
+    [[{ name: 'sid', value: 1 }], /cookies\[0\]\.value/],
+    [[{ name: 'sid', value: 'a;b' }], /cookies\[0\]\.value/],
+    [[{ name: 'sid', value: 'a\r\nSet-Cookie: x=1' }], /cookies\[0\]\.value/],
+    [[{ name: 'sid', value: ' lab-1' }], /cookies\[0\]\.value/],
+    [[{ name: 'sid', value: 'x'.repeat(4094) }], /cookies\[0\]: name \+ value must be at most 4096 bytes/],
+  ]) {
+    await assert.rejects(collect(`${base}/echo`, { cookies }), message, JSON.stringify(cookies));
+    await assert.rejects(collectEach([`${base}/echo`], { cookies }), message, JSON.stringify(cookies));
+  }
+  await assert.rejects(collect(`${base}/echo`, { signal: 'stop' }), /signal must be an AbortSignal/);
+  await assert.rejects(collectEach([`${base}/echo`], { signal: {} }), /signal must be an AbortSignal/);
+  assert.equal(launches.length, launched);
 });
 
 // A copy of the module in TMP whose dataset `mutate(dataDir)` changes; resolves the copy's collect.mjs exports.
