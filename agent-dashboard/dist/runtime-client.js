@@ -131,12 +131,9 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       session = { ...session, authenticated: false, user: null, csrfToken: null };
       onSession(session); onAuthRequired(); onConnection('disconnected', transport);
     },
-    async start(target, delayMs, options = {}) {
-      const value = await request('/api/runs', { target, delayMs, mode: 'core-fixture', ...options });
-      receive(value); return value;
-    },
-    async startLab(modelId, mode = 'local-lab-deepseek', fixtureId = 'vul-web-1', target) {
-      const value = await request('/api/runs', { mode, ...(modelId ? { modelId } : {}), ...(fixtureId !== 'vul-web-1' ? { fixtureId } : {}), ...(target ? { target } : {}) });
+    async startAssessment(modelId, fixtureId = 'vul-web-1', target) {
+      const value = await request('/api/runs', { mode: 'local-lab-general', modelId,
+        ...(fixtureId !== 'vul-web-1' ? { fixtureId } : {}), ...(target ? { target } : {}) });
       receive(value); return value;
     },
     preflightExternal(target, pathPrefix = '/') { return api('/api/targets/preflight', { method: 'POST', body: { target, scope: { pathPrefix }, authorizationConfirmed: true } }); },

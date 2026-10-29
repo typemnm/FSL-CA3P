@@ -7,7 +7,7 @@ const session = { authenticated: true, authRequired: true, user: { name: 'Operat
 const response = (value, status = 200) => ({ ok: status < 400, status, json: async () => value });
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-test('remote deployment defaults to polling, forwards CSRF, and requests a selected real lab model', async t => {
+test('remote deployment polls state and submits general assessments with CSRF and the selected model', async t => {
   const calls = []; const states = []; const connections = []; let streams = 0;
   const client = createRuntimeClient({ hostname: 'workspace.trycloudflare.com', pollIntervalMs: 10,
     onState: value => states.push(value), onConnection: (...args) => connections.push(args), onError: assert.fail,
@@ -25,15 +25,11 @@ test('remote deployment defaults to polling, forwards CSRF, and requests a selec
   assert.equal(streams, 0);
   assert.ok(calls.filter(call => call.path === '/api/state').length >= 3);
   assert.ok(connections.some(([state, transport]) => state === 'connected' && transport === 'polling'));
-  await client.startLab('rule-baseline', 'local-lab-rule');
+  await client.startAssessment('deepseek-flash');
   const start = calls.find(call => call.path === '/api/runs');
-  assert.deepEqual(JSON.parse(start.options.body), { mode: 'local-lab-rule', modelId: 'rule-baseline' });
+  assert.deepEqual(JSON.parse(start.options.body), { mode: 'local-lab-general', modelId: 'deepseek-flash' });
   assert.equal(start.options.headers['X-CSRF-Token'], 'csrf-a');
-  await client.startLab('rule-baseline', 'local-lab-rule', 'vul-web2-daehan', 'http://192.168.0.84:4101');
-  const idor = calls.filter(call => call.path === '/api/runs').at(-1);
-  assert.deepEqual(JSON.parse(idor.options.body), { mode: 'local-lab-rule', modelId: 'rule-baseline', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.84:4101' });
-  assert.equal(idor.options.headers['X-CSRF-Token'], 'csrf-a');
-  await client.startLab('deepseek-flash', 'local-lab-general', 'vul-web2-daehan', 'http://192.168.0.84:4101');
+  await client.startAssessment('deepseek-flash', 'vul-web2-daehan', 'http://192.168.0.84:4101');
   const general = calls.filter(call => call.path === '/api/runs').at(-1);
   assert.deepEqual(JSON.parse(general.options.body), { mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.84:4101' });
   assert.equal(general.options.headers['X-CSRF-Token'], 'csrf-a');
@@ -78,7 +74,7 @@ test('anonymous session shows login without polling; login obtains the rotated C
   });
   t.after(() => client.close());
   await client.connect(); assert.equal(authRequests, 1); assert.equal(calls.length, 1);
-  await client.login('operator', 'test-password'); await client.start('https://display.invalid', 0);
+  await client.login('operator', 'test-password'); await client.startAssessment('deepseek-flash');
   const start = calls.find(call => call.path === '/api/runs'); assert.equal(start.options.headers['X-CSRF-Token'], 'csrf-a');
 });
 

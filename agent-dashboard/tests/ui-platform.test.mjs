@@ -12,7 +12,7 @@ function snapshot(id, mode = 'core-fixture') {
 }
 const idle = { ...snapshot('', 'core-fixture'), id: null, status: 'idle', events: [], snapshots: {}, totalSteps: 19, step: 0 };
 const wrap = run => ({ instanceId: 'test-server', mode: run.mode, run, lab: { available: false } });
-const resetModels = [{ id: 'rule-baseline', name: '규칙 기반', provider: 'local', mode: 'local-lab-rule', available: true },
+const resetModels = [{ id: 'deepseek-primary', name: 'DeepSeek Primary', provider: 'deepseek', mode: 'local-lab-deepseek', available: true },
   { id: 'deepseek-flash', name: 'DeepSeek Flash', provider: 'deepseek', mode: 'local-lab-deepseek', available: true }];
 async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   const server = http.createServer(async (req, res) => {
@@ -38,7 +38,7 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   let authenticated = false; let state = reportOptions.state ?? idle; let detailCalls = 0; let resetError = reportOptions.resetError; let serverEpoch = 0;
   const stateEnvelope = () => {
     const envelope = wrap(state);
-    return { ...envelope, lab: { ...envelope.lab, ...reportOptions.lab }, experiment: { epoch: serverEpoch,
+    return { ...envelope, lab: { ...envelope.lab, generalSupported: true, generalAvailable: true, ...reportOptions.lab }, experiment: { epoch: serverEpoch,
       status: reportOptions.experimentStatus ?? 'ready' } };
   };
   const runs = [snapshot('candidate'), snapshot('baseline'), {
@@ -47,6 +47,7 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
     report: { result: 'prior evidence <img src=x onerror=alert(1)>' },
     manifest: { source: { commitSha: null }, provenance: 'legacy-import' },
   }];
+  if (reportOptions.historyRun) runs[0] = reportOptions.historyRun;
   if (reportOptions.document) {
     runs[0] = { ...snapshot('candidate', 'local-lab-rule'), reportDocument: reportOptions.document };
     if (reportOptions.live) state = runs[0];
@@ -59,7 +60,7 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
     if (!authenticated) return route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"Login required"}' });
     if (path === '/api/state') return json(stateEnvelope());
     if (path === '/api/events') return route.fulfill({ contentType: 'text/event-stream', body: `event: state\ndata: ${JSON.stringify(stateEnvelope())}\n\n` });
-    if (path === '/api/models') return json({ models: reportOptions.models ?? [{ id: 'rule-baseline', name: '규칙 기반 · 실제 XSS 실습', provider: 'local', mode: 'local-lab-rule', available: true }, { id: 'deepseek-test', name: 'DeepSeek unavailable', provider: 'deepseek', mode: 'local-lab-deepseek', available: false }] });
+    if (path === '/api/models') return json({ models: reportOptions.models ?? resetModels });
     if (path === '/api/experiment-reset' && request.method() === 'POST') {
       resets.push({ body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] });
       if (resetError) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: resetError }) });
@@ -84,8 +85,14 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs });
     if (path === '/api/runs' && request.method() === 'POST') {
       const body = request.postDataJSON();
-      mutations.push({ body, csrf: request.headers()['x-csrf-token'] }); state = snapshot('new-rule', body.mode);
-      if (body.fixtureId?.startsWith('vul-web2-')) {
+      mutations.push({ body, csrf: request.headers()['x-csrf-token'] }); state = snapshot('new-assessment', body.mode);
+      if (body.mode === 'local-lab-general') {
+        state = { ...state, assessmentMode: 'general', fixtureId: body.fixtureId ?? 'vul-web-1',
+          target: body.target ?? 'http://127.0.0.1:3000',
+          report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
+            hypotheses: [], probes: [], evidence: [], findings: [],
+            coverage: { totalHypotheses: 0, confirmed: 0, notReproduced: 0, inconclusive: 0, notTested: 0 } } };
+      } else if (body.fixtureId?.startsWith('vul-web2-')) {
         state = { ...state, fixtureId: body.fixtureId, testProfile: 'known_record_idor_read',
           target: body.target || `http://127.0.0.1:${body.fixtureId === 'vul-web2-daehan' ? 4101 : 4102}`,
           report: { fixtureId: body.fixtureId, testProfile: 'known_record_idor_read', finding: { category: 'CWE-639', status: 'not_confirmed' }, evidence: [{ check: 'cross-owner', status: 403 }] },
@@ -134,7 +141,7 @@ test('model change requires Yes before deleting experimental history and owned b
   await page.locator('#model-select').selectOption('deepseek-flash');
   await page.locator('#model-reset-dialog').waitFor({ state: 'visible' });
   if (process.env.CA3P_UI_PREVIEW) await page.screenshot({ path: process.env.CA3P_UI_PREVIEW });
-  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
+  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-primary');
   assert.equal(resets.length, 0);
   assert.match(await page.locator('#model-reset-scope').textContent(), /JSON·HWPX.*먼저 내보내/);
   await page.locator('#model-reset-yes').click();
@@ -157,9 +164,9 @@ test('No and toggle Off switch models without a reset and keep an explicit conta
   assert.equal(await page.locator('#model-reset-warning').isVisible(), true);
   assert.equal(resets.length, 0);
   await page.locator('#model-reset-toggle').uncheck();
-  await page.locator('#model-select').selectOption('rule-baseline');
+  await page.locator('#model-select').selectOption('deepseek-primary');
   assert.equal(await page.locator('#model-reset-dialog').isVisible(), false);
-  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
+  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-primary');
   assert.equal(resets.length, 0);
   await page.reload();
   await page.waitForFunction(() => document.querySelector('#connection-status').textContent.includes('연결됨'));
@@ -172,13 +179,13 @@ test('reset failure retains the old model and history until a successful retry; 
     { models: resetModels, resetError: '관리되는 실습 초기화가 필요합니다.' });
   await page.locator('#model-select').selectOption('deepseek-flash');
   await page.keyboard.press('Escape');
-  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
+  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-primary');
   assert.equal(resets.length, 0);
   await page.locator('#model-select').selectOption('deepseek-flash');
   await page.locator('#model-reset-yes').click();
   await page.locator('#model-reset-error').waitFor({ state: 'visible' });
   assert.match(await page.locator('#model-reset-error').textContent(), /모델은 변경하지 않았습니다/);
-  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
+  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-primary');
   assert.equal(await page.locator('#model-reset-dialog').isVisible(), true);
   setResetError(null);
   await page.locator('#model-reset-yes').click();
@@ -201,7 +208,7 @@ test('failed experiment reset explains that a model-only change cannot unblock a
   assert.match(message, /새 공격 실행은 전체 초기화가 완료될 때까지 차단/);
   await page.locator('#model-reset-no').click();
   assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-flash');
-  assert.equal(await page.locator('#run-button').isDisabled(), true);
+  assert.equal(await page.locator('#run-button').count(), 0);
   assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
   assert.deepEqual(errors, []);
 });
@@ -215,14 +222,14 @@ test('an active run keeps model selection disabled', async t => {
 });
 
 test('manual experiment reset works with a single model and an epoch change clears another client cache', async t => {
-  const { page, resets, errors, advanceExperiment } = await setup(t);
+  const { page, resets, errors, advanceExperiment } = await setup(t, 'operator', null, { models: [resetModels[0]] });
   await page.locator('#experiment-reset-button').click();
   await page.locator('#model-reset-no').click();
   assert.equal(resets.length, 0);
   await page.locator('#experiment-reset-button').click();
   await page.locator('#model-reset-yes').click();
   await page.locator('#model-reset-dialog').waitFor({ state: 'hidden' });
-  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
+  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-primary');
   assert.equal(resets.length, 1);
   await page.evaluate(() => localStorage.setItem('ca3p.loop.core.sessions.v1', '[{"old":"another-client"}]'));
   advanceExperiment();
@@ -244,43 +251,52 @@ test('browser cache deletion failure blocks model switching and execution after 
   await page.locator('#model-reset-yes').click();
   await page.locator('#model-reset-error').waitFor({ state: 'visible' });
   assert.equal(resets.length, 1);
-  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
+  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-primary');
   assert.match(await page.locator('#model-reset-error').textContent(), /브라우저의 실행 캐시/);
-  assert.equal(await page.locator('#run-button').isDisabled(), true);
+  assert.equal(await page.locator('#run-button').count(), 0);
   assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
   assert.deepEqual(errors, []);
 });
 
-test('an IDOR fixture engine switch uses the same confirmation and keeps both selections on cancellation or failure', async t => {
-  const { page, resets, errors, setResetError } = await setup(t, 'operator', null, { models: resetModels });
+test('changing a registered target keeps the selected general model without forcing a rule engine', async t => {
+  const { page, resets, errors } = await setup(t, 'operator', null, { models: resetModels });
   await page.locator('#model-reset-toggle').uncheck();
   await page.locator('#model-select').selectOption('deepseek-flash');
   await page.locator('#model-reset-toggle').check();
-  await page.locator('#fixture-select').selectOption('vul-web2-daehan');
-  await page.locator('#model-reset-dialog').waitFor({ state: 'visible' });
-  assert.equal(await page.locator('#fixture-select').inputValue(), 'vul-web-1');
-  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-flash');
-  await page.keyboard.press('Escape');
-  assert.equal(await page.locator('#fixture-select').inputValue(), 'vul-web-1');
-  await page.locator('#fixture-select').selectOption('vul-web2-daehan');
-  setResetError('관리 초기화 미설정');
-  await page.locator('#model-reset-yes').click();
-  await page.locator('#model-reset-error').waitFor({ state: 'visible' });
-  assert.equal(await page.locator('#fixture-select').inputValue(), 'vul-web-1');
-  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-flash');
-  await page.locator('#model-reset-no').click();
-  assert.equal(await page.locator('#fixture-select').inputValue(), 'vul-web2-daehan');
-  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
-  assert.equal(await page.locator('#model-reset-warning').isVisible(), true);
-  assert.equal(resets.length, 1);
+  for (const fixture of ['vul-web2-daehan', 'vul-web2-wonchang', 'vul-web-1']) {
+    await page.locator('#fixture-select').selectOption(fixture);
+    assert.equal(await page.locator('#fixture-select').inputValue(), fixture);
+    assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-flash');
+    assert.equal(await page.locator('#model-reset-dialog').isVisible(), false);
+    assert.equal(await page.locator('#model-select').isEnabled(), true);
+  }
+  assert.equal(resets.length, 0);
   assert.deepEqual(errors, []);
+});
+
+test('unavailable general assessment stays blocked instead of falling back to a single-check model', async t => {
+  for (const [lab, message] of [
+    [{ generalSupported: false, generalAvailable: false }, /서버 경로가 연결되지 않았습니다/],
+    [{ generalSupported: true, generalAvailable: false }, /실제 모델을 사용할 수 없습니다/],
+  ]) {
+    const { page, mutations, errors } = await setup(t, 'operator', null, { lab, models: [
+      { id: 'rule-baseline', name: 'Available rule engine', provider: 'local', mode: 'local-lab-rule', available: true },
+      { ...resetModels[0], available: false },
+    ] });
+    assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
+    assert.match(await page.locator('#lab-readiness').textContent(), message);
+    assert.equal(await page.locator('#model-select option[value="rule-baseline"]').count(), 0);
+    assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #run-button').count(), 0);
+    assert.equal(mutations.length, 0);
+    assert.deepEqual(errors, []);
+  }
 });
 
 test('the first server handshake replaces a larger cached epoch after changing to a fresh database', async t => {
   const { page, errors } = await setup(t, 'operator', null, { models: resetModels, seedEpoch: 5 });
   await page.waitForFunction(() => localStorage.getItem('ca3p.loop.experiment.epoch.v1') === '0');
   assert.equal(await page.evaluate(() => localStorage.getItem('ca3p.loop.core.sessions.v1')), null);
-  await page.waitForFunction(() => document.querySelector('#model-select').value === 'rule-baseline');
+  await page.waitForFunction(() => document.querySelector('#model-select').value === 'deepseek-primary');
   assert.equal(await page.locator('#experiment-reset-button').isEnabled(), true);
   assert.deepEqual(errors, []);
 });
@@ -330,14 +346,14 @@ test('fixture reports skip model generation while JSON export remains available'
   assert.equal(await page.locator('#export-button').isEnabled(), true);
 });
 
-test('authenticated workspace loads central runs, starts a selected rule lab, and safely renders comparisons and platform evidence', async t => {
+test('authenticated workspace starts a general assessment and safely renders comparisons and platform evidence', async t => {
   const { page, mutations, reviews, errors, detailCalls } = await setup(t);
-  await page.waitForFunction(() => document.querySelector('#model-select').value === 'rule-baseline');
+  await page.waitForFunction(() => document.querySelector('#model-select').value === 'deepseek-primary');
   assert.equal(await page.locator('#lab-run-button').isEnabled(), true);
   await page.locator('#lab-run-button').click();
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'REAL LAB / RULE');
-  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-rule', modelId: 'rule-baseline' }, csrf: 'csrf-live' });
+  await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'GENERAL / EVIDENCE');
+  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary' }, csrf: 'csrf-live' });
   await page.locator('#history-review-panel [data-review-note]').fill('Synthetic evidence checked.');
   await page.locator('#history-review-panel [data-review-form] button').click();
   await page.locator('#history-review-panel .review-complete').waitFor();
@@ -359,18 +375,17 @@ test('authenticated workspace loads central runs, starts a selected rule lab, an
   assert.deepEqual(errors, []);
 });
 
-test('vul-web2 site selection forwards its private origin to the rule IDOR lab and reopens evidence without XSS report claims', async t => {
+test('registered universities and board launch general assessments with their selected origin', async t => {
   const { page, mutations, errors } = await setup(t);
   await page.locator('#fixture-select').selectOption('vul-web2-daehan');
   assert.match(await page.locator('#lab-title').textContent(), /vul-web2 대한대학교/);
   assert.doesNotMatch(await page.locator('#lab-title').textContent(), /XSS|IDOR/);
-  assert.match(await page.locator('#lab-check-scope').textContent(), /IDOR 읽기 권한 비교만/);
-  assert.match(await page.locator('#lab-run-label').textContent(), /IDOR 읽기 검사 시작/);
+  assert.match(await page.locator('#lab-check-scope').textContent(), /반복 점검/);
+  assert.match(await page.locator('#lab-run-label').textContent(), /범용 취약점 점검 시작/);
   assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://127.0.0.1:4101');
   assert.match(await page.locator('#lab-description').textContent(), /Compose/);
-  assert.equal(await page.locator('#model-select').isDisabled(), true);
-  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
-  assert.match(await page.locator('#model-scope').textContent(), /모델을 호출하지 않습니다/);
+  assert.equal(await page.locator('#model-select').isEnabled(), true);
+  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-primary');
   await page.locator('#fixture-select').selectOption('vul-web2-wonchang');
   assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://127.0.0.1:4102');
   await page.locator('#lab-target-origin').fill('192.168.0.84:4102');
@@ -380,30 +395,34 @@ test('vul-web2 site selection forwards its private origin to the rule IDOR lab a
   }
   await page.locator('#lab-run-button').click();
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'REAL LAB / IDOR');
-  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-rule', modelId: 'rule-baseline', fixtureId: 'vul-web2-wonchang', target: 'http://192.168.0.84:4102' }, csrf: 'csrf-live' });
-  assert.match(await page.locator('#dashboard-mode').textContent(), /원창대학교 IDOR/);
-  await page.locator('[data-view=sessions]').click();
-  assert.match(await page.locator('#session-list').textContent(), /원창대학교 IDOR 실습/);
-  await page.locator('[data-session=new-rule]').click();
-  await page.locator('#history-banner').waitFor({ state: 'visible' });
-  await page.locator('[data-view=reports]').click();
-  assert.match(await page.locator('#report-content').textContent(), /원창대학교 IDOR 실행 결과/);
-  assert.match(await page.locator('#report-content').textContent(), /cross-owner: 403/);
-  assert.match(await page.locator('.report-note').textContent(), /자율 CERT 조사 결과를 뜻하지 않습니다/);
-  assert.doesNotMatch(await page.locator('.report-note').textContent(), /삭제 권한|XSS/);
-  assert.match(await page.locator('.report-document').textContent(), /HWPX 보고서는 아직 지원하지 않습니다/);
-  assert.doesNotMatch(await page.locator('.report-document').textContent(), /과금/);
-  assert.equal(await page.locator('#report-download-button').isDisabled(), true);
-  assert.equal(await page.locator('#export-button').isEnabled(), true);
+  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary',
+    fixtureId: 'vul-web2-wonchang', target: 'http://192.168.0.84:4102' }, csrf: 'csrf-live' });
   await page.locator('[data-view=assets]').click();
   await page.locator('#fixture-select').selectOption('vul-web-1');
   assert.equal(await page.locator('#model-select').isEnabled(), true);
-  assert.match(await page.locator('#lab-title').textContent(), /vul-web-1 로컬 게시판/);
-  assert.doesNotMatch(await page.locator('#lab-title').textContent(), /XSS|IDOR/);
-  assert.match(await page.locator('#lab-check-scope').textContent(), /저장형 XSS canary 1회/);
-  assert.match(await page.locator('#lab-run-label').textContent(), /저장형 XSS 검사 시작/);
+  assert.match(await page.locator('#lab-run-label').textContent(), /범용 취약점 점검 시작/);
   assert.equal(await page.locator('#lab-target-control').isHidden(), true);
+  assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #target-form, #settings-speed').count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('saved IDOR evidence remains readable after single-check launch controls are removed', async t => {
+  const historical = { ...snapshot('candidate', 'local-lab-rule'), fixtureId: 'vul-web2-wonchang',
+    testProfile: 'known_record_idor_read', target: 'http://127.0.0.1:4102',
+    report: { fixtureId: 'vul-web2-wonchang', testProfile: 'known_record_idor_read',
+      finding: { category: 'CWE-639', status: 'not_confirmed' }, evidence: [{ check: 'cross-owner', status: 403 }] },
+    reportDocument: { status: 'skipped', errorCode: 'IDOR_DOCUMENT_UNSUPPORTED' } };
+  const { page, mutations, errors } = await setup(t, 'operator', null, { historyRun: historical });
+  await page.locator('[data-view=sessions]').click();
+  await page.locator('[data-session=candidate]').click();
+  await page.locator('#history-banner').waitFor({ state: 'visible' });
+  await page.locator('[data-view=reports]').click();
+  assert.match(await page.locator('#report-content').textContent(), /원창대학교 IDOR 실행 결과/);
+  assert.match(await page.locator('#report-content').textContent(), /cross-owner/);
+  assert.match(await page.locator('.report-document').textContent(), /HWPX 보고서는 아직 지원하지 않습니다/);
+  assert.equal(await page.locator('#report-download-button').isDisabled(), true);
+  assert.equal(await page.locator('#export-button').isEnabled(), true);
+  assert.equal(mutations.length, 0);
   assert.deepEqual(errors, []);
 });
 
@@ -421,7 +440,7 @@ test('Docker university origins prefill both sites while a validated manual orig
   assert.deepEqual(errors, []);
 });
 
-test('IDOR launch rejects paths and credentials before submitting a run', async t => {
+test('registered target launch rejects paths and credentials before submitting a run', async t => {
   const { page, mutations, errors } = await setup(t);
   await page.locator('#fixture-select').selectOption('vul-web2-daehan');
   for (const origin of ['http://127.0.0.1:4101/private', 'http://user:password@127.0.0.1:4101', 'https://127.0.0.1:4101']) {
@@ -504,9 +523,12 @@ test('CI view distinguishes missing test totals from an actual zero-test result'
 test('viewer session can inspect evidence while all mutation controls remain disabled', async t => {
   const { page, errors } = await setup(t, 'viewer');
   await page.waitForFunction(() => document.querySelector('#model-select').options.length > 1);
-  for (const id of ['run-button', 'lab-run-button', 'new-session-button', 'stop-button', 'model-select', 'fixture-select']) assert.equal(await page.locator(`#${id}`).isDisabled(), true, id);
+  for (const id of ['lab-run-button', 'new-session-button', 'stop-button', 'model-select', 'fixture-select']) assert.equal(await page.locator(`#${id}`).isDisabled(), true, id);
   await page.locator('[data-view=sessions]').click(); await page.locator('[data-session=candidate]').click();
   await page.waitForFunction(() => !document.querySelector('#history-banner').hidden);
+  assert.equal(await page.locator('.loop-panel, #loop-graph, #general-run-summary').count(), 0);
+  await page.locator('#trace-event-select').selectOption('event-a');
+  assert.match(await page.locator('#trace-code').textContent(), /RuleReasoningEngine/);
   assert.match(await page.locator('#user-role').textContent(), /조회 전용/);
   assert.equal(await page.locator('#history-review-panel [data-review-form] button').isDisabled(), true);
   assert.deepEqual(errors, []);
