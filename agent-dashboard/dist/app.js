@@ -223,6 +223,7 @@ const viewMeta = {
   modules: ['모듈 탐색', '실행 <span>모듈</span>', '각 모듈이 주고받는 데이터와 상태를 확인하세요.'],
   reports: ['보고서', '점검 <span>보고서</span>', '결과를 읽고 생성된 문서를 내려받습니다.'],
   db: ['DB', '취약점 <span>DB</span>', '보고서를 접수·검토하고 취약점 사례를 관리합니다.'],
+  templates: ['템플릿', '공격 <span>템플릿</span>', 'JSON 템플릿을 검색하고 추가·수정·삭제합니다.'],
   'module-attack': ['Attack Module', 'Attack <span>Module</span>', '실행 모듈의 상태와 설정·로그를 확인합니다.'],
   'module-web-parser': ['Web Parser', 'Web <span>Parser</span>', '웹 관찰 모듈의 상태와 설정·로그를 확인합니다.'],
   'module-guardrail': ['Guardrail', 'Guardrail <span>운영</span>', '정책 모듈의 상태와 판정 로그를 확인합니다.'],
@@ -232,7 +233,7 @@ const viewMeta = {
 const routeToView = {
   'workspace/assets': 'assets',
   'workspace/attack': 'dashboard', 'workspace/attack/history': 'sessions', 'workspace/attack/compare': 'compare',
-  'workspace/reports': 'reports', 'workspace/db': 'db',
+  'workspace/reports': 'reports', 'workspace/db': 'db', 'workspace/templates': 'templates',
   'workspace/chat': 'chat',
   modules: 'modules', 'modules/ci': 'ci', 'modules/platform': 'platform',
   'modules/attack': 'module-attack', 'modules/web-parser': 'module-web-parser',
@@ -335,15 +336,16 @@ function navigate(view) {
   $('module-tabs').hidden = !moduleOverview;
   const navKey = attackView ? 'attack' : moduleOverview ? 'modules' : view === 'reports' ? 'reports' : view === 'db' ? 'db' : view;
   document.querySelectorAll('[data-nav]').forEach((el) => el.classList.toggle('current-group', el.dataset.nav === navKey));
-  $('breadcrumb-group').textContent = attackView || ['assets', 'reports', 'db', 'chat'].includes(view) ? 'Workspace' : 'Modules';
+  $('breadcrumb-group').textContent = attackView || ['assets', 'reports', 'db', 'chat', 'templates'].includes(view) ? 'Workspace' : 'Modules';
   $('breadcrumb-title').textContent = viewMeta[view][0];
   $('page-title').innerHTML = viewMeta[view][1];
   $('page-subtitle').textContent = viewMeta[view][2];
-  document.querySelector('.heading-actions').hidden = ['db', 'chat'].includes(view) || view.startsWith('module-') || moduleOverview;
+  document.querySelector('.heading-actions').hidden = ['db', 'chat', 'templates'].includes(view) || view.startsWith('module-') || moduleOverview;
   $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded', 'false');
   if (location.hash !== `#${viewToRoute[view]}`) historyReplace(view);
   render();
   if (view === 'db') void operations.showDb();
+  if (view === 'templates' && authSession && (!authSession.authRequired || authSession.authenticated)) void operations.showTemplates();
   if (view === 'chat' && authSession && (!authSession.authRequired || authSession.authenticated)) void workspaceChat.show();
   if (view.startsWith('module-')) void operations.showModule(view.slice('module-'.length));
 }
@@ -921,6 +923,7 @@ function acceptSession(value) {
   workspaceChat.refreshPermissions();
   if (activeView === 'chat') void workspaceChat.show();
   if (activeView === 'db') void operations.showDb();
+  if (activeView === 'templates') void operations.showTemplates();
   if (activeView.startsWith('module-')) void operations.showModule(activeView.slice('module-'.length));
 }
 async function loadWorkspace() {

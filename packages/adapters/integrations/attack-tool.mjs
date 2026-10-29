@@ -1,17 +1,17 @@
 import { createHash } from 'node:crypto';
 import { createAttackTool } from '../../../attack-tool/server.mjs';
 import { createAttackToolClient } from '../../../attack-tool/client.mjs';
-import { listTemplates } from '../../../attack-tool/templates.mjs';
 
 /** One run owns two ports; each vulnerability worker has its own authenticated principal. */
-export async function createAttackToolBridge({ authorize, execute, runId, targetOrigin, ports = [0, 0] } = {}) {
+export async function createAttackToolBridge({ authorize, execute, runId, targetOrigin, ports = [0, 0], templateCatalog } = {}) {
   if (typeof authorize !== 'function' || typeof execute !== 'function') throw new TypeError('Attack-tool requires policy and executor ports.');
-  const daemon = await createAttackTool({ ports, timeoutMs: 120_000 });
+  const daemon = await createAttackTool({ ports, timeoutMs: 120_000,
+    ...(templateCatalog ? { catalog: templateCatalog } : {}) });
   const clients = new Map();
   const agentIds = [];
   let closed = false;
   return {
-    endpoints: daemon.endpoints, agentIds, templates: listTemplates(), metrics: daemon.metrics,
+    endpoints: daemon.endpoints, agentIds, templates: daemon.templates, metrics: daemon.metrics,
     async execute({ probe, hypothesis, signal }) {
       if (closed) throw new Error('Attack-tool bridge is closed.');
       const category = hypothesis?.category;
