@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../../packages/run-store/index.mjs';
+import { digest } from '../../../packages/contracts/index.mjs';
 import { runWorker } from '../worker.mjs';
 
 async function waitFor(check, timeoutMs = 5000) {
@@ -315,4 +316,50 @@ test('cancelling a general run aborts its model and closes the runtime', async t
   assert.ok(stopCalls >= 1);
   assert.equal(signal.aborted, true);
   assert.equal(final.reportDocuments.status, 'skipped');
+});
+
+test('general worker passes the verifier handoff only for a finding whose confirmed probe has one', async t => {
+  const { id, storePath, directory } = await setup();
+  let factoryOptions; const reportArgs = [];
+  const report = { schemaVersion: 'general-assessment/1', assessmentMode: 'general', runId: id,
+    status: 'completed', target: { origin: 'http://127.0.0.1:4101' },
+    findings: [
+      { id: 'finding:h1', hypothesisId: 'h1', status: 'confirmed', evidenceIds: ['ev1'] },
+      { id: 'finding:h2', hypothesisId: 'h2', status: 'confirmed', evidenceIds: ['ev2'] },
+    ],
+    probes: [
+      { id: 'p1', hypothesisId: 'h1', status: 'confirmed' },
+      { id: 'p2', hypothesisId: 'h2', status: 'not_reproduced' },
+    ],
+    evidence: [], coverage: { totalHypotheses: 2, confirmed: 2 } };
+  const generalRuntimeFactory = options => {
+    factoryOptions = options;
+    let state;
+    const listeners = new Set();
+    return {
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      async startLab() {
+        mkdirSync(join(options.verificationRoot, 'p1'), { recursive: true });
+        writeFileSync(join(options.verificationRoot, 'p1', 'verification.json'), '{}');
+        state = { run: { id, mode: 'local-lab-general', assessmentMode: 'general',
+          status: 'completed', events: [], report, reviewItems: [] } };
+        for (const listener of listeners) listener(structuredClone(state));
+      },
+      getState() { return structuredClone(state); }, stop() {}, async close() {},
+    };
+  };
+  const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10, env: {}, generalRuntimeFactory,
+    reportGenerator: args => {
+      reportArgs.push(args);
+      return { status: 'ready', filename: `${args.findingId}.hwpx`, bytes: Buffer.from(`PK\x03\x04${args.findingId}`) };
+    } });
+  t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+  const run = await waitFor(() => { const value = worker.store.getRun(id);
+    return value.status === 'completed' && value.reportDocuments?.completedAt && value; });
+  const verificationRoot = join(directory, 'artifacts', digest(id), 'verifications');
+  assert.equal(factoryOptions.verificationRoot, verificationRoot);
+  assert.deepEqual(reportArgs.map(args => args.findingId), ['finding:h1', 'finding:h2']);
+  assert.equal(reportArgs[0].verificationDir, join(verificationRoot, 'p1'));
+  assert.equal('verificationDir' in reportArgs[1], false);
+  assert.equal(run.reportDocuments.status, 'ready');
 });

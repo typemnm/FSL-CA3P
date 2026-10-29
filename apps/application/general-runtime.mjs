@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { emptyRun, assertIdentifier, redact } from '../../packages/contracts/index.mjs';
+import { verifyAttack } from '../../packages/verifier/index.mjs';
+import { writeReportHandoff } from '../../packages/verifier/report-handoff.mjs';
 import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../packages/contracts/general-loop-budget.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
-import { probeSite } from '../../vul-web2/scripts/idor-probe.mjs';
-import { executeUniversityRead } from '../../packages/adapters/university-read.mjs';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
 import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
 import { createAttackToolBridge } from '../../packages/adapters/integrations/attack-tool.mjs';
@@ -45,7 +47,6 @@ const FIXTURES = Object.freeze({
       'vul-web2/docs/사전_침해분석_및_취약점_보고서.md': '../../vul-web2/docs/사전_침해분석_및_취약점_보고서.md',
     },
     manifest: 'vul-web2/package.json',
-    idorAsset: '/api/admissions/partner/applications/:id',
   },
   'vul-web2-wonchang': {
     name: '원창대학교', siteKey: 'wonchang', origin: 'http://127.0.0.1:4102',
@@ -62,7 +63,6 @@ const FIXTURES = Object.freeze({
       'vul-web2/docs/사전_침해분석_및_취약점_보고서.md': '../../vul-web2/docs/사전_침해분석_및_취약점_보고서.md',
     },
     manifest: 'vul-web2/wonchang/pom.xml',
-    idorAsset: '/api/staff/mobile/cases/:id',
   },
 });
 
@@ -403,21 +403,45 @@ function responseSummary(path, response, body, origin) {
     securityHeaderPresence: headers, securityHeaderValues, ...surface };
 }
 
-function validIdorResult(result) {
-  if (!Array.isArray(result?.evidence) || result.evidence.length !== 4) return 'inconclusive';
-  const byCheck = Object.fromEntries(result.evidence.map(item => [item.check, item]));
-  if (Object.keys(byCheck).length !== 4) return 'inconclusive';
-  const first = byCheck.firstOwner; const second = byCheck.secondOwner;
-  const cross = byCheck.crossOwner; const student = byCheck.studentRole;
-  const controls = first?.recordId === 1 && first?.status === 200 && first?.ownerId === 4
-    && second?.recordId === 3 && second?.status === 200 && second?.ownerId === 5
-    && student?.recordId === 3 && student?.status === 403;
-  if (!controls) return 'inconclusive';
-  if (cross?.recordId === 3 && cross?.status === 200 && cross?.ownerId === 5
-    && result.finding?.status === 'confirmed') return 'confirmed';
-  if (cross?.recordId === 3 && [403, 404].includes(cross?.status)
-    && result.finding?.status === 'not_confirmed') return 'not_reproduced';
-  return 'inconclusive';
+/**
+ * Builds a tool-agnostic AttackRecord from one executed probe: the hypothesis, the tool and its input, and the
+ * tool's own bounded evidence. A result that already carries an AttackRecord keeps its exchanges.
+ */
+export function recordForProbe({ probe, hypothesis, execution, origin, relatedEvidence = [] }) {
+  const summaries = items => items.map(({ id, kind, asset, summary }) => ({ id, kind, ...(asset ? { asset } : {}), summary }));
+  const info = { goal: 'Decide whether the hypothesis ' + hypothesis.category + ' at ' + hypothesis.asset + ' is valid',
+    hypothesis: { id: hypothesis.id, category: hypothesis.category, asset: hypothesis.asset, rationale: hypothesis.rationale },
+    tool: probe.tool, input: probe.input, relatedEvidence: summaries(relatedEvidence).slice(-8),
+    ...(typeof probe.input?.sessionRole === 'string' ? { session: probe.input.sessionRole } : {}) };
+  if (execution.attackRecord) return { ...execution.attackRecord, info: { ...info, ...execution.attackRecord.info } };
+  const url = typeof probe.input?.path === 'string' ? new URL(probe.input.path, origin).href : undefined;
+  return { schemaVersion: 'attack-record/1', id: probe.id, kind: String(hypothesis.category).slice(0, 64),
+    target: { origin }, info,
+    request: { method: url ? 'GET' : 'READ', ...(url ? { url } : { file: String(probe.input?.file ?? probe.tool) }),
+      headers: {}, body: null },
+    response: { status: Number.isInteger(execution.result?.status) ? execution.result.status : null,
+      bodyText: JSON.stringify(summaries(execution.evidence ?? [])) } };
+}
+
+/**
+ * Judges one AttackRecord with the AI verifier and maps the result to the core verdict.
+ * The core accepts a non-inconclusive verdict only when it cites this probe's evidence, and rejects an empty reason.
+ */
+export async function judgeAttackRecord(record, { evidenceId, outDir, sessions = {}, verify = verifyAttack,
+  model, env, envFile, signal } = {}) {
+  try {
+    const directory = outDir ?? await mkdtemp(join(tmpdir(), 'ca3p-verify-'));
+    await mkdir(directory, { recursive: true });
+    const result = await verify(record, { outDir: directory, sessions, model, env, envFile, signal });
+    if (outDir) await writeReportHandoff(result, { outDir: directory });
+    const reason = utf8Prefix(String(result.reason ?? ''), 500).trim() || 'verifier_no_reason';
+    return ['confirmed', 'not_reproduced'].includes(result.status)
+      ? { status: result.status, completed: true, evidenceIds: [evidenceId], reason }
+      : { status: 'inconclusive', evidenceIds: [evidenceId], reason };
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
+    return { status: 'inconclusive', evidenceIds: [evidenceId], reason: 'verifier_failed' };
+  }
 }
 
 /** Real assessment of registered local targets; tool execution is read-oriented and bounded. */
@@ -425,13 +449,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   runIdFactory = () => 'general-' + randomUUID(), env = process.env, envFile,
   signal, onModelCall, beforeProbe, afterProbe, caseSnapshot, unavailableInputs = [],
   historyProvider, plannerFactory, fetchImpl = fetch,
-  idorProbe = probeSite, catalogReader = readKnowledgeCatalogReadOnly,
-  webParserCollect = collectWebInfo, parserPreview, limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
+  catalogReader = readKnowledgeCatalogReadOnly,
+  webParserCollect = collectWebInfo, parserPreview, verificationRoot, verifyAttackImpl = verifyAttack, verifierModel,
+  limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!MODELS.has(modelId)) throw new TypeError('A registered DeepSeek model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
-    || typeof idorProbe !== 'function' || typeof catalogReader !== 'function'
-    || typeof webParserCollect !== 'function') {
+    || typeof catalogReader !== 'function'
+    || typeof webParserCollect !== 'function' || typeof verifyAttackImpl !== 'function') {
     throw new TypeError('Invalid general runtime dependency.');
   }
   for (const callback of [onModelCall, beforeProbe, afterProbe, historyProvider, plannerFactory]) {
@@ -782,18 +807,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       authenticatedPages: authenticated.pages,
       declaredRoutes: [...config.routes],
       repositoryFiles: Object.keys(config.files),
-      knownAssessmentAssets: [{ category: 'access_control',
-        asset: config.idorAsset, tool: 'known_record_idor_read',
-        source: 'registered-lab-contract', currentRunVerified: false }],
       referenceSources: references,
       toolCapabilities: {
         http_get: 'input {path,sessionRole?}: GET on a declared or observed pathname at the selected origin; optional sessionRole uses only a prepared fixed demo session; redirects are not followed',
         web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); once the cumulative web_info evidence budget of the run is spent, returns only a one-line overview (status, content type, list counts); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
         repository_read: 'input {file,offset?}: read only an allowlisted local source or reference excerpt',
-        known_record_idor_read:
-          'input {}: guarded role comparison of registered virtual records; use access_control and the knownAssessmentAssets asset',
       },
-      limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; no independent browser-execution verifier is connected for this general run.',
+      limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; an AI verifier judges every executed probe as valid or invalid for its hypothesis and may open a read-only browser.',
         'GET and repository references do not independently confirm most weakness classes.',
         'Historical cases and source reports are context, not current-run proof.',
         'Initial public discovery is bounded to ' + MAX_INITIAL_PAGES + ' routes; other declared routes require a model probe.',
@@ -810,10 +830,6 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     let observed = false;
     let inventory;
     const probeHypotheses = new Map();
-    let usedIdor = false;
-    const matchesIdorHypothesis = hypothesis =>
-      /^(?:access_control|idor|cwe-639)$/iu.test(hypothesis?.category ?? '')
-      && hypothesis?.asset === config.idorAsset;
     const failedModelCalls = [];
     let evidenceCount = 0;
     // Additional web_info evidence has its own budget. The planner reduces
@@ -869,13 +885,6 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           && (probe.input.offset === undefined || Number.isSafeInteger(probe.input.offset)
             && probe.input.offset >= 0 && probe.input.offset <= 32 * 1024),
         reason: 'file_out_of_scope' };
-      if (probe.tool === 'known_record_idor_read') {
-        if (!matchesIdorHypothesis(hypothesis)) {
-          return { allowed: false, reason: 'hypothesis_tool_mismatch' };
-        }
-        return { allowed: !usedIdor && Object.keys(probe.input).length === 0,
-          reason: 'fixed_probe_unavailable' };
-      }
       return { allowed: false, reason: 'tool_unavailable' };
     } };
     const executor = { async execute({ probe, signal: executionSignal }) {
@@ -976,71 +985,23 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             summary: 'Requested local reference could not be read.' }] };
         }
       }
-      usedIdor = true;
-      try {
-        const result = await idorProbe({ siteKey: config.siteKey, origin: allowedOrigin,
-          runId: run.id, signal: probeSignal,
-          fetchImpl: async (url, options) => {
-            const requestUrl = new URL(url);
-            if (requestUrl.origin !== allowedOrigin) throw new Error('IDOR login origin changed.');
-            const hook = { id: probe.id + '-login-' + createHash('sha256').update(String(options.body)).digest('hex').slice(0, 8),
-              probeId: probe.id, iteration: run.iterations, tool: probe.tool,
-              session: 'fixture-login', method: 'POST', url: requestUrl.href };
-            const reservation = await invokeHook(beforeProbe, hook);
-            let response;
-            try {
-              response = await fetchImpl(url, { ...options, redirect: 'manual' });
-              run.targetContacted = true;
-              return response;
-            } finally {
-              await invokeHook(afterProbe, hook, { status: response?.status ?? null }, reservation);
-            }
-          },
-          curlImpl: async (command, options) => {
-            const url = new URL(command.url);
-            if (url.origin !== allowedOrigin) throw new Error('IDOR read origin changed.');
-            const hook = { id: probe.id + '-read-' + url.pathname.split('/').at(-1) + '-'
-                + createHash('sha256').update(options.cookie ?? '').digest('hex').slice(0, 8),
-              probeId: probe.id, iteration: run.iterations, tool: probe.tool,
-              session: 'fixture-role', method: 'GET', url: url.href };
-            const reservation = await invokeHook(beforeProbe, hook);
-            let response;
-            try {
-              response = await executeUniversityRead(command, options);
-              run.targetContacted = true;
-              return response;
-            } finally {
-              await invokeHook(afterProbe, hook, { status: response?.status ?? null }, reservation);
-            }
-          },
-        });
-        const verdictStatus = validIdorResult(result);
-        return { kind: 'known_record_idor_read', verdictStatus, result,
-          evidence: [{ id: evidenceId('probe', probe.id),
-            source: 'vul-web2/guarded-idor-read', kind: 'role-comparison',
-            asset: config.idorAsset,
-            summary: 'Registered virtual-record control comparison: '
-              + result.evidence.map(item => item.check + '=' + item.status
-                + '/owner:' + item.ownerId).join(', ') + '; verifier=' + verdictStatus }] };
-      } catch (error) {
-        if (probeSignal?.aborted || error?.fatalProbe) throw error;
-        return { kind: 'known_record_idor_read', verdictStatus: 'inconclusive',
-          evidence: [{ id: evidenceId('probe', probe.id),
-            source: 'vul-web2/guarded-idor-read', kind: 'unavailable',
-            asset: config.idorAsset, summary: 'Guarded role comparison could not complete; no access-control verdict was confirmed.' }] };
-      }
+      return { kind: probe.tool, evidence: [] };
     } };
-    const verifier = { async verify({ execution, hypothesis }) {
-      const id = execution.evidence?.[0]?.id;
-      const idorHypothesis = matchesIdorHypothesis(hypothesis);
-      if (execution.kind === 'known_record_idor_read'
-        && idorHypothesis
-        && ['confirmed', 'not_reproduced'].includes(execution.verdictStatus)) {
-        return { status: execution.verdictStatus, completed: true, evidenceIds: [id] };
-      }
-      return { status: 'inconclusive', reason: execution.kind === 'known_record_idor_read'
-        ? idorHypothesis ? 'control_incomplete' : 'hypothesis_tool_mismatch'
-        : 'independent_verification_unavailable', evidenceIds: id ? [id] : [] };
+    // Evidence already judged per hypothesis, so each verdict covers everything known so far.
+    const judgedEvidence = new Map();
+    const verifier = { async verify({ hypothesis, probe, execution, evidence, signal }) {
+      const id = execution.evidence[0].id;
+      const own = new Set(execution.evidence.map(item => item.id));
+      const earlier = judgedEvidence.get(hypothesis.id) ?? [];
+      const cited = evidence.filter(item => hypothesis.evidenceIds.includes(item.id) && !own.has(item.id));
+      judgedEvidence.set(hypothesis.id, [...earlier, ...execution.evidence]);
+      const sessions = Object.fromEntries([...sessionCookies].map(([role, cookie]) => [role,
+        [{ name: cookie.slice(0, cookie.indexOf('=')), value: cookie.slice(cookie.indexOf('=') + 1) }]]));
+      // Every executed result goes to the AI verifier, which decides valid or invalid for the hypothesis.
+      return judgeAttackRecord(recordForProbe({ probe, hypothesis, execution, origin: allowedOrigin,
+        relatedEvidence: [...cited, ...earlier] }), { evidenceId: id, sessions, verify: verifyAttackImpl,
+        outDir: verificationRoot ? join(verificationRoot, probe.id) : undefined, model: verifierModel,
+        env, envFile, signal });
     } };
     const wrappedPlanner = { async propose(context) {
       let plan;
@@ -1113,7 +1074,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       }
       return plan;
     } };
-    const availableTools = ['http_get', 'web_info', 'repository_read', 'known_record_idor_read'];
+    const availableTools = ['http_get', 'web_info', 'repository_read'];
     // Each vulnerability worker receives its own authenticated logical client.
     // The daemon owns the transport, while target and policy authority remain in
     // this runtime; model input cannot install an executor or change its scope.

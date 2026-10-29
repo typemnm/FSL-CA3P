@@ -177,6 +177,15 @@
       ]
     },
     {
+      "id": "verifier",
+      "path": "packages/verifier",
+      "layer": "verification",
+      "status": "active",
+      "dependencies": [
+        "agent"
+      ]
+    },
+    {
       "id": "history",
       "path": "packages/history",
       "layer": "knowledge-adapter",
@@ -201,7 +210,8 @@
         "agent",
         "worker",
         "adapters",
-        "chat-store"
+        "chat-store",
+        "verifier"
       ]
     },
     {

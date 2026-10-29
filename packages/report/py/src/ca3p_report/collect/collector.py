@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ..trigger import Trigger
 from . import casper, pentest_db, run_store
-from .bundle import EVENTS_SCHEMA, HISTORY_SCHEMA, RUN_SCHEMA, BundleWriter
+from .bundle import EVENTS_SCHEMA, HISTORY_SCHEMA, RUN_SCHEMA, VERIFICATION_SCHEMA, BundleWriter
 from .general import select_finding
 from .hints import capture_hints
 from .model import CollectError, RunRecord
+from .verification import VerificationHandoffError, load_verification_handoff
 
 RUN_DRIVERS = {
     pentest_db.DRIVER: pentest_db.read_run,
@@ -35,6 +37,32 @@ class CollectResult:
     selection: dict | None = None
 
 
+def _verification(run_id: str, location: Path, selection: dict | None) -> tuple[dict, list]:
+    """The sealed verification document and the (ref, bytes) pairs of its images."""
+    try:
+        handoff = load_verification_handoff(location)
+    except VerificationHandoffError as exc:
+        raise CollectError(str(exc)) from exc
+    attack_id = handoff["result"].get("attackId")
+    if selection is not None and attack_id not in {p["id"] for p in selection["confirmedProbes"]}:
+        raise CollectError("verification attackId is not a confirmed probe of the selected finding")
+    names = [image["path"].name for image in handoff["images"]]
+    if len(set(names)) != len(names):
+        raise CollectError("verification image names are duplicated")
+    records, blobs = [], []
+    for image in handoff["images"]:
+        data = image["path"].read_bytes()
+        if "sha256:" + hashlib.sha256(data).hexdigest() != image["sha256"]:
+            raise CollectError("verification image changed after its integrity check")
+        ref = f"evidence/images/{image['path'].name}"
+        records.append({"ref": ref, "sha256": image["sha256"], "bytes": image["bytes"],
+                        "label": image["label"]})
+        blobs.append((ref, data))
+    document = {"schemaVersion": VERIFICATION_SCHEMA, "runId": run_id,
+                "result": handoff["result"], "images": records}
+    return document, blobs
+
+
 def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
     run = RUN_DRIVERS[trigger.run.kind](trigger.run.location, trigger.run_id)
     if run is None:
@@ -53,6 +81,10 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
     context = casper.reference_context(run.events)
     if context is not None:
         history["referenceContext"] = context
+
+    verification, blobs = (None, [])
+    if trigger.verification.kind == "handoff-dir":
+        verification, blobs = _verification(run.run_id, trigger.verification.location, selection)
 
     writer = BundleWriter(trigger.output_dir / "bundle")
     try:
@@ -89,6 +121,10 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
         )
         hints = capture_hints(run.events)
         writer.add_json("hints/capture.json", "capture-hints", {"runId": run.run_id, **hints})
+        if verification is not None:
+            writer.add_json("run/verification.json", "verification-handoff", verification)
+            for ref, data in blobs:
+                writer.add_bytes(ref, "verification-image", data)
         collected_at = (now or datetime.now(UTC)).isoformat()
         collectors = [
             {
@@ -114,4 +150,7 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
     except BaseException:
         writer.discard()
         raise
+    if selection is not None and verification is not None:
+        # The general model reads the verification through the selection it already receives.
+        selection = {**selection, "verification": verification}
     return CollectResult(bundle=writer.root, manifest=manifest, run=run, selection=selection)

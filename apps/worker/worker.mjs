@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../packages/run-store/index.mjs';
 import { createIdorRuntime } from '../application/idor-runtime.mjs';
@@ -39,12 +40,21 @@ function storeReportPreviews(store, runId, document, findingId) {
   return artifacts;
 }
 
+// The verifier writes <root>/<probeId>/verification.json for each probe it judged.
+function verificationDirFor(report, findingId, verificationRoot) {
+  const hypothesisId = report.findings?.find(finding => finding.id === findingId)?.hypothesisId;
+  if (!hypothesisId) return null;
+  const probe = (report.probes ?? []).find(item => item.hypothesisId === hypothesisId && item.status === 'confirmed'
+    && existsSync(join(verificationRoot, item.id, 'verification.json')));
+  return probe ? join(verificationRoot, probe.id) : null;
+}
+
 export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
   pollMs = 150, leaseMs = 15_000, heartbeatMs = 1000, envFile, env = process.env,
   reportGenerator = generateReportDocument,
   idorRuntimeFactory = createIdorRuntime, generalRuntimeFactory = createGeneralRuntime,
   externalRuntimeFactory = createExternalRuntime, externalRequestImpl,
-  generalPlannerFactory, generalFetchImpl, generalIdorProbe } = {}) {
+  generalPlannerFactory, generalFetchImpl } = {}) {
   const store = createRunRepository({ path: storePath });
   let stopping = false; let runtime = null; let activeLease = null; let activeController = null; let busy = false; let timer; let shutdownTask;
   const notify = () => { if (process.connected) process.send({ type: 'state' }); };
@@ -118,6 +128,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
               status: finding.status ?? null, evidenceCount: Array.isArray(finding.evidenceIds)
                 ? finding.evidenceIds.length : null })) };
         });
+      const verificationRoot = join(dirname(store.path), 'artifacts', digest(lease.runId), 'verifications');
       runtime = (externalRun ? externalRuntimeFactory : generalLab ? generalRuntimeFactory
         : idorRuntimeFactory)({ fixtureId: lease.options.fixtureId,
         targetOrigin: lease.options.target,
@@ -126,11 +137,10 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
           ...(externalRequestImpl ? { requestImpl: externalRequestImpl } : {}) } : {}),
         caseSnapshot: lease.options.caseSnapshot,
         unavailableInputs: lease.options.unavailableInputs ?? [],
-        ...(generalLab && !externalRun ? { limits: lease.options.loopBudget } : {}),
+        ...(generalLab && !externalRun ? { limits: lease.options.loopBudget, verificationRoot } : {}),
         historyProvider,
         ...(generalPlannerFactory ? { plannerFactory: generalPlannerFactory } : {}),
         ...(generalFetchImpl ? { fetchImpl: generalFetchImpl } : {}),
-        ...(generalIdorProbe ? { idorProbe: generalIdorProbe } : {}),
         modelId: lease.modelId,
         env, ...(envFile ? { envFile } : {}), signal: controller.signal,
         onModelCall(metadata) { store.recordModelCall(lease, metadata); notify(); },
@@ -236,9 +246,11 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
               saveProgress();
               let document;
               try {
+                const verificationDir = verificationDirFor(final.report, item.findingId, verificationRoot);
                 document = await reportGenerator({ run: finalState, findingId: item.findingId,
                   storePath: store.path, historyPath: lease.options.caseSnapshot?.sourcePath,
-                  envFile, env, signal: controller.signal });
+                  envFile, env, signal: controller.signal,
+                  ...(verificationDir ? { verificationDir } : {}) });
                 if (document?.status === 'ready' && controller.signal.aborted) document = {
                   status: 'failed', errorCode: 'REPORT_CANCELLED', message: '보고서 생성을 취소했습니다.',
                 };
