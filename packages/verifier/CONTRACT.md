@@ -91,11 +91,17 @@ system prompt는 `VERIFIER_SYSTEM_PROMPT`(`index.mjs`)다.
 | 보고서 읽기 | `load_verification_handoff(dir)`, `copy_handoff_images(handoff, bundle_dir)` | handoff 디렉터리 → 검증된 dict, 번들 `evidence/images/` |
 
 아직 연결되지 않은 곳(후속 PR):
-1. **attack 쪽**: 범용 점검 실행기 `apps/application/general-runtime.mjs`는 요청을 대부분 `fetchImpl`로 직접 보낸다. attack-module은 IDOR 읽기(`executeUniversityRead`)에서만 쓴다. 할 일은 두 가지다.
-   - 공격 요청을 `executeCurlRecorded`로 보내고, 실행 결과에 `attackRecord`를 실어 보낸다.
-   - 같은 파일의 `verifier` 포트에서 `verifyAttack`을 부르고 결과를 `{ status, completed, evidenceIds, reason }`로 바꾼다.
+1. **attack 쪽**: develop의 범용 점검은 모든 probe를 attack-tool daemon으로 보낸다(`execute_probe`, `packages/adapters/integrations/attack-tool.mjs`). verifier를 붙일 자리는 세 곳이다.
+   - **템플릿 공격 결과 → AttackRecord**: `execute_attack_template`는 `{ templateId, baseline, attack, verification }`를 돌려준다. 이를 다음과 같이 옮긴다.
+     - `request`: `renderTemplate({ templateId, payload }).packet`(`attack-tool/templates.mjs`)
+     - `response`: `attack` 관찰. `bodyExcerpt`는 `bodyText`로, `bodyBytes`와 `truncated`는 그대로 옮긴다.
+     - `control`: baseline 패킷과 `baseline` 관찰
 
-   코어는 판정이 그 probe의 증거 id를 참조해야 받아 준다(`agent/src/general-assessment.js`의 `UNSUPPORTED_VERDICT`). verifier 포트는 새 증거를 추가할 수 없으므로 스크린샷은 handoff 디렉터리 `<store 디렉터리>/verifications/<sha256(runId)>/<probeId>/`에 둔다.
+     변환 함수 `recordFromTemplateResult`(adapters, 약 30줄)는 아직 없다. attack-tool이 직접 낸 `verification`(결과 개수 비교)은 모델 입력에 넣지 않는다. AI 판정이 그 값을 따라가지 않게 하려는 것이다.
+   - **범용 런타임의 `verifier` 포트**(`apps/application/general-runtime.mjs`의 `const verifier`): 실행 결과에 AttackRecord가 있으면 `verifyAttack`을 부르고 결과를 `{ status, completed, evidenceIds, reason }`로 바꾼다. 코어는 판정이 그 probe의 증거 id를 참조해야 받아 준다(`agent/src/general-assessment.js`의 `UNSUPPORTED_VERDICT`). verifier 포트는 새 증거를 추가할 수 없으므로 스크린샷은 handoff 디렉터리 `<store 디렉터리>/artifacts/<digest(runId)>/verifications/<probeId>/`에 둔다. 이 경로는 실행 기록을 지울 때 `prepareRunFileCleanup`(`apps/application/experiment-files.mjs`)이 함께 지우는 디렉터리 안이다.
+   - **curl 실행**: attack-tool을 거치지 않는 기존 실행(attack-module `executeCurl`)은 `executeCurlRecorded`로 기록한다.
+
+   `execute_attack_template`은 아직 범용 런타임의 `availableTools`에 없다. 그래서 지금 planner는 템플릿 공격을 부를 수 없다.
 2. **보고서 쪽**: worker(`apps/worker/worker.mjs`)가 confirmed finding마다 `generateReportDocument`를 부를 때 해당 probe의 handoff 디렉터리를 넘긴다. 이를 위해 다음을 추가한다.
    - trigger에 `sources.verification: { kind: 'handoff-dir', location }`를 넣는다(`trigger.py`의 `sources` 키).
    - collector가 위 두 함수로 handoff를 번들에 넣는다.
