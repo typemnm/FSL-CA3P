@@ -11,6 +11,9 @@ test('parser preview requires an operator, CSRF, explicit authorization and boun
     auth: createAuthentication({ users: ['viewer', 'operator'].map(role => hashAccount(role, 'password', role)) }),
     platformProvider: async () => ({ modules: [] }), maintenanceCheck: async () => false,
     targetPreview: async body => {
+      assert.equal(body.signal.aborted, false);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(body.signal.aborted, false);
       calls.push(body);
       return { previewId: 'test-preview', targetKind: 'external', fixtureId: null,
         origin: 'https://example.org', entryUrl: 'https://example.org/', pages: [],
@@ -43,10 +46,50 @@ test('parser preview requires an operator, CSRF, explicit authorization and boun
   const first = await post(operator);
   assert.equal(first.status, 200);
   assert.equal((await first.json()).previewId, 'test-preview');
-  for (let i = 0; i < 11; i += 1) assert.equal((await post(operator, {
+  for (let i = 0; i < 5; i += 1) assert.equal((await post(operator, {
     ...body, previewId: 'test-preview' })).status, 200);
   const limited = await post(operator);
   assert.equal(limited.status, 429);
+  assert.equal((await limited.json()).code, 'PREVIEW_RATE_LIMIT');
   assert.ok(Number(limited.headers.get('retry-after')) > 0);
-  assert.equal(calls.length, 12);
+  assert.equal(calls.length, 6);
+});
+
+test('closing the preview response aborts its crawl and releases the active request slot', async t => {
+  let started;
+  let aborted;
+  const startedPromise = new Promise(resolve => { started = resolve; });
+  const abortedPromise = new Promise(resolve => { aborted = resolve; });
+  let calls = 0;
+  const server = createDashboardServer({
+    runtime: { close: async () => {}, subscribe: () => () => {}, getState: () => ({}) },
+    auth: createAuthentication({ enabled: false }),
+    platformProvider: async () => ({ modules: [] }), maintenanceCheck: async () => false,
+    targetPreview: ({ signal }) => {
+      calls += 1;
+      if (calls > 1) return { previewId: 'next', pages: [] };
+      return new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          aborted(); reject(Object.assign(new Error('cancelled'), { status: 499 }));
+        }, { once: true });
+        started();
+      });
+    },
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(async () => server.shutdown());
+  const endpoint = `http://127.0.0.1:${server.address().port}/api/targets/preview`;
+  const controller = new AbortController();
+  const post = signal => fetch(endpoint, { method: 'POST', signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: 'https://example.org/', authorizationConfirmed: true }) });
+  const first = post(controller.signal).catch(error => error);
+  await startedPromise;
+  controller.abort();
+  assert.equal((await first).name, 'AbortError');
+  await abortedPromise;
+  await new Promise(resolve => setImmediate(resolve));
+  const next = await post();
+  assert.equal(next.status, 200);
+  assert.equal((await next.json()).previewId, 'next');
 });

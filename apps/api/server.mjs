@@ -98,6 +98,7 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
   const streams = new Set();
   const preflightQuotas = new Map();
   const previewQuotas = new Map();
+  let activePreviews = 0;
   const server = http.createServer(async (req, res) => {
     try {
       const port = server.address()?.port;
@@ -165,16 +166,28 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
             quota = { startedAt: now, count: 0, active: false };
             previewQuotas.set(actor, quota);
           }
-          if (quota.active || quota.count >= 12) {
-            return json(res, 429, { error: 'Parser preview requests are limited. Retry shortly.' },
+          if (quota.active || activePreviews >= 4) {
+            return json(res, 429, { error: 'A parser preview is still running. Retry shortly.', code: 'PREVIEW_BUSY' },
+              { 'Retry-After': '1' });
+          }
+          if (quota.count >= 6) {
+            return json(res, 429, { error: 'Parser preview requests are limited. Retry shortly.', code: 'PREVIEW_RATE_LIMIT' },
               { 'Retry-After': String(Math.max(1, Math.ceil((60_000 - (now - quota.startedAt)) / 1000))) });
           }
           const collect = targetPreview ?? runtime.previewTarget?.bind(runtime);
           if (typeof collect !== 'function') throw error(503, 'Parser preview is unavailable.');
           quota.count += 1;
           quota.active = true;
-          try { return json(res, 200, await collect(body)); }
-          finally { quota.active = false; }
+          activePreviews += 1;
+          const controller = new AbortController();
+          const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+          res.once('close', disconnected);
+          try { return json(res, 200, await collect({ ...body, signal: controller.signal })); }
+          finally {
+            res.off('close', disconnected);
+            quota.active = false;
+            activePreviews -= 1;
+          }
         }
         if (pathname === '/api/db/status' && req.method === 'GET') {
           await ensureDb();
