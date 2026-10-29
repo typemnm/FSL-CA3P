@@ -44,6 +44,13 @@ function attackCatalogSnapshot(path) {
   finally { database?.close(); }
 }
 export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
+  const parserPreviewDigest = options.parserPreview ? digest(options.parserPreview) : null;
+  const parserPreview = options.parserPreview ? {
+    previewId: options.parserPreview.previewId,
+    entryUrl: redact(options.parserPreview.entryUrl),
+    observedUrls: (options.parserPreview.pages ?? []).map(page => redact(page.url)),
+    expiresAt: options.parserPreview.expiresAt,
+  } : null;
   if (mode === 'external-general') {
     const moduleNames = ['apps/application', 'apps/worker', 'packages/adapters',
       'packages/contracts', 'packages/run-store', 'web-parser'];
@@ -62,7 +69,9 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       model: { id: modelId, provider: 'rules', requestedModel: null, reportedModel: null,
         snapshot: null, adapterDigest: null, promptTemplateDigest: null, settings: model.settings ?? {},
         actualPromptDigests: [], executionRole: 'not-used-read-only-observation' },
-      data: { logicalInputDigest: digest({ mode, target: options.target, scope: options.scope }),
+      data: { logicalInputDigest: digest({ mode, target: options.target, scope: options.scope,
+        ...(parserPreviewDigest ? { parserPreviewDigest } : {}) }),
+        parserPreviewDigest, parserPreview,
         datasetDigest: treeDigest(join(PROJECT_ROOT, 'web-parser/data/webappanalyzer')),
         catalogDigest: null, caseSnapshotDigest: null, caseRevisions: [],
         unavailableInputs: ['casper-db', 'authenticated-sessions', 'independent-verifiers'] },
@@ -114,7 +123,9 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       ...(fixedUniversityProbe ? { executionRole: 'not-used-fixed-probe' } : {}),
       settings: model.settings ?? {}, actualPromptDigests: [] },
     data: { logicalInputDigest: digest({ mode, fixtureId, testProfile,
-      ...(general ? { loopBudget } : {}), origin: universityOrigin }),
+      ...(general ? { loopBudget } : {}), origin: universityOrigin,
+      ...(parserPreviewDigest ? { parserPreviewDigest } : {}) }),
+      parserPreviewDigest, parserPreview,
       datasetDigest: treeDigest(join(PROJECT_ROOT, 'vul-web2')),
       catalogDigest: general && options.caseSnapshot?.path ? attackCatalogSnapshot(options.caseSnapshot.path) : null,
       catalogSeedDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')),

@@ -7,6 +7,7 @@ import { createRunService } from '../run-service.mjs';
 import { createExternalRuntime } from '../external-runtime.mjs';
 import { isPublicAddress, normalizeExternalTarget, preflightExternalTarget,
   requestExternalHttp, resolvePublicAddresses, verifyExternalPreflightToken } from '../external-target.mjs';
+import { digest } from '../../../packages/contracts/index.mjs';
 
 test('external addresses reject local, metadata, mapped, and documentation ranges', () => {
   for (const address of ['127.0.0.1', '10.1.2.3', '169.254.169.254', '192.168.1.1',
@@ -102,6 +103,39 @@ test('external runtime observes only in-scope public links and leaves findings u
     ['credential_query', 'out_of_scope_origin', 'out_of_scope_path']);
     assert.equal(JSON.stringify(run).includes('token=private'), false);
     assert.equal(JSON.stringify(run).includes('169.254.169.254'), false);
+  } finally { await runtime.close(); }
+});
+
+test('external run visits operator-reviewed paths before discovered links within the eight-request budget', async () => {
+  const targetUrl = 'https://8.8.8.8/start';
+  const parserPreview = { previewId: 'external-reviewed-1', targetKind: 'external',
+    fixtureId: null, origin: 'https://8.8.8.8', entryUrl: targetUrl,
+    expiresAt: '2099-01-01T00:00:00.000Z', discoveredPaths: [],
+    pages: ['/start', '/start/reviewed', '/start/other', '/outside']
+      .map(path => ({ url: `https://8.8.8.8${path}`, status: 200,
+        contentType: 'text/html', technologies: [], libraries: [], forms: [], paths: [], errors: [] })) };
+  const requested = [];
+  const runtime = createExternalRuntime({ targetUrl, scope: { pathPrefix: '/start' },
+    parserPreview, runIdFactory: () => 'external-reviewed-paths',
+    requestImpl: async url => {
+      requested.push(url);
+      return { status: 200, contentType: 'text/html', durationMs: 1, truncated: false,
+        body: '<title>Public</title><a href="/start/discovered">later</a>' };
+    },
+    analyzeImpl: async () => ({ mode: 'http-response', technologies: [], libraries: [] }) });
+  try {
+    const done = new Promise(resolve => {
+      const detach = runtime.subscribe(({ run }) => {
+        if (['completed', 'failed', 'stopped'].includes(run.status)) { detach(); resolve(run); }
+      });
+    });
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed');
+    assert.deepEqual(requested, [targetUrl, 'https://8.8.8.8/start/reviewed',
+      'https://8.8.8.8/start/other', 'https://8.8.8.8/start/discovered']);
+    assert.ok(requested.length <= 8);
+    assert.deepEqual(run.report.parserPreview, parserPreview);
   } finally { await runtime.close(); }
 });
 
@@ -284,8 +318,15 @@ test('run service persists an external run only after bound preflight and confir
   const checked = await preflightExternalTarget({ target: 'https://8.8.8.8/start' },
     { request: async () => ({ status: 200 }) });
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-external-'));
+  const parserPreview = { previewId: 'external-service-reviewed-1', targetKind: 'external',
+    fixtureId: null, origin: 'https://8.8.8.8', entryUrl: checked.normalizedUrl,
+    expiresAt: '2099-01-01T00:00:00.000Z', discoveredPaths: [],
+    pages: [{ url: checked.normalizedUrl, status: 200, contentType: 'text/html',
+      technologies: [], libraries: [], forms: [], paths: [], errors: [] }] };
   const service = createRunService({ storePath: join(directory, 'runs.sqlite3'),
-    autoStartWorker: false, importLegacy: false });
+    autoStartWorker: false, importLegacy: false,
+    targetPreviewService: { preview: async () => structuredClone(parserPreview),
+      getPreview: id => id === parserPreview.previewId ? structuredClone(parserPreview) : null } });
   try {
     const body = { mode: 'external-general', modelId: 'rule-baseline',
       target: checked.normalizedUrl, scope: { pathPrefix: '/' },
@@ -300,5 +341,13 @@ test('run service persists an external run only after bound preflight and confir
     assert.ok(state.run.manifest.modules['packages/adapters']);
     assert.ok(state.run.manifest.data.datasetDigest);
     assert.equal(service.getRun(state.run.id).target, checked.normalizedUrl);
+    const reviewed = await service.start({ ...body, previewId: parserPreview.previewId });
+    assert.deepEqual(reviewed.run.parserPreview, parserPreview);
+    assert.equal(reviewed.run.manifest.data.parserPreviewDigest, digest(parserPreview));
+    parserPreview.pages[0].status = 302;
+    await assert.rejects(service.start({ ...body, previewId: parserPreview.previewId }), { status: 409 });
+    parserPreview.pages[0].status = 200;
+    parserPreview.entryUrl = 'https://8.8.8.8/changed';
+    await assert.rejects(service.start({ ...body, previewId: parserPreview.previewId }), { status: 409 });
   } finally { await service.close(); rmSync(directory, { recursive: true, force: true }); }
 });

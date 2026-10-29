@@ -78,7 +78,7 @@ function readJson(req, maxBody = MAX_BODY) {
 
 export function createDashboardServer({ runtime, auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform, ciResults = null,
   maintenanceCheck = deploymentPaused, deploymentStatusProvider = deploymentStatus, moduleManagement = null,
-  dbManagement = null, targetPreflight = preflightExternalTarget, workspaceChat = null,
+  dbManagement = null, targetPreflight = preflightExternalTarget, targetPreview = null, workspaceChat = null,
   templateCatalog = undefined } = {}) {
   if (!runtime) throw new TypeError('createDashboardServer requires a run service runtime.');
   const configured = publicOrigins.map(value => new URL(value));
@@ -97,6 +97,7 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
   });
   const streams = new Set();
   const preflightQuotas = new Map();
+  const previewQuotas = new Map();
   const server = http.createServer(async (req, res) => {
     try {
       const port = server.address()?.port;
@@ -146,6 +147,33 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
           quota.count += 1;
           quota.active = true;
           try { return json(res, 200, await targetPreflight(body)); }
+          finally { quota.active = false; }
+        }
+        if (pathname === '/api/targets/preview') {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
+          const body = await readJson(req);
+          if (!body || typeof body !== 'object' || Array.isArray(body)
+            || typeof body.url !== 'string' || body.authorizationConfirmed !== true
+            || Object.keys(body).some(key => !['url', 'previewId', 'authorizationConfirmed'].includes(key))
+            || (body.previewId !== undefined && typeof body.previewId !== 'string')) {
+            throw error(400, 'Provide a URL and confirm authorization before parser preview.');
+          }
+          const actor = currentUser.user.name;
+          const now = Date.now();
+          let quota = previewQuotas.get(actor);
+          if (!quota || now - quota.startedAt >= 60_000) {
+            quota = { startedAt: now, count: 0, active: false };
+            previewQuotas.set(actor, quota);
+          }
+          if (quota.active || quota.count >= 12) {
+            return json(res, 429, { error: 'Parser preview requests are limited. Retry shortly.' },
+              { 'Retry-After': String(Math.max(1, Math.ceil((60_000 - (now - quota.startedAt)) / 1000))) });
+          }
+          const collect = targetPreview ?? runtime.previewTarget?.bind(runtime);
+          if (typeof collect !== 'function') throw error(503, 'Parser preview is unavailable.');
+          quota.count += 1;
+          quota.active = true;
+          try { return json(res, 200, await collect(body)); }
           finally { quota.active = false; }
         }
         if (pathname === '/api/db/status' && req.method === 'GET') {

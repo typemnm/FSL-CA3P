@@ -131,6 +131,47 @@ test('general university run uses multiple model hypotheses and confirms only th
   await runtime.close();
 });
 
+test('reviewed university paths enter the initial model inventory and remain available for later probes', async () => {
+  const origin = 'http://127.0.0.1:53987';
+  const entryUrl = `${origin}/admissions?year=2026`;
+  const discovered = `${origin}/admissions/detail`;
+  const parserPreview = { previewId: 'general-reviewed-1', targetKind: 'lab',
+    fixtureId: 'vul-web2-daehan', origin, entryUrl, expiresAt: '2099-01-01T00:00:00.000Z',
+    discoveredPaths: [discovered], pages: [{ url: entryUrl, status: 200,
+      title: 'Admissions', technologies: [{ name: 'jQuery' }], libraries: [{ name: 'jQuery' }],
+      forms: [], paths: [{ url: discovered, sources: ['html:link'] }], errors: [] }] };
+  for (let index = 1; index < 12; index += 1) parserPreview.pages.push({
+    url: `${origin}/reviewed/${index}`, status: 200, title: 'Reviewed page',
+    technologies: Array.from({ length: 40 }, () => ({ name: 'Technology '.repeat(8) })),
+    libraries: Array.from({ length: 40 }, () => ({ name: 'Library '.repeat(8) })),
+    forms: [], paths: [], errors: [] });
+  let observed;
+  const runtime = createGeneralRuntime({ fixtureId: 'vul-web2-daehan', targetOrigin: origin,
+    modelId: 'deepseek-flash', runIdFactory: () => 'general-reviewed', parserPreview,
+    unavailableInputs: ['casper-db'],
+    catalogReader: async () => { throw new Error('No case snapshot'); },
+    fetchImpl: async url => response(new URL(url).pathname),
+    plannerFactory: () => ({ async propose(context) {
+      observed = { pages: context.inventory.preParsedPages,
+        evidence: context.evidence.filter(item => item.source === 'web-parser/operator-preview') };
+      return { done: true, hypotheses: [], probes: [], modelMetadata: {
+        provider: 'deepseek', model: 'deepseek-flash' } };
+    } }) });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    assert.equal(observed.pages[0].url, entryUrl);
+    assert.deepEqual(observed.pages[0].libraries, ['jQuery']);
+    assert.equal(observed.pages.length, 12);
+    assert.ok(Buffer.byteLength(JSON.stringify(observed.pages), 'utf8') <= 5000);
+    assert.equal(observed.evidence.length, 1);
+    assert.ok(run.report.scope.allowedPaths.includes('/admissions/detail'));
+    assert.deepEqual(run.report.parserPreview, parserPreview);
+  } finally { await runtime.close(); }
+});
+
 test('general university catalog uses its frozen snapshot and excludes other targets', async () => {
   const reads = [];
   const runtime = createGeneralRuntime({

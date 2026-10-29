@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createRunService } from '../run-service.mjs';
 import { createDashboardServer } from '../../api/server.mjs';
 import { createAuthentication, hashAccount } from '../../api/auth.mjs';
+import { digest } from '../../../packages/contracts/index.mjs';
 
 function setup(t, options = {}) {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
@@ -93,6 +94,45 @@ test('university fixtures queue their known-record IDOR check without a case dat
     assert.equal(lease.options.caseSnapshot, undefined);
     service.store.finish(lease, 'completed');
   }
+});
+
+test('a reviewed university URL and paths are frozen in run options and manifest before engine execution', async t => {
+  const origin = 'http://127.0.0.1:4101';
+  const entryUrl = `${origin}/admissions?year=2026`;
+  const snapshot = { previewId: 'reviewed-university-1', targetKind: 'lab',
+    fixtureId: 'vul-web2-daehan', origin, entryUrl, expiresAt: '2099-01-01T00:00:00.000Z',
+    discoveredPaths: [`${origin}/admissions/detail`],
+    pages: [{ url: entryUrl, status: 200, contentType: 'text/html', title: 'Admissions',
+      technologies: [{ name: 'jQuery', version: '3.7.1' }], libraries: [{ name: 'jQuery', version: '3.7.1' }],
+      forms: [], paths: [{ url: `${origin}/admissions/detail`, sources: ['html:link'] }],
+      errors: [], truncated: false, mode: 'browser' }] };
+  let available = true;
+  const previewService = { preview: async () => structuredClone(snapshot),
+    getPreview: id => available && id === snapshot.previewId ? structuredClone(snapshot) : null };
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
+    targetPreviewService: previewService });
+  assert.equal((await service.previewTarget({ url: entryUrl })).entryUrl, entryUrl);
+  const state = await service.start({ mode: 'local-lab-rule', fixtureId: snapshot.fixtureId,
+    target: origin, previewId: snapshot.previewId });
+  assert.equal(state.run.status, 'queued');
+  assert.equal(state.run.manifest.data.parserPreviewDigest, digest(snapshot));
+  assert.equal(state.run.manifest.data.parserPreview.entryUrl, entryUrl);
+  assert.deepEqual(state.run.manifest.data.parserPreview.observedUrls, [entryUrl]);
+  const lease = service.store.claimNext('reviewed-preview-options');
+  assert.deepEqual(lease.options.parserPreview, snapshot);
+  service.store.finish(lease, 'completed');
+  await assert.rejects(service.start({ mode: 'local-lab-rule', fixtureId: snapshot.fixtureId,
+    target: 'http://192.168.0.20:4101', previewId: snapshot.previewId }), { status: 409 });
+  await assert.rejects(service.start({ mode: 'local-lab-rule', fixtureId: 'vul-web2-wonchang',
+    previewId: snapshot.previewId }), { status: 409 });
+  snapshot.pages[0].status = null;
+  await assert.rejects(service.start({ mode: 'local-lab-rule', fixtureId: snapshot.fixtureId,
+    previewId: snapshot.previewId }), { status: 409 });
+  snapshot.pages[0].status = 200;
+  available = false;
+  await assert.rejects(service.start({ mode: 'local-lab-rule', fixtureId: snapshot.fixtureId,
+    previewId: snapshot.previewId }), { status: 409 });
+  assert.equal(service.listRuns().total, 1);
 });
 
 test('configured university origins become lab defaults while an explicit internal target still wins', async t => {

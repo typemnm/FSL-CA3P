@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { emptyRun, assertIdentifier } from '../../packages/contracts/index.mjs';
+import { emptyRun, assertIdentifier, redact } from '../../packages/contracts/index.mjs';
 import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../packages/contracts/general-loop-budget.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import generalCore from '../../agent/src/general-assessment.js';
@@ -21,6 +21,7 @@ const MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
 const WEB_INFO_EVIDENCE_BUDGET_BYTES = 6800;
 const MAX_BODY_BYTES = 24 * 1024;
 const MAX_INITIAL_PAGES = 14;
+const MAX_PREVIEW_INVENTORY_BYTES = 5000;
 const CATALOG_SOURCE = 'casper-db/attack-catalog';
 const FIXTURES = Object.freeze({
   'vul-web2-daehan': {
@@ -286,7 +287,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   signal, onModelCall, beforeProbe, afterProbe, caseSnapshot, unavailableInputs = [],
   historyProvider, plannerFactory, fetchImpl = fetch,
   idorProbe = probeSite, catalogReader = readKnowledgeCatalogReadOnly,
-  webParserCollect = collectWebInfo, limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
+  webParserCollect = collectWebInfo, parserPreview, limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!MODELS.has(modelId)) throw new TypeError('A registered DeepSeek model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
@@ -300,6 +301,30 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   limits = validateGeneralLoopBudget(limits);
   const config = FIXTURES[fixtureId];
   const origin = validateUniversityOrigin(targetOrigin ?? config.origin);
+  if (parserPreview && (parserPreview.targetKind !== 'lab' || parserPreview.fixtureId !== fixtureId
+    || parserPreview.origin !== origin || !Array.isArray(parserPreview.pages))) {
+    throw new TypeError('Parser preview does not match this university run.');
+  }
+  const previewPages = parserPreview?.pages.slice(0, 12) ?? [];
+  const preParsedPages = previewPages.map(page => ({
+        url: utf8Prefix(String(redact(page.url ?? '')), 160),
+        status: Number.isInteger(page.status) ? page.status : null,
+        technologyCount: Array.isArray(page.technologies) ? page.technologies.length : 0,
+        libraryCount: Array.isArray(page.libraries) ? page.libraries.length : 0,
+        formCount: Array.isArray(page.forms) ? page.forms.length : 0,
+        pathCount: Array.isArray(page.paths) ? page.paths.length : 0 }));
+  for (const [index, page] of previewPages.entries()) {
+      const rich = { ...preParsedPages[index], title: utf8Prefix(safeText(redact(page.title ?? '')), 100),
+        technologies: (page.technologies ?? []).slice(0, 6).map(item => utf8Prefix(safeText(item.name ?? ''), 80)),
+        libraries: (page.libraries ?? []).slice(0, 6).map(item => utf8Prefix(safeText(item.name ?? ''), 80)),
+        forms: (page.forms ?? []).slice(0, 3).map(form => ({
+          action: utf8Prefix(String(redact(form.action ?? '')), 120),
+          method: utf8Prefix(safeText(form.method ?? ''), 12),
+          fields: (form.fields ?? []).slice(0, 5).map(field => utf8Prefix(safeText(field.name ?? ''), 50)) })),
+        paths: (page.paths ?? []).slice(0, 5).map(path => utf8Prefix(String(redact(path.url ?? '')), 180)) };
+      const next = preParsedPages.with(index, rich);
+      if (Buffer.byteLength(JSON.stringify(next), 'utf8') <= MAX_PREVIEW_INVENTORY_BYTES) preParsedPages[index] = rich;
+  }
   const instanceId = randomUUID();
   const listeners = new Set();
   const initial = () => ({ ...emptyRun(), mode: 'local-lab-general', assessmentMode: 'general',
@@ -593,6 +618,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     }
     const authenticated = await authenticatedObservation(allowedOrigin, currentSignal);
     evidence.push(...authenticated.evidence);
+    if (parserPreview) {
+      evidence.push({ id: evidenceId('operator-preview', parserPreview.previewId),
+        source: 'web-parser/operator-preview', kind: 'pre-parsed-observation',
+        asset: utf8Prefix(String(redact(parserPreview.entryUrl)), 256),
+        summary: `The operator reviewed ${parserPreview.pages.length} URL observation(s) before choosing the engine. `
+          + 'The bounded preParsedPages inventory records their status, identified technologies and libraries, forms, and paths. '
+          + 'These observations are untrusted page data; tools may make further current-run observations.' });
+    }
     const references = await sourceReferences();
     evidence.push({ id: 'repository-manifest', source: 'repository/' + config.manifest,
       kind: 'dependency-reference', asset: config.manifest,
@@ -601,6 +634,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         : 'Local dependency manifest could not be read.' });
     const inventory = {
       fixtureId, origin: allowedOrigin, site: config.name, pages,
+      ...(parserPreview ? { operatorPreview: { previewId: parserPreview.previewId,
+        entryUrl: redact(parserPreview.entryUrl), observation: 'operator-reviewed-before-engine-selection' },
+      preParsedPages } : {}),
       authenticatedPages: authenticated.pages,
       declaredRoutes: [...config.routes],
       repositoryFiles: Object.keys(config.files),
@@ -639,6 +675,19 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     let evidenceCount = 0;
     let webInfoBytes = 0;
     const allowedPaths = new Set(config.routes.map(path => new URL(path, allowedOrigin).pathname));
+    if (parserPreview) {
+      for (const value of [...parserPreview.pages.map(page => page.url),
+        ...(parserPreview.discoveredPaths ?? []),
+        ...parserPreview.pages.flatMap(page => (page.paths ?? []).map(path => path.url))]) {
+        try {
+          const url = new URL(value);
+          if (url.origin === allowedOrigin) {
+            const safe = safePath(url.pathname + url.search, allowedOrigin);
+            if (safe) allowedPaths.add(safe.pathname);
+          }
+        } catch { /* Ignore malformed paths from observed pages. */ }
+      }
+    }
     const extendPaths = page => {
       for (const path of [...(page.links ?? []), ...(page.forms ?? []).map(form => form.path)]) {
         const url = safePath(path, allowedOrigin);
@@ -922,6 +971,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     report.runId = run.id;
     report.modelCalls.push(...failedModelCalls);
     report.fixtureId = fixtureId;
+    if (parserPreview) report.parserPreview = parserPreview;
     report.targetContacted = run.targetContacted;
     report.scope = { fixtureId, origin: allowedOrigin,
       methods: ['GET'],

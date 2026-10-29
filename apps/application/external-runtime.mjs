@@ -79,11 +79,16 @@ function redirectDestinationReason(location, base, scope) {
 
 export function createExternalRuntime({ targetUrl, scope: suppliedScope, modelId = 'rule-baseline',
   runIdFactory = () => 'external-' + randomUUID(), requestImpl = requestExternalHttp,
-  analyzeImpl = fingerprintObservedResponse, signal, beforeProbe, afterProbe } = {}) {
+  analyzeImpl = fingerprintObservedResponse, parserPreview, signal, beforeProbe, afterProbe } = {}) {
   const { normalizedUrl, scope } = normalizeExternalTarget({ target: targetUrl,
     scope: { pathPrefix: suppliedScope?.pathPrefix ?? '/' } });
   if (suppliedScope?.origin && JSON.stringify(suppliedScope) !== JSON.stringify(scope)) {
     throw new TypeError('External scope changed after run preparation.');
+  }
+  if (parserPreview && (parserPreview.targetKind !== 'external'
+    || parserPreview.entryUrl !== normalizedUrl || parserPreview.origin !== scope.origin
+    || !Array.isArray(parserPreview.pages))) {
+    throw new TypeError('Parser preview does not match this external run.');
   }
   if (modelId !== 'rule-baseline') throw new TypeError('Initial external observation uses the rule baseline.');
   if (typeof requestImpl !== 'function' || typeof analyzeImpl !== 'function'
@@ -118,6 +123,14 @@ export function createExternalRuntime({ targetUrl, scope: suppliedScope, modelId
     const budgetSignal = AbortSignal.timeout(scope.maxDurationMs);
     const deadlineAt = Date.now() + scope.maxDurationMs;
     const pages = []; const evidence = []; const queue = [normalizedUrl]; const queued = new Set(queue);
+    // Run the operator-reviewed URLs before following links discovered during this run.
+    // requestExternalHttp rechecks scope and the public IP for every request.
+    for (const page of parserPreview?.pages ?? []) {
+      if (queue.length >= scope.maxRequests || typeof page.url !== 'string'
+        || externalScopeRejectionReason(page.url, scope)) continue;
+      const url = new URL(page.url).href;
+      if (!queued.has(url)) { queued.add(url); queue.push(url); }
+    }
     const rejectionCounts = {};
     let requestsUsed = 0;
     const errors = [];
@@ -208,6 +221,7 @@ export function createExternalRuntime({ targetUrl, scope: suppliedScope, modelId
       run.report = { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
         inspectionMode: 'external-read-only', runId: run.id, status: 'completed',
         target: { kind: 'external', entryUrl: redact(normalizedUrl), origin: scope.origin },
+        ...(parserPreview ? { parserPreview } : {}),
         targetContacted: run.targetContacted,
         requestAttempted: run.requestAttempted,
         scope: { ...scope, authentication: 'none', supportedTools: ['http_get'],

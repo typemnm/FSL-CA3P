@@ -72,6 +72,11 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         throw Object.assign(new Error('This run mode was retired. Start a general assessment instead.'), { code: 'RETIRED_MODE' });
       }
       const frozen = store.getRun(lease.runId).manifest;
+      const previewDigest = lease.options.parserPreview ? digest(lease.options.parserPreview) : null;
+      if ((frozen.data?.parserPreviewDigest ?? null) !== previewDigest) {
+        throw Object.assign(new Error('Operator-reviewed parser results changed after this run was queued.'),
+          { code: 'CONDITION_CHANGED' });
+      }
       for (const [name, value] of Object.entries(frozen.modules ?? {})) {
         if (treeDigest(join(PROJECT_ROOT, name)) !== value.contentDigest) {
           throw Object.assign(new Error('Module content changed after this run was queued. Create a new run.'), { code: 'CONDITION_CHANGED' });
@@ -116,6 +121,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       runtime = (externalRun ? externalRuntimeFactory : generalLab ? generalRuntimeFactory
         : idorRuntimeFactory)({ fixtureId: lease.options.fixtureId,
         targetOrigin: lease.options.target,
+        parserPreview: lease.options.parserPreview,
         ...(externalRun ? { targetUrl: lease.options.target, scope: lease.options.scope,
           ...(externalRequestImpl ? { requestImpl: externalRequestImpl } : {}) } : {}),
         caseSnapshot: lease.options.caseSnapshot,
@@ -153,7 +159,9 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         // Keep the public run active until report evidence and historical-case
         // checks have been stored. A terminal status must describe a complete run.
         const terminalState = ['completed', 'failed', 'stopped', 'cancelled', 'interrupted'].includes(run.status);
-        try { store.saveState(lease, { ...run, status: terminalState ? 'running' : run.status, modelId: lease.modelId }); notify(); }
+        try { store.saveState(lease, { ...run, status: terminalState ? 'running' : run.status,
+          modelId: lease.modelId,
+          ...(lease.options.parserPreview ? { parserPreview: lease.options.parserPreview } : {}) }); notify(); }
         catch (error) {
           persistenceError = error; controller.abort(error); cancel(lease.runId); resolveTerminal(); return;
         }
@@ -172,8 +180,10 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         await terminal;
         if (persistenceError) throw persistenceError;
         const final = runtime.getState().run;
+        if (lease.options.parserPreview && final.report) final.report.parserPreview = lease.options.parserPreview;
         const status = final.status === 'stopped' ? 'cancelled' : final.status;
-        let finalState = { ...final, status, modelId: lease.modelId };
+        let finalState = { ...final, status, modelId: lease.modelId,
+          ...(lease.options.parserPreview ? { parserPreview: lease.options.parserPreview } : {}) };
         if (final.report) {
           const artifact = store.writeArtifact(lease.runId, 'run-report', final.report, { contentType: 'application/json', provenance: 'verified-run-report' });
           let historyWrite;

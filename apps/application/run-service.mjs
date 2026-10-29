@@ -13,6 +13,7 @@ import { importLegacyRuns } from './import-legacy.mjs';
 import { prepareExperimentCleanup, prepareHistoryReset } from './experiment-cleanup.mjs';
 import { prepareRunFileCleanup } from './experiment-files.mjs';
 import { targetResetObligationsForRuns } from './experiment-targets.mjs';
+import { createTargetPreviewService } from './target-preview.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
 // History keeps showing stored runs of retired modes; only start validation uses RUN_MODES.
@@ -31,11 +32,13 @@ const UNIVERSITY_ORIGIN_ENV = Object.freeze({
 /** API-side application service. It never runs the lab in the HTTP process. */
 export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWorker = true,
   pollMs = 100, workerOptions = {}, envFile, env = process.env, defaultDelayMs = 0, importLegacy = true,
-  experimentCleanupFactory = prepareExperimentCleanup, experimentFileOptions = {}, workerShutdownMs = 10_000 } = {}) {
+  experimentCleanupFactory = prepareExperimentCleanup, experimentFileOptions = {}, workerShutdownMs = 10_000,
+  targetPreviewService } = {}) {
   const universityOrigins = Object.freeze(Object.fromEntries(Object.entries(IDOR_FIXTURES)
     .map(([fixtureId, fallback]) => [fixtureId,
       validateUniversityOrigin(env[UNIVERSITY_ORIGIN_ENV[fixtureId]] ?? fallback)])));
   const store = createRunRepository({ path: storePath });
+  const previews = targetPreviewService ?? createTargetPreviewService({ universityOrigins });
   store.recoverExpired();
   store.recoverAbandonedExperimentOperation();
   const instanceId = randomUUID(); const listeners = new Set();
@@ -104,8 +107,22 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (resetting || store.experimentState().status !== 'ready') throw fault(409, '실험 초기화 또는 검토가 진행 중이거나 초기화 재시도가 필요합니다.');
     if (!body || typeof body !== 'object' || Array.isArray(body)
       || Object.keys(body).some(key => !['mode', 'modelId', 'target', 'delayMs', 'testProfile', 'fixtureId',
-        'scope', 'preflightToken', 'authorizationConfirmed'].includes(key))) {
+        'scope', 'preflightToken', 'authorizationConfirmed', 'previewId'].includes(key))) {
       throw fault(400, 'Unsupported run options.');
+    }
+    if (body.previewId !== undefined && (typeof body.previewId !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/u.test(body.previewId))) {
+      throw fault(400, 'Invalid parser preview ID.');
+    }
+    const reviewedPreview = body.previewId === undefined ? null : previews.getPreview(body.previewId);
+    // The run store redacts every persisted value. Freeze that same safe form before
+    // hashing it so the queued snapshot and manifest digest cannot diverge.
+    const parserPreview = reviewedPreview ? redact(reviewedPreview) : null;
+    if (body.previewId !== undefined && (!parserPreview || parserPreview.previewId !== body.previewId
+      || !Array.isArray(parserPreview.pages)
+      || !parserPreview.pages.some(page => Number.isInteger(page?.status)
+        && page.status >= 200 && page.status < (body.mode === 'external-general' ? 300 : 400)))) {
+      throw fault(409, 'Parser preview expired or did not collect a page. Review the URL again.');
     }
     if (RETIRED_RUN_MODES.includes(body.mode) || RETIRED_PROFILES.includes(body.testProfile)) {
       throw Object.assign(fault(400, 'The single stored-XSS/BOLA check was retired. Start a general assessment instead.'),
@@ -117,13 +134,19 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       const modelId = body.modelId ?? 'rule-baseline';
       if (modelId !== 'rule-baseline') throw fault(400, 'Initial external observation requires rule-baseline.');
       const { normalizedUrl, scope } = normalizeExternalTarget(body);
+      if (parserPreview && (parserPreview.targetKind !== 'external'
+        || parserPreview.entryUrl !== normalizedUrl || parserPreview.origin !== scope.origin
+        || parserPreview.fixtureId !== null)) {
+        throw fault(409, 'Parser preview does not match this external target. Review the URL again.');
+      }
       if (!verifyExternalPreflightToken(body.preflightToken, normalizedUrl, scope)) {
         throw fault(400, 'External target preflight expired or changed. Check the target again.');
       }
       await resolvePublicAddresses(new URL(normalizedUrl).hostname);
       const id = `run-${randomUUID()}`;
       const options = { mode: body.mode, modelId, target: normalizedUrl, scope,
-        testProfile: 'external-read-only', fixtureId: null, delayMs: 0 };
+        testProfile: 'external-read-only', fixtureId: null, delayMs: 0,
+        ...(parserPreview ? { parserPreview } : {}) };
       const manifest = createRunManifest({ runId: id, mode: body.mode, modelId, options,
         model: listModels().find(item => item.id === modelId), env });
       const experiment = store.experimentState();
@@ -131,7 +154,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
         previousRunCount: store.listRuns({ limit: 1 }).total };
       const state = { ...emptyRun(), id, coreRunId: id, status: 'queued', mode: body.mode, modelId,
         assessmentMode: 'general', target: redact(normalizedUrl), targetKind: 'external',
-        targetContacted: false, simulated: false, testProfile: 'external-read-only', fixtureId: null, manifest };
+        targetContacted: false, simulated: false, testProfile: 'external-read-only', fixtureId: null, manifest,
+        ...(parserPreview ? { parserPreview } : {}) };
       store.createRun({ id, mode: body.mode, modelId, manifest, state, options });
       selectedRunId = id; ensureWorker(); publish(true); child?.send({ type: 'wake' });
       return getState();
@@ -159,8 +183,14 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     const testProfile = body.testProfile ?? (general ? 'general' : 'known_record_idor_read');
     if (general ? testProfile !== 'general' : testProfile !== 'known_record_idor_read') throw fault(400, 'Unsupported fixture test profile.');
     const target = validateUniversityOrigin(body.target === undefined ? idorOrigin : body.target);
+    if (parserPreview && (parserPreview.targetKind !== 'lab'
+      || parserPreview.fixtureId !== fixtureId || parserPreview.origin !== target
+      || new URL(parserPreview.entryUrl).origin !== target)) {
+      throw fault(409, 'Parser preview does not match this university URL. Review the URL again.');
+    }
     const id = `run-${randomUUID()}`;
-    const options = { mode, modelId, target, delayMs: 0, testProfile, fixtureId };
+    const options = { mode, modelId, target, delayMs: 0, testProfile, fixtureId,
+      ...(parserPreview ? { parserPreview } : {}) };
     if (general) {
       options.loopBudget = store.getGeneralLoopBudget();
       try { options.caseSnapshot = prepareCaseSnapshot({ runId: id, storePath: store.path, fixtureId, env }); }
@@ -184,7 +214,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     const state = { ...emptyRun(), id, coreRunId: id, status: 'queued', mode, modelId,
       ...(general ? { assessmentMode: 'general' } : {}),
       target,
-      simulated: false, testProfile, fixtureId, manifest };
+      simulated: false, testProfile, fixtureId, manifest,
+      ...(parserPreview ? { parserPreview } : {}) };
     store.createRun({ id, mode, modelId, manifest, state, options });
     selectedRunId = id; ensureWorker(); publish(true);
     child?.send({ type: 'wake' });
@@ -331,7 +362,9 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     })();
     return closeTask;
   }
-  return { getState, start, startLab: ({ modelId = 'rule-baseline', ...options } = {}) => start({ ...options,
+  return { getState, previewTarget: body => previews.preview(body),
+    getPreview: previewId => previews.getPreview(previewId),
+    start, startLab: ({ modelId = 'rule-baseline', ...options } = {}) => start({ ...options,
     modelId, mode: modelId === 'rule-baseline' ? 'local-lab-rule' : 'local-lab-general' }),
     stop, reset, resetExperiment, clearRunHistory, experimentResetPreview, withMutationLock, close, listModels, store, ready,
     getGeneralLoopBudget: () => store.getGeneralLoopBudget(),
