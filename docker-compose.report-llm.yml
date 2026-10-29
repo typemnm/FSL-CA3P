@@ -1,0 +1,16 @@
+# First run scripts/setup-report-llm.mjs. Only public model weights need Internet.
+# docker compose -f docker-compose.yml -f docker-compose.report-llm.yml up -d --build
+services:
+  dashboard:
+    environment:
+      CASPER_DB_REPORT_LLM_URL: http://report-llm:11434
+      CASPER_DB_REPORT_LLM_MODEL: ${CASPER_DB_REPORT_LLM_MODEL:-qwen3-vl:8b-instruct}
+      CASPER_DB_REPORT_LLM_SUBNET: 172.29.120.0/24
+    networks:
+      - default
+      - report-private
+
+networks:
+  report-private:
+    external: true
+    name: ca3p-report-private

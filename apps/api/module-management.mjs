@@ -98,6 +98,12 @@ export function createModuleManagement({ runtime, platformProvider, dbManagement
       if (id === 'web-parser') config.runtimeModuleId = 'web-parser';
       if (id === 'attack') config.runtimeModuleId = 'attack-tool';
       if (id === 'llm') config.models = await runtime.listModels?.() ?? [];
+      if (id === 'db' && typeof dbManagement?.status === 'function') {
+        const health = await dbManagement.status();
+        return { config, revision: health.revision, editable: true, source: 'dashboard-settings',
+          health, settings: health.settings,
+          message: '대시보드의 다음 보고서 접수·수동 권고 수집부터 적용합니다. 진행 중인 실행과 Agent 설정은 변경하지 않습니다.' };
+      }
       return { config, revision: current.contentDigest ?? platform?.source?.commitSha ?? null,
         editable: false, source: 'deployment',
         message: '현재 적용된 모듈 설정입니다. 실행 중 설정 변경은 지원하지 않습니다.' };
@@ -112,8 +118,10 @@ export function createModuleManagement({ runtime, platformProvider, dbManagement
         const audit = await dbManagement.listAudit({ limit, offset });
         return { logs: (audit.logs ?? []).map((entry, index) => ({
           id: `db-audit-${offset + index + 1}`, runId: null, module: 'db',
-          stage: entry.action, status: 'completed', title: entry.action,
+          stage: entry.action, status: entry.status ?? 'completed', title: entry.action,
           actor: entry.actor, caseId: entry.caseId ?? null, draftSha: entry.draftSha ?? null,
+          ...(entry.jobId ? { jobId: entry.jobId, targetId: entry.targetId,
+            requestCount: entry.requestCount, errorCount: entry.errorCount, complete: entry.complete } : {}),
           createdAt: entry.recordedAt,
         })), total: audit.total ?? 0, truncated: false };
       }

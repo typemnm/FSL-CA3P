@@ -9,7 +9,9 @@ RUN apt-get update \
     && python3 -m venv /opt/ca3p-venv
 
 ENV PATH="/opt/ca3p-venv/bin:${PATH}" \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/ca3p-browsers
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ca3p-browsers \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
 
 WORKDIR /app
 
