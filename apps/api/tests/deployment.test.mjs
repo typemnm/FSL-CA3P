@@ -123,7 +123,7 @@ test('maintenance does not bypass viewer permissions, session authentication or 
 test('clearing maintenance allows the same authenticated operator to dispatch exactly one run', async t => {
   let paused = true;
   const { api, login, calls } = await serverFixture(t, { maintenanceCheck: async () => paused });
-  const operator = await login('operator'), body = { mode: 'core-fixture', modelId: 'rule-baseline' };
+  const operator = await login('operator'), body = { mode: 'local-lab-rule', modelId: 'rule-baseline', fixtureId: 'vul-web2-daehan' };
   assert.equal((await api('/api/runs', { headers: operator, body })).status, 503);
   paused = false;
   assert.equal((await api('/api/runs', { headers: operator, body })).status, 202);

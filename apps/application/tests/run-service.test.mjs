@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunService } from '../run-service.mjs';
+import { createDashboardServer } from '../../api/server.mjs';
+import { createAuthentication, hashAccount } from '../../api/auth.mjs';
 
 function setup(t, options = {}) {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
@@ -27,15 +31,33 @@ async function waitFor(service, id, terminal = ['completed', 'failed', 'interrup
   }
   throw new Error('Worker did not finish the run.');
 }
-test('a separate worker executes queued fixture runs and history survives API restart', async t => {
+// Credential-free private-origin stand-in for the fixed daehan IDOR read (no model, no case DB).
+async function universityTarget(t) {
+  const server = createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/login') {
+      let body = ''; for await (const chunk of req) body += chunk;
+      res.writeHead(302, { location: '/mypage', 'set-cookie': `sid=${new URLSearchParams(body).get('username')}; HttpOnly; Path=/` });
+      res.end(); return;
+    }
+    const match = /^\/api\/admissions\/partner\/applications\/(1|3)$/.exec(req.url);
+    if (req.method !== 'GET' || !match) { res.writeHead(404); res.end(); return; }
+    const id = Number(match[1]);
+    res.writeHead(req.headers.cookie === 'sid=student1' ? 403 : 200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id, partner_user_id: id === 1 ? 4 : 5 }));
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  return `http://127.0.0.1:${server.address().port}`;
+}
+test('a separate worker executes queued lab runs and history survives API restart', async t => {
   const { service, reopen } = setup(t);
-  const started = await service.start({ mode: 'core-fixture', target: 'https://display.invalid', delayMs: 0 });
+  const started = await service.startLab({ fixtureId: 'vul-web2-daehan', target: await universityTarget(t) });
   assert.equal(started.run.status, 'queued');
   const final = await waitFor(service, started.run.id);
   assert.equal(final.status, 'completed', final.error);
   assert.equal(final.id, final.coreRunId); assert.equal(final.id, final.report.runId);
-  assert.equal(final.events.length, 25); assert.equal(final.events.at(-1).sequence, 25);
-  assert.ok(final.manifest.modules.agent.contentDigest); assert.ok(final.artifacts.some(item => item.kind === 'run-report'));
+  assert.equal(final.events.length, 6); assert.equal(final.events.at(-1).sequence, 6);
+  assert.ok(final.manifest.modules['apps/worker'].contentDigest); assert.ok(final.artifacts.some(item => item.kind === 'run-report'));
   await service.close();
   const restarted = reopen();
   assert.equal(restarted.getState().run.id, final.id); assert.equal(restarted.getRun(final.id).status, 'completed');
@@ -43,7 +65,7 @@ test('a separate worker executes queued fixture runs and history survives API re
 test('queued cancellation never reaches a worker; arbitrary lab targets are rejected', async t => {
   const { service } = setup(t, { autoStartWorker: false });
   await assert.rejects(service.start({ mode: 'local-lab-rule', target: 'https://remote.invalid' }), { status: 400 });
-  const state = await service.start({ mode: 'core-fixture' });
+  const state = await service.startLab({ fixtureId: 'vul-web2-daehan' });
   assert.equal(service.stop(state.run.id).run.status, 'cancelled');
   assert.equal(service.store.claimNext('test-worker'), null); assert.equal(service.reset().run.status, 'idle');
 });
@@ -206,7 +228,7 @@ test('university fixtures reject public or malformed targets, AI modes and incom
 
 test('legacy imports remain in history without replacing the current interactive run', async t => {
   const { service, reopen } = setup(t, { autoStartWorker: false, importLegacy: false });
-  const live = await service.start({ mode: 'core-fixture' });
+  const live = await service.startLab({ fixtureId: 'vul-web2-daehan' });
   service.store.importLegacyRun({ runId: 'legacy-after-live', report: {
     runId: 'legacy-after-live', status: 'completed', startedAt: new Date().toISOString(),
   }, events: [] });
@@ -227,4 +249,37 @@ test('a store containing only legacy reports starts with an idle interactive sta
   const restarted = reopen({ importLegacy: false });
   assert.equal(restarted.getState().run.status, 'idle');
   assert.equal(restarted.listRuns({ mode: 'legacy-import' }).items.length, 1);
+});
+
+test('a stored core-fixture run stays readable through the run API and remains the current run after restart', async t => {
+  const { service, reopen } = setup(t, { autoStartWorker: false, importLegacy: false });
+  const id = 'stored-core-fixture-run';
+  service.store.createRun({ id, mode: 'core-fixture', modelId: 'rule-baseline', manifest: { runId: id },
+    state: { id, mode: 'core-fixture', modelId: 'rule-baseline', status: 'queued', simulated: true, events: [] },
+    options: { delayMs: 0 } });
+  const lease = service.store.claimNext('stored-history-test');
+  service.store.saveState(lease, { ...service.getRun(id), status: 'completed',
+    report: { runId: id, finding: { status: 'confirmed' } } });
+  service.store.finish(lease, 'completed');
+  await service.close();
+
+  const restarted = reopen({ importLegacy: false });
+  assert.equal(restarted.getState().run.id, id);
+  const server = createDashboardServer({ runtime: restarted,
+    auth: createAuthentication({ users: [hashAccount('history-viewer', 'local-test-password', 'viewer')] }) });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => server.shutdown());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'history-viewer', password: 'local-test-password' }) });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const list = await fetch(`${base}/api/runs`, { headers: { cookie } });
+  assert.equal(list.status, 200);
+  assert.deepEqual((await list.json()).runs.map(item => [item.id, item.mode, item.status]), [[id, 'core-fixture', 'completed']]);
+  const detail = await fetch(`${base}/api/runs/${id}`, { headers: { cookie } });
+  assert.equal(detail.status, 200);
+  const { run } = await detail.json();
+  assert.equal(run.mode, 'core-fixture');
+  assert.equal(run.report.finding.status, 'confirmed');
 });
