@@ -83,6 +83,8 @@ const PAGES = {
   '/fp': html('<p>fp</p>', `<meta name="generator" content="WordPress 6.5"><meta name="constructor" content="x">
     <script src="/vendor.js"></script>`),
   '/fp-src': html('', '<script src="/jquery-3.7.1.min.js"></script>'),
+  '/dependency-fp': html('', '<link rel="stylesheet" href="/styles-comment.css">'
+    + '<script src="/vendor-comment.js"></script><script src="/react-dom-18.2.0.min.js"></script>'),
   '/proxy-hang': html('', '<script>window.jQuery = new Proxy(function () {}, { getOwnPropertyDescriptor() { for (;;) {} } });</script>'),
   '/many-links': html(Array.from({ length: MAX_STRUCTURE_ITEMS + 1 }, (_, i) => `<a href="https://example.invalid/${i}">x</a>`).join('')),
   '/many-imgs': html(Array.from({ length: MAX_RESOURCES + 1 }, (_, i) => `<img src="/img/${i}">`).join('')),
@@ -182,6 +184,13 @@ before(async () => {
       return res.writeHead(200, { 'content-type': 'text/javascript' }).end('window.jQuery = { fn: { jquery: "3.7.1" } };');
     }
     if (pathname === '/jquery-3.7.1.min.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end('');
+    if (pathname === '/vendor-comment.js' || pathname === '/styles-comment.css'
+      || pathname === '/react-dom-18.2.0.min.js') {
+      const body = pathname === '/vendor-comment.js' ? '/* axios v1.6.8 */\nwindow.fixture = true;'
+        : pathname === '/styles-comment.css' ? '/* Bootstrap v5.3.3 */\nbody { color: black; }' : '';
+      return res.writeHead(200, { 'content-type': pathname.endsWith('.css') ? 'text/css' : 'text/javascript',
+        'content-length': Buffer.byteLength(body) }).end(body);
+    }
     if (pathname === '/fp') {
       res.writeHead(200, { 'content-type': 'text/html', 'X-Powered-By': 'Express', 'set-cookie': 'PHPSESSID=abc123; Path=/' });
       return res.end(PAGES['/fp']);
@@ -263,8 +272,9 @@ const DOC = (url) => ({ url, sources: ['request:document'], methods: ['GET'], sa
 test('returns TargetInfo shape with raw headers, meta, structure and resources', T, async () => {
   const info = await collect(`${base}/`);
   assert.equal(info.schemaVersion, SCHEMA_VERSION);
-  assert.deepEqual(Object.keys(info).sort(), ['body', 'cookies', 'errors', 'headers', 'html', 'libraries', 'meta', 'navigation',
+  assert.deepEqual(Object.keys(info).sort(), ['body', 'cookies', 'dependencies', 'errors', 'headers', 'html', 'libraries', 'meta', 'navigation',
     'paths', 'resources', 'schemaVersion', 'structure', 'target', 'technologies', 'truncated']);
+  assert.equal(info.dependencies.mode, 'url-observation');
   assert.equal(info.body, null, 'an HTML document is reported as html only');
   assert.deepEqual(info.target, { requestedUrl: `${base}/`, finalUrl: `${base}/`, origin: base });
   assert.equal(info.navigation.status, 200);
@@ -865,12 +875,14 @@ test('cookies and signal: invalid values are rejected before any browser starts'
 async function moduleCopy(name, mutate) {
   const copy = join(TMP, name);
   await mkdir(copy);
-  for (const f of ['collect.mjs', 'fingerprint.mjs', 'fingerprint-worker.mjs', 'package.json']) await cp(new URL(f, MODULE), join(copy, f));
+  for (const f of ['collect.mjs', 'fingerprint.mjs', 'fingerprint-worker.mjs', 'dependency-inventory.mjs', 'package.json']) await cp(new URL(f, MODULE), join(copy, f));
   await cp(new URL('data', MODULE), join(copy, 'data'), { recursive: true });
   await mutate(join(copy, 'data/webappanalyzer'));
   // Own wapalyzer-core: its setTechnologies() corrupts state when called twice, so a copy must not share its instance.
   await mkdir(join(copy, 'node_modules'));
   await symlink(fileURLToPath(new URL('node_modules/playwright', MODULE)), join(copy, 'node_modules/playwright'),
+    process.platform === 'win32' ? 'junction' : 'dir');
+  await symlink(fileURLToPath(new URL('node_modules/acorn', MODULE)), join(copy, 'node_modules/acorn'),
     process.platform === 'win32' ? 'junction' : 'dir');
   await cp(new URL('node_modules/wapalyzer-core', MODULE), join(copy, 'node_modules/wapalyzer-core'), { recursive: true });
   return import(pathToFileURL(join(copy, 'collect.mjs')).href);
@@ -946,4 +958,19 @@ test('fingerprints technologies and libraries from meta, script src, JS globals,
   const src = await collect(`${base}/fp-src`);
   const jq = src.technologies.find((t) => t.name === 'jQuery');
   assert.deepEqual([jq.version, [...new Set(jq.evidence.map((e) => e.field))]], ['3.7.1', ['scriptSrc']], 'version from the file name alone');
+});
+
+test('browser-observed JS and CSS comments supplement Wappalyzer with bounded dependency indicators', T, async () => {
+  const info = await collect(`${base}/dependency-fp`);
+  assert.deepEqual(info.errors, []);
+  const names = new Map(info.libraries.map(item => [item.name, item]));
+  assert.equal(names.get('Axios')?.version, '1.6.8');
+  assert.equal(names.get('Bootstrap')?.version, '5.3.3');
+  assert.equal(names.get('ReactDOM')?.version, '18.2.0');
+  assert.ok(names.get('Axios')?.evidence.some(item => item.field === 'resourceComment'));
+  assert.equal(info.dependencies.mode, 'url-observation');
+  assert.ok(info.dependencies.coverage.inspectedBytes > 0);
+  assert.deepEqual(info.dependencies.pages, [{ id: 'page-1', url: `${base}/dependency-fp` }]);
+  assert.ok(info.dependencies.relations.some(item => item.from === 'page-1'));
+  assert.doesNotMatch(JSON.stringify(info.dependencies), /window\.fixture = true|color: black/u);
 });

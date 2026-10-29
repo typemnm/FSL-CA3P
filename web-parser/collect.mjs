@@ -35,6 +35,10 @@ const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/; // RFC 6265 cookie-name = 
 // and without naming the cookie: checked here instead.
 const COOKIE_VALUE = /^(?! )[^\x00-\x1f\x7f;]*(?<! )$/;
 const MAX_COOKIE_BYTES = 4096;
+const MAX_DEPENDENCY_RESOURCES = 32;
+const MAX_DEPENDENCY_SOURCE_BYTES = 256 * 1024;
+const MAX_DEPENDENCY_TOTAL_BYTES = 8 * 1024 * 1024;
+const DEPENDENCY_READ_MS = 3000;
 
 function checkOptions(opts) {
   if (opts != null && typeof opts !== 'object') throw new Error('opts must be an object');
@@ -132,7 +136,36 @@ export async function collect(url, opts) {
     // Host-only cookies (no Domain attribute) on the requested host, path '/'.
     if (cookies.length) await context.addCookies(cookies.map(({ name, value }) => ({ name, value, url: start.origin })));
     const answered = new WeakSet(); // a request aborted after its response is already recorded
-    context.on('response', (r) => { answered.add(r.request()); pushResource(r.request().resourceType(), r.request(), r.status()); });
+    const dependencyResponses = new Map([[start.origin, []]]);
+    context.on('response', (r) => {
+      const request = r.request();
+      const kind = request.resourceType();
+      answered.add(request);
+      pushResource(kind, request, r.status());
+      if (kind === 'document' && request.isNavigationRequest()) {
+        try {
+          if (!request.frame().parentFrame()) {
+            const origin = new URL(request.url()).origin;
+            if (!dependencyResponses.has(origin) && dependencyResponses.size >= 8) {
+              const evict = [...dependencyResponses.keys()].find(value => value !== start.origin);
+              if (evict) dependencyResponses.delete(evict);
+            }
+            if (!dependencyResponses.has(origin)) dependencyResponses.set(origin, []);
+          }
+        } catch { /* A detached navigation frame gives no resource origin. */ }
+      }
+      if (['script', 'stylesheet'].includes(kind) && ['GET', 'HEAD'].includes(request.method())) {
+        try {
+          const origin = new URL(request.url()).origin;
+          if (!dependencyResponses.has(origin) && dependencyResponses.size >= 8) return;
+          const bucket = dependencyResponses.get(origin) ?? [];
+          if (bucket.length < MAX_RESOURCES) {
+            bucket.push({ response: r, url: request.url(), kind, status: r.status() });
+            dependencyResponses.set(origin, bucket);
+          }
+        } catch { /* Ignore resources without an HTTP(S) origin. */ }
+      }
+    });
     context.on('requestfailed', (r) => { if (!answered.has(r)) pushResource(r.resourceType(), r, null); });
     let probes = null; // dataset-driven matcher inputs; a dataset error only costs the fingerprint stage
     try {
@@ -271,14 +304,49 @@ export async function collect(url, opts) {
     if (probes) {
       try {
         const { scripts } = info.structure;
+        const linkTags = info.structure.linkTags ?? [];
+        const dependencyResources = [];
+        let inspectedBytes = 0;
+        const deadline = Math.min(Date.now() + DEPENDENCY_READ_MS, began + timeoutMs);
+        const referenced = new Set([
+          ...scripts.filter(script => script.src).map(script => script.src),
+          ...linkTags.filter(link => /(?:^|\s)(?:stylesheet|modulepreload)(?:\s|$)/iu.test(link.rel ?? ''))
+            .map(link => link.href),
+        ].map(value => { try { return withoutHash(value); } catch { return null; } }).filter(Boolean));
+        for (const item of dependencyResponses.get(info.target.origin) ?? []) {
+          if (Date.now() >= deadline || dependencyResources.length >= MAX_DEPENDENCY_RESOURCES) break;
+          if (!referenced.has(withoutHash(item.url))) continue;
+          const resource = { url: item.url, kind: item.kind, status: item.status };
+          if (item.status >= 200 && item.status < 300 && typeof item.response.text === 'function') {
+            const lengthHeader = (await item.response.headers?.())?.['content-length'];
+            const declared = /^\d{1,8}$/u.test(lengthHeader ?? '') ? Number(lengthHeader) : NaN;
+            if (Number.isSafeInteger(declared) && declared >= 0 && declared <= MAX_DEPENDENCY_SOURCE_BYTES) {
+              try {
+                const body = await bounded(item.response.text(), Math.max(1, deadline - Date.now()));
+                const bytes = Buffer.byteLength(body, 'utf8');
+                if (bytes <= MAX_DEPENDENCY_SOURCE_BYTES
+                  && inspectedBytes + bytes <= MAX_DEPENDENCY_TOTAL_BYTES) {
+                  resource.body = body;
+                  inspectedBytes += bytes;
+                }
+              } catch { /* A missing resource body leaves only the URL observation. */ }
+            }
+          }
+          dependencyResources.push(resource);
+        }
         Object.assign(info, await fingerprintWithin({
           url: info.target.finalUrl,
           headers: info.headers,
           cookies: pageCookies.map(({ name, value }) => ({ name, value })),
           meta: info.meta,
           html: info.html,
-          scriptSrc: scripts.filter((s) => s.src).map((s) => s.src),
+          scriptSrc: [...scripts.filter((s) => s.src).map((s) => s.src),
+            ...linkTags.filter(link => /(?:^|\s)modulepreload(?:\s|$)/iu.test(link.rel ?? '')).map(link => link.href)],
+          stylesheetHref: linkTags.filter(link => /(?:^|\s)stylesheet(?:\s|$)/iu.test(link.rel ?? '')).map(link => link.href),
           scripts: scripts.filter((s) => s.inline != null).map((s) => s.inline),
+          inlineScripts: scripts.filter((s) => s.inline != null).map((s) => ({ body: s.inline, type: s.type })),
+          inlineBaseUrl: snap?.baseUrl,
+          resourceBodies: dependencyResources,
           xhr: info.resources.filter((r) => r.kind === 'xhr' || r.kind === 'fetch').map((r) => r.url),
           ...seen,
         }, timeoutMs));
@@ -541,6 +609,7 @@ function extractPage({ maxHtml, maxItems, maxText, budget }) {
   if (html && html.length > maxHtml) truncated = true;
   return {
     url: docUrl,
+    baseUrl: base.length <= 2048 ? base : docUrl,
     readyState: get(Document.prototype, 'readyState')(document),
     contentType: get(Document.prototype, 'contentType')(document),
     html: html && html.length > maxHtml ? html.slice(0, maxHtml) : html,

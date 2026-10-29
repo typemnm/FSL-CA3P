@@ -1,0 +1,164 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createWebInventory, readResourceReferences, LIMITS } from '../dependency-inventory.mjs';
+
+const origin = 'http://127.0.0.1:4101';
+const inventory = () => createWebInventory(origin, raw => {
+  const url = new URL(raw);
+  return url.origin + url.pathname + (url.search ? '?redacted' : '') + (url.hash ? '#inline' : '');
+});
+
+test('URL alone inventory is partial, and never claims a server package inventory', () => {
+  const data = inventory().snapshot();
+  assert.equal(data.mode, 'url-observation');
+  assert.equal(data.complete, false);
+  assert.equal(data.serverDependencies, 'unknown');
+  assert.equal(data.vulnerabilityMatching, 'not-performed');
+  assert.deepEqual(data.libraries, []);
+});
+
+test('the nine explicit filename indicators require complete resource names', () => {
+  const data = inventory();
+  const files = [
+    'jquery-3.7.1.min.js', 'lodash-4.17.21.min.js', 'bootstrap-5.3.3.bundle.js',
+    'vue-3.4.0.global.js', 'react-18.2.0.production.js', 'react-dom-18.2.0.production.js',
+    'angular-1.8.3.min.js', 'axios-1.6.0.min.js', 'moment-2.29.4.min.js',
+  ];
+  data.references('page-1', { items: files.map(file => ({
+    url: `${origin}/assets/${file}`, kind: 'script', relation: 'script-src',
+  })) });
+  data.references('page-1', { items: [{
+    url: `${origin}/assets/reactive.js`, kind: 'script', relation: 'script-src',
+  }] });
+  assert.deepEqual(data.snapshot().libraries.map(item => item.name).sort(),
+    ['angular', 'axios', 'bootstrap', 'jquery', 'lodash', 'moment', 'react', 'react-dom', 'vue']);
+});
+
+test('filename and actual content produce distinct evidence; conflicts stay unresolved', () => {
+  const data = inventory();
+  data.references('page-1', { items: [
+    { url: origin + '/jquery-3.7.1.min.js', kind: 'script', relation: 'script-src' }
+  ] });
+  let result = data.snapshot();
+  assert.equal(result.assets[0].state, 'referenced');
+  assert.equal(result.libraries[0].evidence[0].kind, 'url-name-hint');
+  data.response('page-1', origin + '/jquery-3.7.1.min.js', 'script', 200, '/*! jQuery v3.6.0 */\nvoid 0;');
+  result = data.snapshot();
+  assert.equal(result.assets[0].state, 'response-observed');
+  assert.equal(result.libraries[0].version, null);
+  assert.deepEqual(result.libraries[0].versionCandidates, ['3.6.0', '3.7.1']);
+  assert.equal(result.libraries[0].versionStatus, 'conflicting-indicators');
+});
+
+test('bundle name is irrelevant to comment identification; string literals are not banners', () => {
+  const data = inventory();
+  data.response('page-1', origin + '/bundle.js', 'script', 200,
+    '/*! lodash v4.17.21 */\nconst x="jQuery v9.9.9";');
+  assert.deepEqual(data.snapshot().libraries.map(x => [x.name,x.version]), [['lodash','4.17.21']]);
+});
+
+test('known library with an unknown version stays null; numeric query values do not become versions', () => {
+  const data = inventory();
+  data.references('page-1', { items: [{ url: origin + '/vue.global.js?token=secret123', kind: 'script', relation: 'script-src' }] });
+  const result = data.snapshot();
+  assert.equal(result.libraries[0].version, null);
+  assert.equal(JSON.stringify(result).includes('secret123'), false);
+});
+
+test('two resources with different library versions are not collapsed by library name', () => {
+  const data = inventory();
+  for (const [i, version] of ['3.6.0','3.7.1'].entries()) {
+    data.response('page-1', origin + '/bundle' + i + '.js', 'script', 200, `/*! jQuery v${version} */`);
+  }
+  assert.equal(data.snapshot().libraries.length, 2);
+});
+
+test('JS import relations are literal static observations, not npm transitive resolution', () => {
+  const data = inventory();
+  data.response('page-1', origin + '/js/main.js', 'script', 200,
+    "import x from './child.js'; export * from './more.js'; import('react'); const x2='z'; import(x2);");
+  const result = data.snapshot();
+  assert.equal(result.assets.length, 3);
+  assert.equal(result.moduleReferences[0].specifier, 'react');
+  assert.equal(result.moduleReferences[0].resolution, 'unresolved');
+  assert.equal(result.relations.filter(edge => edge.kind === 'js-import').length, 3);
+  assert.ok(result.coverage.reasons.includes('dynamic-import-unresolved'));
+  assert.equal(result.libraries.length, 0);
+});
+
+test('CSS @import ignores strings and comments; Bootstrap comment is only a claim', () => {
+  const data = inventory();
+  data.response('page-1', origin + '/css/app.css', 'stylesheet', 200,
+    '/*! Bootstrap v5.3.3 */ @import "base.css"; /* @import "hidden.css"; */ .x{content:"@import fake.css"}');
+  const result = data.snapshot();
+  assert.equal(result.libraries[0].name, 'bootstrap');
+  assert.equal(result.libraries[0].identification, 'indicator-only');
+  assert.equal(result.assets.length, 2);
+  assert.ok(result.assets.some(x => x.url.endsWith('/css/base.css')));
+});
+
+test('external URL declarations remain blocked without content fingerprinting', () => {
+  const data = inventory();
+  data.references('page-1', { items: [{ url: 'https://cdn.example/jquery-3.7.1.min.js', kind: 'script', relation: 'script-src' }] });
+  const result = data.snapshot();
+  assert.equal(result.assets[0].state, 'blocked-origin');
+  assert.deepEqual(result.libraries[0].evidence.map(x => x.kind), ['url-name-hint']);
+  assert.equal(result.assets[0].inspectedContentSha256, undefined);
+});
+
+test('HTTP failures are not parsed; header claims exclude cookies and raw header values', () => {
+  const data = inventory();
+  data.response('page-1', origin + '/error.js', 'script', 404, '/*! lodash v4.17.15 */');
+  data.headers('page-1', { 'x-powered-by': 'Express', 'set-cookie': 'session=secret123', 'server': 'hidden-sensitive-data' });
+  const result = data.snapshot();
+  assert.equal(result.libraries.length, 0);
+  assert.equal(result.assets[0].state, 'http-error');
+  assert.equal(result.technologies[0].name, 'Express');
+  assert.equal(result.technologies[0].version, null);
+  assert.equal(JSON.stringify(result).includes('secret123'), false);
+  assert.equal(JSON.stringify(result).includes('hidden-sensitive-data'), false);
+});
+
+test('Spring Boot response header is reported as an observed technology', () => {
+  const data = inventory();
+  data.headers('page-1', { 'x-powered-by': 'Spring Boot' });
+  assert.deepEqual(data.snapshot().technologies, [{
+    name: 'Spring Boot', version: null, evidence: 'response-header-claim',
+    header: 'x-powered-by', pageIds: ['page-1']
+  }]);
+});
+
+test('Google Fonts stylesheet reference is an external service hint, not a library', () => {
+  const data = inventory();
+  data.references('page-1', { items: [
+    { url: 'https://fonts.googleapis.com/css2?family=Inter', kind: 'stylesheet', relation: 'stylesheet-link' },
+    { url: 'https://fonts.googleapis.com.evil.test/css2', kind: 'stylesheet', relation: 'stylesheet-link' }
+  ] });
+  const result = data.snapshot();
+  assert.deepEqual(result.libraries, []);
+  assert.deepEqual(result.technologies, [{ name: 'Google Font API', version: null,
+    evidence: 'stylesheet-url-hint', host: 'fonts.googleapis.com', pageIds: ['page-1'] }]);
+  assert.equal(result.assets[0].state, 'blocked-origin');
+});
+
+test('malformed imports and unsupported syntax do not crash inventory', () => {
+  const data = inventory();
+  assert.doesNotThrow(() => data.response('page-1',origin + '/one.js','script',200,"import 'https://[';"));
+  assert.doesNotThrow(() => data.response('page-1',origin + '/two.js','script',200,'function {'));
+  assert.ok(data.snapshot().coverage.reasons.includes('unsupported-resource-url'));
+  assert.ok(data.snapshot().coverage.reasons.includes('script-syntax-not-interpreted'));
+});
+
+test('inspection is bounded and duplicate responses do not repeat body interpretation', () => {
+  const data = inventory();
+  const body = '/*! jQuery v3.7.1 */';
+  data.response('page-1',origin + '/bundle.js','script',200,body);
+  data.response('page-2',origin + '/bundle.js','script',200,body);
+  assert.equal(data.snapshot().coverage.inspectedBytes, Buffer.byteLength(body));
+  data.response('page-1',origin + '/huge.js','script',200,' '.repeat(LIMITS.sourceBytes+1));
+  assert.ok(data.snapshot().coverage.reasons.includes('source-byte-limit'));
+  for (let i=0; i<LIMITS.assets+10; i++) data.references('page-1',{items:[{url:origin+'/a'+i+'.js',kind:'script',relation:'script-src'}]});
+  assert.equal(data.snapshot().assets.length, LIMITS.assets);
+  assert.ok(data.snapshot().coverage.reasons.includes('asset-limit'));
+});
+

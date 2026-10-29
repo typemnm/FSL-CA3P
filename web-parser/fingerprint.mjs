@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
+import { createWebInventory } from './dependency-inventory.mjs';
 
 // Wappalyzer matching logic from wapalyzer-core (CJS entry; its ESM entry uses the removed `assert` import syntax),
 // fed with the enthec/webappanalyzer dataset (downloaded by scripts/fetch-dataset.mjs) instead of the package's bundled data.
@@ -14,6 +15,84 @@ export const LIBRARY_CATEGORIES = new Set([12, 18, 25, 26, 59, 66]);
 // `<[^>]{1,250}` patterns cost ~250 steps per unclosed '<', so this bounds a page-controlled worst case.
 export const MATCH_SAMPLE_LENGTH = 50_000;
 const sample = (s) => (s.length > MATCH_SAMPLE_LENGTH ? s.slice(0, MATCH_SAMPLE_LENGTH / 2) + s.slice(-MATCH_SAMPLE_LENGTH / 2) : s);
+const INDICATOR_NAMES = new Map([
+  ['jquery', 'jQuery'], ['lodash', 'Lodash'], ['bootstrap', 'Bootstrap'],
+  ['vue', 'Vue.js'], ['react', 'React'], ['react-dom', 'ReactDOM'],
+  ['angular', 'AngularJS'], ['axios', 'Axios'], ['moment', 'Moment.js'],
+]);
+
+function dependencyInventory(input) {
+  let documentUrl;
+  try { documentUrl = new URL(input.url); }
+  catch { return null; }
+  if (!['http:', 'https:'].includes(documentUrl.protocol)) return null;
+  const displayUrl = raw => {
+    const url = new URL(raw);
+    const path = url.pathname.split('/').map(part => {
+      if (/^\d+$/u.test(part)) return '{number}';
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(part)) return '{uuid}';
+      if (/^[a-z0-9_-]{24,}$/iu.test(part)) return '{token}';
+      return part;
+    }).join('/');
+    return url.origin + path + (url.search ? '?redacted' : '') + (url.hash ? '#inline' : '');
+  };
+  const inventory = createWebInventory(documentUrl.origin, displayUrl);
+  const pageId = 'page-1';
+  const references = [
+    ...(Array.isArray(input.scriptSrc) ? input.scriptSrc : [])
+      .map(url => ({ url, kind: 'script', relation: 'script-src' })),
+    ...(Array.isArray(input.stylesheetHref) ? input.stylesheetHref : [])
+      .map(url => ({ url, kind: 'stylesheet', relation: 'stylesheet-link' })),
+  ];
+  inventory.references(pageId, { items: references, truncated: false });
+  for (const resource of (Array.isArray(input.resourceBodies) ? input.resourceBodies : []).slice(0, 32)) {
+    if (!resource || typeof resource.url !== 'string') continue;
+    inventory.response(pageId, resource.url, resource.kind, resource.status,
+      typeof resource.body === 'string' ? resource.body : undefined);
+  }
+  const inline = Array.isArray(input.inlineScripts) ? input.inlineScripts
+    : (Array.isArray(input.scripts) ? input.scripts : []).map(body => ({ body, type: null }));
+  inline.slice(0, 32).forEach((script, index) => {
+    if (typeof script?.body === 'string') inventory.inline(pageId, documentUrl.href, index,
+      script.body, script.type ?? null, input.inlineBaseUrl ?? documentUrl.href);
+  });
+  const headers = Object.create(null);
+  for (const row of Array.isArray(input.headers) ? input.headers : []) {
+    if (typeof row?.name === 'string' && typeof row?.value === 'string')
+      headers[row.name.toLowerCase()] ??= row.value;
+  }
+  inventory.headers(pageId, headers);
+  return { pages: [{ id: pageId, url: displayUrl(documentUrl.href) }], ...inventory.snapshot() };
+}
+
+function mergeIndicatorLibraries(wappalyzer, dependencies) {
+  if (!dependencies) return wappalyzer;
+  const merged = new Map(wappalyzer.map(item => [item.name.toLowerCase(), { ...item,
+    evidence: [...(item.evidence ?? [])] }]));
+  const assets = new Map(dependencies.assets.map(item => [item.id, item]));
+  for (const item of dependencies.libraries) {
+    const name = INDICATOR_NAMES.get(item.name) ?? item.name;
+    const key = name.toLowerCase();
+    const asset = assets.get(item.assetId);
+    const indicators = item.evidence.map(row => ({
+      field: row.kind === 'source-comment' ? 'resourceComment'
+        : asset?.kind === 'stylesheet' ? 'stylesheetHref' : 'scriptSrc',
+      ...(asset?.url ? { key: asset.url } : {}),
+      match: row.version ?? name,
+    }));
+    const current = merged.get(key) ?? { name, version: null, source: 'indicator', evidence: [] };
+    const versions = new Set([current.version, ...(current.versionCandidates ?? []),
+      item.version, ...(item.versionCandidates ?? [])].filter(Boolean));
+    current.version = versions.size === 1 ? [...versions][0] : null;
+    if (versions.size > 1) current.versionCandidates = [...versions].sort();
+    for (const evidence of indicators) {
+      if (!current.evidence.some(row => row.field === evidence.field && row.key === evidence.key
+        && row.match === evidence.match)) current.evidence.push(evidence);
+    }
+    merged.set(key, current);
+  }
+  return [...merged.values()];
+}
 
 let loaded = false;
 function load() {
@@ -176,11 +255,11 @@ export function fingerprint(input) {
       version: springHeader[1] ?? null, confidence: 75,
       evidence: [{ field: 'headers', key: 'x-powered-by', match: 'Spring Boot' }], categoryIds: [18] });
   }
-  return {
-    technologies: technologies.map(({ categoryIds, ...t }) => t),
-    libraries: technologies.filter((t) => t.categoryIds.some((id) => LIBRARY_CATEGORIES.has(id)))
-      .map(({ name, version, evidence }) => ({ name, version, source: 'fingerprint', evidence })),
-  };
+  const dependencies = dependencyInventory(input);
+  const libraries = technologies.filter((t) => t.categoryIds.some((id) => LIBRARY_CATEGORIES.has(id)))
+    .map(({ name, version, evidence }) => ({ name, version, source: 'fingerprint', evidence }));
+  return { technologies: technologies.map(({ categoryIds, ...t }) => t),
+    libraries: mergeIndicatorLibraries(libraries, dependencies), ...(dependencies ? { dependencies } : {}) };
 }
 
 // Runs fingerprint() in a worker so a pathological page can't freeze the caller's event loop; the worker is

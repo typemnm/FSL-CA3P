@@ -76,7 +76,8 @@
   html:      string|null,                    // 추출한 문서의 document.documentElement.outerHTML 원본 (HTML 문서 아니거나, 추출 없거나, 응답 없는 문서면 null)
   body:      string|null,                    // 추출한 문서가 HTML이 아닌 텍스트형이면 응답 본문 원본 (아래 "body"; HTML·바이너리·추출 없음이면 null)
   technologies: [ { name, categories:[카테고리명], version|null, confidence:0-100, evidence:[{field, key?, match}] } ],
-  libraries:    [ { name, version|null, source:"fingerprint", evidence:[{field, key?, match}] } ],
+  libraries:    [ { name, version|null, source:"fingerprint"|"indicator", evidence:[{field, key?, match}], versionCandidates? } ],
+  dependencies: { pages, assets, libraries, moduleReferences, relations, technologies, coverage, limitations, ... },
   structure: {   // 그 endpoint의 문서 하나에서 나온 그대로 (같은 항목이 여러 번 있으면 여러 번)
     forms:   [ { selector, action, raw?, method, fields:[{name,type}] } ],
     links:   [ { href, raw?, text } ],
@@ -226,9 +227,21 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   - `evidence[]` = 매치된 패턴의 `{field, key?, match}`(field: headers|cookies|meta|html|scriptSrc|scripts|xhr|url|js|dom).
     `key`는 headers/cookies/meta의 이름(데이터셋 키, 소문자), js의 chain, dom의 selector; 그 외 field에는 없음.
     `implies`로만 추가된 기술은 `{field:'implies', match:<함의한 기술명>}`.
-  - `libraries` = technologies 중 카테고리 id ∈ {12 JavaScript frameworks, 18 Web frameworks, 25 JavaScript graphics,
+  - Wappalyzer의 `libraries` = technologies 중 카테고리 id ∈ {12 JavaScript frameworks, 18 Web frameworks, 25 JavaScript graphics,
     26 Mobile frameworks, 59 JavaScript libraries, 66 UI frameworks} (`fingerprint.mjs`의 `LIBRARY_CATEGORIES`).
     24 Rich text editors는 페이지 위젯이라 제외(결정).
+  - `dependencies`는 별도 지표 목록(`dependency-inventory.mjs`)으로 공개 페이지에서 참조한 JS·CSS 파일명,
+    같은 origin에서 브라우저가 받은 리소스 본문의 주석, 정적 JS import·CSS `@import`, 응답 헤더를 기록한다.
+    파일명·주석으로 식별 가능한 라이브러리는 jQuery, Lodash, Bootstrap, Vue.js, React, ReactDOM,
+    AngularJS, Axios, Moment.js의 9종이다. Wappalyzer 결과와 이름별로 합쳐 `libraries`에도 표시하며,
+    지표만으로 발견한 항목은 `source:"indicator"`, 버전 단서가 충돌하면 `version:null`과
+    `versionCandidates`를 기록한다. `dependencies.pages[0].id`를 그래프 관계의 페이지 노드로 사용한다.
+  - 본문 분석은 **이미 로드된** 같은 origin의 JS·CSS 중 현재 문서가 참조한 최대 32개에 한한다.
+    `Content-Length`가 256 KiB 이하로 확인될 때만 본문을 읽고, 읽은 뒤에도 개별 256 KiB·전체 8 MiB를
+    검사한다. 길이가 없거나 큰 응답·다른 origin의 본문은 읽지 않고 URL 단서만 남긴다.
+    `Response.text()`는 스트리밍 상한을 제공하지 않으므로 잘못된 길이 헤더나 압축 팽창에는
+    읽기 전 메모리 상한이 보장되지 않는다. 이 그래프는 공개 리소스 관찰 결과이며 서버 설치 패키지 목록이나
+    취약점 판정이 아니다. `coverage.reasons`와 `limitations`에 미확인 범위를 표시한다.
   - 데이터셋 로드 실패·매칭 예외는 `errors`에 `{stage:'fingerprint'}` 1건, 수집 결과는 그대로 반환(reject 안 함).
 - `schemaVersion`은 **자체 네임스페이스**(`web-parser-1`) — 기존 xss-parser의 `3.4`와 무관.
 - 취약점 흔적/판정 필드 없음(역할상 중립).
