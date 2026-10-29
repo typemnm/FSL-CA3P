@@ -126,9 +126,11 @@ function fitted(base, lead, sections) {
  * discovered paths, page surface. The caller passes its own `safeText`/`safeHeaderValue`
  * so the masking matches its other tools; every string value is masked before serialization. Response bodies, cookie values and secret
  * header values are never included; robots/sitemap content arrives as paths[].sources.
+ * `mode: 'minimal'` returns only a one-line overview (status, content type, list counts)
+ * for a caller whose evidence budget is spent.
  */
 export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRole, remaining = 3,
-  safeText = String, safeHeaderValue = String } = {}) {
+  mode = 'full', safeText = String, safeHeaderValue = String } = {}) {
   // Masking serialized JSON would let the core's `[^\s,;]+` value pattern run past a closing
   // quote; `token [redacted]` (no `=`) is also left alone when the core masks the summary again.
   const clean = value => safeText(String(value)).replaceAll('=[redacted]', ' [redacted]');
@@ -151,9 +153,14 @@ export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRol
     technologies: list(info.technologies).length, forms: list(structure.forms).length,
     links: list(structure.links).length, frames: frames.length, resources: list(info.resources).length,
     paths: list(info.paths).length, errors: list(info.errors).length };
+  const status = `HTTP ${navigation.status ?? 'no response'} `
+    + clean(String(navigation.contentType ?? 'unknown').slice(0, 80));
+  if (mode === 'minimal') {
+    return [{ ...base('', 'web-info'), summary: `${subject}: ${status}; counts ${JSON.stringify(counts)}`
+      + '; details withheld: evidence budget' }].slice(0, Math.max(0, remaining));
+  }
   // Lead fields are capped so the lead alone always fits; lists are trimmed by whole items.
-  const overview = fitted(base('', 'web-info'), `${subject}: HTTP ${navigation.status ?? 'no response'} `
-    + clean(String(navigation.contentType ?? 'unknown').slice(0, 80))
+  const overview = fitted(base('', 'web-info'), `${subject}: ${status}`
     + (finalUrl && finalUrl !== info.target?.requestedUrl ? `; final ${clean(String(finalUrl).slice(0, 300))}` : '')
     // A control character would JSON-escape to 6 bytes; drop them so the capped lead stays small.
     + (title ? `; title ${encode(title.slice(0, 100).replace(/[\u0000-\u001f\u007f]/gu, ' '))}` : '')

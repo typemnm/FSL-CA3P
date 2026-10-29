@@ -1050,6 +1050,59 @@ test('web_info evidence from a large page stays within core limits and marks sho
   assert.match(items[2].summary, /forms 1\/25: .*"\+30 more"\]\}\]; headers \d+\/80: /u);
 });
 
+function heavyTargetInfo(url) {
+  const info = fakeTargetInfo(url, Array.from({ length: 150 }, (_, i) => ({ url: new URL('/p/' + i + '?q=1', url).href,
+    sources: ['link'], methods: ['GET'], sameOrigin: true, params: ['q'] })));
+  info.headers = Array.from({ length: 22 }, (_, i) => ({ name: 'X-Header-' + i, value: 'value-' + i }));
+  info.technologies = Array.from({ length: 12 }, (_, i) => ({ name: 'Tech' + i, version: '1.' + i,
+    categories: ['Web frameworks'] }));
+  info.structure.forms = Array.from({ length: 6 }, (_, i) => ({ action: url + 'f' + i, method: 'POST',
+    fields: Array.from({ length: 8 }, (_, j) => ({ name: 'field' + j, type: 'text' })) }));
+  return info;
+}
+
+test('web_info on heavy pages up to maxProbes keeps the real planner prompt under its limit', async () => {
+  const promptBytes = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-prompt-budget', fetchImpl: universityLoginFetch(),
+    webParserCollect: async url => ({ info: heavyTargetInfo(url), summary: {} }),
+    plannerFactory: () => plannerModule.createGeneralModelPlanner({ client: { async completeJson({ systemPrompt, userPayload }) {
+      promptBytes.push(Buffer.byteLength(systemPrompt, 'utf8') + Buffer.byteLength(JSON.stringify(userPayload), 'utf8'));
+      const { iteration, evidence } = userPayload;
+      return { value: { done: false, hypotheses: [{ id: 'h' + iteration, category: 'configuration', asset: '/',
+        rationale: 'Observe a heavy page.', evidenceIds: [evidence[0].id] }],
+      probes: Array.from({ length: 4 }, (_, i) => ({ id: 'w' + iteration + '-' + i, hypothesisId: 'h' + iteration,
+        tool: 'web_info', input: { path: '/' } })) }, metadata: { provider: 'deepseek', model: 'deepseek-flash' } };
+    } } }),
+  });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    assert.equal(promptBytes.length, 6);
+    const probes = run.report.probes.filter(item => item.tool === 'web_info');
+    assert.equal(probes.length, 24);
+    const byId = new Map(run.report.evidence.map(item => [item.id, item]));
+    const full = probes[0].evidenceIds.map(id => byId.get(id));
+    assert.deepEqual(full.map(item => item.kind), ['web-info', 'web-info-paths', 'web-info-surface']);
+    // Without the budget, the 20 calls a planner sees would resend far more than its prompt limit.
+    const fullBytes = full.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), 'utf8'), 0);
+    assert.ok(20 * fullBytes > 64 * 1024, String(fullBytes));
+    const counts = probes.map(item => item.evidenceIds.length);
+    const fullCalls = counts.lastIndexOf(3) + 1;
+    assert.deepEqual(counts, counts.map((_, index) => index < fullCalls ? 3 : 1));
+    assert.ok(fullCalls < 24);
+    for (const probe of probes.slice(fullCalls)) {
+      const line = byId.get(probe.evidenceIds[0]);
+      assert.equal(line.kind, 'web-info');
+      assert.match(line.summary, /^web_info \/: HTTP 200 text\/html; counts \{.*"paths":150.*\}; details withheld: evidence budget$/u);
+      assert.ok(Buffer.byteLength(line.summary, 'utf8') <= 300);
+    }
+  } finally { await runtime.close(); }
+});
+
 test('web_info fits the remaining evidence budget with one and then zero free slots', async () => {
   let initial = 0;
   await runWebInfoBudget({ probes: [], onEvidence: evidence => { initial = evidence.length; } });

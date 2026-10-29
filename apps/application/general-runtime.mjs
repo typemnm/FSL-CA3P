@@ -14,6 +14,9 @@ const { createGeneralModelPlannerFromEnv } = generalPlanner;
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 const MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
 const LIMITS = Object.freeze({ maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 });
+// Planner prompt cap 65,536 − 8,192 margin − 39,894 measured worst non-web_info context (daehan inventory 13,859,
+// initial evidence 3,833, 40 hypotheses 19,867, system/rest/probe IDs 2,335) − 24 one-line overviews × 441 = 6,866.
+const WEB_INFO_EVIDENCE_BUDGET_BYTES = 6800;
 const MAX_BODY_BYTES = 24 * 1024;
 const MAX_INITIAL_PAGES = 14;
 const BOARD_ACCESS_ASSET = '/api/posts/:id';
@@ -728,7 +731,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       referenceSources: references,
       toolCapabilities: {
         http_get: 'input {path,sessionRole?}: GET on a declared or observed pathname at the selected origin; optional sessionRole uses only a prepared fixed demo session; redirects are not followed',
-        web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
+        web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); once the cumulative web_info evidence budget of the run is spent, returns only a one-line overview (status, content type, list counts); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
         repository_read: 'input {file,offset?}: read only an allowlisted local source or reference excerpt',
         ...(config.siteKey ? { known_record_idor_read:
           'input {}: guarded role comparison of registered virtual records; use access_control and the knownAssessmentAssets asset' }
@@ -760,6 +763,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       && hypothesis?.asset === BOARD_ACCESS_ASSET;
     const failedModelCalls = [];
     let evidenceCount = 0;
+    let webInfoBytes = 0;
     const allowedPaths = new Set(config.routes.map(path => new URL(path, allowedOrigin).pathname));
     const extendPaths = page => {
       for (const path of [...(page.links ?? []), ...(page.forms ?? []).map(form => form.path)]) {
@@ -850,6 +854,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           tool: probe.tool, session: sessionRole ?? 'public', method: 'GET', url: url.href };
         const reservation = await invokeHook(beforeProbe, probeRecord);
         let observedStatus = null;
+        const bytes = items => items.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), 'utf8'), 0);
         try {
           const { info, summary } = await webParserCollect(url.href, {
             ...(cookiePair ? { cookies: cookiePair } : {}), signal: currentSignal });
@@ -863,17 +868,24 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             const safe = safePath(discovered.pathname + discovered.search, allowedOrigin);
             if (safe) allowedPaths.add(safe.pathname);
           }
-          return { kind: 'web_info', result: summary, evidence: evidenceFromTargetInfo(info, {
-            idBase: evidenceId('probe', probe.id), sessionRole, remaining,
+          const options = { idBase: evidenceId('probe', probe.id), sessionRole, remaining,
             source: 'web-parser/' + fixtureId + (sessionRole ? '/role:' + sessionRole : ''),
-            asset: url.pathname + url.search, safeText: evidenceText, safeHeaderValue }) };
+            asset: url.pathname + url.search, safeText: evidenceText, safeHeaderValue };
+          let evidence = evidenceFromTargetInfo(info, options);
+          // The planner resends all evidence each call; past the budget only a one-line overview fits.
+          if (webInfoBytes + bytes(evidence) > WEB_INFO_EVIDENCE_BUDGET_BYTES) {
+            evidence = evidenceFromTargetInfo(info, { ...options, mode: 'minimal' });
+          }
+          webInfoBytes += bytes(evidence);
+          return { kind: 'web_info', result: summary, evidence };
         } catch (error) {
           if (currentSignal?.aborted || error?.fatalProbe) throw error;
-          return { kind: 'web_info', error: 'request_unavailable',
-            evidence: [{ id: evidenceId('probe', probe.id), source: 'web-parser/' + fixtureId,
-              kind: 'unavailable', asset: probe.input.path,
-              summary: 'web_info browser observation failed or timed out; the hypothesis remains unverified.' }]
-              .slice(0, remaining) };
+          const evidence = [{ id: evidenceId('probe', probe.id), source: 'web-parser/' + fixtureId,
+            kind: 'unavailable', asset: probe.input.path,
+            summary: 'web_info browser observation failed or timed out; the hypothesis remains unverified.' }]
+            .slice(0, remaining);
+          webInfoBytes += bytes(evidence);
+          return { kind: 'web_info', error: 'request_unavailable', evidence };
         } finally {
           await invokeHook(afterProbe, probeRecord, { status: observedStatus,
             evidenceId: evidenceId('probe', probe.id) }, reservation);
