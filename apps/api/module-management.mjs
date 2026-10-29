@@ -3,7 +3,8 @@ import { GENERAL_LOOP_BUDGET_DEFAULTS, GENERAL_LOOP_BUDGET_CAPS,
   validateGeneralLoopBudgetPayload } from '../../packages/contracts/general-loop-budget.mjs';
 
 const MODULES = Object.freeze([
-  { id: 'attack', name: 'Attack Module', manifestId: 'attack-module', eventIds: ['attack-module', 'attack'] },
+  { id: 'attack', name: 'Attack Tool', manifestId: 'attack-tool', fallbackManifestIds: ['attack-module'],
+    eventIds: ['attack-tool', 'attack-module', 'attack'] },
   { id: 'web-parser', name: 'Web Parser', manifestId: 'xss-parser', eventIds: ['web-parser', 'xss-parser', 'parser'] },
   { id: 'guardrail', name: 'Guardrail', manifestId: 'guardrail', eventIds: ['guardrail'] },
   { id: 'llm', name: 'LLM', manifestId: 'models', eventIds: ['llm', 'model', 'deepseek'] },
@@ -17,7 +18,11 @@ function definition(id) {
   return found;
 }
 function manifestModule(platform, item) {
-  return platform?.modules?.find(module => module.id === item.manifestId) ?? null;
+  for (const id of [item.manifestId, ...(item.fallbackManifestIds ?? [])]) {
+    const found = platform?.modules?.find(module => module.id === id);
+    if (found) return found;
+  }
+  return null;
 }
 function pageItems(page) {
   if (Array.isArray(page)) return page;
@@ -91,6 +96,7 @@ export function createModuleManagement({ runtime, platformProvider, dbManagement
         sourceRevision: platform?.source?.commitSha ?? null,
       };
       if (id === 'web-parser') config.runtimeModuleId = 'web-parser';
+      if (id === 'attack') config.runtimeModuleId = 'attack-tool';
       if (id === 'llm') config.models = await runtime.listModels?.() ?? [];
       return { config, revision: current.contentDigest ?? platform?.source?.commitSha ?? null,
         editable: false, source: 'deployment',

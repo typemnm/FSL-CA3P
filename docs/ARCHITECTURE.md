@@ -8,6 +8,9 @@ flowchart LR
   APP --> WORKER[apps/worker child process]
   WORKER --> CORE[agent core / ports]
   CORE --> ADAPTER[packages/adapters: parser / attack / guardrail / knowledge]
+  ADAPTER --> AT[attack-tool JSON-RPC daemon / multi-port clients]
+  AT --> GR[guardrail policy]
+  GR --> EXEC[structured HTTP execution]
   WORKER --> MODELS[packages/models registry]
   WORKER --> REPORT[packages/report Python + Chromium + HWPX]
   REPORT -.read run evidence.-> DB
@@ -23,6 +26,7 @@ flowchart LR
 | contracts | schema/version, run identity, secret redaction, module provenance | 모든 계약 소비자 및 전체 루프 |
 | agent core | 관찰·계획·행동·검증·판정 실행 순서 | agent unit, 고정 결과 회귀 |
 | adapters | 브라우저·curl·정책·과거 사례 및 카탈로그 변환; UI에서 실행 구현 분리 | 모듈 unit + adapter 통합 + 실제 실습 |
+| attack-tool | 포트별 인증을 갖는 JSON-RPC daemon; 템플릿 조회·가드레일을 거친 실행·결과 반환 | 패킷 검증, 동시 client, 권한 분리, 차단 시 무요청 |
 | models | 등록된 모델 선택, 설정·입출력 metadata | 가짜 provider 성공·실패·취소, 규칙 기반 실제 루프 |
 | application/worker | 시작·중지·상태 및 프로세스 분리 | 수명주기, 재시작·실패·취소 |
 | run-store | 이벤트·run·model-call 기록 | SQLite 재조회·중복·복구 |
@@ -39,3 +43,7 @@ flowchart LR
 ## 통합 취약점 DB
 
 `pentest-db`는 교체된 모듈이며 독립 카탈로그·DB·수명주기를 갖지 않는다. `casper-db`의 한 SQLite 파일이 CERT 사례, 공개 권고, 공격 정보·payload·검증 규칙 및 미래 템플릿 계약을 관리한다. 새 Agent 호출은 `casper-db`를 사용한다. 실행 registry는 `run-store`, 기존 파일 아티팩트는 `run-evidence` 어댑터가 보존한다. 예전 이름은 이력 읽기와 호환 별칭에만 남는다. 공격 툴은 통합 DB의 패턴 revision·검증 규칙·executor 계약을 소비한다.
+
+## 공격 도구 통신
+
+일반 평가의 에이전트는 고정 DB snapshot의 카탈로그를 참고해 도구 입력을 제안한다. application의 bridge가 취약점별 client와 daemon 포트를 선택하고, `attack-tool`은 서버에 고정한 principal·대상 범위로 가드레일을 통과한 요청을 실행한다. 요청/응답 ID와 정책 결과를 실행 증거에 연결한다. DB의 초안 템플릿이나 AI가 전달한 policy context는 실행 권한을 부여하지 않는다. 기존 고정 카나리 경로와 `attack-module` 실행기는 호환성을 유지한다. 구현 범위·통신 계약·검증 순서는 [attack-tool 계획](ATTACK_TOOL_PLAN.md)을 따른다.

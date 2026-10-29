@@ -162,7 +162,8 @@
         "attack-module",
         "guardrail",
         "casper-db",
-        "vul-web-1"
+        "vul-web-1",
+        "attack-tool"
       ]
     },
     {
@@ -258,6 +259,15 @@
         "xss-parser"
       ],
       "reason": "Replaced by the current parser/attack execution pipeline; source branch remains available for reference."
+    },
+    {
+      "id": "attack-tool",
+      "path": "attack-tool",
+      "layer": "adapter",
+      "status": "active",
+      "dependencies": [
+        "guardrail"
+      ]
     }
   ],
   "boundaries": [
@@ -297,7 +307,8 @@
         "attack-module",
         "guardrail",
         "casper-db",
-        "vul-web-1"
+        "vul-web-1",
+        "attack-tool"
       ]
     }
   ],

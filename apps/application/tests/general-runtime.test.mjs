@@ -1182,3 +1182,45 @@ test('web_info fits the remaining evidence budget with one and then zero free sl
   assert.equal(probe('w-zero').reason, 'no_evidence');
   assert.equal(run.report.evidence.length, initial + 1);
 });
+
+test('general runtime routes vulnerability workers through two daemon ports and closes them after completion', async t => {
+  let advertised;
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:53988',
+    modelId: 'deepseek-flash', runIdFactory: () => 'general-attack-tool-workers',
+    fetchImpl: async url => response(new URL(url).pathname),
+    plannerFactory: () => ({ async propose(context) {
+      advertised = context.inventory.attackTool;
+      assert.equal(advertised.templates.length, 1);
+      assert.equal(advertised.templates[0].templateId, 'sqli-like-tautology');
+      assert.equal(new Set(advertised.endpoints).size, 2);
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      const evidenceIds = [context.evidence[0].id];
+      return { hypotheses: [
+        { id: 'headers', category: 'configuration', asset: '/about',
+          rationale: 'Review observed response headers.', evidenceIds },
+        { id: 'dependencies', category: 'dependency', asset: 'vul-web2/package.json',
+          rationale: 'Review declared dependency versions as context.', evidenceIds },
+      ], probes: [
+        { id: 'headers-read', hypothesisId: 'headers', tool: 'http_get', input: { path: '/about' } },
+        { id: 'dependency-read', hypothesisId: 'dependencies', tool: 'repository_read',
+          input: { file: 'vul-web2/package.json' } },
+      ] };
+    } }),
+  });
+  t.after(() => runtime.close());
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  assert.equal(run.report.probes.length, 2);
+  assert.ok(run.report.probes.every(probe => probe.evidenceIds.length));
+  assert.equal(new Set(run.report.attackTool.agentIds).size, 2);
+  assert.deepEqual(run.report.attackTool.endpoints, advertised.endpoints);
+  assert.deepEqual(run.report.attackTool.flow, ['agent', 'attack-tool', 'guardrail', 'executor']);
+  assert.deepEqual(run.report.attackTool.templateIds, ['sqli-like-tautology']);
+  assert.doesNotMatch(JSON.stringify(run.report.attackTool), /Bearer|authorization|token|secret/i);
+  for (const endpoint of advertised.endpoints) {
+    await assert.rejects(fetch(endpoint, { signal: AbortSignal.timeout(1000) }));
+  }
+});

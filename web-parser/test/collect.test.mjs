@@ -8,7 +8,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import wt from 'node:worker_threads';
 import { chromium } from 'playwright';
@@ -863,9 +863,10 @@ async function moduleCopy(name, mutate) {
   await mutate(join(copy, 'data/webappanalyzer'));
   // Own wapalyzer-core: its setTechnologies() corrupts state when called twice, so a copy must not share its instance.
   await mkdir(join(copy, 'node_modules'));
-  await symlink(fileURLToPath(new URL('node_modules/playwright', MODULE)), join(copy, 'node_modules/playwright'));
+  await symlink(fileURLToPath(new URL('node_modules/playwright', MODULE)), join(copy, 'node_modules/playwright'),
+    process.platform === 'win32' ? 'junction' : 'dir');
   await cp(new URL('node_modules/wapalyzer-core', MODULE), join(copy, 'node_modules/wapalyzer-core'), { recursive: true });
-  return import(join(copy, 'collect.mjs'));
+  return import(pathToFileURL(join(copy, 'collect.mjs')).href);
 }
 
 const run = (args) => promisify(execFile)(process.execPath, [CLI, ...args], { timeout: 60000 });
