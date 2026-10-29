@@ -1,6 +1,6 @@
 # packages/verifier
 
-공격 모듈이 실행한 공격이 **실제로 먹혔는지** 판정하는 것이 이 패키지의 한 가지 일이다. 판정은 AI 모델이 내린다. 코드는 입력을 검증하고, 증거를 모으고, 결과를 status로 옮길 뿐이다. 유형별 규칙은 없다.
+공격 모듈이 실행한 공격이 **실제로 먹혔는지** 판정하는 것이 이 패키지의 한 가지 일이다. verifier는 공격하지 않는다. 주어진 공격 정보와 attack 모듈의 수행 결과만 보고 AI 모델이 판정하고, 추가 확인이 필요하면 Playwright로 페이지를 읽기만 한다. 코드는 입력을 검증하고, 증거를 모으고, 결과를 status로 옮길 뿐이다. 유형별 규칙은 없다.
 
 ## 흐름
 1. 공격 모듈 실행 → `executeCurlRecorded`(`packages/adapters/attack-recorder.mjs`)가 AttackRecord를 만든다.
