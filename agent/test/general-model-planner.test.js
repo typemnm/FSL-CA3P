@@ -177,6 +177,68 @@ test('general planner fails explicitly when the complete context cannot fit the 
   assert.equal(client.calls.length, 0);
 });
 
+test('general planner keeps high-budget IDs and recent evidence while explicitly compacting older detail', async () => {
+  const client = fakeClient({ done: true, hypotheses: [], probes: [] });
+  const input = assessmentInput();
+  input.inventory = { context: 'x'.repeat(13_800) };
+  input.iteration = 32;
+  input.budget = { maxIterations: 32, maxProbes: 128, remainingProbes: 1, usedProbes: 127 };
+  input.availableTools = ['web_info'];
+  input.evidence = Array.from({ length: 128 }, (_, index) => ({
+    id: `ev-${index}`, source: 'web-parser/fixture', kind: 'web-info', asset: '/',
+    summary: `HTTP 200 text/html; page ${index}; counts {"paths":150,"forms":6}; details withheld: evidence budget `
+      + 'x'.repeat(110),
+  }));
+  input.hypotheses = Array.from({ length: 40 }, (_, index) => ({
+    id: `hyp-${index}`, category: 'configuration', asset: '/',
+    rationale: 'Observed configuration suggests a separate check. '.repeat(9),
+    evidenceIds: [`ev-${index}`], status: 'inconclusive',
+  }));
+  input.usedProbeIds = Array.from({ length: 127 }, (_, index) => `probe-${index}`);
+  const result = await createGeneralModelPlanner({ client }).propose(input);
+  const { systemPrompt, userPayload } = client.calls[0];
+  assert.equal(result.done, true);
+  assert.ok(Buffer.byteLength(systemPrompt, 'utf8')
+    + Buffer.byteLength(JSON.stringify(userPayload), 'utf8') <= MAX_PROMPT_BYTES);
+  assert.deepEqual(userPayload.evidence.map(item => item.id), input.evidence.map(item => item.id));
+  assert.deepEqual(userPayload.hypotheses.map(item => item.id), input.hypotheses.map(item => item.id));
+  assert.deepEqual(userPayload.usedProbeIds, input.usedProbeIds);
+  assert.ok(userPayload.contextCompaction.evidenceSummaries > 0
+    || userPayload.contextCompaction.hypothesisDetails > 0);
+  assert.equal(userPayload.evidence.at(-1).summary, input.evidence.at(-1).summary);
+  if (userPayload.contextCompaction.evidenceSummaries) {
+    assert.match(userPayload.evidence[0].summary, /details omitted/u);
+  } else assert.match(userPayload.hypotheses[0].rationale, /details omitted/u);
+  assert.deepEqual(result.modelMetadata.contextCompaction, userPayload.contextCompaction);
+  // The original run context was not modified by the prompt view.
+  assert.match(input.evidence[0].summary, /HTTP 200/u);
+  assert.match(input.hypotheses[0].rationale, /Observed configuration/u);
+});
+
+test('general planner preserves all IDs at the maximum run caps under prompt pressure', async () => {
+  const client = fakeClient({ done: true, hypotheses: [], probes: [] });
+  const input = assessmentInput();
+  input.inventory = { site: '/fixture', summary: 'x'.repeat(8_000) };
+  input.iteration = 32;
+  input.budget = { maxIterations: 32, maxProbes: 128, remainingProbes: 1, usedProbes: 127 };
+  input.evidence = Array.from({ length: 256 }, (_, index) => ({ id: `ev-${index}`,
+    source: 'web-parser/fixture', kind: 'web-info', asset: '/', summary: `Observation ${index}: ` + 'x'.repeat(250) }));
+  input.hypotheses = Array.from({ length: 128 }, (_, index) => ({ id: `hyp-${index}`,
+    category: 'configuration', asset: '/', rationale: 'Test this page. '.repeat(20),
+    evidenceIds: [`ev-${index}`], status: 'inconclusive' }));
+  input.usedProbeIds = Array.from({ length: 127 }, (_, index) => `probe-${index}`);
+  await createGeneralModelPlanner({ client }).propose(input);
+  const { systemPrompt, userPayload } = client.calls[0];
+  assert.ok(Buffer.byteLength(systemPrompt, 'utf8')
+    + Buffer.byteLength(JSON.stringify(userPayload), 'utf8') <= MAX_PROMPT_BYTES);
+  assert.equal(userPayload.evidence.length, 256);
+  assert.equal(userPayload.hypotheses.length, 128);
+  assert.equal(new Set(userPayload.evidence.map(item => item.id)).size, 256);
+  assert.equal(new Set(userPayload.hypotheses.map(item => item.id)).size, 128);
+  assert.equal(userPayload.evidence.at(-1).summary, input.evidence.at(-1).summary);
+  assert.match(userPayload.hypotheses[0].rationale, /details omitted/u);
+});
+
 test('general planner refuses unsupported evidence fields instead of silently dropping data', async () => {
   const input = assessmentInput();
   input.evidence[0].rawResponseBody = 'PRIVATE';

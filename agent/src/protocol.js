@@ -1,5 +1,9 @@
 'use strict';
 
+// Legacy runOnce wire contract: xss-parser scan v3.4 and stored-XSS execution.
+// General web_info consumes web-parser TargetInfo web-parser-1 through its direct
+// adapter; it is intentionally outside this envelope and its parser.result schema.
+
 const { randomUUID } = require('node:crypto');
 
 const SCHEMA_VERSION = '1.0';

@@ -9,18 +9,22 @@ import { probeSite } from '../../vul-web2/scripts/idor-probe.mjs';
 import { executeUniversityRead } from '../../packages/adapters/university-read.mjs';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
 import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
+import { observeStoredXssExecution } from '../../packages/adapters/integrations/xss-parser.mjs';
+import xssCanary from '../../agent/src/xss-canary.js';
 
 const { runGeneralAssessment } = generalCore;
 const { createGeneralModelPlannerFromEnv } = generalPlanner;
+const { createStoredXssCanary } = xssCanary;
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 const MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
-// Planner prompt cap 65,536 − 8,192 margin − 39,894 measured worst non-web_info context (daehan inventory 13,859,
-// initial evidence 3,833, 40 hypotheses 19,867, system/rest/probe IDs 2,335) − 24 one-line overviews × 441 = 6,866.
-// Measured with the default loop budget (maxProbes 24); a larger maxProbes shrinks the headroom the core prompt has.
+// Keep recent full web_info evidence under this cumulative budget. After it is spent,
+// probes return minimal overviews; the planner explicitly compacts older history if a
+// user raises the loop budget beyond the default 24 probes.
 const WEB_INFO_EVIDENCE_BUDGET_BYTES = 6800;
 const MAX_BODY_BYTES = 24 * 1024;
 const MAX_INITIAL_PAGES = 14;
 const BOARD_ACCESS_ASSET = '/api/posts/:id';
+const BOARD_XSS_ASSET = 'POST /api/posts';
 const CATALOG_SOURCE = 'casper-db/attack-catalog';
 const FIXTURES = Object.freeze({
   'vul-web-1': {
@@ -296,12 +300,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   signal, onModelCall, beforeProbe, afterProbe, caseSnapshot, unavailableInputs = [],
   historyProvider, plannerFactory, boardFactory, cleanupRegistryPath, fetchImpl = fetch,
   idorProbe = probeSite, catalogReader = readKnowledgeCatalogReadOnly,
-  webParserCollect = collectWebInfo, limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
+  webParserCollect = collectWebInfo, xssObserver = observeStoredXssExecution,
+  limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!MODELS.has(modelId)) throw new TypeError('A registered DeepSeek model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
     || typeof idorProbe !== 'function' || typeof catalogReader !== 'function'
-    || typeof webParserCollect !== 'function') {
+    || typeof webParserCollect !== 'function' || typeof xssObserver !== 'function') {
     throw new TypeError('Invalid general runtime dependency.');
   }
   for (const callback of [onModelCall, beforeProbe, afterProbe, historyProvider, plannerFactory, boardFactory]) {
@@ -582,6 +587,97 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         + ', Bob after-list HTTP ' + after.status + ', exact canary remains=' + remains
         + '; independent authorization verdict=' + verdictStatus + '.' };
   }
+  async function boardStoredXssCanary(allowedOrigin, modelProbe, currentSignal) {
+    if (config.siteKey || board?.origin !== allowedOrigin) {
+      throw new Error('A server-owned isolated board is required for the XSS canary.');
+    }
+    const { marker, content } = createStoredXssCanary();
+    const title = 'ca3p-general-xss-' + marker;
+    const label = 'freshMarkerDigest=' + createHash('sha256').update(marker).digest('hex').slice(0, 12);
+    async function request(stage, method, path, { cookie, data } = {}) {
+      const permitted = method === 'POST' && ['/api/session', '/api/posts'].includes(path)
+        || method === 'GET' && path === '/api/posts';
+      if (!permitted) throw new Error('The isolated XSS canary attempted an unregistered action.');
+      currentSignal?.throwIfAborted();
+      const url = safePath(path, allowedOrigin);
+      if (!url || url.origin !== board.origin) throw new Error('The isolated board origin changed.');
+      const body = data === undefined ? undefined : JSON.stringify(data);
+      const hook = { id: modelProbe.id + '-' + stage, probeId: modelProbe.id,
+        iteration: run.iterations, tool: 'known_stored_xss_canary',
+        session: 'alice', method, url: url.href,
+        ...(body ? { payloadDigest: createHash('sha256').update(body).digest('hex') } : {}) };
+      const reservation = await invokeHook(beforeProbe, hook);
+      let response;
+      try {
+        currentSignal?.throwIfAborted();
+        const timeout = AbortSignal.timeout(5000);
+        response = await fetchImpl(url, { method, redirect: 'manual',
+          headers: { ...(cookie ? { cookie } : {}),
+            ...(body ? { 'content-type': 'application/json' } : {}) },
+          ...(body ? { body } : {}),
+          signal: currentSignal ? AbortSignal.any([currentSignal, timeout]) : timeout });
+        run.targetContacted = true;
+        const raw = await limitedBody(response);
+        let json = null;
+        try { json = JSON.parse(raw); } catch { /* A malformed reply cannot establish a verdict. */ }
+        return { status: response.status, json, setCookie: response.headers.get('set-cookie') };
+      } finally {
+        await invokeHook(afterProbe, hook, { status: response?.status ?? null }, reservation);
+      }
+    }
+    const login = await request('alice-login', 'POST', '/api/session', { data: { userId: 'alice' } });
+    const cookie = login.status === 200 && login.json?.user?.id === 'alice'
+      ? login.setCookie?.split(';', 1)[0]?.trim() : null;
+    if (!cookie || !/^[A-Za-z][A-Za-z0-9_-]{0,39}=[A-Za-z0-9._~-]{8,500}$/u.test(cookie)) {
+      return { verdictStatus: 'inconclusive', summary: label + ': fixed Alice session was not established.' };
+    }
+    const created = await request('alice-create', 'POST', '/api/posts', { cookie,
+      data: { title, content } });
+    const post = created.json?.post;
+    if (created.status !== 201 || !Number.isSafeInteger(post?.id) || post.id < 1
+      || post.authorId !== 'alice' || post.title !== title || post.content !== content) {
+      return { verdictStatus: 'inconclusive', summary: label + ': the fresh Alice XSS canary was not confirmed.' };
+    }
+    const exactPost = reply => reply.status === 200 && Array.isArray(reply.json?.posts)
+      && reply.json.posts.some(item => item?.id === post.id && item.authorId === 'alice'
+        && item.title === title && item.content === content);
+    const before = await request('alice-before', 'GET', '/api/posts', { cookie });
+    if (!exactPost(before)) return { verdictStatus: 'inconclusive',
+      summary: label + ': the fresh canary was absent before browser observation.' };
+
+    const hook = { id: modelProbe.id + '-browser-observe', probeId: modelProbe.id,
+      iteration: run.iterations, tool: 'known_stored_xss_canary', session: 'public',
+      method: 'GET', url: allowedOrigin + '/' };
+    const reservation = await invokeHook(beforeProbe, hook);
+    let observed;
+    try {
+      currentSignal?.throwIfAborted();
+      observed = await xssObserver(allowedOrigin, { postId: post.id, marker, signal: currentSignal });
+      run.targetContacted = true;
+    } finally {
+      await invokeHook(afterProbe, hook, { status: null }, reservation);
+    }
+    const after = await request('alice-after', 'GET', '/api/posts', { cookie });
+    let sameOrigin = false;
+    try { sameOrigin = new URL(observed?.pageUrl).origin === allowedOrigin; }
+    catch { /* No trustworthy browser destination. */ }
+    if (!exactPost(after) || !sameOrigin || observed?.postId !== post.id
+      || observed?.marker !== marker || observed?.postVisible !== true
+      || !Array.isArray(observed?.errors)) {
+      return { verdictStatus: 'inconclusive',
+        summary: label + ': browser observation or after-control did not match this run’s canary.' };
+    }
+    const confirmed = observed.executed === true && observed.payloadPresent === true
+      && observed.bindingCalled === true;
+    const notReproduced = observed.executed === false && observed.bindingCalled === false
+      && observed.errors.length === 0;
+    const verdictStatus = confirmed ? 'confirmed' : notReproduced ? 'not_reproduced' : 'inconclusive';
+    return { verdictStatus, summary: label + ', freshPostId=' + post.id
+      + ': current-run Alice post persisted before and after isolated Chromium observation; '
+      + 'post visible=' + observed.postVisible + ', exact payload DOM=' + observed.payloadPresent
+      + ', main-frame browser callback=' + observed.bindingCalled
+      + '; independent XSS verdict=' + verdictStatus + '.' };
+  }
   async function sourceReferences() {
     const entries = [];
     try {
@@ -726,6 +822,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         source: 'registered-lab-contract', currentRunVerified: false }]
         : [{ category: 'access_control', asset: BOARD_ACCESS_ASSET,
           tool: 'known_cross_user_delete_canary',
+          source: 'registered-isolated-board-contract', currentRunVerified: false },
+        { category: 'stored_xss', asset: BOARD_XSS_ASSET,
+          tool: 'known_stored_xss_canary',
           source: 'registered-isolated-board-contract', currentRunVerified: false }],
       referenceSources: references,
       toolCapabilities: {
@@ -735,9 +834,12 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         ...(config.siteKey ? { known_record_idor_read:
           'input {}: guarded role comparison of registered virtual records; use access_control and the knownAssessmentAssets asset' }
           : { known_cross_user_delete_canary:
-            'input {}: on a fresh isolated board, create one synthetic Bob post and compare an Alice delete with denied control and before/after lists; use access_control and the knownAssessmentAssets asset' }),
+            'input {}: on a fresh isolated board, create one synthetic Bob post and compare an Alice delete with denied control and before/after lists; use access_control and the knownAssessmentAssets asset',
+          known_stored_xss_canary:
+            'input {}: on the fresh isolated board only, create one synthetic Alice XSS canary and require a matching current-run main-frame Chromium callback for confirmation; use stored_xss and the knownAssessmentAssets asset' }),
       },
-      limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; no independent browser-execution verifier is connected for this general run.',
+      limitations: ['web_info observes browser-visible information but never confirms execution; only the fixed isolated-board XSS canary can independently verify its registered asset.',
+        'University XSS hypotheses remain unconfirmed because no bounded write and browser callback contract exists for those targets.',
         'GET and repository references do not independently confirm most weakness classes.',
         'Historical cases and source reports are context, not current-run proof.',
         'Initial public discovery is bounded to ' + MAX_INITIAL_PAGES + ' routes; other declared routes require a model probe.',
@@ -754,15 +856,27 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     let inventory;
     let usedIdor = false;
     let usedBoardDelete = false;
+    let usedBoardXss = false;
     const matchesIdorHypothesis = hypothesis =>
       /^(?:access_control|idor|cwe-639)$/iu.test(hypothesis?.category ?? '')
       && hypothesis?.asset === config.idorAsset;
     const matchesBoardAccessHypothesis = hypothesis =>
       /^(?:access_control|idor|bola|cwe-639)$/iu.test(hypothesis?.category ?? '')
       && hypothesis?.asset === BOARD_ACCESS_ASSET;
+    const matchesBoardXssHypothesis = hypothesis =>
+      /^(?:xss|stored_xss|cwe-79)$/iu.test(hypothesis?.category ?? '')
+      && hypothesis?.asset === BOARD_XSS_ASSET;
     const failedModelCalls = [];
     let evidenceCount = 0;
     let webInfoBytes = 0;
+    const webInfoSource = sessionRole => {
+      const prefix = 'web-parser/' + fixtureId + '/';
+      const role = sessionRole ? '/role:' + sessionRole : '';
+      const exact = prefix + run.id + role;
+      // Evidence source is capped at 128 bytes; the report still retains the full run ID.
+      return Buffer.byteLength(exact, 'utf8') <= 128
+        ? exact : prefix + evidenceId('run', run.id) + role;
+    };
     const allowedPaths = new Set(config.routes.map(path => new URL(path, allowedOrigin).pathname));
     const extendPaths = page => {
       for (const path of [...(page.links ?? []), ...(page.forms ?? []).map(form => form.path)]) {
@@ -805,6 +919,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           return { allowed: false, reason: 'hypothesis_tool_mismatch' };
         }
         return { allowed: !config.siteKey && !usedBoardDelete && Object.keys(probe.input).length === 0,
+          reason: 'fixed_probe_unavailable' };
+      }
+      if (probe.tool === 'known_stored_xss_canary') {
+        if (!matchesBoardXssHypothesis(hypothesis)) {
+          return { allowed: false, reason: 'hypothesis_tool_mismatch' };
+        }
+        return { allowed: !config.siteKey && !usedBoardXss && Object.keys(probe.input).length === 0,
           reason: 'fixed_probe_unavailable' };
       }
       return { allowed: false, reason: 'tool_unavailable' };
@@ -868,7 +989,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             if (safe) allowedPaths.add(safe.pathname);
           }
           const options = { idBase: evidenceId('probe', probe.id), sessionRole, remaining,
-            source: 'web-parser/' + fixtureId + (sessionRole ? '/role:' + sessionRole : ''),
+            source: webInfoSource(sessionRole),
             asset: url.pathname + url.search, safeText: evidenceText, safeHeaderValue };
           let evidence = evidenceFromTargetInfo(info, options);
           // The planner resends all evidence each call; past the budget only a one-line overview fits.
@@ -879,7 +1000,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           return { kind: 'web_info', result: summary, evidence };
         } catch (error) {
           if (currentSignal?.aborted || error?.fatalProbe) throw error;
-          const evidence = [{ id: evidenceId('probe', probe.id), source: 'web-parser/' + fixtureId,
+          const evidence = [{ id: evidenceId('probe', probe.id), source: webInfoSource(sessionRole),
             kind: 'unavailable', asset: probe.input.path,
             summary: 'web_info browser observation failed or timed out; the hypothesis remains unverified.' }]
             .slice(0, remaining);
@@ -920,6 +1041,24 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
               source: 'vul-web-1/isolated-board-canary', kind: 'unavailable',
               asset: BOARD_ACCESS_ASSET,
               summary: 'Isolated cross-user delete comparison could not complete; no authorization verdict was confirmed.' }] };
+        }
+      }
+      if (probe.tool === 'known_stored_xss_canary') {
+        usedBoardXss = true;
+        try {
+          const result = await boardStoredXssCanary(allowedOrigin, probe, currentSignal);
+          return { kind: probe.tool, verdictStatus: result.verdictStatus, result,
+            evidence: [{ id: evidenceId('probe', probe.id),
+              source: 'vul-web-1/isolated-board-xss-canary',
+              kind: 'browser-callback-comparison', asset: BOARD_XSS_ASSET,
+              summary: result.summary }] };
+        } catch (error) {
+          if (currentSignal?.aborted || error?.fatalProbe) throw error;
+          return { kind: probe.tool, verdictStatus: 'inconclusive',
+            evidence: [{ id: evidenceId('probe', probe.id),
+              source: 'vul-web-1/isolated-board-xss-canary',
+              kind: 'unavailable', asset: BOARD_XSS_ASSET,
+              summary: 'Current-run isolated browser callback comparison could not complete; no XSS verdict was confirmed.' }] };
         }
       }
       usedIdor = true;
@@ -980,6 +1119,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       const id = execution.evidence?.[0]?.id;
       const idorHypothesis = matchesIdorHypothesis(hypothesis);
       const boardAccessHypothesis = matchesBoardAccessHypothesis(hypothesis);
+      const boardXssHypothesis = matchesBoardXssHypothesis(hypothesis);
       if (execution.kind === 'known_record_idor_read'
         && idorHypothesis
         && ['confirmed', 'not_reproduced'].includes(execution.verdictStatus)) {
@@ -990,10 +1130,17 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         && ['confirmed', 'not_reproduced'].includes(execution.verdictStatus)) {
         return { status: execution.verdictStatus, completed: true, evidenceIds: [id] };
       }
+      if (execution.kind === 'known_stored_xss_canary'
+        && boardXssHypothesis
+        && ['confirmed', 'not_reproduced'].includes(execution.verdictStatus)) {
+        return { status: execution.verdictStatus, completed: true, evidenceIds: [id] };
+      }
       return { status: 'inconclusive', reason: execution.kind === 'known_record_idor_read'
         ? idorHypothesis ? 'control_incomplete' : 'hypothesis_tool_mismatch'
         : execution.kind === 'known_cross_user_delete_canary'
           ? boardAccessHypothesis ? 'control_incomplete' : 'hypothesis_tool_mismatch'
+        : execution.kind === 'known_stored_xss_canary'
+          ? boardXssHypothesis ? 'control_incomplete' : 'hypothesis_tool_mismatch'
         : 'independent_verification_unavailable', evidenceIds: id ? [id] : [] };
     } };
     const wrappedPlanner = { async propose(context) {
@@ -1035,7 +1182,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       return plan;
     } };
     const availableTools = ['http_get', 'web_info', 'repository_read',
-      config.siteKey ? 'known_record_idor_read' : 'known_cross_user_delete_canary'];
+      config.siteKey ? 'known_record_idor_read' : 'known_cross_user_delete_canary',
+      ...(!config.siteKey ? ['known_stored_xss_canary'] : [])];
     const { report } = await runGeneralAssessment({
       target: { fixtureId, origin: allowedOrigin }, observer, planner: wrappedPlanner,
       policy, executor, verifier, availableTools, limits, signal: currentSignal,
@@ -1055,7 +1203,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       methods: config.siteKey ? ['GET'] : ['GET', 'POST', 'DELETE'],
       ...(config.siteKey ? { sessionBootstrap: 'POST /login using fixed demo accounts' } : {}),
       ...(!config.siteKey ? { boundedMutationTool: 'known_cross_user_delete_canary',
-        mutationTarget: 'fresh synthetic post only', mutationPathPattern: BOARD_ACCESS_ASSET } : {}),
+        mutationTarget: 'fresh synthetic post only', mutationPathPattern: BOARD_ACCESS_ASSET,
+        boundedXssMutationTool: 'known_stored_xss_canary', xssMutationTarget: BOARD_XSS_ASSET } : {}),
       toolIds: availableTools, allowedPaths: [...allowedPaths].sort(), ...limits };
     return report;
   }

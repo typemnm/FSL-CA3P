@@ -39,12 +39,14 @@ const MAX_COOKIE_BYTES = 4096;
 function checkOptions(opts) {
   if (opts != null && typeof opts !== 'object') throw new Error('opts must be an object');
   if (opts != null && 'maxPages' in opts) throw new Error('maxPages: crawling removed: pass endpoints explicitly via collectEach');
-  const { timeoutMs = 30000, waitUntil = 'load', userAgent, ignoreHTTPSErrors = true, cookies = [], signal } = opts ?? {};
+  const { timeoutMs = 30000, waitUntil = 'load', userAgent, ignoreHTTPSErrors = true,
+    cookies = [], signal, sameOriginOnly = false } = opts ?? {};
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMER_MS) throw new Error(`timeoutMs must be an integer in 1..${MAX_TIMER_MS}`);
   if (!WAIT_UNTIL.has(waitUntil)) throw new Error(`waitUntil must be one of: ${[...WAIT_UNTIL].join(', ')}`);
   if (typeof ignoreHTTPSErrors !== 'boolean') throw new Error('ignoreHTTPSErrors must be a boolean');
   if (userAgent !== undefined && typeof userAgent !== 'string') throw new Error('userAgent must be a string');
   if (signal !== undefined && !(signal instanceof AbortSignal)) throw new Error('signal must be an AbortSignal');
+  if (typeof sameOriginOnly !== 'boolean') throw new Error('sameOriginOnly must be a boolean');
   if (!Array.isArray(cookies) || cookies.length > MAX_COOKIES) throw new Error(`cookies must be an array of at most ${MAX_COOKIES} { name, value }`);
   for (const [i, c] of cookies.entries()) { // entries() visits holes too
     if (typeof c?.name !== 'string' || !COOKIE_NAME.test(c.name)) throw new Error(`cookies[${i}].name must be a non-empty RFC 6265 token`);
@@ -53,7 +55,7 @@ function checkOptions(opts) {
     }
     if (Buffer.byteLength(c.name + c.value) > MAX_COOKIE_BYTES) throw new Error(`cookies[${i}]: name + value must be at most ${MAX_COOKIE_BYTES} bytes`);
   }
-  return { timeoutMs, waitUntil, userAgent, ignoreHTTPSErrors, cookies, signal };
+  return { timeoutMs, waitUntil, userAgent, ignoreHTTPSErrors, cookies, signal, sameOriginOnly };
 }
 
 // Node's own AbortError shape: name 'AbortError', the signal's reason as cause.
@@ -82,7 +84,7 @@ export async function collectEach(targetURLs, opts) {
 // Collector of exactly one endpoint (it never clicks, types or submits itself; page JS runs as in a normal visit):
 // everything is passed through as received (CONTRACT §6, no redaction).
 export async function collect(url, opts) {
-  const { timeoutMs, waitUntil, userAgent, ignoreHTTPSErrors, cookies, signal } = checkOptions(opts);
+  const { timeoutMs, waitUntil, userAgent, ignoreHTTPSErrors, cookies, signal, sameOriginOnly } = checkOptions(opts);
   if (signal?.aborted) throw abortError(signal);
   const start = new URL(url);
   if (start.protocol !== 'http:' && start.protocol !== 'https:') throw new Error(`unsupported protocol: ${start.protocol}`);
@@ -127,10 +129,9 @@ export async function collect(url, opts) {
       executablePath: process.env.WEB_PARSER_BROWSER_PATH || undefined,
       userAgent,
       ignoreHTTPSErrors,
+      ...(sameOriginOnly ? { serviceWorkers: 'block' } : {}),
     });
     signal?.throwIfAborted(); // aborted while the browser started
-    // Host-only cookies (no Domain attribute) on the requested host, path '/'.
-    if (cookies.length) await context.addCookies(cookies.map(({ name, value }) => ({ name, value, url: start.origin })));
     const answered = new WeakSet(); // a request aborted after its response is already recorded
     context.on('response', (r) => { answered.add(r.request()); pushResource(r.request().resourceType(), r.request(), r.status()); });
     context.on('requestfailed', (r) => { if (!answered.has(r)) pushResource(r.resourceType(), r, null); });
@@ -143,6 +144,19 @@ export async function collect(url, opts) {
     const seen = { js: {}, dom: {} };
     const page = context.pages()[0] ?? await context.newPage();
     const cdp = await context.newCDPSession(page);
+    // Playwright context.route only intercepts the first URL in a redirect chain.
+    // CDP Fetch pauses each hop, so a host-only cookie cannot cross to another port.
+    if (sameOriginOnly) {
+      cdp.on('Fetch.requestPaused', ({ requestId, request }) => {
+        const allowed = new URL(request.url).origin === start.origin;
+        const method = allowed ? 'Fetch.continueRequest' : 'Fetch.failRequest';
+        const params = allowed ? { requestId } : { requestId, errorReason: 'BlockedByClient' };
+        void cdp.send(method, params).catch(() => {}); // context may close during cancellation
+      });
+      await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+    }
+    // Host-only cookies (no Domain attribute) on the requested host, path '/'.
+    if (cookies.length) await context.addCookies(cookies.map(({ name, value }) => ({ name, value, url: start.origin })));
     const docs = []; // main-frame navigation responses (3xx hops included), in arrival order
     page.on('response', (r) => {
       if (r.frame() === page.mainFrame() && r.request().isNavigationRequest()) docs.push(r);

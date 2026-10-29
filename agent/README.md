@@ -4,9 +4,9 @@
 
 `src/general-assessment.js`의 `runGeneralAssessment()`는 기존 단일 XSS/IDOR `runOnce()`와 독립된 범용 판단 루프다. 호출자가 `observer.observe`, `planner.propose`, `policy.authorize`, `executor.execute`, `verifier.verify` 포트를 제공한다. 코어는 관측 증거를 바탕으로 여러 가설과 검사를 반복하고, 허용 도구·반복·검사·증거 예산을 확인한다. 정책을 거부한 검사는 실행하지 않으며, 완료된 검사의 독립 증거가 없으면 `confirmed`나 `not_reproduced`로 판정하지 않는다. 결과에는 `findings[]`, 미점검 수, 증거 출처와 종료 사유를 남긴다.
 
-`src/general-model-planner.js`는 기존 DeepSeek 클라이언트를 사용하는 구조화 플래너다. `createGeneralModelPlannerFromEnv()`를 선택해 호출하면 실제 모델 API를 사용한다. 대상 페이지와 관측 자료는 비신뢰 데이터로 취급하고, 허용된 도구·증거 ID를 벗어난 출력은 거부한다. 문맥이 모델 입력 한도를 넘으면 자료를 조용히 생략하지 않고 오류를 반환한다.
+`src/general-model-planner.js`는 기존 DeepSeek 클라이언트를 사용하는 구조화 플래너다. `createGeneralModelPlannerFromEnv()`를 선택해 호출하면 실제 모델 API를 사용한다. 대상 페이지와 관측 자료는 비신뢰 데이터로 취급하고, 허용된 도구·증거 ID를 벗어난 출력은 거부한다. 문맥이 모델 입력 한도를 넘으면 이전 증거·가설의 세부 내용을 명시적 생략 표식으로 줄이되 모든 ID와 최근 증거를 유지한다. ID 목록까지 들어가지 않는 경우에는 오류를 반환한다.
 
-범용 점검은 운영 경로의 API → 실행 서비스 → worker → `apps/application/general-runtime.mjs`를 통해 세 등록 실습 대상에 연결돼 있다. 에이전트 모듈은 판단 코어와 모델 플래너를 제공하고, 대상 요청·실행 정책·독립 검증과 실행 상태 저장은 런타임이 담당한다. 브라우저 증거가 필요한 XSS 검사는 `xss-parser` 관측이 범용 런타임에 연결되기 전까지 실측 확정으로 표시하지 않는다.
+범용 점검은 운영 경로의 API → 실행 서비스 → worker → `apps/application/general-runtime.mjs`를 통해 세 등록 실습 대상에 연결돼 있다. 에이전트 모듈은 판단 코어와 모델 플래너를 제공하고, 대상 요청·실행 정책·독립 검증과 실행 상태 저장은 런타임이 담당한다. `web_info`는 `web-parser`의 `web-parser-1` 관측을 직접 어댑터로 받아 출처·실행 ID·원점·부분 관측 상태를 제한된 증거에 남긴다. 이 관측만으로 취약점을 확정하지 않는다. 격리 게시판의 `known_stored_xss_canary`만 현재 실행에서 만든 게시글과 독립 Chromium 콜백을 비교해 XSS를 판정한다. 대학 대상의 XSS는 안전한 쓰기 계약이 없어 미확정으로 남긴다.
 
 코어의 `onEvent`는 `observe`, `plan`, `policy`, `execute`, `verify`, `complete` 단계와 반복 번호를 보낸다. 계획 이벤트에는 가설·검사 ID와 도구 연결, 가설의 분류·자산이 있고, 관측·실행 이벤트에는 새 증거의 유형·자산이 있다. 검사 이벤트에는 가설·검사 ID, 도구, 판정 상태, 증거 ID 참조가 있다. 모든 이벤트의 `progress`는 가설·검사·증거 수와 **검사별** 판정 수를 기록한다. 이는 최종 `findings[]` 수나 전체 취약점 완료율이 아니다. 운영 런타임은 이 제한된 메타데이터를 실행 상태와 대시보드로 전달한다. 원본 HTTP 응답, 쿠키, 모델 출력, 가설의 원문 rationale과 증거의 원문 summary는 진행 이벤트에 넣지 않는다. 자세한 근거와 최종 finding은 보고서가 저장된 뒤 표시한다.
 
@@ -16,7 +16,7 @@ npm --prefix agent run test:general
 
 이 검증은 관측·모델·도구 계약 대역을 통해 범용 에이전트의 판단, 정책, 증거 흐름을 확인한다. 실제 사이트 발견율이나 전체 `integration-gate` 성공을 뜻하지 않는다.
 
-이 디렉터리의 production 범위는 **에이전트 코어**다. 코어는 `xss-parser`, `casper-db`, `pentest-db`, `attack-module`에 직렬화된 JSON 요청을 보내고 응답을 받아 한 번의 사고 루프를 수행한다. 대시보드의 기본 로컬 실습은 `stored_xss_canary` 프로필이며, 기존 `agent_cross_user_delete_canary`는 명시적으로 선택하는 레거시 프로필이다. 코어 fixture는 scripted 응답으로 동작한다. 실제 브라우저·DB·curl·`guardrail` 연결은 [`agent-dashboard/local-lab-gateway.mjs`](../agent-dashboard/local-lab-gateway.mjs)와 그 어댑터가 담당한다.
+기존 단일 XSS/IDOR `runOnce()`의 JSON envelope(`src/protocol.js`, v1.0)는 `xss-parser`의 스캔 출력 v3.4와 브라우저 실행 확인을 계속 사용한다. 기존 `structure-1.0` 구조 투영도 이 경로의 별도 출력이다. 범용 루프의 `web-parser` 출력 `web-parser-1`은 이 레거시 출력과 호환으로 간주하지 않고 `packages/adapters/integrations/web-parser.mjs`에서 직접 소비한다. 대시보드의 Web Parser 모듈 설정은 새 `web-parser` manifest를 표시하며, 과거 `xss-parser` 실행 이벤트는 로그에서 계속 식별한다. 대시보드의 기본 로컬 단일 실습은 `stored_xss_canary` 프로필이며, 기존 `agent_cross_user_delete_canary`는 명시적으로 선택하는 레거시 프로필이다. 실제 브라우저·DB·curl·`guardrail` 연결은 [`agent-dashboard/local-lab-gateway.mjs`](../agent-dashboard/local-lab-gateway.mjs)와 그 어댑터가 담당한다.
 
 다음 기능은 에이전트 디렉터리의 production 코드에 포함하지 않는다.
 

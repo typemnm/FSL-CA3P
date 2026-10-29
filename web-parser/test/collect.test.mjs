@@ -81,9 +81,10 @@ const PAGES = {
   '/many-imgs': html(Array.from({ length: MAX_RESOURCES + 1 }, (_, i) => `<img src="/img/${i}">`).join('')),
   '/big-html': html(`<p>${'x'.repeat(MAX_HTML_LENGTH)}</p>`),
   '/long-text': html(`<a href="/a">${'t'.repeat(MAX_TEXT_LENGTH + 1)}</a>`),
-  // V4: 60M U+0001 chars (6 bytes each once CDP-escaped) in a div that the 'div' DOM probe also reads.
+  // V4: 20M U+0001 chars (6 bytes each once CDP-escaped) still exceed every output cap
+  // while keeping Chromium serialization bounded on slower CI hosts.
   '/huge': html('<div id="big"></div>', `<script>addEventListener('DOMContentLoaded', () => {
-    document.getElementById('big').textContent = '\\u0001'.repeat(60_000_000); })</script>`),
+    document.getElementById('big').textContent = '\\u0001'.repeat(20_000_000); })</script>`),
   // V5: page-controlled worst case for the dataset's `<[^>]{1,250}` patterns, just under the html cap.
   '/lt': html(`<!-- ${'<'.repeat(4_990_000)} -->`),
   // V8: a small DOM (fast load and core extraction) that the slow-probe dataset (slowProbeModule) takes seconds to probe.
@@ -826,6 +827,57 @@ test('cookies: planted on the requested host only, sent with the navigation and 
   assert.equal(moved.meta.find((m) => m.name === 'seen-cookie').content, '', 'not sent after the redirect to localhost');
 });
 
+test('sameOriginOnly blocks cross-port resources and redirects before an authenticated cookie is sent', T, async () => {
+  const siblingRequests = [];
+  const targetRequests = [];
+  const sibling = createServer((req, res) => {
+    siblingRequests.push({ url: req.url, cookie: req.headers.cookie ?? null });
+    res.writeHead(200, { 'content-type': 'text/html' }).end(html('sibling'));
+  });
+  await new Promise(resolve => sibling.listen(0, '127.0.0.1', resolve));
+  const siblingOrigin = `http://127.0.0.1:${sibling.address().port}`;
+  const target = createServer((req, res) => {
+    targetRequests.push({ url: req.url, cookie: req.headers.cookie ?? null });
+    if (req.url === '/redirect-chain') return res.writeHead(302, { location: '/redirect' }).end();
+    if (req.url === '/redirect') return res.writeHead(302, { location: `${siblingOrigin}/redirected` }).end();
+    if (req.url === '/same') return res.writeHead(204).end();
+    res.writeHead(200, { 'content-type': 'text/html' })
+      .end(html(`<img src="/same"><img src="${siblingOrigin}/resource">`));
+  });
+  await new Promise(resolve => target.listen(0, '127.0.0.1', resolve));
+  const targetOrigin = `http://127.0.0.1:${target.address().port}`;
+  try {
+    const options = { cookies: [{ name: 'sid', value: 'fixed-session' }], sameOriginOnly: true, timeoutMs: 10000 };
+    const observed = await collect(`${targetOrigin}/page`, options);
+    assert.equal(observed.navigation.status, 200);
+    for (const path of ['/page', '/same']) {
+      assert.equal(targetRequests.find(request => request.url === path)?.cookie, 'sid=fixed-session');
+    }
+    assert.deepEqual(siblingRequests, [], 'no cross-port resource request reached the sibling service');
+    await collect(`${targetOrigin}/redirect-chain`, options).catch(() => {});
+    assert.deepEqual(siblingRequests, [], 'no cross-port redirect reached the sibling service');
+  } finally {
+    target.closeAllConnections();
+    sibling.closeAllConnections();
+    await Promise.all([new Promise(resolve => target.close(resolve)), new Promise(resolve => sibling.close(resolve))]);
+  }
+});
+
+test('sameOriginOnly still aborts a pending navigation without waiting for its timeout', T, async () => {
+  const silent = await silentServer();
+  try {
+    const controller = new AbortController();
+    const run = collect(`${silent.url}/`, { sameOriginOnly: true,
+      cookies: [{ name: 'sid', value: 'fixed-session' }], signal: controller.signal, timeoutMs: 60000 });
+    run.catch(() => {});
+    await silent.arrived;
+    const started = Date.now();
+    controller.abort(new Error('cancelled'));
+    await assert.rejects(run, error => error.name === 'AbortError' && error.cause?.message === 'cancelled');
+    assert.ok(Date.now() - started < 2000);
+  } finally { silent.close(); }
+});
+
 test('cookies and signal: invalid values are rejected before any browser starts', T, async () => {
   const launched = launches.length;
   for (const [cookies, message] of [
@@ -851,6 +903,8 @@ test('cookies and signal: invalid values are rejected before any browser starts'
   }
   await assert.rejects(collect(`${base}/echo`, { signal: 'stop' }), /signal must be an AbortSignal/);
   await assert.rejects(collectEach([`${base}/echo`], { signal: {} }), /signal must be an AbortSignal/);
+  await assert.rejects(collect(`${base}/echo`, { sameOriginOnly: 'yes' }), /sameOriginOnly must be a boolean/);
+  await assert.rejects(collectEach([`${base}/echo`], { sameOriginOnly: 'yes' }), /sameOriginOnly must be a boolean/);
   assert.equal(launches.length, launched);
 });
 

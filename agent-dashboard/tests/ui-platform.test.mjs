@@ -297,7 +297,13 @@ test('a viewer downloads the saved HWPX after reopening central history and relo
   assert.match(await page.locator('#report-document-status').textContent(), /준비됨/);
   const downloading = page.waitForEvent('download'); await link.click();
   const download = await downloading;
-  assert.equal(download.suggestedFilename(), '검사 보고서.hwpx');
+  assert.equal(await link.getAttribute('download'), '검사 보고서.hwpx');
+  const response = await page.request.get(download.url());
+  assert.equal(response.status(), 200);
+  const disposition = response.headers()['content-disposition'];
+  const encodedFilename = /(?:^|;)\s*filename\*=UTF-8''([^;]+)/iu.exec(disposition)?.[1];
+  assert.ok(encodedFilename, disposition);
+  assert.equal(decodeURIComponent(encodedFilename), '검사 보고서.hwpx');
   assert.equal(await download.failure(), null);
   assert.deepEqual(await readFile(await download.path()), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 255]));
   assert.deepEqual(errors, []);

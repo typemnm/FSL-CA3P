@@ -4,7 +4,7 @@ import { GENERAL_LOOP_BUDGET_DEFAULTS, GENERAL_LOOP_BUDGET_CAPS,
 
 const MODULES = Object.freeze([
   { id: 'attack', name: 'Attack Module', manifestId: 'attack-module', eventIds: ['attack-module', 'attack'] },
-  { id: 'web-parser', name: 'Web Parser', manifestId: 'xss-parser', eventIds: ['web-parser', 'xss-parser', 'parser'] },
+  { id: 'web-parser', name: 'Web Parser', manifestId: 'web-parser', eventIds: ['web-parser', 'xss-parser', 'parser'] },
   { id: 'guardrail', name: 'Guardrail', manifestId: 'guardrail', eventIds: ['guardrail'] },
   { id: 'llm', name: 'LLM', manifestId: 'models', eventIds: ['llm', 'model', 'deepseek'] },
   { id: 'db', name: 'DB', manifestId: 'casper-db', eventIds: ['casper-db', 'db', 'knowledge'] },

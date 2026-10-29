@@ -87,6 +87,7 @@ test('general university run uses multiple model hypotheses and confirms only th
   assert.equal(run.report.assessmentMode, 'general');
   assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-idor').status, 'confirmed');
   assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-xss').status, 'not_tested');
+  assert.ok(!run.report.scope.toolIds.includes('known_stored_xss_canary'));
   assert.equal(run.report.modelCalls.length, 2);
   assert.equal(modelCalls.length, 2);
   assert.ok(calls.length >= 4);
@@ -823,6 +824,97 @@ test('mismatched board probes leave the one-shot canary for the registered asset
   await runtime.close();
 });
 
+async function runRealBoardXssCanary(safeMode, xssObserver, planner) {
+  const hooks = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
+    runIdFactory: () => safeMode ? 'safe-general-xss' : 'vulnerable-general-xss',
+    boardFactory: async () => {
+      const { startLocalLab } = await import('../../../packages/adapters/local-lab-gateway.mjs');
+      return startLocalLab({ safeMode });
+    },
+    ...(xssObserver ? { xssObserver } : {}),
+    beforeProbe: async hook => { hooks.push(hook); },
+    plannerFactory: () => planner ?? ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-general-xss', category: 'stored_xss',
+        asset: 'POST /api/posts', rationale: 'Verify a fresh synthetic post in an isolated browser.',
+        evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-general-xss', hypothesisId: 'h-general-xss',
+        tool: 'known_stored_xss_canary', input: {} }] };
+    } }),
+  });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    return { run: await done, hooks };
+  } finally { await runtime.close(); }
+}
+
+test('current-run isolated Chromium callback independently confirms board stored XSS', async () => {
+  const { run, hooks } = await runRealBoardXssCanary(false);
+  assert.equal(run.status, 'completed', run.error);
+  const probe = run.report.probes.find(item => item.id === 'p-general-xss');
+  assert.equal(probe.status, 'confirmed', JSON.stringify(run.report.evidence));
+  assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-general-xss').status, 'confirmed');
+  assert.ok(run.report.scope.toolIds.includes('known_stored_xss_canary'));
+  const evidence = run.report.evidence.find(item => item.id === probe.evidenceIds[0]);
+  assert.equal(evidence.kind, 'browser-callback-comparison');
+  assert.match(evidence.summary, /main-frame browser callback=true; independent XSS verdict=confirmed/u);
+  assert.deepEqual(hooks.filter(item => item.tool === 'known_stored_xss_canary').map(item => item.method),
+    ['POST', 'POST', 'GET', 'GET', 'GET']);
+  assert.ok(hooks.filter(item => item.tool === 'known_stored_xss_canary')
+    .every(item => item.url.startsWith(run.target)));
+  assert.doesNotMatch(JSON.stringify(run.report), /<img data-ca3p-xss-marker|__ca3pXssProbe/u);
+});
+
+test('isolated Chromium without a callback leaves the exact persisted board canary not reproduced', async () => {
+  const { run } = await runRealBoardXssCanary(true);
+  assert.equal(run.status, 'completed', run.error);
+  const probe = run.report.probes.find(item => item.id === 'p-general-xss');
+  assert.equal(probe.status, 'not_reproduced');
+  assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-general-xss').status, 'not_reproduced');
+  const evidence = run.report.evidence.find(item => item.id === probe.evidenceIds[0]);
+  assert.match(evidence.summary, /main-frame browser callback=false; independent XSS verdict=not_reproduced/u);
+});
+
+test('a browser observation for a different canary cannot confirm the board XSS hypothesis', async () => {
+  const { run } = await runRealBoardXssCanary(false, async (origin, { postId }) => ({
+    executed: true, marker: '0'.repeat(32), postId, pageUrl: origin + '/',
+    postVisible: true, payloadPresent: true, bindingCalled: true, errors: [],
+  }));
+  assert.equal(run.status, 'completed', run.error);
+  assert.equal(run.report.probes[0].status, 'inconclusive');
+  assert.equal(run.report.findings[0].status, 'inconclusive');
+  assert.equal(run.report.evidence.find(item => item.kind === 'browser-callback-comparison')?.summary
+    .includes('did not match this run'), true);
+});
+
+test('mismatched XSS hypotheses cannot consume the one-shot isolated board canary', async () => {
+  const planner = { async propose(context) {
+    if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+    const evidenceIds = [context.evidence[0].id];
+    return { done: false, hypotheses: [
+      { id: 'wrong-xss-class', category: 'access_control', asset: 'POST /api/posts',
+        rationale: 'Wrong weakness class.', evidenceIds },
+      { id: 'wrong-xss-asset', category: 'stored_xss', asset: '/api/posts/1',
+        rationale: 'Concrete post is not the registered asset.', evidenceIds },
+      { id: 'valid-xss', category: 'stored_xss', asset: 'POST /api/posts',
+        rationale: 'Use one fresh canary on the registered endpoint.', evidenceIds },
+    ], probes: [
+      { id: 'wrong-class-probe', hypothesisId: 'wrong-xss-class', tool: 'known_stored_xss_canary', input: {} },
+      { id: 'wrong-asset-probe', hypothesisId: 'wrong-xss-asset', tool: 'known_stored_xss_canary', input: {} },
+      { id: 'valid-xss-probe', hypothesisId: 'valid-xss', tool: 'known_stored_xss_canary', input: {} },
+    ] };
+  } };
+  const { run, hooks } = await runRealBoardXssCanary(false, undefined, planner);
+  assert.equal(run.status, 'completed', run.error);
+  assert.deepEqual(run.report.probes.map(item => item.status), ['blocked', 'blocked', 'confirmed']);
+  assert.deepEqual(run.report.probes.slice(0, 2).map(item => item.reason),
+    ['hypothesis_tool_mismatch', 'hypothesis_tool_mismatch']);
+  assert.equal(hooks.filter(item => item.tool === 'known_stored_xss_canary').length, 5);
+});
+
 test('denied control that removes the canary never proceeds to candidate deletion', async () => {
   let candidateSent = 0;
   const runtime = createGeneralRuntime({
@@ -946,9 +1038,9 @@ test('web_info observes declared paths, extends scope, and rejects off-scope or 
   // web_info evidence is observation; the verifier never promotes it to a verdict.
   const pubEvidence = run.report.evidence.find(item => item.id === probe('w-pub').evidenceIds[0]);
   assert.equal(pubEvidence.kind, 'web-info');
-  assert.equal(pubEvidence.source, 'web-parser/vul-web2-daehan');
+  assert.equal(pubEvidence.source, 'web-parser/vul-web2-daehan/web-info-scope');
   const roleEvidence = run.report.evidence.find(item => item.id === probe('w-role').evidenceIds[0]);
-  assert.equal(roleEvidence.source, 'web-parser/vul-web2-daehan/role:owner');
+  assert.equal(roleEvidence.source, 'web-parser/vul-web2-daehan/web-info-scope/role:owner');
   // The fixed owner session cookie reached web-parser as a { name, value } pair.
   const roleCall = collected.find(item => new URL(item.url).pathname === '/mypage');
   assert.deepEqual(roleCall.cookies, [{ name: 'sess', value: 'partner1TOKEN1234567' }]);
@@ -957,6 +1049,32 @@ test('web_info observes declared paths, extends scope, and rejects off-scope or 
   assert.ok(run.report.scope.toolIds.includes('web_info'));
   assert.doesNotMatch(JSON.stringify(run.report), /TOKEN1234567/u);
   await runtime.close();
+});
+
+test('web_info evidence keeps a long run ID traceable without exceeding the source limit', async () => {
+  const longRunId = 'r'.repeat(128);
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => longRunId,
+    fetchImpl: universityLoginFetch(),
+    webParserCollect: async url => ({ info: fakeTargetInfo(url), summary: {} }),
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-long-run', category: 'configuration',
+        asset: '/', rationale: 'Observe a declared path.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-long-run', hypothesisId: 'h-long-run', tool: 'web_info', input: { path: '/' } }] };
+    } }),
+  });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    assert.equal(run.report.runId, longRunId);
+    const evidence = run.report.evidence.find(item => item.kind === 'web-info');
+    assert.match(evidence.source, /^web-parser\/vul-web2-daehan\/run-[a-f0-9]{16}$/u);
+    assert.ok(Buffer.byteLength(evidence.source, 'utf8') <= 128);
+  } finally { await runtime.close(); }
 });
 
 test('web_info honors cancellation mid-run', async () => {
@@ -1060,7 +1178,7 @@ test('web_info evidence shows the planner real page details from a browser witho
     assert.match(robotsPaths.summary, /"url":"\/hidden-admin","sources":\["robots:disallow"\]/u);
     assert.match(of('w-json')[0].summary, /HTTP 200 application\/json/u);
     const aliceSurface = of('w-alice').find(item => item.kind === 'web-info-surface');
-    assert.equal(aliceSurface.source, 'web-parser/vul-web-1/role:alice');
+    assert.equal(aliceSurface.source, 'web-parser/vul-web-1/web-info-evidence/role:alice');
     assert.match(aliceSurface.summary, /"name":"sid",/u);
     assert.match(aliceSurface.summary, /"name":"x-echo","value":"\[redacted\]"/u);
     assert.match(of('w-alice').find(item => item.kind === 'web-info-paths').summary, /"url":"\/echo\?ref \[redacted\]"/u);
@@ -1161,7 +1279,7 @@ test('web_info on heavy pages up to maxProbes keeps the real planner prompt unde
     for (const probe of probes.slice(fullCalls)) {
       const line = byId.get(probe.evidenceIds[0]);
       assert.equal(line.kind, 'web-info');
-      assert.match(line.summary, /^web_info \/: HTTP 200 text\/html; counts \{.*"paths":150.*\}; details withheld: evidence budget$/u);
+      assert.match(line.summary, /^web_info \/: HTTP 200 text\/html; counts \{.*"paths":150.*\}; origin=http:\/\/127\.0\.0\.1:4101; coverage\.partial=false; details withheld: evidence budget$/u);
       assert.ok(Buffer.byteLength(line.summary, 'utf8') <= 300);
     }
   } finally { await runtime.close(); }

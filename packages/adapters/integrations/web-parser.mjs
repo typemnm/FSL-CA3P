@@ -7,7 +7,7 @@
  *
  * The returned TargetInfo is an untrusted browser observation, not an API or
  * ownership assertion. Secret redaction is the core's job (redactSensitive), not
- * this module's, so the summary carries observed fields as-is (CONTRACT §6).
+ * this module's. The raw TargetInfo stays intact; the model summary is bounded.
  */
 
 import { collect as collectDefault } from '../../../web-parser/collect.mjs';
@@ -18,7 +18,38 @@ export const DEFAULT_TIMEOUT_MS = 15000;
 // Section count caps for the model summary; a truncated section carries { shown, total }.
 export const MAX_SUMMARY_BYTES = 40 * 1024;
 const CAPS = Object.freeze({ redirectChain: 20, headers: 50, cookies: 30, meta: 30,
-  technologies: 40, forms: 20, formFields: 20, links: 50, resources: 60, paths: 80 });
+  technologies: 40, forms: 20, formFields: 20, links: 50, resources: 60, paths: 80, errors: 20 });
+
+const jsonBytes = value => Buffer.byteLength(JSON.stringify(value), 'utf8');
+const partialCoverage = info => info.truncated === true
+  || Array.isArray(info.errors) && info.errors.length > 0
+  || Array.isArray(info.resources) && info.resources.some(resource => resource?.status == null)
+  || info.navigation?.status == null;
+
+/** Preserve whole Unicode characters and mark strings shortened only in the model-facing copy. */
+function shortened(value, maxBytes) {
+  if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  const marker = '…';
+  const room = Math.max(0, maxBytes - Buffer.byteLength(marker, 'utf8'));
+  let prefix = '';
+  let bytes = 0;
+  for (const character of value) {
+    const size = Buffer.byteLength(character, 'utf8');
+    if (bytes + size > room) break;
+    prefix += character;
+    bytes += size;
+  }
+  return prefix + (maxBytes >= Buffer.byteLength(marker, 'utf8') ? marker : '');
+}
+
+function shortenStrings(value, maxBytes) {
+  if (typeof value === 'string') return shortened(value, maxBytes);
+  if (Array.isArray(value)) return value.map(item => shortenStrings(item, maxBytes));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, shortenStrings(item, maxBytes)]));
+  }
+  return value;
+}
 
 /** A plain array when nothing was dropped, else { shown, total, items } so truncation is visible. */
 function section(list, cap, map = value => value) {
@@ -60,31 +91,45 @@ function build(info, caps) {
     paths: section(info.paths, caps.paths, path => ({ url: path.url, sources: path.sources,
       methods: path.methods, sameOrigin: path.sameOrigin, params: path.params,
       ...(path.wildcard ? { wildcard: true } : {}) })),
-    errors: info.errors ?? [],
+    errors: section(info.errors, caps.errors),
+    coverage: { partial: partialCoverage(info) },
     truncated: info.truncated === true,
   };
 }
 
 /**
- * Compact TargetInfo for the model. Fields are taken as-is (no masking); only the
- * item counts are capped, and a capped section keeps { shown, total } so the model
- * sees that it was truncated rather than silently losing entries (CONTRACT §3).
+ * Compact TargetInfo for the model. The raw observation is not modified or masked.
+ * Count caps and, for unusually large individual fields, string caps keep the
+ * execution envelope bounded. A capped section keeps { shown, total }; a string
+ * cap is marked with an ellipsis and summaryTruncated so omissions are visible.
  */
 export function summarizeTargetInfo(info, { maxBytes = MAX_SUMMARY_BYTES } = {}) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 256) throw new RangeError('maxBytes must be at least 256');
   const caps = { ...CAPS };
-  // A controlled lab page fits the default caps; shrink the widest sections only if an
-  // unusually large page would otherwise exceed the budget. shown/total stays honest.
-  for (let attempt = 0; attempt < 12; attempt += 1) {
+  // Prefer retaining intact values. Reduce only the item counts needed to fit.
+  for (let attempt = 0; attempt < 100; attempt += 1) {
     const summary = build(info, caps);
-    if (Buffer.byteLength(JSON.stringify(summary), 'utf8') <= maxBytes) return summary;
+    if (jsonBytes(summary) <= maxBytes) return summary;
     let widest = null;
     for (const key of Object.keys(caps)) {
-      if (caps[key] > 3 && (!widest || caps[key] > caps[widest])) widest = key;
+      if (caps[key] > 1 && (!widest || caps[key] > caps[widest])) widest = key;
     }
-    if (!widest) return summary; // every section already at the floor
-    caps[widest] = Math.max(3, Math.floor(caps[widest] / 2));
+    if (!widest) break;
+    caps[widest] = Math.max(1, Math.floor(caps[widest] / 2));
   }
-  return build(info, caps);
+  const summary = build(info, caps);
+  for (const stringBytes of [2048, 1024, 512, 256, 128, 64, 32]) {
+    const bounded = { ...shortenStrings(summary, stringBytes), summaryTruncated: true };
+    if (jsonBytes(bounded) <= maxBytes) return bounded;
+  }
+  // The smallest summary still tells the model that detail was omitted. This also
+  // bounds pathological nested fields such as a single enormous error message.
+  const minimal = { requestedUrl: shortened(info.target?.requestedUrl ?? '', 80),
+    finalUrl: shortened(info.target?.finalUrl ?? '', 80), status: info.navigation?.status ?? null,
+    coverage: { partial: true }, truncated: true, summaryTruncated: true,
+    detail: 'omitted: summary byte budget' };
+  if (jsonBytes(minimal) <= maxBytes) return minimal;
+  return { coverage: { partial: true }, truncated: true, summaryTruncated: true };
 }
 
 // The core ends the whole run on an evidence item whose summary exceeds 2048 UTF-8 bytes
@@ -108,10 +153,15 @@ const capped = (items, cap) => items.length > cap ? [...items.slice(0, cap), `+$
 function fitted(base, lead, sections) {
   const kept = sections.filter(section => section.items.length);
   const shown = kept.map(() => []);
-  const render = () => [lead, ...kept.map((section, index) => `${section.label} `
+  let boundedLead = lead;
+  const render = () => [boundedLead, ...kept.map((section, index) => `${section.label} `
     + `${shown[index].length}/${section.items.length}: [${shown[index].join(',')}]`)].join('; ');
   const fits = summary => Buffer.byteLength(summary, 'utf8') <= EVIDENCE_SUMMARY_BYTES
     && Buffer.byteLength(JSON.stringify({ ...base, summary }), 'utf8') <= EVIDENCE_JSON_BYTES;
+  while (!fits(render()) && Buffer.byteLength(boundedLead, 'utf8') > 3) {
+    boundedLead = shortened(boundedLead, Math.floor(Buffer.byteLength(boundedLead, 'utf8') / 2));
+  }
+  if (!fits(render())) return { ...base, summary: 'web_info detail omitted: evidence byte budget' };
   kept.forEach((section, index) => {
     for (const item of section.items) {
       shown[index].push(item);
@@ -143,8 +193,12 @@ export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRol
       return parsed.origin === info.target?.origin ? parsed.pathname + parsed.search : url;
     } catch { return url; }
   };
-  const subject = `web_info ${clean(asset)}${sessionRole ? ` as fixed ${sessionRole}` : ''}`;
-  const base = (suffix, kind) => ({ id: suffix ? `${idBase}-${suffix}` : idBase, source, kind, asset });
+  // The core accepts at most 512 UTF-8 bytes for evidence.asset. The full path
+  // stays in the raw TargetInfo; only the evidence label is shortened.
+  const evidenceAsset = shortened(clean(asset), 480);
+  const subject = `web_info ${evidenceAsset}${sessionRole ? ` as fixed ${shortened(clean(sessionRole), 80)}` : ''}`;
+  const base = (suffix, kind) => ({ id: suffix ? `${idBase}-${suffix}` : idBase,
+    source, kind, asset: evidenceAsset });
   const frames = [...list(structure.iframes).map(frame => ({ tag: 'iframe', src: frame.src, sandbox: frame.sandbox })),
     ...list(structure.frames).map(frame => ({ tag: 'frame', src: frame.src }))].filter(frame => frame.src);
   const finalUrl = info.target?.finalUrl;
@@ -154,17 +208,20 @@ export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRol
     links: list(structure.links).length, frames: frames.length, resources: list(info.resources).length,
     paths: list(info.paths).length, errors: list(info.errors).length };
   const status = `HTTP ${navigation.status ?? 'no response'} `
-    + clean(String(navigation.contentType ?? 'unknown').slice(0, 80));
+    + shortened(clean(String(navigation.contentType ?? 'unknown')), 160);
+  const origin = `origin=${shortened(clean(String(info.target?.origin ?? 'unknown')), 180)}`;
+  const coverage = `coverage.partial=${partialCoverage(info)}`;
   if (mode === 'minimal') {
     return [{ ...base('', 'web-info'), summary: `${subject}: ${status}; counts ${JSON.stringify(counts)}`
-      + '; details withheld: evidence budget' }].slice(0, Math.max(0, remaining));
+      + `; ${origin}; ${coverage}; details withheld: evidence budget` }].slice(0, Math.max(0, remaining));
   }
   // Lead fields are capped so the lead alone always fits; lists are trimmed by whole items.
   const overview = fitted(base('', 'web-info'), `${subject}: ${status}`
-    + (finalUrl && finalUrl !== info.target?.requestedUrl ? `; final ${clean(String(finalUrl).slice(0, 300))}` : '')
+    + (finalUrl && finalUrl !== info.target?.requestedUrl
+      ? `; final ${shortened(clean(String(finalUrl)), 256)}` : '')
     // A control character would JSON-escape to 6 bytes; drop them so the capped lead stays small.
-    + (title ? `; title ${encode(title.slice(0, 100).replace(/[\u0000-\u001f\u007f]/gu, ' '))}` : '')
-    + `; counts ${JSON.stringify(counts)}`, [
+    + (title ? `; title ${encode(shortened(title.replace(/[\u0000-\u001f\u007f]/gu, ' '), 200))}` : '')
+    + `; counts ${JSON.stringify(counts)}; ${origin}; ${coverage}`, [
     { label: 'redirects', items: list(navigation.redirectChain)
       .map(hop => encode(compact({ kind: hop.kind, status: hop.status }))) },
     { label: 'technologies', items: list(info.technologies).map(tech => encode(compact({
@@ -204,7 +261,10 @@ export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRol
 export async function collectWebInfo(url, { cookies, signal, timeoutMs = DEFAULT_TIMEOUT_MS,
   collectImpl = collectDefault } = {}) {
   const budget = Math.min(timeoutMs, DEFAULT_TIMEOUT_MS);
-  const info = await collectImpl(url, { timeoutMs: budget,
-    ...(cookies ? { cookies } : {}), ...(signal ? { signal } : {}) });
+  // The general loop is authorized for one origin, including public observations.
+  // Keep every redirect hop and browser resource inside it.
+  const info = await collectImpl(url, { timeoutMs: budget, sameOriginOnly: true,
+    ...(cookies ? { cookies } : {}),
+    ...(signal ? { signal } : {}) });
   return { info, summary: summarizeTargetInfo(info) };
 }

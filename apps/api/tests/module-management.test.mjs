@@ -6,7 +6,8 @@ test('module management shows deployed configuration and bounded run logs withou
   const modules = createModuleManagement({
     platformProvider: async () => ({ source: { commitSha: 'revision-test' }, modules: [
       { id: 'attack-module', status: 'active', version: '1.0', contentDigest: 'attack-digest', path: 'attack-module' },
-      { id: 'xss-parser', status: 'active', version: '2.0', contentDigest: 'parser-digest', path: 'xss-parser' },
+      { id: 'xss-parser', status: 'active', version: '2.0', contentDigest: 'legacy-parser-digest', path: 'xss-parser' },
+      { id: 'web-parser', status: 'active', version: '0.1.0', contentDigest: 'parser-digest', path: 'web-parser' },
       { id: 'models', status: 'active', contentDigest: 'model-digest', path: 'packages/models' },
     ] }),
     runtime: {
@@ -26,8 +27,12 @@ test('module management shows deployed configuration and bounded run logs withou
   assert.equal(list.modules[0].contentDigest, 'attack-digest');
   const parser = await modules.config('web-parser');
   assert.equal(parser.config.runtimeModuleId, 'web-parser');
+  assert.equal(parser.config.integrationId, 'web-parser');
+  assert.equal(parser.config.path, 'web-parser');
   assert.equal(parser.revision, 'parser-digest');
   assert.equal(parser.editable, false);
+  const parserLogs = await modules.logs('web-parser');
+  assert.equal(parserLogs.logs[0].module, 'xss-parser', 'legacy parser events remain visible');
   const llm = await modules.config('llm');
   assert.equal(llm.config.models[0].id, 'rule-baseline');
   const attackLogs = await modules.logs('attack');

@@ -37,6 +37,7 @@ test('summary carries observed fields as-is and stays within the byte budget', (
   assert.equal(summary.finalUrl, 'http://127.0.0.1/app');
   assert.equal(summary.status, 200);
   assert.equal(summary.title, 'Lab Portal');
+  assert.deepEqual(summary.coverage, { partial: false });
   assert.deepEqual(summary.redirectChain, [{ from: 'http://127.0.0.1/', to: 'http://127.0.0.1/app', status: 302, kind: 'http' }]);
   // Values are not masked by the adapter; the core's redactSensitive owns that (CONTRACT §6).
   assert.equal(summary.cookies[0].value, 'secret123');
@@ -70,6 +71,21 @@ test('an oversized page is shrunk by count to fit 40KB while recording totals', 
   assert.ok(summary.paths.shown < 2000);
 });
 
+test('one oversized observed string cannot bypass the model summary byte limit', () => {
+  const huge = '한'.repeat(30_000);
+  const info = targetInfo({ headers: [{ name: 'X-Large', value: huge }],
+    errors: [{ stage: 'extract', message: huge }] });
+  const summary = summarizeTargetInfo(info);
+  assert.ok(Buffer.byteLength(JSON.stringify(summary), 'utf8') <= MAX_SUMMARY_BYTES);
+  assert.equal(summary.summaryTruncated, true);
+  assert.equal(info.headers[0].value, huge, 'the raw browser observation remains intact');
+  assert.equal(info.errors[0].message, huge);
+  const execution = { kind: 'web_info', result: summary, evidence: evidenceFromTargetInfo(info,
+    { idBase: 'probe-oversized', source: 'web-parser/test', asset: '/app' }) };
+  assert.ok(Buffer.byteLength(JSON.stringify(execution), 'utf8') <= 64 * 1024,
+    'the core must accept the execution envelope');
+});
+
 const evidenceOptions = { idBase: 'probe-abc', source: 'web-parser/test', asset: '/app' };
 
 /** `label shown/total: [...]` from an evidence summary; JSON.parse fails if an item was cut mid-way. */
@@ -92,6 +108,8 @@ test('evidence gives the model form fields, paths and technologies but no cookie
     ['probe-abc-surface', 'web-info-surface', 'web-parser/test', '/app']]);
   const [overview, paths, surface] = evidence.map(item => item.summary);
   assert.match(overview, /^web_info \/app as fixed owner: HTTP 200 text\/html; final http:\/\/127\.0\.0\.1\/app; title "Lab Portal"/u);
+  assert.match(overview, /origin=http:\/\/127\.0\.0\.1/u);
+  assert.match(overview, /coverage\.partial=false/u);
   assert.deepEqual(listIn(overview, 'technologies').items, [{ name: 'React', version: '18.2.0', categories: ['JavaScript frameworks'] }]);
   assert.deepEqual(listIn(overview, 'redirects').items, [{ kind: 'http', status: 302 }]);
   assert.deepEqual(listIn(paths, 'paths').items, [{ url: '/about', sources: ['link'] }]);
@@ -137,6 +155,22 @@ test('a large page stays within the core evidence limits and trims lists by whol
   assert.equal(lists[2].items[0].fields.at(-1), '+50 more');
 });
 
+test('long Unicode paths and document labels stay inside every core evidence field limit', () => {
+  const longPath = '/' + '경로'.repeat(2_000);
+  const info = targetInfo({ target: { requestedUrl: 'http://127.0.0.1/',
+    finalUrl: 'http://127.0.0.1' + longPath, origin: 'http://127.0.0.1' },
+  navigation: { status: 200, contentType: 'text/' + '한'.repeat(500), redirectChain: [] },
+  html: '<title>' + '제목'.repeat(1_000) + '</title>' });
+  const evidence = evidenceFromTargetInfo(info, { ...evidenceOptions, asset: longPath });
+  assert.ok(evidence.length > 0);
+  for (const item of evidence) {
+    assert.ok(Buffer.byteLength(item.asset, 'utf8') <= 512);
+    assert.ok(Buffer.byteLength(item.summary, 'utf8') <= 2048);
+    assert.ok(Buffer.byteLength(JSON.stringify(item), 'utf8') <= 4096);
+  }
+  assert.match(evidence[0].asset, /…$/u);
+});
+
 test('evidence respects the remaining budget and tolerates non-HTML or empty observations', () => {
   assert.deepEqual(evidenceFromTargetInfo(targetInfo(), { ...evidenceOptions, remaining: 1 }).map(item => item.kind), ['web-info']);
   assert.deepEqual(evidenceFromTargetInfo(targetInfo(), { ...evidenceOptions, remaining: 0 }), []);
@@ -149,6 +183,15 @@ test('evidence respects the remaining budget and tolerates non-HTML or empty obs
   assert.match(json[0].summary, /^web_info \/app: HTTP 200 application\/json; counts \{"headers":1,/u);
   assert.doesNotMatch(JSON.stringify(json), /BODY-VALUE/u);
   assert.match(evidenceFromTargetInfo({}, evidenceOptions)[0].summary, /^web_info \/app: HTTP no response unknown; counts/u);
+  assert.match(evidenceFromTargetInfo({}, evidenceOptions)[0].summary, /origin=unknown/u);
+  assert.match(evidenceFromTargetInfo({}, evidenceOptions)[0].summary, /coverage\.partial=true/u);
+  const partial = targetInfo({ errors: [{ stage: 'extract', message: 'timed out' }] });
+  assert.deepEqual(summarizeTargetInfo(partial).coverage, { partial: true });
+  assert.match(evidenceFromTargetInfo(partial, evidenceOptions)[0].summary, /coverage\.partial=true.*error stages 1\/1:/u);
+  const failedResource = targetInfo({ resources: [{ kind: 'image', method: 'GET',
+    url: 'http://127.0.0.1:9999/logo.png', status: null }] });
+  assert.deepEqual(summarizeTargetInfo(failedResource).coverage, { partial: true });
+  assert.match(evidenceFromTargetInfo(failedResource, evidenceOptions)[0].summary, /coverage\.partial=true/u);
 });
 
 test('masked values stay inside whole JSON items and are unchanged when the core masks the summary again', () => {
@@ -176,6 +219,10 @@ test('collectWebInfo returns the raw TargetInfo and its summary, bounding timeou
   assert.equal(summary.status, 200);
   assert.equal(seen[0].opts.timeoutMs, 15000);
   assert.deepEqual(seen[0].opts.cookies, [{ name: 'sid', value: 'lab-1' }]);
+  assert.equal(seen[0].opts.sameOriginOnly, true, 'an authenticated browser cannot follow cross-origin requests');
+  await collectWebInfo('http://127.0.0.1/app', {
+    collectImpl: async (_url, opts) => { seen.push({ opts }); return info; } });
+  assert.equal(seen[1].opts.sameOriginOnly, true, 'public observations stay within the authorized origin');
 });
 
 test('collectWebInfo observes a real loopback page and forwards a cookie to it', async () => {

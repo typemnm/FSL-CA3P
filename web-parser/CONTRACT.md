@@ -1,7 +1,7 @@
 # web-parser — 모듈 계약 (초안)
 
-- 상태: 초안 v0.7 (P3.1: `signal`(취소)·`cookies`(요청 호스트에 심는 쿠키) 옵션) · 2026-10-29 · 브랜치 `woohyun212/web-parser` (← develop `998cf22`)
-- 소유: woohyun. **xss-parser를 대체**(xss-parser는 deprecated 예정).
+- 상태: 초안 v0.8 (P3.2: 인증 관측용 `sameOriginOnly` 요청 제한) · 2026-10-29 · `web-parser-1` 출력 계약
+- 소유: woohyun. 범용 웹 정보 관측은 `web-parser`가 담당한다. 기존 단일 XSS의 브라우저 실행 검증은 `xss-parser` 경로를 유지한다.
 
 ## 1. 역할
 **Agent가 정한 endpoint**를 입력받아 그 문서의 **웹 정보를 수집**해 Agent에 넘기는 **취약점 종류 무관(XSS/IDOR/SQLi 독립)
@@ -21,7 +21,7 @@
   (URL마다 별도 격리 브라우저 세션, §5). 결과도 입력 순서:
   `{ url, ok:true, targetInfo } | { url, ok:false, error:{ message } }`. 한 URL의 실패(reject)는 배열 안에 담기고 나머지를
   멈추지 않는다. 배열·`opts` 검증 오류만 reject(방문 전에): 배열이 아니거나 비었거나, 문자열이 아닌 항목·빈 슬롯(희소 배열),
-  `opts`가 객체가 아님, `timeoutMs`·`waitUntil`·`ignoreHTTPSErrors`·`userAgent`(문자열)·`signal`·`cookies` 오류, `maxPages`.
+  `opts`가 객체가 아님, `timeoutMs`·`waitUntil`·`ignoreHTTPSErrors`·`userAgent`(문자열)·`signal`·`cookies`·`sameOriginOnly` 오류, `maxPages`.
   예외로 `signal` abort는 **호출 전체를 reject**한다(아래 `signal`).
 - **필수**: `url` (http/https 임의 대상).
 - **선택** (`opts`는 생략·`null` 모두 `{}`로 취급):
@@ -52,6 +52,10 @@
     문자열이며 RFC 6265 token 문자만(`=`·`;`·공백·제어문자 등 구분자 불가), `value`는 문자열(제어문자·`;` 불가, 빈 문자열 허용),
     앞뒤 공백 없음, `name`+`value` UTF-8 4096바이트 이하(뒤 두 가지는 Chromium이 거부하는 쿠키라 기동 전에 걸러 낸다).
     `name`·`value` 외 필드는 무시. 심은 쿠키는 `TargetInfo.cookies`(jar 전체, §3)에 그대로 나온다(별도 표시·가공 없음).
+  - `sameOriginOnly` (boolean, 기본 `false`; 모듈 API 전용, CLI 옵션 없음): `true`면 탐색 전에 브라우저 요청을 요청 URL의
+    origin(스킴·호스트·포트)으로 제한한다. 다른 origin으로 향하는 리다이렉트와 하위 리소스 요청은 네트워크 전송 전에 중단된다.
+    인증 쿠키는 포트로 격리되지 않으며 범용 Agent의 공개·인증 관측 모두 선택 원점 밖으로 나가지 않도록 이 옵션을 사용한다.
+    차단된 요청은 일반 탐색/리소스 실패로 기록된다.
 - CLI: `web-parser (--url <URL> | --urls-file <file>)... [--out file] [--timeout-ms N] [--wait-until load|networkidle]
   [--user-agent UA] [--ignore-https-errors true|false]`. `--url`은 반복 가능, `--urls-file`은 단독으로도 되고 한 줄에 URL 하나
   (빈 줄과 **줄 전체가** `#`로 시작하는 주석만 무시 — 줄 끝 ` # note`는 URL에 남는다), 둘 다 주면 `--url` 먼저. URL이 **1개**면
@@ -233,21 +237,19 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
 - `schemaVersion`은 **자체 네임스페이스**(`web-parser-1`) — 기존 xss-parser의 `3.4`와 무관.
 - 취약점 흔적/판정 필드 없음(역할상 중립).
 
-## 4. Agent 호출 입출력 구조 (와이어)
-- 모듈은 **독립 완성이 우선**(§8 P1). Agent 연동은 입출력 **형태만 지금 정리**하고 결선은 P3.
-- **URL 하나당 요청 1회 (사용자 결정)**: operation `collect_web_info`, payload `{ url, opts? }` → result
-  `{ type:"web_info", targetInfo }` (`targetInfo` = `collect(url, opts)`의 `TargetInfo`, §3). Agent는 필요할 때 같은 URL을
-  **언제든 다시 요청**할 수 있고, 호출마다 새 격리 세션(§5)이라 이전 호출의 영향이 없다. web-parser는 **호출 사이에 아무 상태도
-  기억하지 않는다**(커서·세션·결과 보관 없음). 목록을 한 번에 보내고 묶음으로 받는 방식은 검토 후 기각.
-- `collectEach`는 CLI·일괄 처리용 편의 기능(§2)이며 Agent 경로가 아니다(Agent 경로는 `collect(url)`).
-- ⚠️ **P3 제약**(현재 `agent/src/protocol.js` 기준, 모듈은 수정하지 않음):
-  1. **시간**: Agent의 기본 invoke 타임아웃(`DEFAULT_GATEWAY_TIMEOUT_MS`) 10,000ms < 페이지 예산(`timeoutMs` 기본 30,000,
-     최대 약 `3 × timeoutMs` + 기동, §2) — 호출 측이 그보다 긴 타임아웃을 넘겨야 한다.
-  2. **크기**: 봉투 상한은 직렬화된 메시지 전체 1,000,000 UTF-8 바이트(`MAX_MESSAGE_BYTES`). `html` 상한이 5,000,000자이므로
-     아주 큰 페이지는 `TargetInfo` 하나만으로 1MB 봉투를 넘을 수 있다.
-- ⚠️ **이 와이어 결선(protocol.js의 sender id·operation·result 검증, orchestrator 호출)은 agent 코어
-  소유자(1mn2147) 조율 필요.** xss-parser를 대체하므로 기존 `parser.result`/`parse_site`/sender
-  `xss-parser` 경로의 처분도 함께 정해야 함. 모듈 쪽 계약(이 문서)은 그와 독립으로 먼저 확정.
+## 4. Agent 연동 계약
+- 범용 런타임의 `web_info` 도구는 URL 하나당 `packages/adapters/integrations/web-parser.mjs`의 `collectWebInfo()`를
+  호출한다. 어댑터는 `collect(url, { timeoutMs, signal, cookies, sameOriginOnly })`를 사용하고 원본 `TargetInfo`
+  (`schemaVersion: "web-parser-1"`, §3)와 크기를 제한한 요약을 반환한다. 범용 점검의 공개·인증 호출 모두
+  `sameOriginOnly`를 켜 선택한 원점 밖의 요청을 차단한다.
+- 런타임은 모델에 원본 HTML·쿠키 값을 보내지 않고 `evidenceFromTargetInfo()`가 만든 제한된 증거를 보낸다.
+  증거에는 출처·실행 ID·원점·`coverage.partial`을 남기며, 관측만으로 취약점을 확정하지 않는다.
+  코어 실행 결과 상한 64 KiB, 증거 요약 상한 2048바이트, 증거 항목 상한 4096바이트에 맞춘다.
+- Agent는 필요하면 같은 URL을 다시 요청할 수 있다. 호출마다 새 격리 세션(§5)이므로 web-parser는 호출 사이
+  상태를 기억하지 않는다. `collectEach`는 CLI·일괄 처리용이고 범용 Agent 경로가 아니다.
+- `agent/src/protocol.js`의 JSON envelope v1.0은 기존 단일 XSS/IDOR `runOnce()`의 `xss-parser` 출력 v3.4와
+  실행 확인에만 사용한다. 기존 `xss-parser`의 `structure-1.0` 구조 투영도 별개로 유지한다. 범용
+  `web-parser-1`은 두 레거시 출력과 서로 대입하거나 `parser.result`/`parse_site` 와이어에 넣지 않는다.
 
 ## 5. 브라우저 세션 격리 (요구사항)
 - **다른 모듈/Agent와 같은 Chrome을 공유하지 않는다.** 매 수집마다 **자체 Chromium 인스턴스**를
@@ -286,10 +288,10 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
 - **P2.4**: `paths` 통합 색인(§3), 빠진 URL 출처(`<link>`·`<area>`·formaction·`<frame>`·`<embed>`·`<object>`·meta refresh·srcset)를
   structure에 추가, `resources[].method`, 비 HTML 텍스트 응답 `body`, robots.txt/sitemap 파싱. 동시 실행 상한은 넣지 않음(결정).
 - **P3.1**: `collect`·`collectEach`의 `signal`(시작 전·진행 중 abort → `AbortError` reject, 브라우저·프로필 정리)과 `cookies`(요청
-  URL 호스트 한정 host-only 쿠키) 옵션(§2). 범용 점검 런타임의 도구 결선(어댑터·도구 등록)은 다음 작업.
-- **P3 (Agent 연동, 1mn2147 조율)**: §4 결선과 Agent 쪽 시간·봉투 1MB 제약(§4), xss-parser 경로 대체·폐기,
-  integration-manifest에서 모듈 id 교체.
-- **P4 (정리)**: xss-parser deprecate(매니페스트·어댑터·테스트 정리), 문서화.
+  URL 호스트 한정 host-only 쿠키) 옵션(§2).
+- **P3.2**: 인증 관측 시 `sameOriginOnly`로 리다이렉트의 모든 홉과 하위 리소스 요청을 요청 URL의 origin으로 제한(§2).
+- **P3 (Agent 연동)**: §4의 `web_info` 직접 결선, 제한 증거, 취소·인증 쿠키·실행 ID 출처를 구현한다.
+- **P4 (정리)**: 단일 XSS 실행 검증을 이전할 안전한 계약과 회귀 검증이 마련된 뒤 `xss-parser` 폐기를 검토한다.
 
 ## 9. 테스트
 - `npm test` = `test/collect.test.mjs`(실제 Chromium, 테스트 프로세스 안 127.0.0.1 HTTP 픽스처) + `test/fingerprint.test.mjs`
@@ -297,7 +299,7 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   파일 안에 타임아웃. 부하에 민감한 벽시계 단언은 두지 않는다 — Worker 재사용·Worker 경유는 생성/메시지 횟수로 확인.
 - 수집: `TargetInfo` 형태, 크롤 없음(endpoint 1개만 방문, `maxPages` 거부), `collectEach`(순서·실패 격리·세션 격리), 리다이렉트
   체인, 3xx 후 실패(V2), 같은 URL 재로드의 문서 일관성(V1), 비 HTML 판정(V0), 행 걸린 페이지·JS 전역 종료(V9), 큰 DOM에서 핵심
-  추출 우선 + JS 전역 유지(V8: 비싼 DOM 셀렉터를 더한 데이터셋 사본, 정확히 `dom: timeout`), 페이지 안 상한(V4: 60M자 페이지),
+  추출 우선 + JS 전역 유지(V8: 비싼 DOM 셀렉터를 더한 데이터셋 사본, 정확히 `dom: timeout`), 페이지 안 상한(V4: 20M자 페이지),
   매처 최악 입력이 Worker 메시지 1건으로 처리됨(V5), 깨진·없는 데이터셋(V7), 응답 없는 에러 페이지 미보고(W0), 끝나지 않는 착지
   문서 재추출 + `load: timeout`(W1), 본문이 나눠 오는 착지 문서의 늦은 링크까지 추출(G0/G2), 진행 중 내비게이션 정지(W2: load
   전·후·POST 폼, 응답하는 리다이렉트는 따라감; G1/G4: load 후 0–25ms 지연으로 시작하는 내비게이션·meta refresh 0 — DOM·JS 전역
@@ -313,6 +315,8 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   제거, 성공 뒤 abort 무영향, `collectEach` 중 abort → 전체 reject·남은 URL 미실행, 쿠키가 요청 서버에 도달(`Cookie` 에코)·jar에
   그대로, `localhost` 서브리소스·`localhost`로의 리다이렉트에는 쿠키 없음, 잘못된 `cookies`(배열 아님·51개·이름·값)와 `signal`은
   브라우저 기동 전에 reject.
+- 인증 경계: `sameOriginOnly`로 동일 호스트의 다른 포트에 있는 리다이렉트 대상·하위 리소스를 네트워크 전에 차단하고,
+  요청 origin의 문서·리소스에는 심은 쿠키를 보낸다.
 - TLS(`ignoreHTTPSErrors` 기본 true의 자체서명 수용, `securityDetails`, false의 reject)는 **테스트 없음**.
 - 어댑터: dom 속성 버전, xhr(host+path), 3단계 `requires` 체인, `requiresCategory`, implies로만 충족되는 requirement, excludes,
   중복 detection confidence, 이름 정규화·`constructor`/`__proto__`(V6), html 표본(가운데는 버리고 끝은 매치), Worker 데드라인(V5),
@@ -321,9 +325,9 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   (`LIBRARY_CATEGORIES` 이름, implies/excludes/requires 대상 존재).
 - 비밀 경계는 수집기 밖(영속화/전송) 책임이므로 모듈 테스트 범위 밖 — 경계 지점에서 별도 검증.
 
-## 10. xss-parser 폐기(deprecation)
-- web-parser가 Agent 경로를 대체하면 xss-parser의 wire(`xss-parser` sender, `parse_site`),
-  integration-manifest 항목, 어댑터, 테스트 스위트를 순차 제거/치환. P3~P4에서 1mn2147·매니페스트와 조율.
+## 10. 기존 xss-parser 경로
+- 범용 웹 정보 관측에는 `web-parser-1`을 사용한다. 단일 `stored_xss_canary`의 스캔 v3.4와 독립 브라우저
+  콜백 검증에는 `xss-parser` 와이어·어댑터·테스트를 유지한다. 두 출력 버전은 서로 대입하지 않는다.
 
 ## 11. 백로그
 - **JS 코드 안의 API 경로 추출**(정적 분석) — 백로그. 인라인·외부 스크립트(와 JSON 본문)의 문자열·`fetch`/XHR 호출에서 경로를
