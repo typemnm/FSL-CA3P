@@ -71,7 +71,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
         methods: ['GET', 'HEAD'], maxRequests: options.scope.maxRequests,
         maxResponseBytes: options.scope.maxResponseBytes, requestTimeoutMs: options.scope.requestTimeoutMs,
         maxDurationMs: options.scope.maxDurationMs,
-        redirects: 'manual-no-follow', mutationRetry: 'never', targetReset: 'unavailable',
+        redirects: 'manual-no-follow', mutationRetry: 'never', targetReset: 'not-required-read-only',
         recovery: 'interrupted-new-run-required', maxIterations: 1 },
       environment: { nodeVersion: process.version, pythonVersion: 'not-applicable',
         browserVersion: 'not-applicable', playwrightVersion: 'not-applicable',

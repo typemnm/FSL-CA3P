@@ -32,6 +32,18 @@ function setup(t, options = {}) {
   return { service, open, calls, directory, storePath };
 }
 
+function recordReadOnlyExternalObservation(service, id) {
+  service.store.createRun({ id, mode: 'external-general', modelId: 'rule-baseline',
+    manifest: { runId: id, target: { kind: 'external', origin: 'https://example.org' } },
+    state: { id, status: 'queued', mode: 'external-general', modelId: 'rule-baseline',
+      testProfile: 'external-read-only', fixtureId: null, targetKind: 'external',
+      target: 'https://example.org/start', targetContacted: true,
+      simulated: false, events: [] },
+    options: { mode: 'external-general', modelId: 'rule-baseline', testProfile: 'external-read-only',
+      fixtureId: null, target: 'https://example.org/start' } });
+  service.store.requestCancel(id);
+}
+
 test('confirmed reset removes all central history and publishes a new experiment epoch', async t => {
   const { service, open, calls } = setup(t);
   const first = await service.start({ mode: 'core-fixture' });
@@ -250,6 +262,45 @@ test('history clear of isolated runs advances the epoch and permits another run'
   assert.equal(result.experiment.status, 'ready');
   assert.equal(result.experiment.epoch, 1);
   assert.equal(service.listRuns().total, 0);
+  const next = await service.start({ mode: 'core-fixture' });
+  assert.equal(next.run.manifest.experiment.epoch, 1);
+});
+
+test('read-only external observation can be fully reset without a target hook', async t => {
+  const { service } = setup(t, { experimentCleanupFactory: prepareExperimentCleanup });
+  recordReadOnlyExternalObservation(service, 'external-read-only-reset');
+  const reset = await service.resetExperiment({ confirmed: true });
+  assert.equal(reset.experiment.status, 'ready');
+  assert.equal(reset.experiment.epoch, 1);
+  assert.deepEqual(reset.experimentReset.targets.targets, []);
+  assert.equal(service.listRuns().total, 0);
+  assert.deepEqual(service.store.pendingTargetResets(), []);
+  const next = await service.start({ mode: 'core-fixture' });
+  assert.equal(next.run.manifest.experiment.epoch, 1);
+});
+
+test('a previous failed reset of a read-only external run can be retried', async t => {
+  const { service, open } = setup(t, { experimentCleanupFactory: prepareExperimentCleanup });
+  recordReadOnlyExternalObservation(service, 'external-read-only-retry');
+  const owner = 'previous-external-reset';
+  service.store.beginExperimentReset(owner);
+  service.store.failExperimentReset(owner);
+  assert.equal(service.getState().experiment.status, 'failed');
+  const restarted = open();
+  const reset = await restarted.resetExperiment({ confirmed: true });
+  assert.equal(reset.experiment.status, 'ready');
+  assert.equal(restarted.listRuns().total, 0);
+  const next = await restarted.start({ mode: 'core-fixture' });
+  assert.equal(next.run.manifest.experiment.epoch, 1);
+});
+
+test('clearing read-only external history leaves no target restoration obligation', async t => {
+  const { service } = setup(t);
+  recordReadOnlyExternalObservation(service, 'external-read-only-history');
+  await service.clearRunHistory({ confirmed: true });
+  assert.equal(service.getState().experiment.status, 'ready');
+  assert.equal(service.listRuns().total, 0);
+  assert.deepEqual(service.store.pendingTargetResets(), []);
   const next = await service.start({ mode: 'core-fixture' });
   assert.equal(next.run.manifest.experiment.epoch, 1);
 });

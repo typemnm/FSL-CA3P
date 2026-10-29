@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../../packages/run-store/index.mjs';
+import { targetResetObligationsForRuns } from '../../application/experiment-targets.mjs';
 import { normalizeExternalTarget } from '../../application/external-target.mjs';
 import { runWorker } from '../worker.mjs';
 
@@ -50,6 +51,7 @@ test('external worker observes public pages, stores the report, and skips HWPX w
   assert.deepEqual(requested, [normalizedUrl]);
   assert.equal(final.targetContacted, true);
   assert.equal(final.report.inspectionMode, 'external-read-only');
+  assert.deepEqual(targetResetObligationsForRuns([final]), []);
   assert.deepEqual(final.report.findings, []);
   assert.deepEqual(final.report.policyRejections,
     { total: 1, byReason: { out_of_scope_path: 1 } });
