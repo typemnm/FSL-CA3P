@@ -8,6 +8,8 @@ test('model registry exposes a real rule baseline without credentials', () => {
   assert.ok(models.slice(1).every(row => !row.available));
   assert.ok(models.slice(1).every(row => row.supportedModes.includes('local-lab-general')));
   assert.ok(!models[0].supportedModes.includes('local-lab-general'));
+  assert.deepEqual(models.map(row => row.mode), ['local-lab-rule', 'local-lab-general', 'local-lab-general']);
+  assert.ok(models.every(row => !row.supportedModes.some(mode => ['core-fixture', 'local-lab-deepseek'].includes(mode))));
   assert.equal(typeof createModelReasoning('rule-baseline').reflect, 'function');
   assert.throws(() => createModelReasoning('unregistered'), /등록되지/);
 });

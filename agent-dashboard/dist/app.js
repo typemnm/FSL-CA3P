@@ -929,7 +929,7 @@ async function loadWorkspace() {
     const payload = await runtime.getModels();
     if (generation !== workspaceGeneration) return;
     const previous = $('model-select').value;
-    models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string' && item.provider === 'deepseek' && item.mode === 'local-lab-deepseek') : [];
+    models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string' && item.provider === 'deepseek' && item.mode === 'local-lab-general') : [];
     $('model-select').innerHTML = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
     $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
     renderStats();

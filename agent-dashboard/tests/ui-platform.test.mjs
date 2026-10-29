@@ -12,8 +12,8 @@ function snapshot(id, mode = 'core-fixture') {
 }
 const idle = { ...snapshot('', 'core-fixture'), id: null, status: 'idle', events: [], snapshots: {}, totalSteps: 19, step: 0 };
 const wrap = run => ({ instanceId: 'test-server', mode: run.mode, run, lab: { available: false } });
-const resetModels = [{ id: 'deepseek-primary', name: 'DeepSeek Primary', provider: 'deepseek', mode: 'local-lab-deepseek', available: true },
-  { id: 'deepseek-flash', name: 'DeepSeek Flash', provider: 'deepseek', mode: 'local-lab-deepseek', available: true }];
+const resetModels = [{ id: 'deepseek-primary', name: 'DeepSeek Primary', provider: 'deepseek', mode: 'local-lab-general', available: true },
+  { id: 'deepseek-flash', name: 'DeepSeek Flash', provider: 'deepseek', mode: 'local-lab-general', available: true }];
 async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   const server = http.createServer(async (req, res) => {
     try {

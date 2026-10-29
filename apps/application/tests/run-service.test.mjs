@@ -174,6 +174,7 @@ test('general assessment requires a real configured model and registered target 
     { mode: 'local-lab-general', fixtureId: 'unknown', modelId: 'deepseek-flash' },
     { mode: 'local-lab-general', fixtureId: 'vul-web-1', modelId: 'deepseek-flash', target: 'http://127.0.0.1:4101' },
     { mode: 'local-lab-general', fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash', testProfile: 'known_record_idor_read' },
+    { fixtureId: 'vul-web-1', testProfile: 'known_record_idor_read' },
   ]) await assert.rejects(configured.start(options), { status: 400 });
   assert.equal(service.listRuns().total, 0);
   assert.equal(configured.listRuns().total, 0);
@@ -220,10 +221,62 @@ test('university fixtures reject public or malformed targets, AI modes and incom
     { fixtureId: 'vul-web2-daehan', mode: 'local-lab-rule', modelId: 'deepseek-flash' },
     { fixtureId: 'vul-web2-daehan', mode: 'core-fixture' },
     { fixtureId: 'vul-web2-daehan', testProfile: 'stored_xss_canary' },
-    { fixtureId: 'vul-web-1', testProfile: 'known_record_idor_read' },
   ]) await assert.rejects(service.start(options), { status: 400 });
-  await assert.rejects(service.startLab({ fixtureId: 'vul-web2-wonchang', modelId: 'deepseek-flash' }), { status: 400 });
+  // A model-backed lab request is now a general assessment, which needs a configured model.
+  await assert.rejects(service.startLab({ fixtureId: 'vul-web2-wonchang', modelId: 'deepseek-flash' }), { status: 503 });
   assert.equal(service.listRuns().total, 0);
+});
+
+test('retired single-check modes and profiles are rejected before queuing over the service and HTTP API', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: 'test-key', CASPER_DB_PYTHON: 'unavailable-python-for-retired' } });
+  for (const [options, code] of [
+    [{ mode: 'core-fixture' }, 'RETIRED_MODE'],
+    [{ mode: 'core-fixture', target: 'https://display.invalid', delayMs: 0 }, 'RETIRED_MODE'],
+    [{ mode: 'local-lab-deepseek', modelId: 'deepseek-flash' }, 'RETIRED_MODE'],
+    [{ mode: 'local-lab-rule' }, 'RETIRED_MODE'],
+    [{ mode: 'local-lab-rule', fixtureId: 'vul-web-1', modelId: 'rule-baseline' }, 'RETIRED_MODE'],
+    [{ testProfile: 'stored_xss_canary' }, 'RETIRED_PROFILE'],
+    [{ testProfile: 'agent_cross_user_delete_canary' }, 'RETIRED_PROFILE'],
+  ]) await assert.rejects(service.start(options), { status: 400, code }, JSON.stringify(options));
+  await assert.rejects(service.startLab({ modelId: 'rule-baseline' }), { status: 400, code: 'RETIRED_MODE' });
+  assert.equal(service.listRuns().total, 0);
+
+  const server = createDashboardServer({ runtime: service,
+    auth: createAuthentication({ users: [hashAccount('lab-operator', 'local-test-password', 'operator')] }) });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => server.shutdown());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'lab-operator', password: 'local-test-password' }) });
+  const headers = { 'Content-Type': 'application/json', cookie: login.headers.get('set-cookie').split(';')[0],
+    'X-CSRF-Token': (await login.json()).csrfToken };
+  for (const body of [{ mode: 'core-fixture' }, { mode: 'local-lab-deepseek', modelId: 'deepseek-flash' },
+    { mode: 'local-lab-rule', modelId: 'rule-baseline' }, { testProfile: 'stored_xss_canary' }]) {
+    const response = await fetch(`${base}/api/runs`, { method: 'POST', headers, body: JSON.stringify(body) });
+    assert.equal(response.status, 400, JSON.stringify(body));
+  }
+  const lab = await fetch(`${base}/api/lab-runs`, { method: 'POST', headers, body: JSON.stringify({ modelId: 'rule-baseline' }) });
+  assert.equal(lab.status, 400);
+  assert.equal(service.listRuns().total, 0);
+});
+
+test('the board lab defaults to a general assessment and the university rule lab still queues', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: 'test-key', CASPER_DB_PYTHON: 'unavailable-python-for-default' } });
+  for (const start of [() => service.start({}), () => service.start({ fixtureId: 'vul-web-1' }),
+    () => service.startLab({ modelId: 'deepseek-flash' })]) {
+    const state = await start();
+    assert.equal(state.run.mode, 'local-lab-general');
+    assert.equal(state.run.modelId, 'deepseek-flash');
+    assert.equal(state.run.testProfile, 'general');
+    assert.equal(state.run.fixtureId, 'vul-web-1');
+    service.store.finish(service.store.claimNext('default-mode-test'), 'completed');
+  }
+  const idor = await service.startLab({ fixtureId: 'vul-web2-daehan' });
+  assert.equal(idor.run.mode, 'local-lab-rule');
+  assert.equal(idor.run.testProfile, 'known_record_idor_read');
+  assert.equal(service.store.claimNext('idor-still-queues').options.testProfile, 'known_record_idor_read');
 });
 
 test('legacy imports remain in history without replacing the current interactive run', async t => {
