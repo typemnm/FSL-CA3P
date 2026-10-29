@@ -131,11 +131,11 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       session = { ...session, authenticated: false, user: null, csrfToken: null };
       onSession(session); onAuthRequired(); onConnection('disconnected', transport);
     },
-    previewTarget({ url, previewId } = {}) {
+    previewTarget({ url, previewId, signal } = {}) {
       if (typeof url !== 'string' || !url.trim()) throw new TypeError('A URL is required for parser preview.');
       return api('/api/targets/preview', { method: 'POST', body: {
         url, authorizationConfirmed: true, ...(previewId ? { previewId } : {}),
-      } });
+      }, signal });
     },
     async startAssessment(modelId, fixtureId, target, previewId) {
       if (!['vul-web2-daehan', 'vul-web2-wonchang'].includes(fixtureId)) throw new TypeError('A registered university fixture is required.');

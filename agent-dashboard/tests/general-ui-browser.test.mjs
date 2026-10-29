@@ -42,6 +42,10 @@ test('general run renders and supported targets launch the bounded model assessm
   const page = await browser.newPage();
   const errors = []; const posts = [];
   let stateUnavailable = false;
+  let delayNextPreview = false;
+  let previewBusyOnce = false;
+  let delayedPreviewRelease;
+  let delayedPreviewStarted;
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => { window.EventSource = undefined; });
   await page.route('**/*', async route => {
@@ -70,16 +74,27 @@ test('general run renders and supported targets launch the bounded model assessm
     if (path === '/api/runs' && request.method() === 'POST') return json({ instanceId: 'general-ui-test', mode: run.mode, run,
       lab: { available: true, generalSupported: true, generalAvailable: true } });
     if (path === '/api/targets/preview' && request.method() === 'POST') {
-      const body = request.postDataJSON();
-      const extra = !!body.previewId;
-      return json({ previewId: 'preview-ui', targetKind: 'lab', fixtureId: 'vul-web2-daehan',
+      if (previewBusyOnce) {
+        previewBusyOnce = false;
+        return route.fulfill({ status: 429, contentType: 'application/json',
+          body: JSON.stringify({ code: 'PREVIEW_BUSY', error: 'Previous preview is still stopping.' }) });
+      }
+      if (delayNextPreview) {
+        delayNextPreview = false;
+        await new Promise(resolve => { delayedPreviewRelease = resolve; delayedPreviewStarted?.(); });
+      }
+      try { return await json({ previewId: 'preview-ui', targetKind: 'lab', fixtureId: 'vul-web2-daehan',
         origin: 'http://127.0.0.1:4101', entryUrl: 'http://127.0.0.1:4101/', expiresAt: '2099-01-01T00:00:00Z',
         pages: [{ url: 'http://127.0.0.1:4101/', status: 200, contentType: 'text/html', title: '대한대학교',
           technologies: [{ name: 'Bootstrap', version: '5' }], libraries: [{ name: 'jQuery', version: '3' }],
           forms: [], paths: [{ url: 'http://127.0.0.1:4101/about', sources: ['link'] }], errors: [], truncated: false, mode: 'browser' },
-          ...(extra ? [{ url: 'http://127.0.0.1:4101/about', status: 200, contentType: 'text/html', title: '소개',
-            technologies: [{ name: 'Vue' }], libraries: [], forms: [], paths: [], errors: [], truncated: false, mode: 'browser' }] : [])],
-        discoveredPaths: extra ? [] : ['http://127.0.0.1:4101/about'] });
+          { url: 'http://127.0.0.1:4101/about', status: 200, contentType: 'text/html', title: '소개',
+            technologies: [{ name: 'Vue' }], libraries: [], forms: [], paths: [], errors: [], truncated: false, mode: 'browser' },
+          { url: 'http://127.0.0.1:4101/unavailable', status: null, contentType: null, title: null,
+            technologies: [], libraries: [], forms: [], paths: [], errors: [{ code: 'PARSER_TIMEOUT' }], truncated: false, mode: 'browser' }],
+        discoveredPaths: ['http://127.0.0.1:4101/about', 'http://127.0.0.1:4101/unavailable'],
+        crawl: { maxPages: 48, visited: 3, queued: 2, truncated: true, stopReason: 'page-limit' } }); }
+      catch { return; } // The delayed response may be cancelled by editing the start URL.
     }
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs: [run], total: 1 });
     if (path === '/api/models') return json({ models: [
@@ -127,22 +142,43 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #target-form').count(), 0);
   assert.equal(await page.locator('#fixture-select').count(), 0);
   await page.locator('#start-url').fill('http://127.0.0.1:4101/');
+  const delayedStart = new Promise(resolve => { delayedPreviewStarted = resolve; });
+  delayNextPreview = true;
+  await page.locator('#parse-start-button').click();
+  await delayedStart;
+  const cancellationState = await page.evaluate(() => {
+    const input = document.querySelector('#start-url');
+    input.value = 'http://127.0.0.1:4102/';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return { disabled: document.querySelector('#parse-start-button').disabled,
+      status: document.querySelector('#target-preview-status').textContent };
+  });
+  assert.equal(cancellationState.disabled, true);
+  assert.match(cancellationState.status, /중단하는 중/);
+  delayedPreviewRelease();
+  await page.waitForFunction(() => !document.querySelector('#parse-start-button').disabled);
+  assert.equal(await page.locator('#target-preview-paths button').count(), 0);
+  await page.locator('#start-url').fill('http://127.0.0.1:4101/');
   await page.locator('#parse-start-button').click();
   await page.locator('#target-preview-pages .parser-preview-card').first().waitFor();
   assert.match(await page.locator('#target-preview-pages .parser-preview-card').first().textContent(), /대한대학교.*Bootstrap 5.*jQuery 3/s);
+  assert.equal(await page.locator('#target-preview-paths button').count(), 3);
+  assert.match(await page.locator('#target-preview-coverage').textContent(), /등록 대학 · 브라우저 관찰.*방문 3개.*최대 48개 URL.*부분 수집.*미수집 후보 2개/);
   assert.equal(await page.locator('#engine-step').isVisible(), true);
-  await page.locator('[data-preview-url="http://127.0.0.1:4101/about"]').click();
-  await page.waitForFunction(() => document.querySelectorAll('#target-preview-pages .parser-preview-card').length === 2);
-  assert.match(await page.locator('#target-preview-pages .parser-preview-card').last().textContent(), /소개.*Vue/s);
-  await page.locator('#additional-path').fill('/unparsed');
-  assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
-  await page.locator('#additional-path').fill('');
+  await page.locator('[data-preview-page-index="1"]').click();
+  assert.equal(await page.locator('#target-preview-pages .parser-preview-card').count(), 1);
+  assert.match(await page.locator('#target-preview-pages .parser-preview-card').textContent(), /소개.*Vue/s);
+  await page.locator('[data-preview-page-index="2"]').click();
+  assert.match(await page.locator('#target-preview-pages .parser-preview-card').textContent(), /PARSER_TIMEOUT/);
+  assert.equal(posts.filter(item => item.path === '/api/targets/preview').length, 2);
   await page.locator('#start-url').fill('http://127.0.0.1:4102/');
   assert.equal(await page.locator('#engine-step').isHidden(), true);
   assert.equal(await page.locator('#target-preview-pages .parser-preview-card').count(), 0);
   await page.locator('#start-url').fill('http://127.0.0.1:4101/');
+  previewBusyOnce = true;
   await page.locator('#parse-start-button').click();
   await page.locator('#target-preview-pages .parser-preview-card').first().waitFor();
+  assert.equal(posts.filter(item => item.path === '/api/targets/preview').length, 4);
   assert.equal(await page.locator('#model-select').isEnabled(), true);
   await page.locator('#model-select').selectOption('deepseek-test');
   await page.locator('#model-reset-no').click();

@@ -152,7 +152,10 @@ let activeTab = 'request';
 let activeView = 'dashboard';
 let parserPreview = null;
 let previewPending = false;
+let previewCancelPending = false;
 let previewGeneration = 0;
+let previewAbortController = null;
+let selectedPreviewPageIndex = 0;
 let previewExpiryTimer = null;
 let reportPreviewGeneration = 0;
 let toastTimer;
@@ -392,7 +395,6 @@ function renderStats() {
   $('engine-step').hidden = !previewAvailable();
   $('lab-run-button').disabled = !ready || !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || (parserPreview.targetKind === 'lab' && model.provider === 'deepseek' && (!labReadiness.generalSupported || !labReadiness.generalAvailable));
   $('parse-start-button').disabled = !canOperate() || !connected || controlPending || active || previewPending;
-  $('add-path-button').disabled = !parserPreview || Date.parse(parserPreview.expiresAt) <= Date.now() || !canOperate() || !connected || controlPending || active || previewPending;
   $('model-select').disabled = !ready || controlPending || active || !canOperate() || parserPreview?.targetKind === 'external';
   $('model-reset-toggle').checked = settings.confirmModelReset;
   $('model-reset-toggle').disabled = controlPending || !!pendingModelChange;
@@ -401,12 +403,12 @@ function renderStats() {
   $('lab-title').textContent = '2. 판단 엔진 선택';
   $('lab-description').textContent = parserPreview?.targetKind === 'external' ? '외부 URL의 공개 페이지 관찰은 현재 규칙 엔진으로 실행합니다.' : '파싱 결과를 확인한 뒤 판단 엔진을 선택하세요.';
   $('lab-check-scope').textContent = parserPreview?.targetKind === 'external' ? '외부 URL은 읽기 전용으로 관찰합니다.' : '등록된 실습 대상의 파싱 결과를 확인하고 점검합니다.';
-  $('lab-run-label').textContent = '점검 시작';
+  $('lab-run-label').textContent = '진단하기';
   $('lab-readiness').textContent = !ready ? '파싱 결과를 먼저 확인하세요.' : authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : model?.available ? `${model.name || model.id} · 점검 준비됨` : '사용 가능한 판단 엔진이 없습니다.';
   $('model-scope').textContent = parserPreview?.targetKind === 'external'
-    ? '규칙 엔진이 공개 HTTP 응답을 읽기 전용으로 관찰합니다. 사전 파싱한 경로를 방문 후보에 반영합니다.'
+    ? '규칙 엔진이 공개 HTTP 응답을 읽기 전용으로 관찰합니다. 사전 파싱한 URL을 방문 후보에 반영합니다.'
     : model?.provider === 'deepseek'
-      ? '사전 파싱한 페이지를 초기 관찰에 반영합니다. AI 모델 호출에는 API 비용이 발생할 수 있습니다.'
+      ? '파싱한 전체 URL의 관찰 결과를 초기 AI 입력에 반영합니다. 모델 호출에는 API 비용이 발생할 수 있습니다.'
       : '규칙 엔진은 기존 고정 IDOR 검사를 수행합니다. 파싱 결과는 기록에 저장되지만 IDOR 판정 입력에는 사용하지 않습니다.';
   $('new-session-button').disabled = !canOperate() || !connected || controlPending || active;
   $('export-button').disabled = item.events.length === 0 && !general;
@@ -664,7 +666,7 @@ function previewAvailable() {
     && $('start-url').value.trim() === parserPreview.entryUrl;
 }
 function previewReady() {
-  return previewAvailable() && !previewPending && !$('additional-path').value.trim();
+  return previewAvailable() && !previewPending;
 }
 function renderModelChoices() {
   const previous = $('model-select').value;
@@ -680,130 +682,158 @@ function renderModelChoices() {
   acceptedModelId = $('model-select').value;
   renderStats();
 }
+function previewPathLabel(url) {
+  try { const parsed = new URL(url); return `${parsed.pathname}${parsed.search}` || '/'; }
+  catch { return String(url); }
+}
 function renderPreview() {
   const preview = parserPreview;
-  const pathLabel = url => { try { const parsed = new URL(url); return `${parsed.pathname}${parsed.search}` || '/'; } catch { return String(url); } };
-  const staticAsset = url => /\.(?:css|m?js|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|pdf|zip|mp4|webm)$/iu.test(pathLabel(url));
   $('target-preview-results').hidden = !preview;
   if (!preview) {
+    $('target-preview-coverage').textContent = '';
+    $('target-preview-paths').replaceChildren();
     $('target-preview-pages').replaceChildren();
-    $('discovered-paths').replaceChildren();
     renderModelChoices();
     return;
   }
-  $('target-preview-pages').innerHTML = (preview.pages || []).map((page, index) => {
+  const pages = Array.isArray(preview.pages) ? preview.pages : [];
+  selectedPreviewPageIndex = Math.min(selectedPreviewPageIndex, Math.max(0, pages.length - 1));
+  const crawl = preview.crawl || {};
+  const errors = pages.filter(page => page.status === null || (page.errors || []).length).length;
+  const queued = Number.isInteger(crawl.queued) ? crawl.queued : 0;
+  const limit = Number.isInteger(crawl.maxPages) ? crawl.maxPages : pages.length;
+  const visited = Number.isInteger(crawl.visited) ? crawl.visited : pages.length;
+  const scope = preview.targetKind === 'lab' ? '등록 대학 · 브라우저 관찰' : '외부 URL · HTTP 응답 분석';
+  const truncation = {
+    'page-limit': `페이지 수 제한 · 미수집 후보 ${queued}개`,
+    'time-limit': `시간 제한 · 미수집 후보 ${queued}개`,
+    'candidate-limit': `후보 수 제한 · 미수집 후보 ${queued}개`,
+    'page-content-limit': '일부 페이지 내용 제한',
+    'safety-block': '안전 규칙으로 수집 중단',
+  }[crawl.stopReason] || '수집 제한';
+  $('target-preview-coverage').textContent = `${scope} · 방문 ${visited}개 · 결과 ${pages.length}개 · 오류 ${errors}개 · 최대 ${limit}개 URL`
+    + (crawl.truncated ? ` · 부분 수집 (${truncation})` : '')
+    + ' · 왼쪽에서 경로를 선택해 결과를 확인하세요.';
+  const pathList = $('target-preview-paths');
+  const pathScrollTop = pathList.scrollTop;
+  const pathScrollLeft = pathList.scrollLeft;
+  pathList.innerHTML = pages.map((page, index) => {
+    const selected = index === selectedPreviewPageIndex;
+    const status = Number.isInteger(page.status) ? `HTTP ${page.status}` : '응답 없음';
+    const hasError = (page.errors || []).length > 0;
+    return `<button type="button" class="parser-preview-path${selected ? ' selected' : ''}" data-preview-page-index="${index}" aria-pressed="${selected}" aria-controls="target-preview-pages" title="${escape(page.url)}"><span>${escape(previewPathLabel(page.url))}</span><small>${escape(status)}${hasError ? ' · 수집 오류' : ''}${page.truncated ? ' · 부분 결과' : ''}</small></button>`;
+  }).join('');
+  pathList.scrollTop = pathScrollTop;
+  pathList.scrollLeft = pathScrollLeft;
+  const page = pages[selectedPreviewPageIndex];
+  if (!page) {
+    $('target-preview-pages').innerHTML = '<p>표시할 파싱 결과가 없습니다.</p>';
+  } else {
     const tech = (page.technologies || []).map(item => `${item.name || ''}${item.version ? ' ' + item.version : ''}`);
     const libs = (page.libraries || []).map(item => `${item.name || ''}${item.version ? ' ' + item.version : ''}`);
     const forms = (page.forms || []).map(form => `${form.method || 'GET'} ${form.action || ''} (${(form.fields || []).map(field => field.name || field.type).join(', ')})`);
     const paths = (page.paths || []).map(path => path.url || path).filter(Boolean);
-    const htmlPaths = paths.filter(url => !staticAsset(url));
-    const errors = (page.errors || []).map(error => error.code || String(error));
+    const pageErrors = (page.errors || []).map(error => error.code || String(error));
     const row = (label, values) => `<div class="parser-preview-row"><strong>${label}</strong><span>${escape(values.length ? values.join(', ') : '없음')}</span></div>`;
-    return `<article class="parser-preview-card" data-preview-page="${index}">
+    $('target-preview-pages').innerHTML = `<article class="parser-preview-card" data-preview-page="${selectedPreviewPageIndex}">
       <h3>${escape(page.url)}</h3>
       <p class="parser-preview-meta">HTTP ${escape(page.status ?? '응답 없음')} · ${escape(page.contentType || '콘텐츠 유형 미확인')} · ${page.mode === 'browser' ? '브라우저 관찰' : 'HTTP 응답 분석'}</p>
       <p>${escape(page.title || '제목 없음')}</p>
       ${row('기술', tech)}${row('외부 라이브러리', libs)}${row('폼', forms)}
-      <div class="parser-preview-row"><strong>발견 경로</strong><span>${escape(`${paths.length}개 · 페이지 후보 ${htmlPaths.length}개${htmlPaths.length ? ' · ' + htmlPaths.slice(0, 3).map(pathLabel).join(', ') + (htmlPaths.length > 3 ? ' 외' : '') : ''}`)}</span></div>
-      ${errors.length ? `<p class="parser-preview-warning">수집 오류: ${escape(errors.join(', '))}</p>` : ''}
-      ${page.truncated ? '<p class="parser-preview-warning">수집 제한에 도달하여 부분 결과입니다.</p>' : ''}
+      <div class="parser-preview-row"><strong>발견 경로</strong><span>${escape(`${paths.length}개${paths.length ? ' · ' + paths.slice(0, 3).map(previewPathLabel).join(', ') + (paths.length > 3 ? ' 외' : '') : ''}`)}</span></div>
+      ${pageErrors.length ? `<p class="parser-preview-warning">수집 오류: ${escape(pageErrors.join(', '))}</p>` : ''}
+      ${page.truncated ? '<p class="parser-preview-warning">이 URL은 부분 결과입니다.</p>' : ''}
       ${page.mode === 'http-response' ? '<p class="parser-preview-note">외부 URL은 HTTP 응답을 분석했습니다. 브라우저 DOM과 실행 후 JavaScript 상태, 폼은 수집하지 않았습니다.</p>' : ''}
     </article>`;
-  }).join('');
-  const observed = new Set((preview.pages || []).map(page => page.url));
-  const discovered = (preview.discoveredPaths || []).filter(url => !observed.has(url));
-  const htmlCandidates = discovered.filter(url => !staticAsset(url));
-  const staticCandidates = discovered.filter(staticAsset);
-  const pathButton = url => `<button type="button" class="button secondary" data-preview-url="${escape(url)}" title="${escape(url)}">${escape(pathLabel(url))}</button>`;
-  $('discovered-paths').innerHTML = discovered.length
-    ? `<strong>발견된 페이지 경로 ${htmlCandidates.length}개 · 선택해서 추가 파싱</strong><div class="parser-path-buttons">${htmlCandidates.map(pathButton).join('') || '<span>페이지 경로 후보가 없습니다.</span>'}</div>${staticCandidates.length ? `<details class="parser-static-paths"><summary>정적 파일 경로 ${staticCandidates.length}개</summary><div class="parser-path-buttons">${staticCandidates.map(pathButton).join('')}</div></details>` : ''}`
-    : '<span>추가로 파싱할 발견 경로가 없습니다.</span>';
+  }
   renderModelChoices();
 }
 function invalidatePreview(message = '시작 URL이 바뀌었습니다. 새 URL을 다시 파싱하세요.') {
+  const cancelling = previewCancelPending || (previewPending && !!previewAbortController);
   previewGeneration += 1;
+  previewAbortController?.abort();
+  previewAbortController = null;
   if (previewExpiryTimer) clearTimeout(previewExpiryTimer);
   previewExpiryTimer = null;
   parserPreview = null;
-  previewPending = false;
+  previewPending = cancelling;
+  previewCancelPending = cancelling;
+  selectedPreviewPageIndex = 0;
   acceptedModelId = '';
-  $('target-preview-status').textContent = message;
+  $('target-preview-status').textContent = cancelling ? '이전 URL 수집을 중단하는 중입니다. 중단되면 새 URL을 파싱할 수 있습니다.' : message;
   renderPreview();
 }
 function acceptPreview(result) {
   parserPreview = result;
+  selectedPreviewPageIndex = 0;
   if (result.entryUrl) $('start-url').value = result.entryUrl;
   const externalRedirect = result.targetKind === 'external' && (result.pages || []).some(page => page.status >= 300 && page.status < 400)
     && !(result.pages || []).some(page => page.status >= 200 && page.status < 300);
   $('target-preview-status').textContent = externalRedirect
     ? '외부 URL이 이동 응답(3xx)을 반환했습니다. 이동한 주소를 시작 URL에 직접 입력해 다시 파싱하세요.'
-    : $('additional-path').value.trim()
-    ? '입력한 추가 경로는 아직 파싱되지 않았습니다. 이 경로를 파싱하거나 입력을 지우세요.'
-    : `${result.pages?.length || 0}개 URL의 결과를 확인하세요. 수집 오류와 부분 결과는 URL별로 표시됩니다.`;
+    : !(result.pages || []).some(page => page.status >= 200 && page.status < (result.targetKind === 'external' ? 300 : 400))
+      ? '수집은 끝났지만 성공한 URL이 없어 진단을 시작할 수 없습니다. URL별 오류를 확인하세요.'
+      : `${result.pages?.length || 0}개 URL의 파싱이 끝났습니다. 경로를 선택해 결과를 확인한 뒤 판단 엔진을 고르세요.`;
   if (previewExpiryTimer) clearTimeout(previewExpiryTimer);
   const remaining = Date.parse(result.expiresAt) - Date.now();
   if (Number.isFinite(remaining)) previewExpiryTimer = setTimeout(() => invalidatePreview('파싱 결과가 만료됐습니다. 다시 파싱하세요.'), Math.max(0, Math.min(remaining, 2147483647)));
   renderPreview();
 }
 $('start-url').addEventListener('input', () => invalidatePreview());
-$('additional-path').addEventListener('input', () => {
-  $('target-preview-status').textContent = $('additional-path').value.trim()
-    ? '입력한 경로는 아직 파싱되지 않았습니다. 이 경로를 파싱하거나 입력을 지우세요.'
-    : parserPreview ? '파싱된 URL별 결과를 확인한 뒤 판단 엔진을 선택하세요.' : '시작 URL을 파싱하세요.';
-  renderStats();
+$('target-preview-paths').addEventListener('click', event => {
+  const button = event.target.closest('[data-preview-page-index]');
+  if (!button || !parserPreview) return;
+  const index = Number(button.dataset.previewPageIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= parserPreview.pages.length) return;
+  selectedPreviewPageIndex = index;
+  renderPreview();
 });
 $('target-preview-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (!canOperate() || connection !== 'connected' || previewPending) return;
   const url = $('start-url').value.trim();
   const generation = ++previewGeneration;
+  previewAbortController?.abort();
+  const controller = new AbortController();
+  previewAbortController = controller;
+  previewCancelPending = false;
+  if (previewExpiryTimer) clearTimeout(previewExpiryTimer);
+  previewExpiryTimer = null;
+  parserPreview = null;
+  selectedPreviewPageIndex = 0;
   previewPending = true;
-  $('target-preview-status').textContent = '시작 URL을 파싱하고 있습니다.';
+  $('target-preview-status').textContent = '시작 URL에서 발견한 페이지를 수집 중입니다. 등록 대학은 최대 48페이지·50초, 외부 URL은 최대 8페이지·28초까지 수집합니다. URL을 바꾸면 현재 수집을 중단합니다.';
+  renderPreview();
   renderStats();
   try {
-    const result = await runtime.previewTarget({ url });
+    let result;
+    for (let retry = 0; retry <= 5; retry += 1) {
+      try {
+        result = await runtime.previewTarget({ url, signal: controller.signal });
+        break;
+      } catch (error) {
+        if (error.code !== 'PREVIEW_BUSY' || retry === 5 || controller.signal.aborted) throw error;
+        $('target-preview-status').textContent = `동시 수집이 진행 중입니다. 서버 여유를 확인해 다시 요청합니다 (${retry + 1}/5).`;
+        await new Promise(resolve => setTimeout(resolve, 350));
+        if (controller.signal.aborted) throw new DOMException('수집 요청이 취소됐습니다.', 'AbortError');
+      }
+    }
     if (generation !== previewGeneration || $('start-url').value.trim() !== url) return;
     acceptPreview(result);
   } catch (error) {
     if (generation === previewGeneration) $('target-preview-status').textContent = `파싱 실패: ${error.message}`;
   } finally {
-    if (generation === previewGeneration) { previewPending = false; renderStats(); }
+    if (generation === previewGeneration) {
+      previewAbortController = null;
+      previewPending = false;
+      renderStats();
+    } else if (controller.signal.aborted && previewCancelPending) {
+      previewCancelPending = false;
+      previewPending = false;
+      $('target-preview-status').textContent = '이전 URL 수집을 중단했습니다. 새 URL을 파싱하세요.';
+      renderStats();
+    }
   }
-});
-async function addPreviewUrl(rawUrl, fromInput = false) {
-  if (!parserPreview || previewPending || !canOperate() || connection !== 'connected') return;
-  let url;
-  try {
-    url = new URL(rawUrl, parserPreview.origin);
-    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== parserPreview.origin || url.username || url.password || url.hash) throw new Error();
-  } catch {
-    $('target-preview-status').textContent = '같은 원점의 URL 또는 경로만 추가할 수 있습니다.';
-    return;
-  }
-  const generation = ++previewGeneration;
-  const previewId = parserPreview.previewId;
-  previewPending = true;
-  $('target-preview-status').textContent = `${url.href} 파싱 중입니다.`;
-  renderStats();
-  try {
-    const result = await runtime.previewTarget({ url: url.href, previewId });
-    if (generation !== previewGeneration || parserPreview?.previewId !== previewId) return;
-    if (fromInput && $('additional-path').value.trim() === rawUrl) $('additional-path').value = '';
-    acceptPreview(result);
-  } catch (error) {
-    if (generation === previewGeneration) $('target-preview-status').textContent = `추가 경로 파싱 실패: ${error.message}`;
-  } finally {
-    if (generation === previewGeneration) { previewPending = false; renderStats(); }
-  }
-}
-$('additional-path-form').addEventListener('submit', event => {
-  event.preventDefault();
-  const value = $('additional-path').value.trim();
-  if (value) void addPreviewUrl(value, true);
-});
-$('discovered-paths').addEventListener('click', event => {
-  const button = event.target.closest('[data-preview-url]');
-  if (button) void addPreviewUrl(button.dataset.previewUrl);
 });
 $('lab-run-button').addEventListener('click', async () => {
   if (!previewReady() || browserResetError || ['failed', 'resetting'].includes(experimentStatus) || pendingModelChange) return;

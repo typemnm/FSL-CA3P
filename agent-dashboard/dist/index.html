@@ -65,20 +65,19 @@
         <section class="view" id="view-chat" hidden><div id="workspace-chat-root"></div></section>
         <section class="view" id="view-assets" hidden>
           <section class="panel external-target-panel" aria-labelledby="target-preview-title">
-            <div class="panel-heading"><div><h2 id="target-preview-title"><span data-icon="globe"></span>1. URL별 파싱</h2><span class="panel-subtitle">시작 URL을 파싱한 뒤 발견한 경로를 하나씩 추가할 수 있습니다.</span></div></div>
+            <div class="panel-heading"><div><h2 id="target-preview-title"><span data-icon="globe"></span>1. URL 파싱</h2><span class="panel-subtitle">시작 URL을 입력하면 발견된 페이지 경로를 한 번에 수집합니다.</span></div></div>
             <form id="target-preview-form" class="parser-url-form">
               <label for="start-url">시작 URL <input id="start-url" type="url" placeholder="http://127.0.0.1:4101/ 또는 https://example.org/" autocomplete="off" required></label>
-              <button class="button secondary" id="parse-start-button" type="submit">시작 URL 파싱</button>
+              <button class="button secondary" id="parse-start-button" type="submit">파싱하기</button>
             </form>
             <p class="external-scope-note">파싱은 판단 엔진 호출 전에 실행됩니다. 외부 URL은 동일 원점의 공개 HTTP 응답만 읽습니다.</p>
             <div id="target-preview-status" role="status" aria-live="polite">URL을 입력하고 파싱 결과를 확인하세요.</div>
             <div id="target-preview-results" hidden>
-              <div id="target-preview-pages" class="parser-preview-pages"></div>
-              <form id="additional-path-form" class="parser-url-form">
-                <label for="additional-path">추가 경로 또는 같은 원점의 URL <input id="additional-path" type="text" placeholder="/about" autocomplete="off"></label>
-                <button class="button secondary" id="add-path-button" type="submit">이 경로 파싱</button>
-              </form>
-              <div id="discovered-paths" class="parser-discovered-paths"></div>
+              <p id="target-preview-coverage" class="parser-preview-coverage"></p>
+              <div class="parser-preview-browser">
+                <nav id="target-preview-paths" class="parser-preview-paths" aria-label="파싱한 URL 목록"></nav>
+                <div id="target-preview-pages" class="parser-preview-pages"></div>
+              </div>
             </div>
           </section>
           <div class="lab-launch" id="engine-step" hidden>
@@ -94,7 +93,7 @@
               <small class="lab-cost" id="model-scope">선택한 모델로 범용 취약점 점검을 수행합니다. 모델 API 호출에는 비용이 발생할 수 있습니다.</small>
               <small id="lab-readiness" aria-live="polite">실행 환경을 확인하는 중입니다.</small>
             </div>
-            <button type="button" class="button lab-run-button" id="lab-run-button" disabled><span data-icon="play"></span><span id="lab-run-label">실습 실행 준비 중</span></button>
+            <button type="button" class="button lab-run-button" id="lab-run-button" disabled><span data-icon="play"></span><span id="lab-run-label">진단하기</span></button>
           </div>
 
         </section>

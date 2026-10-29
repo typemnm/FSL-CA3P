@@ -28,9 +28,11 @@ test('remote deployment polls state and submits general assessments with CSRF an
   assert.equal(client.start, undefined, 'the retired core-fixture start must not be reachable');
   await assert.rejects(client.startAssessment('deepseek-flash', 'unknown-fixture', 'http://192.168.0.84:4101'), /registered university fixture/);
   await assert.rejects(client.startAssessment('deepseek-flash', 'vul-web2-daehan'), /registered university origin/);
-  await client.previewTarget({ url: 'http://192.168.0.84:4101/' });
+  const previewController = new AbortController();
+  await client.previewTarget({ url: 'http://192.168.0.84:4101/', signal: previewController.signal });
   const preview = calls.find(call => call.path === '/api/targets/preview');
   assert.deepEqual(JSON.parse(preview.options.body), { url: 'http://192.168.0.84:4101/', authorizationConfirmed: true });
+  assert.equal(preview.options.signal, previewController.signal);
   await client.startAssessment('deepseek-flash', 'vul-web2-daehan', 'http://192.168.0.84:4101', 'preview-a');
   const start = calls.find(call => call.path === '/api/runs');
   assert.deepEqual(JSON.parse(start.options.body), { mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.84:4101', previewId: 'preview-a' });
