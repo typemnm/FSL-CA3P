@@ -37,6 +37,7 @@ test('general run renders and supported targets launch the bounded model assessm
       ? { executablePath: localChrome } : {}) });
   const page = await browser.newPage();
   const errors = []; const posts = [];
+  let stateUnavailable = false;
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => { window.EventSource = undefined; });
   await page.route('**/*', async route => {
@@ -52,8 +53,16 @@ test('general run renders and supported targets launch the bounded model assessm
     const json = value => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
     if (request.method() === 'POST') posts.push({ path, body: request.postDataJSON() });
     if (path === '/api/auth/session') return json({ authenticated: true, authRequired: false, user: { role: 'operator', name: 'Test' } });
-    if (path === '/api/state') return json({ instanceId: 'general-ui-test', mode: run.mode, run,
-      lab: { available: true, generalSupported: true, generalAvailable: true } });
+    if (path === '/api/state') {
+      if (stateUnavailable) return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"Temporary state outage"}' });
+      return json({ instanceId: 'general-ui-test', mode: run.mode, run,
+        lab: { available: true, generalSupported: true, generalAvailable: true } });
+    }
+    if (path === '/api/runs/general-run/stop' && request.method() === 'POST') {
+      run.status = 'stopped';
+      return json({ instanceId: 'general-ui-test', mode: run.mode, run,
+        lab: { available: true, generalSupported: true, generalAvailable: true } });
+    }
     if (path === '/api/runs' && request.method() === 'POST') return json({ instanceId: 'general-ui-test', mode: run.mode, run,
       lab: { available: true, generalSupported: true, generalAvailable: true } });
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs: [run], total: 1 });
@@ -68,17 +77,14 @@ test('general run renders and supported targets launch the bounded model assessm
   });
   await page.goto('http://ca3p.invalid/#dashboard');
   await page.waitForFunction(() => document.querySelector('#execution-label')?.textContent === 'GENERAL / EVIDENCE');
-  assert.equal(await page.locator('#loop-graph').isHidden(), true);
-  assert.equal(await page.locator('#general-run-summary').isVisible(), true);
-  assert.equal(await page.locator('.general-loop-phase.is-observed').count(), 2);
+  assert.equal(await page.locator('.loop-panel, #loop-graph, #general-run-summary, .general-loop').count(), 0);
   assert.equal(await page.locator('#general-live-results-panel').count(), 0);
   assert.equal(await page.locator('#view-dashboard .activity-panel').count(), 0);
   assert.equal(await page.locator('#view-dashboard .stat-card').count(), 0);
-  await page.locator('.general-loop-phase.is-observed').first().click();
+  await page.locator('#trace-event-select').selectOption('general-run:general-event:4');
   assert.match(await page.locator('#trace-code').textContent(), /probe.observe/);
   assert.match(await page.locator('#progress-number').textContent(), /4 events · 검사 1건/);
-  assert.equal(await page.locator('.progress-track').isHidden(), true);
-  assert.match(await page.locator('#general-run-summary').textContent(), /전체 취약점에 대한 완료율이 아닙니다/);
+  assert.equal(await page.locator('.progress-track, #pause-button').count(), 0);
   await page.locator('[data-view=modules]').click();
   assert.equal(await page.locator('#module-grid img').count(), 0);
   assert.match(await page.locator('#module-grid').textContent(), /constructor/);
@@ -99,10 +105,10 @@ test('general run renders and supported targets launch the bounded model assessm
   await page.locator('[data-view=assets]').click();
   assert.equal(await page.locator('#view-assets').isVisible(), true);
   assert.equal(await page.locator('#fixture-select option').allTextContents().then(values => values.some(value => /XSS|IDOR/.test(value))), false);
-  assert.equal(await page.locator('#assessment-mode').inputValue(), 'general');
+  assert.equal(await page.locator('#assessment-mode, #asset-mock-run, #target-form').count(), 0);
   assert.match(await page.locator('#lab-title').textContent(), /vul-web-1 로컬 게시판/);
   assert.doesNotMatch(await page.locator('#lab-title').textContent(), /XSS|IDOR/);
-  assert.match(await page.locator('#lab-check-scope').textContent(), /유형을 미리 한정하지 않고/);
+  assert.match(await page.locator('#lab-check-scope').textContent(), /반복 점검/);
   assert.match(await page.locator('#lab-run-label').textContent(), /범용 취약점 점검 시작/);
   await page.locator('#fixture-select').selectOption('vul-web2-daehan');
   assert.match(await page.locator('#lab-title').textContent(), /vul-web2 대한대학교/);
@@ -116,20 +122,8 @@ test('general run renders and supported targets launch the bounded model assessm
   assert.deepEqual(posts.at(-1), { path: '/api/runs', body: { mode: 'local-lab-general', modelId: 'deepseek-test',
     fixtureId: 'vul-web2-daehan', target: 'http://127.0.0.1:4101' } });
   await page.locator('[data-view=assets]').click();
-  await page.locator('#assessment-mode').selectOption('legacy');
-  await page.locator('#model-reset-dialog').waitFor({ state: 'visible' });
-  assert.equal(await page.locator('#assessment-mode').inputValue(), 'general');
-  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-test');
-  await page.locator('#model-reset-no').click();
-  assert.match(await page.locator('#lab-check-scope').textContent(), /IDOR 읽기 권한 비교만/);
-  assert.match(await page.locator('#lab-run-label').textContent(), /IDOR 읽기 검사 시작/);
-  assert.equal(await page.locator('#model-select').isDisabled(), true);
-  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
-  await page.locator('#assessment-mode').selectOption('general');
-  await page.locator('#model-reset-dialog').waitFor({ state: 'visible' });
-  assert.equal(await page.locator('#assessment-mode').inputValue(), 'legacy');
-  await page.locator('#model-reset-no').click();
-  assert.equal(await page.locator('#assessment-mode').inputValue(), 'general');
+  assert.equal(await page.locator('#model-select option[value="rule-baseline"]').count(), 0);
+  assert.equal(await page.locator('#model-select').isEnabled(), true);
   assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-test');
   assert.equal(posts.length, 1);
   await page.locator('[data-view=dashboard]').click();
@@ -164,10 +158,34 @@ test('general run renders and supported targets launch the bounded model assessm
   await page.waitForFunction(() => document.querySelector('#execution-label')?.textContent === 'GENERAL / EVIDENCE');
   assert.match(await page.locator('#progress-label').textContent(), /결과 대기/);
   assert.match(await page.locator('#progress-number').textContent(), /기록된 검사 ID 1개/);
-  assert.match(await page.locator('#general-run-summary').textContent(), /실행 검사 1/);
-  await page.locator('[data-general-event=verified]').click();
+  await page.locator('#trace-event-select').selectOption('verified');
   assert.match(await page.locator('#trace-code').textContent(), /"stage": "verify"/);
   assert.match(await page.locator('#trace-code').textContent(), /"probeId": "p1"/);
+  // A later iteration extends the stream without a fixed loop/event total.
+  run.iterations = 2;
+  run.events.push({ id: 'observe-next', stage: 'observe', iteration: 2, title: 'Next observation',
+    module: 'agent', response: { evidenceSummaries: [{ id: 'e2', kind: 'status-metadata', asset: '/next' }] },
+    time: '2026-10-26T00:00:03Z' });
+  await page.waitForFunction(() => document.querySelector('#progress-number')?.textContent.includes('6 events'));
+  assert.doesNotMatch(await page.locator('#progress-number').textContent(), /\/\s*\d+|100%/);
+  assert.equal(await page.locator('#trace-event-select').inputValue(), 'verified');
+  await page.locator('#trace-event-select').selectOption('observe-next');
+  assert.match(await page.locator('#trace-code').textContent(), /"iteration": 2/);
+  assert.equal(await page.locator('#stop-button').isEnabled(), true);
+
+  // Disconnection preserves evidence and prevents a stale stop request.
+  stateUnavailable = true;
+  await page.waitForFunction(() => document.querySelector('#connection-status')?.textContent.includes('연결 끊김'));
+  assert.equal(await page.locator('#stop-button').isDisabled(), true);
+  assert.equal(await page.locator('#trace-event-select').inputValue(), 'observe-next');
+  assert.match(await page.locator('#trace-code').textContent(), /"iteration": 2/);
+  stateUnavailable = false;
+  await page.waitForFunction(() => document.querySelector('#connection-status')?.textContent.includes('연결됨'));
+  assert.equal(await page.locator('#stop-button').isEnabled(), true);
+  await page.locator('#stop-button').click();
+  await page.waitForFunction(() => document.querySelector('#progress-label')?.textContent.includes('중지됨'));
+  assert.equal(posts.at(-1).path, '/api/runs/general-run/stop');
+  assert.equal(await page.locator('#stop-button').isDisabled(), true);
   run.status = 'completed'; run.report = report; run.reportDocument = undefined;
   run.iterations = 2; run.events = originalEvents;
   await page.reload();

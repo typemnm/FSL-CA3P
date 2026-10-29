@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun,
-  renderGeneralLiveResults, renderGeneralLoop, renderGeneralOverview, renderGeneralReport,
+  renderGeneralLiveResults, renderGeneralOverview, renderGeneralReport,
 } from '../dist/general-results.js';
 
 function result() {
@@ -72,7 +72,7 @@ test('external report displays observed scope, rejections and response receipt s
       findings: [], hypotheses: [], evidence: [], probes: [] },
   });
   assert.match(renderGeneralOverview(run), /공개 페이지 관찰/);
-  assert.match(renderGeneralLoop(run), /외부 대상 관찰 이벤트/);
+  assert.equal(run.events[0].stage, 'scope.rejected');
   const html = renderGeneralReport(run);
   assert.match(html, /요청 시도/);
   assert.match(html, /HTTP 응답 수신/);
@@ -139,7 +139,7 @@ test('partial general results show rejected model proposals without hiding verif
   assert.match(html, /<span class="review-tag">확정<\/span>/);
 });
 
-test('general loop shows only observed phases and escapes event identifiers', () => {
+test('general normalization preserves repeated stages and identifiers across iterations', () => {
   const item = normalizeGeneralRun({ id: 'run-loop', mode: 'local-lab-general',
     status: 'running', startedAt: '2026-10-26T00:00:00Z', iterations: 2,
     events: [
@@ -151,16 +151,11 @@ test('general loop shows only observed phases and escapes event identifiers', ()
       { id: 'observe-2\"><script>alert(1)</script>', stage: 'observe', iteration: 2 },
     ] });
   assert.equal(generalObservedProbeCount(item), 1);
-  const html = renderGeneralLoop(item, 'verify-1');
-  assert.match(html, /반복 1/);
-  assert.match(html, /반복 2/);
-  assert.match(html, /기록 1건/);
-  assert.match(html, /미관측/);
-  assert.match(html, /is-selected/);
-  assert.match(html, /기록된 검사 ID/);
-  assert.match(html, /전체 취약점에 대한 완료율이 아닙니다/);
-  assert.doesNotMatch(html, /<script>/);
-  assert.match(html, /&lt;script&gt;/);
+  assert.deepEqual(item.events.map(event => event.iteration), [1, 1, 1, 2]);
+  assert.deepEqual(item.events.map(event => event.stage), ['observe', 'policy', 'verify', 'observe']);
+  assert.equal(item.events.at(-1).id, 'observe-2\"><script>alert(1)</script>');
+  assert.equal(item.events.length, 4);
+  assert.equal(item.iterations, 2);
 });
 
 test('policy events are not shown as verified findings before a report exists', () => {
@@ -209,12 +204,11 @@ test('live general events show projected progress and linked probe outcomes befo
         response: { progress: { hypothesisCount: 2, probeCount: 2, evidenceCount: 3,
           confirmedProbeCount: 1, blockedProbeCount: 1, remainingProbeBudget: 2 } } },
     ] });
-  const loop = renderGeneralLoop(item);
-  assert.match(loop, /가설 <strong>2<\/strong>/);
-  assert.match(loop, /실행 검사 <strong>2<\/strong>/);
-  assert.match(loop, /수집 증거 <strong>3<\/strong>/);
-  assert.match(loop, /남은 검사 예산 <strong>2<\/strong>/);
   const live = renderGeneralLiveResults(item);
+  assert.match(live, /가설 <strong>2<\/strong>/);
+  assert.match(live, /실행 검사 <strong>2<\/strong>/);
+  assert.match(live, /수집 증거 <strong>3<\/strong>/);
+  assert.match(live, /정책 차단 검사 <strong>1<\/strong>/);
   assert.match(live, /검사 p-blocked/);
   assert.match(live, /정책 차단 · 가설 h-wrong · 도구 known_record_idor_read/);
   assert.match(live, /&lt;hypothesis_tool_mismatch&gt;/);

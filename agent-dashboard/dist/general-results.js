@@ -16,12 +16,6 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[char]);
 
-const PHASES = [
-  { id: 'observe', label: '관측' }, { id: 'plan', label: '계획' },
-  { id: 'policy', label: '정책' }, { id: 'execute', label: '실행' },
-  { id: 'verify', label: '검증' },
-];
-
 function phaseFor(stage) {
   const value = text(stage).toLowerCase();
   const last = value.split(/[.:]/u).at(-1);
@@ -219,64 +213,6 @@ export function renderGeneralOverview(item) {
     return `<section class="general-overview" aria-label="외부 대상 관찰 진행"><div class="eyebrow">EXTERNAL / READ ONLY</div><h3>공개 페이지 관찰${summary.partial ? ' · 부분 결과' : ''}</h3><p>현재 단계: <strong>${escape(stage)}</strong></p><div class="general-overview-counts"><span>요청 <strong>${count(coverage.requestsUsed) ?? 0}</strong></span><span>응답 페이지 <strong>${count(coverage.observedPages) ?? 0}</strong></span><span>거부 후보 <strong>${count(coverage.rejectedCandidates) ?? 0}</strong></span></div><p class="muted">비인증 읽기 요청만 수행합니다. 독립 검증기가 없어 취약점 확정을 수행하지 않습니다.</p>${stopped ? `<p>종료 사유: ${escape(stopped)}</p>` : ''}</section>`;
   }
   return `<section class="general-overview" aria-label="범용 점검 진행"><div class="eyebrow">GENERAL ASSESSMENT</div><h3>가설과 증거 기반 점검${summary.partial ? ' · 부분 결과' : ''}</h3><p>현재 단계: <strong>${escape(stage)}</strong></p><div class="general-overview-counts"><span>가설 <strong>${summary.totalHypotheses}</strong></span><span>검사 <strong>${summary.probes}</strong></span><span>확정 <strong>${summary.confirmed}</strong></span><span>미점검 <strong>${summary.notTested}</strong></span><span>거부 제안 <strong>${summary.rejectedProposals.length}</strong></span></div><p class="muted">발견한 공격면과 지원 가능한 검사의 범위만 집계합니다. 전체 취약점에 대한 완료율이 아닙니다.</p>${summary.partial ? '<p>일부 모델 제안이 실행되지 않아 점검 범위가 남아 있습니다.</p>' : ''}${stopped ? `<p>종료 사유: ${escape(stopped)}</p>` : ''}</section>`;
-}
-
-/** Show observed phases only. An unobserved phase is never counted as complete. */
-export function renderGeneralLoop(item, selectedEventId = null) {
-  const events = list(item?.events).filter(object);
-  if (item?.mode === 'external-general') {
-    return `<section class="general-loop" aria-label="외부 대상 관찰 이벤트"><div class="eyebrow">EXTERNAL / OBSERVED EVENTS</div><h3>실제 관찰 단계</h3><div class="general-loop-iterations">${events.length ? events.map(event => `<button type="button" class="general-loop-phase is-observed${event.id === selectedEventId ? ' is-selected' : ''}" data-general-event="${escape(text(event.id))}"><strong>${escape(text(event.title) || text(event.stage) || '관찰 이벤트')}</strong><small>${escape(text(event.stage))}</small></button>`).join('') : '<p>아직 수신한 이벤트가 없습니다.</p>'}</div><p class="general-loop-note">범위 밖 링크와 리다이렉트는 요청하지 않으며 거부 사유를 이벤트에 남깁니다.</p></section>`;
-  }
-  const progress = latestProgress(events);
-  const phasesByIteration = new Map();
-  for (const event of events) {
-    const phase = phaseFor(event.stage);
-    if (!phase) continue;
-    const iteration = count(event.iteration) ?? 0;
-    if (!phasesByIteration.has(iteration)) phasesByIteration.set(iteration, new Map());
-    const phases = phasesByIteration.get(iteration);
-    phases.set(phase, [...(phases.get(phase) ?? []), event]);
-  }
-  const rows = [...phasesByIteration].sort(([a], [b]) => a - b);
-  if (!rows.length) rows.push([count(item?.iterations) ?? 0, new Map()]);
-  const flow = rows.map(([iteration, phases]) => {
-    const nodes = PHASES.map(phase => {
-      const records = phases.get(phase.id) ?? [];
-      const latest = records.at(-1);
-      const content = '<strong>' + phase.label + '</strong><small>'
-        + (records.length ? '기록 ' + records.length + '건' : '미관측') + '</small>';
-      return latest
-        ? '<button type="button" class="general-loop-phase is-observed'
-          + (latest.id === selectedEventId ? ' is-selected' : '')
-          + '" data-general-event="' + escape(text(latest.id)) + '">' + content + '</button>'
-        : '<span class="general-loop-phase">' + content + '</span>';
-    }).join('<span class="general-loop-arrow" aria-hidden="true">→</span>');
-    return '<div class="general-loop-iteration"><h4>'
-      + (iteration ? '반복 ' + iteration : '반복 번호 미기록')
-      + '</h4><div class="general-loop-flow">' + nodes + '</div></div>';
-  }).join('');
-  const lastStage = text(events.at(-1)?.stage) || text(item?.status) || '실행 대기';
-  const summary = generalSummary(item);
-  const heading = summary ? '가설과 증거 기반 점검' + (summary.partial ? ' · 부분 결과' : '') : '점검 결과 대기';
-  const counts = summary
-    ? '<span>가설 <strong>' + summary.totalHypotheses + '</strong></span>'
-      + '<span>검사 <strong>' + summary.probes + '</strong></span>'
-      + '<span>확정 <strong>' + summary.confirmed + '</strong></span>'
-      + '<span>미점검 <strong>' + summary.notTested + '</strong></span>'
-    : progress
-      ? '<span>가설 <strong>' + (progress.hypothesisCount ?? '?') + '</strong></span>'
-        + '<span>실행 검사 <strong>' + (progress.probeCount ?? '?') + '</strong></span>'
-        + '<span>수집 증거 <strong>' + (progress.evidenceCount ?? '?') + '</strong></span>'
-        + '<span>남은 검사 예산 <strong>' + (progress.remainingProbeBudget ?? '?') + '</strong></span>'
-    : '<span>수신 이벤트 <strong>' + events.length + '</strong></span>'
-      + '<span>기록된 검사 ID <strong>' + generalObservedProbeCount(item) + '</strong></span>';
-  return '<section class="general-loop" aria-label="범용 Agent loop">'
-    + '<div class="eyebrow">GENERAL ASSESSMENT / OBSERVED LOOP</div><h3>' + heading + '</h3>'
-    + '<p>최근 단계: <strong>' + escape(lastStage) + '</strong></p>'
-    + '<div class="general-overview-counts">' + counts + '</div>'
-    + '<div class="general-loop-iterations">' + flow + '</div>'
-    + '<p class="general-loop-note">실제로 수신한 단계만 기록으로 표시합니다. 진행 수치는 검사 기준이며 전체 취약점에 대한 완료율이 아닙니다.</p>'
-    + '</section>';
 }
 
 /** A verify event is a probe observation, not a persisted finding. */
