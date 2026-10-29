@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, extname, sep } from 'node:path';
-import { createLocalRuntime } from '../application/local-runtime.mjs';
 import { createAuthentication } from './auth.mjs';
 import { getPlatform } from './platform.mjs';
 import { createModuleManagement } from './module-management.mjs';
@@ -76,9 +75,10 @@ function readJson(req, maxBody = MAX_BODY) {
   });
 }
 
-export function createDashboardServer({ runtime = createLocalRuntime(), auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform, ciResults = null,
+export function createDashboardServer({ runtime, auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform, ciResults = null,
   maintenanceCheck = deploymentPaused, deploymentStatusProvider = deploymentStatus, moduleManagement = null,
   dbManagement = null, targetPreflight = preflightExternalTarget, workspaceChat = null } = {}) {
+  if (!runtime) throw new TypeError('createDashboardServer requires a run service runtime.');
   const configured = publicOrigins.map(value => new URL(value));
   if (configured.some(url => url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/')) throw new Error('Public origins must be plain HTTPS origins.');
   if (configured.length && !auth.enabled) throw new Error('External dashboard access requires authentication.');

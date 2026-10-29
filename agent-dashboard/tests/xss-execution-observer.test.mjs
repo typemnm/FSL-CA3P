@@ -6,7 +6,7 @@ import {
   createStoredXssCanary,
   observeStoredXssExecution,
   storedXssCanaryContent,
-} from '../integrations/xss-parser.mjs';
+} from '../../packages/adapters/integrations/xss-parser.mjs';
 import { startLocalLab } from '../local-lab-gateway.mjs';
 
 const parserRequire = createRequire(new URL('../../xss-parser/package.json', import.meta.url));

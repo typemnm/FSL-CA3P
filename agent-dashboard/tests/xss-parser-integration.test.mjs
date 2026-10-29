@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { parseLocalSite } from '../integrations/xss-parser.mjs';
+import { parseLocalSite } from '../../packages/adapters/integrations/xss-parser.mjs';
 import { startLocalLab } from '../local-lab-gateway.mjs';
 
 const origin = 'http://127.0.0.1:8123';
