@@ -242,6 +242,8 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
     `Response.text()`는 스트리밍 상한을 제공하지 않으므로 잘못된 길이 헤더나 압축 팽창에는
     읽기 전 메모리 상한이 보장되지 않는다. 이 그래프는 공개 리소스 관찰 결과이며 서버 설치 패키지 목록이나
     취약점 판정이 아니다. `coverage.reasons`와 `limitations`에 미확인 범위를 표시한다.
+    참조 200개, 응답 본문 32개, 인라인 스크립트 32개 상한이나 읽기 시간 제한에 걸리면
+    `coverage.reasons`에 해당 제한을 남긴다. 이 제한은 `TargetInfo.truncated`의 HTML·구조 상한과 별개다.
   - 데이터셋 로드 실패·매칭 예외는 `errors`에 `{stage:'fingerprint'}` 1건, 수집 결과는 그대로 반환(reject 안 함).
 - `schemaVersion`은 **자체 네임스페이스**(`web-parser-1`) — 기존 xss-parser의 `3.4`와 무관.
 - 취약점 흔적/판정 필드 없음(역할상 중립).

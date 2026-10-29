@@ -44,14 +44,20 @@ function dependencyInventory(input) {
     ...(Array.isArray(input.stylesheetHref) ? input.stylesheetHref : [])
       .map(url => ({ url, kind: 'stylesheet', relation: 'stylesheet-link' })),
   ];
-  inventory.references(pageId, { items: references, truncated: false });
-  for (const resource of (Array.isArray(input.resourceBodies) ? input.resourceBodies : []).slice(0, 32)) {
+  inventory.references(pageId, { items: references, truncated: references.length > 200 });
+  const resources = Array.isArray(input.resourceBodies) ? input.resourceBodies : [];
+  if (resources.length > 32) inventory.mark('resource-response-limit');
+  for (const reason of Array.isArray(input.resourceCollectionReasons) ? input.resourceCollectionReasons : []) {
+    if (typeof reason === 'string') inventory.mark(reason);
+  }
+  for (const resource of resources.slice(0, 32)) {
     if (!resource || typeof resource.url !== 'string') continue;
     inventory.response(pageId, resource.url, resource.kind, resource.status,
       typeof resource.body === 'string' ? resource.body : undefined);
   }
   const inline = Array.isArray(input.inlineScripts) ? input.inlineScripts
     : (Array.isArray(input.scripts) ? input.scripts : []).map(body => ({ body, type: null }));
+  if (inline.length > 32) inventory.mark('inline-script-limit');
   inline.slice(0, 32).forEach((script, index) => {
     if (typeof script?.body === 'string') inventory.inline(pageId, documentUrl.href, index,
       script.body, script.type ?? null, input.inlineBaseUrl ?? documentUrl.href);

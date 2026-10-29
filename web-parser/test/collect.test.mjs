@@ -85,6 +85,8 @@ const PAGES = {
   '/fp-src': html('', '<script src="/jquery-3.7.1.min.js"></script>'),
   '/dependency-fp': html('', '<link rel="stylesheet" href="/styles-comment.css">'
     + '<script src="/vendor-comment.js"></script><script src="/react-dom-18.2.0.min.js"></script>'),
+  '/dependency-many': html('', Array.from({ length: 33 }, (_, index) =>
+    `<script src="/dependency-empty/${index}.js"></script>`).join('')),
   '/proxy-hang': html('', '<script>window.jQuery = new Proxy(function () {}, { getOwnPropertyDescriptor() { for (;;) {} } });</script>'),
   '/many-links': html(Array.from({ length: MAX_STRUCTURE_ITEMS + 1 }, (_, i) => `<a href="https://example.invalid/${i}">x</a>`).join('')),
   '/many-imgs': html(Array.from({ length: MAX_RESOURCES + 1 }, (_, i) => `<img src="/img/${i}">`).join('')),
@@ -191,6 +193,8 @@ before(async () => {
       return res.writeHead(200, { 'content-type': pathname.endsWith('.css') ? 'text/css' : 'text/javascript',
         'content-length': Buffer.byteLength(body) }).end(body);
     }
+    if (pathname.startsWith('/dependency-empty/')) return res.writeHead(200, {
+      'content-type': 'text/javascript', 'content-length': 0 }).end('');
     if (pathname === '/fp') {
       res.writeHead(200, { 'content-type': 'text/html', 'X-Powered-By': 'Express', 'set-cookie': 'PHPSESSID=abc123; Path=/' });
       return res.end(PAGES['/fp']);
@@ -973,4 +977,10 @@ test('browser-observed JS and CSS comments supplement Wappalyzer with bounded de
   assert.deepEqual(info.dependencies.pages, [{ id: 'page-1', url: `${base}/dependency-fp` }]);
   assert.ok(info.dependencies.relations.some(item => item.from === 'page-1'));
   assert.doesNotMatch(JSON.stringify(info.dependencies), /window\.fixture = true|color: black/u);
+});
+
+test('browser reports dependency response limits when more than 32 scripts load', T, async () => {
+  const info = await collect(`${base}/dependency-many`);
+  assert.deepEqual(info.errors, []);
+  assert.ok(info.dependencies.coverage.reasons.includes('resource-response-limit'));
 });

@@ -137,6 +137,7 @@ export async function collect(url, opts) {
     if (cookies.length) await context.addCookies(cookies.map(({ name, value }) => ({ name, value, url: start.origin })));
     const answered = new WeakSet(); // a request aborted after its response is already recorded
     const dependencyResponses = new Map([[start.origin, []]]);
+    const dependencyResponseOverflow = new Set();
     context.on('response', (r) => {
       const request = r.request();
       const kind = request.resourceType();
@@ -162,7 +163,7 @@ export async function collect(url, opts) {
           if (bucket.length < MAX_RESOURCES) {
             bucket.push({ response: r, url: request.url(), kind, status: r.status() });
             dependencyResponses.set(origin, bucket);
-          }
+          } else dependencyResponseOverflow.add(origin);
         } catch { /* Ignore resources without an HTTP(S) origin. */ }
       }
     });
@@ -313,9 +314,16 @@ export async function collect(url, opts) {
           ...linkTags.filter(link => /(?:^|\s)(?:stylesheet|modulepreload)(?:\s|$)/iu.test(link.rel ?? ''))
             .map(link => link.href),
         ].map(value => { try { return withoutHash(value); } catch { return null; } }).filter(Boolean));
-        for (const item of dependencyResponses.get(info.target.origin) ?? []) {
-          if (Date.now() >= deadline || dependencyResources.length >= MAX_DEPENDENCY_RESOURCES) break;
-          if (!referenced.has(withoutHash(item.url))) continue;
+        const candidates = (dependencyResponses.get(info.target.origin) ?? [])
+          .filter(item => referenced.has(withoutHash(item.url)));
+        const resourceCollectionReasons = [];
+        if (dependencyResponseOverflow.has(info.target.origin)) resourceCollectionReasons.push('resource-candidate-limit');
+        if (candidates.length > MAX_DEPENDENCY_RESOURCES) resourceCollectionReasons.push('resource-response-limit');
+        for (const item of candidates.slice(0, MAX_DEPENDENCY_RESOURCES)) {
+          if (Date.now() >= deadline) {
+            resourceCollectionReasons.push('resource-read-time-limit');
+            break;
+          }
           const resource = { url: item.url, kind: item.kind, status: item.status };
           if (item.status >= 200 && item.status < 300 && typeof item.response.text === 'function') {
             const lengthHeader = (await item.response.headers?.())?.['content-length'];
@@ -347,6 +355,7 @@ export async function collect(url, opts) {
           inlineScripts: scripts.filter((s) => s.inline != null).map((s) => ({ body: s.inline, type: s.type })),
           inlineBaseUrl: snap?.baseUrl,
           resourceBodies: dependencyResources,
+          resourceCollectionReasons,
           xhr: info.resources.filter((r) => r.kind === 'xhr' || r.kind === 'fetch').map((r) => r.url),
           ...seen,
         }, timeoutMs));

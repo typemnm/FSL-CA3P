@@ -108,3 +108,23 @@ test('inline module imports use the document base URL', () => {
   assert.ok(result.dependencies.assets.some(item => item.url === `${ORIGIN}/assets/module.js`));
   assert.ok(result.dependencies.relations.some(item => item.kind === 'js-import'));
 });
+
+test('dependency limits are explicit when later references or sources are not inspected', () => {
+  const references = detect({ scriptSrc: Array.from({ length: 201 }, (_, index) =>
+    `${ORIGIN}/assets/${index}.js`) });
+  assert.equal(references.dependencies.assets.length, 200);
+  assert.ok(references.dependencies.coverage.reasons.includes('dom-reference-limit'));
+
+  const resources = detect({ resourceBodies: Array.from({ length: 33 }, (_, index) => ({
+    url: `${ORIGIN}/assets/${index}.js`, kind: 'script', status: 200,
+    body: index === 32 ? '/* axios v1.6.8 */' : 'void 0;',
+  })) });
+  assert.equal(named(resources.libraries, 'Axios'), undefined);
+  assert.ok(resources.dependencies.coverage.reasons.includes('resource-response-limit'));
+
+  const inline = detect({ inlineScripts: Array.from({ length: 33 }, (_, index) => ({
+    body: index === 32 ? '/* axios v1.6.8 */' : 'void 0;', type: 'module',
+  })) });
+  assert.equal(named(inline.libraries, 'Axios'), undefined);
+  assert.ok(inline.dependencies.coverage.reasons.includes('inline-script-limit'));
+});
