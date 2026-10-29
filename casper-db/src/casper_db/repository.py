@@ -426,8 +426,13 @@ class CaseStore:
         if not include_drafts:
             sql += " AND status = 'ready'"
         with self._connect() as connection:
-            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_case_state'").fetchone():
-                sql += " AND NOT EXISTS (SELECT 1 FROM dashboard_case_state a WHERE a.case_id = cases.case_id)"
+            if connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_case_state'"
+            ).fetchone():
+                sql += (
+                    " AND NOT EXISTS (SELECT 1 FROM dashboard_case_state a "
+                    "WHERE a.case_id = cases.case_id)"
+                )
             sql += " ORDER BY case_id"
             rows = connection.execute(sql, values).fetchall()
             return [self._record(row) for row in rows]
@@ -437,9 +442,16 @@ class CaseStore:
         target = TARGET_ID_ADAPTER.validate_python(target_id, strict=True)
         with self._connect() as connection:
             sql = "SELECT * FROM cases WHERE target_id = ? AND status = 'ready'"
-            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_case_state'").fetchone():
-                sql += " AND NOT EXISTS (SELECT 1 FROM dashboard_case_state a WHERE a.case_id = cases.case_id)"
-            rows = connection.execute(sql + " ORDER BY reported_on DESC, case_id", (target,)).fetchall()
+            if connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_case_state'"
+            ).fetchone():
+                sql += (
+                    " AND NOT EXISTS (SELECT 1 FROM dashboard_case_state a "
+                    "WHERE a.case_id = cases.case_id)"
+                )
+            rows = connection.execute(
+                sql + " ORDER BY reported_on DESC, case_id", (target,)
+            ).fetchall()
             return [self._record(row) for row in rows]
 
     @staticmethod
