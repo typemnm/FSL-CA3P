@@ -1,7 +1,7 @@
 # web-parser — 모듈 계약 (초안)
 
 - 상태: 초안 v0.7 (P3.1: `signal`(취소)·`cookies`(요청 호스트에 심는 쿠키) 옵션) · 2026-10-29 · 브랜치 `woohyun212/web-parser` (← develop `998cf22`)
-- 소유: woohyun. **xss-parser를 대체**(xss-parser는 deprecated 예정).
+- 소유: woohyun. **xss-parser를 대체**(xss-parser는 폐기·삭제됨, §10).
 
 ## 1. 역할
 **Agent가 정한 endpoint**를 입력받아 그 문서의 **웹 정보를 수집**해 Agent에 넘기는 **취약점 종류 무관(XSS/IDOR/SQLi 독립)
@@ -246,8 +246,8 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   2. **크기**: 봉투 상한은 직렬화된 메시지 전체 1,000,000 UTF-8 바이트(`MAX_MESSAGE_BYTES`). `html` 상한이 5,000,000자이므로
      아주 큰 페이지는 `TargetInfo` 하나만으로 1MB 봉투를 넘을 수 있다.
 - ⚠️ **이 와이어 결선(protocol.js의 sender id·operation·result 검증, orchestrator 호출)은 agent 코어
-  소유자(1mn2147) 조율 필요.** xss-parser를 대체하므로 기존 `parser.result`/`parse_site`/sender
-  `xss-parser` 경로의 처분도 함께 정해야 함. 모듈 쪽 계약(이 문서)은 그와 독립으로 먼저 확정.
+  소유자(1mn2147) 조율 필요.** 기존 `parser.result`/`parse_site`/sender `xss-parser` 경로는 삭제됐다(§10).
+  모듈 쪽 계약(이 문서)은 그와 독립으로 먼저 확정.
 
 ## 5. 브라우저 세션 격리 (요구사항)
 - **다른 모듈/Agent와 같은 Chrome을 공유하지 않는다.** 매 수집마다 **자체 Chromium 인스턴스**를
@@ -289,7 +289,7 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   URL 호스트 한정 host-only 쿠키) 옵션(§2). 범용 점검 런타임의 도구 결선(어댑터·도구 등록)은 다음 작업.
 - **P3 (Agent 연동, 1mn2147 조율)**: §4 결선과 Agent 쪽 시간·봉투 1MB 제약(§4), xss-parser 경로 대체·폐기,
   integration-manifest에서 모듈 id 교체.
-- **P4 (정리)**: xss-parser deprecate(매니페스트·어댑터·테스트 정리), 문서화.
+- **P4 (정리)**: xss-parser deprecate(매니페스트·어댑터·테스트 정리), 문서화 — 완료(§10).
 
 ## 9. 테스트
 - `npm test` = `test/collect.test.mjs`(실제 Chromium, 테스트 프로세스 안 127.0.0.1 HTTP 픽스처) + `test/fingerprint.test.mjs`
@@ -321,9 +321,15 @@ hop = { from, to, status, headers:[{name,value}]|null, kind: "http"|"client" }
   (`LIBRARY_CATEGORIES` 이름, implies/excludes/requires 대상 존재).
 - 비밀 경계는 수집기 밖(영속화/전송) 책임이므로 모듈 테스트 범위 밖 — 경계 지점에서 별도 검증.
 
-## 10. xss-parser 폐기(deprecation)
-- web-parser가 Agent 경로를 대체하면 xss-parser의 wire(`xss-parser` sender, `parse_site`),
-  integration-manifest 항목, 어댑터, 테스트 스위트를 순차 제거/치환. P3~P4에서 1mn2147·매니페스트와 조율.
+## 10. xss-parser 폐기(완료)
+- 기존 단일 검사(core-fixture·저장형 XSS·교차 사용자 삭제)와 함께 xss-parser를 폐기했다. `xss-parser/` 디렉터리는 삭제했고,
+  integration-manifest에는 `status: "replaced"`, `replacement: ["web-parser"]`로 남긴다.
+- 삭제: wire(`xss-parser` receiver, `parser.result`, `parse_site`·`verify_stored_xss` 검증), 로컬 실습 게이트웨이,
+  `parseLocalSite` 어댑터, 관련 테스트 스위트. CI·Docker·장치 배포의 Chromium 설치와 `preflight`는 web-parser의 Playwright를 쓴다.
+- 유지: 저장형 XSS 실행 확인 어댑터 `observeStoredXssExecution`(`packages/adapters/integrations/xss-execution.mjs`)은
+  web-parser의 Playwright를 로드한다. 이 어댑터를 호출하는 실행 경로는 없다. 브라우저 경로 env는 `WEB_PARSER_BROWSER_PATH`이고
+  `XSS_PARSER_BROWSER_PATH`는 별칭이다.
+- 과거 실행 기록의 `xss-parser` 이벤트와 manifest 항목은 그대로 읽는다(대시보드 모듈 별칭, 모듈 관리 `eventIds`).
 
 ## 11. 백로그
 - **JS 코드 안의 API 경로 추출**(정적 분석) — 백로그. 인라인·외부 스크립트(와 JSON 본문)의 문자열·`fetch`/XHR 호출에서 경로를

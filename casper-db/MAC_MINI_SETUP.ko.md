@@ -14,8 +14,6 @@ export PATH="$(brew --prefix node@24)/bin:$PATH"
 source .venv/bin/activate
 python -m pip install -r casper-db/requirements-runtime.lock
 python -m pip install --no-deps -e ./casper-db
-npm ci --prefix xss-parser
-(cd xss-parser && npx playwright install chromium)
 export CASPER_DB_PYTHON="$PWD/.venv/bin/python"
 export CASPER_DB_TESSERACT="$(brew --prefix)/bin/tesseract"
 ```
@@ -54,6 +52,8 @@ python -m casper_db report-db publish casper-db/data/server-workspace DRAFT_SHA2
 첫 publish는 등록 전 확인이고 `--apply`에서 최종 사례를 저장합니다. HWP v5와 HWPX를 지원하며 암호·DRM 문서는 지원하지 않습니다. OCR은 내장된 지원 이미지 형식에 적용하고 현재 최대 8개·이미지당 800만 픽셀 제한이 있습니다. 페이지 전체를 렌더링한 OCR이 아닙니다. 실제 보고서에서는 표 경계, URL, 파라미터, payload의 따옴표·공백·인코딩, 이미지 누락을 대조합니다.
 
 ## 실제 파서 결과 → GitHub/NVD → 같은 DB 저장·조회
+
+> `xss-parser`는 제거됐습니다. 아래 `xss-parser/cli.mjs --structure` 명령은 더 이상 실행할 수 없습니다. `ingest-parser.mjs`가 받는 `structure-1.0`·3.4 보고서를 새로 만드는 대체 생산자는 아직 없습니다(`web-parser` 출력은 `web-parser-1`). 이미 저장된 파서 보고서는 `ingest-parser.mjs`로 계속 넣을 수 있습니다.
 
 같은 대상 ID를 사용합니다. 파서는 승인된 loopback URL만 받으므로 서버에서 실행 중인 대상의 로컬 포트를 지정합니다. `YOUR-TARGET`, 포트, 경로는 실제 값으로 바꿉니다.
 

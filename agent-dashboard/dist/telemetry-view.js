@@ -1,6 +1,6 @@
 /** Display metadata and formatting for current and archived telemetry. */
 export const MODULES = [
-  { id: 'parser', name: 'xss-parser', role: '사이트 응답 분석', icon: 'scan' },
+  { id: 'parser', name: 'web-parser', role: '사이트 응답 분석', icon: 'scan' },
   { id: 'casper', name: 'casper-db', role: '취약점 지식 조회', icon: 'database' },
   { id: 'attack', name: 'attack-module', role: 'curl 쓰기 요청', icon: 'terminal' },
   { id: 'guardrail', name: 'guardrail', role: '실행 전 요청 검사', icon: 'shield' },

@@ -334,11 +334,10 @@ async function webParserReleaseFixture(t, { malformedDataset = false, emptyProbe
   await mkdir(repoDir);
   const files = {
     'integration-manifest.json': JSON.stringify({ modules: [
-      { id: 'xss-parser', path: 'xss-parser', status: 'active' },
       { id: 'web-parser', path: modulePath, status: 'active' },
       { id: 'report', path: 'packages/report', status: 'active' },
     ] }),
-    'xss-parser/package-lock.json': '{}', 'web-parser/package-lock.json': '{}',
+    'web-parser/package-lock.json': '{}',
     'packages/report/capture/package-lock.json': '{}', 'packages/report/requirements-ci.lock': '# fixture',
     'packages/report/pyproject.toml': '# fixture',
     'web-parser/scripts/fetch-dataset.mjs': `import {mkdir,writeFile} from 'node:fs/promises';
@@ -388,9 +387,11 @@ test('fresh device releases explicitly fetch and validate parser data despite di
   const f = await webParserReleaseFixture(t);
   await assert.rejects(stat(join(f.release, 'web-parser/data/webappanalyzer')), { code: 'ENOENT' });
   await assert.rejects(prepareRelease(f.localConfig, { sha: f.sha }, f.phase, { execute: f.runCommand }), /fixture stopped before database or service operations/);
-  assert.deepEqual(f.commands.map(item => item.name), ['venv', 'npm-0', 'npm-1', 'npm-2', 'python-requirements',
+  assert.deepEqual(f.commands.map(item => item.name), ['venv', 'npm-0', 'npm-1', 'python-requirements',
     'python-packages', 'chromium', 'web-parser-dataset', 'web-parser-dataset-check', 'preflight']);
   assert.deepEqual(f.phases, ['dependencies', 'web-parser-dataset', 'isolated-smoke']);
+  assert.deepEqual(f.commands.find(item => item.name === 'chromium').args,
+    [join(f.release, 'web-parser/node_modules/playwright/cli.js'), 'install', 'chromium']);
   const download = f.commands.find(item => item.name === 'web-parser-dataset');
   assert.equal(download.executable, process.execPath);
   assert.deepEqual(download.args, [join(f.release, 'web-parser/scripts/fetch-dataset.mjs')]);
@@ -472,9 +473,9 @@ process.once('SIGTERM',()=>server.close());
     git(['worktree', 'add', '--detach', release, sha]);
     const fakePython = join(directory, 'fixture-python');
     await writeFile(fakePython, '#!/bin/sh\nprintf \'{"ok":true}\\n\'\n', { mode: 0o700 });
-    for (const path of ['.venv/bin', 'xss-parser/node_modules/playwright', 'packages/report/capture/node_modules/playwright', 'agent']) await mkdir(join(release, path), { recursive: true });
+    for (const path of ['.venv/bin', 'packages/report/capture/node_modules/playwright', 'agent']) await mkdir(join(release, path), { recursive: true });
     await symlink(fakePython, join(release, '.venv/bin/python'));
-    for (const path of ['xss-parser/node_modules/playwright/package.json', 'packages/report/capture/node_modules/playwright/package.json']) await writeFile(join(release, path), '{}');
+    await writeFile(join(release, 'packages/report/capture/node_modules/playwright/package.json'), '{}');
     await atomicJson(join(deployRoot, 'prepared', `${sha}.json`), { sha });
     await mkdir(join(repoDir, 'agent'));
     const envFile = join(repoDir, 'agent/.env');
