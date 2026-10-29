@@ -103,6 +103,15 @@ test('HTTP failures are not parsed; header claims exclude cookies and raw header
   assert.equal(JSON.stringify(result).includes('hidden-sensitive-data'), false);
 });
 
+test('Spring Boot response header is reported as an observed technology', () => {
+  const data = inventory();
+  data.headers('page-1', { 'x-powered-by': 'Spring Boot' });
+  assert.deepEqual(data.snapshot().technologies, [{
+    name: 'Spring Boot', version: null, evidence: 'response-header-claim',
+    header: 'x-powered-by', pageIds: ['page-1']
+  }]);
+});
+
 test('malformed imports and unsupported syntax do not crash a scan', () => {
   const data = inventory();
   assert.doesNotThrow(() => data.response('page-1',origin + '/one.js','script',200,"import 'https://[';"));

@@ -199,6 +199,7 @@ export function createWebInventory(origin, displayUrl) {
     },
     headers(pageId, headers) {
       const rules = [ ['x-powered-by', /^Express$/i, 'Express'],
+        ['x-powered-by', /^Spring Boot$/i, 'Spring Boot'],
         ['x-powered-by', /^PHP(?:\/(\d+(?:\.\d+){1,3}))?$/i, 'PHP'],
         ['x-powered-by', /^Next\.js$/i, 'Next.js'],
         ['server', /^nginx(?:\/(\d+(?:\.\d+){1,3}))?$/i, 'nginx'],
