@@ -5,6 +5,7 @@ import { createRunRepository } from '../../packages/run-store/index.mjs';
 import { createLocalRuntime } from '../application/local-runtime.mjs';
 import { createIdorRuntime } from '../application/idor-runtime.mjs';
 import { createGeneralRuntime } from '../application/general-runtime.mjs';
+import { createExternalRuntime } from '../application/external-runtime.mjs';
 import { createModelReasoning } from '../../packages/models/registry.mjs';
 import { digest } from '../../packages/contracts/index.mjs';
 import { startLocalLab } from '../../packages/adapters/local-lab-gateway.mjs';
@@ -24,10 +25,29 @@ function generalDocumentsStatus(items) {
   return 'failed';
 }
 
+function storeReportPreviews(store, runId, document, findingId) {
+  const artifacts = {};
+  for (const [field, kind, filename, contentType, maxBytes, idField] of [
+    ['previewMarkdown', 'report-preview', 'report.md', 'text/markdown; charset=utf-8', 2_000_000, 'previewArtifactId'],
+    ['previewHtml', 'report-preview-html', 'report.html', 'text/html; charset=utf-8', 30_000_000, 'previewHtmlArtifactId'],
+  ]) {
+    if (typeof document[field] !== 'string') continue;
+    const bytes = Buffer.from(document[field], 'utf8');
+    if (!bytes.length || bytes.length > maxBytes) throw new Error('Invalid report preview size.');
+    const artifact = store.writeBinaryArtifact(runId, kind, bytes, {
+      filename, ...(findingId ? { findingId } : {}), contentType,
+      provenance: 'report-agent-generated',
+    });
+    artifacts[idField] = artifact.id;
+  }
+  return artifacts;
+}
+
 export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
   pollMs = 150, leaseMs = 15_000, heartbeatMs = 1000, envFile, env = process.env,
   reportGenerator = generateReportDocument, runtimeFactory = createLocalRuntime,
   idorRuntimeFactory = createIdorRuntime, generalRuntimeFactory = createGeneralRuntime,
+  externalRuntimeFactory = createExternalRuntime, externalRequestImpl,
   generalPlannerFactory, generalFetchImpl, generalIdorProbe, generalBoardFactory } = {}) {
   const store = createRunRepository({ path: storePath });
   let stopping = false; let runtime = null; let activeLease = null; let activeController = null; let busy = false; let timer; let shutdownTask;
@@ -60,10 +80,16 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       }
       const controller = new AbortController();
       activeController = controller;
-      const generalLab = lease.mode === 'local-lab-general';
+      const externalRun = lease.mode === 'external-general';
+      const generalLab = lease.mode === 'local-lab-general' || externalRun;
       const idorLab = lease.options.testProfile === 'known_record_idor_read';
-      if (generalLab && (lease.options.testProfile !== 'general' || lease.modelId === 'rule-baseline')) {
+      if (lease.mode === 'local-lab-general'
+        && (lease.options.testProfile !== 'general' || lease.modelId === 'rule-baseline')) {
         throw Object.assign(new Error('General assessment requires its own profile and a registered model.'), { code: 'INVALID_GENERAL_RUN' });
+      }
+      if (externalRun && (lease.options.testProfile !== 'external-read-only' || lease.modelId !== 'rule-baseline'
+        || lease.options.fixtureId !== null)) {
+        throw Object.assign(new Error('External observation requires its read-only profile.'), { code: 'INVALID_EXTERNAL_RUN' });
       }
       const engine = idorLab || generalLab ? null : await createModelReasoning(lease.modelId, { signal: controller.signal,
         env,
@@ -72,8 +98,9 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         } });
       let persistenceError = null;
       const historyProvider = () => store.listRuns({ limit: 50 }).items
-        .filter(item => item.id !== lease.runId
-          && (item.fixtureId ?? item.manifest?.target?.fixtureId) === lease.options.fixtureId)
+        .filter(item => item.id !== lease.runId && (externalRun
+          ? item.mode === 'external-general' && item.manifest?.target?.origin === lease.options.scope.origin
+          : (item.fixtureId ?? item.manifest?.target?.fixtureId) === lease.options.fixtureId))
         .slice(0, 20).map(item => {
           const findings = Array.isArray(item.report?.findings) ? item.report.findings
             : item.report?.finding ? [item.report.finding] : [];
@@ -83,9 +110,12 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
               status: finding.status ?? null, evidenceCount: Array.isArray(finding.evidenceIds)
                 ? finding.evidenceIds.length : null })) };
         });
-      runtime = (generalLab ? generalRuntimeFactory : idorLab ? idorRuntimeFactory : runtimeFactory)({ defaultDelayMs: lease.options.delayMs,
+      runtime = (externalRun ? externalRuntimeFactory : generalLab ? generalRuntimeFactory
+        : idorLab ? idorRuntimeFactory : runtimeFactory)({ defaultDelayMs: lease.options.delayMs,
         fixtureId: lease.options.fixtureId,
         targetOrigin: lease.options.target,
+        ...(externalRun ? { targetUrl: lease.options.target, scope: lease.options.scope,
+          ...(externalRequestImpl ? { requestImpl: externalRequestImpl } : {}) } : {}),
         caseSnapshot: lease.options.caseSnapshot,
         unavailableInputs: lease.options.unavailableInputs ?? [],
         historyProvider,
@@ -226,6 +256,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
                   status: 'failed', errorCode: 'REPORT_CANCELLED', message: '보고서 생성을 취소했습니다.',
                 };
                 if (document?.status === 'ready') {
+                  const previews = storeReportPreviews(store, lease.runId, document, item.findingId);
                   const binary = store.writeBinaryArtifact(lease.runId, 'hwpx-report', document.bytes, {
                     filename: document.filename, findingId: item.findingId,
                     contentType: 'application/hwp+zip', provenance: 'report-agent-generated',
@@ -233,7 +264,8 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
                   if (items.some(other => other !== item && other.status === 'ready' && other.artifactId === binary.id)) {
                     throw new Error('Two selected findings produced the same HWPX bytes.');
                   }
-                  document = { status: 'ready', artifactId: binary.id, filename: document.filename,
+                  document = { status: 'ready', artifactId: binary.id,
+                    ...previews, filename: document.filename,
                     message: 'HWPX 보고서 초안이 준비되었습니다. 내려받은 뒤 검토하세요.' };
                 } else document = { status: ['failed', 'unavailable', 'skipped'].includes(document?.status) ? document.status : 'failed',
                   message: document?.message, errorCode: document?.errorCode ?? 'REPORT_GENERATION_FAILED' };
@@ -264,10 +296,12 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
               status: 'failed', errorCode: 'REPORT_CANCELLED', message: '보고서 생성을 취소했습니다.',
             };
             if (document.status === 'ready') {
+              const previews = storeReportPreviews(store, lease.runId, document);
               const binary = store.writeBinaryArtifact(lease.runId, 'hwpx-report', document.bytes, {
                 filename: document.filename, contentType: 'application/hwp+zip', provenance: 'report-agent-generated',
               });
-              document = { status: 'ready', artifactId: binary.id, filename: document.filename,
+              document = { status: 'ready', artifactId: binary.id,
+                ...previews, filename: document.filename,
                 message: 'HWPX 보고서 초안이 준비되었습니다. 내려받은 뒤 검토하세요.' };
             } else document = { status: ['failed', 'unavailable', 'skipped'].includes(document.status) ? document.status : 'failed',
               message: document.message, errorCode: document.errorCode };

@@ -1,10 +1,21 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+
+export function daehanDatabasePath(env = process.env) {
+  const testPath = env.NODE_ENV === 'test' ? env.CA3P_TEST_DAEHAN_DB_PATH : undefined;
+  if (testPath !== undefined) {
+    if (typeof testPath !== 'string' || !isAbsolute(testPath) || basename(testPath) !== 'daehan.sqlite') {
+      throw new Error('CA3P_TEST_DAEHAN_DB_PATH must be an absolute daehan.sqlite path.');
+    }
+    return testPath;
+  }
+  return join(root, 'data', 'daehan.sqlite');
+}
 
 export function sha1(value) {
   return createHash('sha1').update(String(value)).digest('hex');
@@ -17,9 +28,10 @@ function daysBefore(date, count) {
 }
 
 export function openDatabase(site) {
-  const dataDir = join(root, 'data');
+  const filename = process.env.LAB_MEMORY_DB === '1' ? ':memory:'
+    : site.id === 'daehan' ? daehanDatabasePath() : join(root, 'data', `${site.id}.sqlite`);
+  const dataDir = filename === ':memory:' ? join(root, 'data') : dirname(filename);
   mkdirSync(dataDir, { recursive: true });
-  const filename = process.env.LAB_MEMORY_DB === '1' ? ':memory:' : join(dataDir, `${site.id}.sqlite`);
   const db = new DatabaseSync(filename);
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (

@@ -5,7 +5,7 @@ import zlib
 import pytest
 from hwpx import HwpxDocument
 
-from ca3p_report.hwpx import write_hwpx, write_markdown
+from ca3p_report.hwpx import write_html, write_hwpx, write_markdown
 from ca3p_report.hwpx.writer import PHOTO_MISSING, PHOTO_NOTE, TRIAGE_CAVEAT, VERDICT_CAVEAT
 
 RUN = "run-20261020-xss"
@@ -204,6 +204,16 @@ def test_markdown_preview_is_html_escaped(tmp_path):
         assert heading in text
     assert "<script>" not in text and "&lt;script&gt;" in text
     assert "\\|" in text  # pipe in a table cell does not split the row
+
+
+def test_html_preview_renders_tables_and_intact_images_without_executing_payload(tmp_path, image_root):
+    text = write_html(model(), tmp_path / "report.html", image_root=image_root).read_text(encoding="utf-8")
+    assert "<table><tbody>" in text
+    assert 'src="data:image/png;base64,' in text
+    assert text.count('src="data:image/png;base64,') == 1
+    assert text.count(PHOTO_MISSING) == 2
+    assert "<script>alert" not in text and "&lt;script&gt;alert" in text
+    assert "default-src 'none'" in text
 
 
 @pytest.mark.parametrize(

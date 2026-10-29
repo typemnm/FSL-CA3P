@@ -331,7 +331,8 @@ class CaseStore:
                 result["created"].append(record)
         return result
 
-    def update(self, case: Case | dict, *, expected_revision: int | None = None) -> CaseRecord:
+    def update(self, case: Case | dict, *, expected_revision: int | None = None,
+               _connection: sqlite3.Connection | None = None) -> CaseRecord:
         data = self._values(case)
         fields = tuple(key for key in COLUMNS if key != "case_id")
         sql = (
@@ -340,7 +341,8 @@ class CaseStore:
             + ", updated_at = ?, revision = revision + 1 WHERE case_id = ?"
         )
         values = [data[key] for key in fields] + [datetime.now(UTC).isoformat(), data["case_id"]]
-        with self._connect(write=True) as connection:
+        context = self._connect(write=True) if _connection is None else nullcontext(_connection)
+        with context as connection:
             current = connection.execute(
                 "SELECT target_id, revision FROM cases WHERE case_id = ?", (data["case_id"],)
             ).fetchone()
@@ -423,8 +425,10 @@ class CaseStore:
             values.append(query.parameter_location)
         if not include_drafts:
             sql += " AND status = 'ready'"
-        sql += " ORDER BY case_id"
         with self._connect() as connection:
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_case_state'").fetchone():
+                sql += " AND NOT EXISTS (SELECT 1 FROM dashboard_case_state a WHERE a.case_id = cases.case_id)"
+            sql += " ORDER BY case_id"
             rows = connection.execute(sql, values).fetchall()
             return [self._record(row) for row in rows]
 
@@ -432,11 +436,10 @@ class CaseStore:
         """Return prior ready reports for the LLM to compare with parser output."""
         target = TARGET_ID_ADAPTER.validate_python(target_id, strict=True)
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM cases WHERE target_id = ? AND status = 'ready' "
-                "ORDER BY reported_on DESC, case_id",
-                (target,),
-            ).fetchall()
+            sql = "SELECT * FROM cases WHERE target_id = ? AND status = 'ready'"
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_case_state'").fetchone():
+                sql += " AND NOT EXISTS (SELECT 1 FROM dashboard_case_state a WHERE a.case_id = cases.case_id)"
+            rows = connection.execute(sql + " ORDER BY reported_on DESC, case_id", (target,)).fetchall()
             return [self._record(row) for row in rows]
 
     @staticmethod

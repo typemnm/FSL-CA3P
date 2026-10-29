@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -21,7 +22,7 @@ from .import_workflow import (
 )
 from .narrative import VERSION as NARRATIVE_VERSION
 from .report_drafts import ReportDraft
-from .repository import COLUMNS, CaseStore, NotFoundError, initialize_database
+from .repository import COLUMNS, CaseStore, ConflictError, NotFoundError, initialize_database
 
 INTAKE_APP_ID = 0x43415051
 CASE_APP_ID = 0x43415043
@@ -63,13 +64,23 @@ class ReportIntake:
         self.root = Path(workspace).expanduser().resolve(strict=True)
         manifest_path = self.root / "workspace.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("schema_version") != "report-db-workspace-1":
+        if manifest.get("schema_version") not in ("report-db-workspace-1", "report-db-workspace-2"):
             raise ValueError("not an owned report DB workspace")
         self.workspace_id = manifest["workspace_id"]
+        self.attached = manifest["schema_version"] == "report-db-workspace-2"
         self.state_path = self._owned_path("intake.sqlite3")
-        self.case_path = self._owned_path("cases.sqlite3")
+        self.case_path = (
+            Path(manifest["case_path"]).expanduser().resolve(strict=True)
+            if self.attached else self._owned_path("cases.sqlite3")
+        )
         self._verify_database(self.state_path, INTAKE_APP_ID)
-        self._verify_database(self.case_path, CASE_APP_ID)
+        if self.attached:
+            if not self.case_path.is_file():
+                raise ValueError("attached Case DB is not a file")
+            with CaseStore(self.case_path)._connect():
+                pass
+        else:
+            self._verify_database(self.case_path, CASE_APP_ID)
         with self._connect() as connection:
             row = connection.execute("SELECT workspace_id FROM metadata").fetchone()
             if row is None or row[0] != self.workspace_id:
@@ -100,6 +111,33 @@ class ReportIntake:
             json.dump(
                 {"schema_version": "report-db-workspace-1", "workspace_id": workspace_id}, stream
             )
+        return cls(root)
+
+    @classmethod
+    def create_attached(cls, workspace: Path, case_path: Path) -> ReportIntake:
+        """Create an intake next to an existing Case DB used by the runtime.
+
+        The Case DB path is supplied by server configuration, never by an upload.
+        Existing Case rows and versions stay in place.
+        """
+        case_path = initialize_database(case_path)
+        root = Path(workspace).expanduser().resolve()
+        if root == case_path.parent or case_path.is_relative_to(root):
+            raise ValueError("intake workspace must be separate from the Case DB")
+        root.mkdir(parents=True, exist_ok=False)
+        workspace_id = uuid4().hex
+        connection = sqlite3.connect(root / "intake.sqlite3")
+        try:
+            connection.executescript(SCHEMA)
+            connection.execute("INSERT INTO metadata VALUES (?)", (workspace_id,))
+            connection.execute(f"PRAGMA application_id = {INTAKE_APP_ID}")
+            connection.execute("PRAGMA user_version = 1")
+            connection.commit()
+        finally:
+            connection.close()
+        with (root / "workspace.json").open("x", encoding="utf-8") as stream:
+            json.dump({"schema_version": "report-db-workspace-2", "workspace_id": workspace_id,
+                       "case_path": str(case_path)}, stream)
         return cls(root)
 
     def _owned_path(self, filename):
@@ -136,9 +174,9 @@ class ReportIntake:
             connection.close()
 
     def _case_store(self):
-        path = self._owned_path("cases.sqlite3")
-        self._verify_database(path, CASE_APP_ID)
-        return CaseStore(path)
+        if not self.attached:
+            self._verify_database(self.case_path, CASE_APP_ID)
+        return CaseStore(self.case_path)
 
     @staticmethod
     def _load(connection, draft_sha):
@@ -206,6 +244,7 @@ class ReportIntake:
         source_kind="imported",
         local_ocr=False,
         ocr_language="ko",
+        managed_source=False,
     ):
         report = parse_report(
             source,
@@ -214,6 +253,11 @@ class ReportIntake:
             local_ocr=local_ocr,
             ocr_language=ocr_language,
         )
+        if managed_source:
+            reference = f"intake:{report.source['sha256']}"
+            report.source["path"] = reference
+            for finding in report.findings:
+                finding.candidate.source_report = reference
         raw = Path(source).read_bytes()
         if hashlib.sha256(raw).hexdigest() != report.source["sha256"]:
             raise ValueError("source changed during extraction")
@@ -292,9 +336,17 @@ class ReportIntake:
             "review_file": str(folder / "report.review.json"),
         }
 
-    def submit_review(self, draft_sha: str, review: ReportReview):
+    def submit_review(self, draft_sha: str, review: ReportReview,
+                      *, expected_validation_sha: str | None = None):
         with self._connect(write=True) as connection:
             report, source = self._load(connection, draft_sha)
+            if expected_validation_sha is not None:
+                active = connection.execute(
+                    "SELECT validation_sha FROM active_validations WHERE draft_sha = ?",
+                    (draft_sha,),
+                ).fetchone()
+                if active is None or active[0] != expected_validation_sha:
+                    raise ConflictError("review changed since it was opened")
             package = self._save_validation(connection, report, review, source["target_id"])
         return {
             "draft_sha256": draft_sha,
@@ -320,12 +372,15 @@ class ReportIntake:
             ),
         )
 
-    def publish(self, draft_sha: str, *, apply=False, ready_only=False):
+    def publish(self, draft_sha: str, *, apply=False, ready_only=False,
+                expected_validation_sha: str | None = None):
         # Lock the active review until Case commit and receipt are complete. If a process
         # dies between the two DB commits, add_many's unchanged result repairs the receipt.
         with self._connect(write=apply) as connection:
             report, source = self._load(connection, draft_sha)
             package = self._active(connection, report, source["target_id"])
+            if expected_validation_sha is not None and package.package_sha256 != expected_validation_sha:
+                raise ConflictError("review changed since it was opened")
             eligible = package.cases if ready_only or not package.blocked else []
             result = {
                 "draft_sha256": draft_sha,
@@ -444,3 +499,39 @@ class ReportIntake:
             "reports": reports,
             "case_database_written": False,
         }
+
+    def delete_draft(self, draft_sha: str):
+        """Remove only an unpublished intake; published Case evidence is immutable."""
+        if not isinstance(draft_sha, str) or len(draft_sha) != 64 or any(
+            char not in "0123456789abcdef" for char in draft_sha
+        ):
+            raise ValueError("invalid draft SHA-256")
+        store = self._case_store()
+        with self._connect(write=True) as connection:
+            report, source = self._load(connection, draft_sha)
+            receipt = connection.execute(
+                "SELECT 1 FROM receipts WHERE draft_sha = ? LIMIT 1", (draft_sha,)
+            ).fetchone()
+            if receipt:
+                raise ValueError("published intake cannot be deleted")
+            for finding in report.findings:
+                try:
+                    store.get(assigned_case_id(report, finding.source_ref))
+                except NotFoundError:
+                    continue
+                raise ValueError("intake has a stored Case and cannot be deleted")
+            connection.execute("DELETE FROM active_validations WHERE draft_sha = ?", (draft_sha,))
+            connection.execute(
+                "DELETE FROM validations WHERE review_sha IN "
+                "(SELECT review_sha FROM reviews WHERE draft_sha = ?)", (draft_sha,)
+            )
+            connection.execute("DELETE FROM reviews WHERE draft_sha = ?", (draft_sha,))
+            connection.execute("DELETE FROM drafts WHERE draft_sha = ?", (draft_sha,))
+            if not connection.execute(
+                "SELECT 1 FROM drafts WHERE source_sha = ? LIMIT 1", (source["source_sha"],)
+            ).fetchone():
+                connection.execute("DELETE FROM sources WHERE source_sha = ?", (source["source_sha"],))
+        folder = (self.root / "exports" / draft_sha).resolve()
+        if folder.is_relative_to(self.root) and folder.is_dir():
+            shutil.rmtree(folder)
+        return {"draft_sha256": draft_sha, "deleted": True}

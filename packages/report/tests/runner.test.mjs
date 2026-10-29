@@ -11,6 +11,8 @@ const env = { DEEPSEEK_API_KEY: 'report-test-fake-key' };
 const run = { id: 'report-run-test', mode: 'local-lab-rule', simulated: false,
   report: { runId: 'report-run-test', status: 'completed' } };
 const hwpx = Buffer.from('PK\x03\x04synthetic document');
+const preview = Buffer.from('# 검사 결과\n\n| 항목 | 값 |\n| --- | --- |\n| 상태 | 완료 |\n');
+const htmlPreview = Buffer.from('<!doctype html><html><body><table><tr><td>완료</td></tr></table></body></html>');
 async function setup(t) {
   const temporaryRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   await mkdir(temporaryRoot, { recursive: true });
@@ -30,10 +32,14 @@ function successfulExecution(change = value => value, modelRunId) {
     const model = Buffer.from(JSON.stringify({ run: { runId: modelRunId ?? trigger.runId } }));
     await writeFile(join(directory, '검사결과.hwpx'), hwpx);
     await writeFile(join(directory, 'report-model.json'), model);
+    await writeFile(join(directory, 'report.md'), preview);
+    await writeFile(join(directory, 'report.html'), htmlPreview);
     return { code: 0, stdout: JSON.stringify(change({ schemaVersion: 'report-result-1.0', ok: true,
       stage: 'reported', runId: trigger.runId, reportFilename: '검사결과.hwpx', files: [
         { name: '검사결과.hwpx', sha256: sha(hwpx), size: hwpx.length },
         { name: 'report-model.json', sha256: sha(model), size: model.length },
+        { name: 'report.md', sha256: sha(preview), size: preview.length },
+        { name: 'report.html', sha256: sha(htmlPreview), size: htmlPreview.length },
       ] })) };
   };
 }
@@ -53,6 +59,8 @@ test('checks CLI run identity, filename, model identity and hashes before return
   assert.equal(result.status, 'ready');
   assert.equal(result.filename, '검사결과.hwpx');
   assert.deepEqual(result.bytes, hwpx);
+  assert.equal(result.previewMarkdown, preview.toString('utf8'));
+  assert.equal(result.previewHtml, htmlPreview.toString('utf8'));
   for (const change of [
     value => ({ ...value, runId: 'another-run' }),
     value => ({ ...value, reportFilename: '../escape.hwpx' }),

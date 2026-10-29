@@ -17,12 +17,13 @@ async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBy
   const bytes = Buffer.from(artifactBytes ?? '{"runId":"run-a","evidence":"fixture"}');
   const artifactPath = join(directory, 'evidence.json'); await writeFile(artifactPath, bytes);
   const artifact = { id: sha256('artifact-id'), path: artifactPath, sha256: sha256(bytes), size: bytes.length };
-  const listeners = new Set(); const calls = { start: 0, startBodies: [], stop: 0, lab: [], experimentReset: [] };
+  const listeners = new Set(); const calls = { start: 0, startBodies: [], stop: 0, lab: [], experimentReset: [], historyClear: [] };
   const runtime = { getState: () => runtimeState, getRun: id => id === 'run-a' ? runtimeState.run : null,
     listRuns: () => [state.run], listModels: () => [], start: async body => { calls.start += 1; calls.startBodies.push(body); return state; },
     startLab: async body => { calls.lab.push(body); return state; }, stop: async () => { calls.stop += 1; return state; }, reset: () => state,
     experimentResetPreview: () => ({ status: 'ready', runCount: 1, canReset: true }),
     resetExperiment: async body => { calls.experimentReset.push(body); return { ...state, experimentReset: { status: 'completed', epoch: 1 } }; },
+    clearRunHistory: async body => { calls.historyClear.push(body); return { ...state, historyClear: { status: 'completed', epoch: 1 } }; },
     close: async () => {}, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     store: { getArtifact: id => id === artifact.id ? artifact : null },
   };
@@ -107,6 +108,24 @@ test('complete experiment reset requires operator permission, CSRF and exact exp
   assert.deepEqual(calls.experimentReset, [{ confirmed: true }]);
   assert.equal((await api(base, '/api/experiment-reset', { method: 'DELETE', headers: operator.headers })).status, 405);
   assert.equal((await api(base, '/api/experiment-reset', { method: 'POST', headers: { ...operator.headers, Origin: 'http://foreign.invalid' }, body: { confirmed: true } })).status, 403);
+});
+
+test('history clear requires operator permission, CSRF and exact explicit confirmation', async t => {
+  const { base, calls } = await fixture(t);
+  assert.equal((await api(base, '/api/run-history/clear', { method: 'POST', body: { confirmed: true } })).status, 401);
+  const viewer = await login(base, 'viewer');
+  assert.equal((await api(base, '/api/run-history/clear', { method: 'POST', headers: viewer.headers, body: { confirmed: true } })).status, 403);
+  const operator = await login(base, 'operator');
+  assert.equal((await api(base, '/api/run-history/clear', { method: 'POST', headers: { Cookie: operator.headers.Cookie }, body: { confirmed: true } })).status, 403);
+  for (const body of [{}, null, [], { confirmed: false }, { confirmed: 'true' }, { confirmed: true, target: '/' }]) {
+    assert.equal((await api(base, '/api/run-history/clear', { method: 'POST', headers: operator.headers, body })).status, 400);
+  }
+  assert.equal(calls.historyClear.length, 0);
+  const result = await api(base, '/api/run-history/clear', { method: 'POST', headers: operator.headers, body: { confirmed: true } });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.historyClear.status, 'completed');
+  assert.deepEqual(calls.historyClear, [{ confirmed: true }]);
+  assert.equal((await api(base, '/api/run-history/clear', { method: 'GET', headers: operator.headers })).status, 405);
 });
 
 test('lab API forwards the university fixture and target selection but rejects extra run controls', async t => {

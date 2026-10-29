@@ -31,11 +31,13 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
     } catch { res.writeHead(404); res.end(); }
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true,
+    executablePath: process.env.CA3P_PLAYWRIGHT_EXECUTABLE || undefined });
   const page = await browser.newPage(); const errors = []; const mutations = []; const reviews = []; const resets = [];
   page.on('pageerror', error => errors.push(error.message));
   let authenticated = false; let state = reportOptions.state ?? idle; let detailCalls = 0; let resetError = reportOptions.resetError; let serverEpoch = 0;
-  const stateEnvelope = () => ({ ...wrap(state), experiment: { epoch: serverEpoch, status: 'ready' } });
+  const stateEnvelope = () => ({ ...wrap(state), experiment: { epoch: serverEpoch,
+    status: reportOptions.experimentStatus ?? 'ready' } });
   const runs = [snapshot('candidate'), snapshot('baseline'), {
     id: 'legacy-record', mode: 'legacy-import', status: 'completed', startedAt: '2026-10-13T10:00:00Z',
     target: null, events: [{ module: 'parser', message: '<img src=x onerror=alert(1)>' }],
@@ -101,6 +103,7 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   });
   t.after(async () => { await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   if (reportOptions.seedEpoch !== undefined) await page.addInitScript(epoch => {
+    if (window !== window.top) return;
     localStorage.setItem('ca3p.loop.experiment.epoch.v1', JSON.stringify(epoch));
     localStorage.setItem('ca3p.loop.core.sessions.v1', '[{"previous":"server"}]');
   }, reportOptions.seedEpoch);
@@ -109,6 +112,8 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   await page.locator('#login-username').fill('test-user'); await page.locator('#login-password').fill('test-password'); await page.locator('#login-submit').click();
   await page.locator('#login-dialog').waitFor({ state: 'hidden' });
   await page.waitForFunction(() => document.querySelector('#connection-status').textContent.includes('연결됨'));
+  await page.locator('[data-view=assets]').click();
+  await page.locator('#view-assets').waitFor({ state: 'visible' });
   return { page, mutations, reviews, resets, errors, detailCalls: () => detailCalls,
     setResetError(value) { resetError = value; },
     advanceExperiment() { state = idle; runs.splice(0); serverEpoch += 1; },
@@ -177,6 +182,24 @@ test('reset failure retains the old model and history until a successful retry; 
   await page.locator('#model-reset-dialog').waitFor({ state: 'hidden' });
   assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-flash');
   assert.equal(resets.length, 2);
+  assert.deepEqual(errors, []);
+});
+
+test('failed experiment reset explains that a model-only change cannot unblock attacks', async t => {
+  const { page, errors } = await setup(t, 'operator', null, { models: resetModels,
+    experimentStatus: 'failed', resetError: 'vul-web2-daehan의 전체 초기화 관리 훅이 설정되지 않았습니다.' });
+  await page.locator('#model-select').selectOption('deepseek-flash');
+  await page.locator('#model-reset-dialog').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#model-reset-note').textContent(), /새 공격 실행은 차단/);
+  await page.locator('#model-reset-yes').click();
+  await page.locator('#model-reset-error').waitFor({ state: 'visible' });
+  const message = await page.locator('#model-reset-error').textContent();
+  assert.match(message, /CA3P_EXPERIMENT_RESET_TARGETS/);
+  assert.match(message, /새 공격 실행은 전체 초기화가 완료될 때까지 차단/);
+  await page.locator('#model-reset-no').click();
+  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-flash');
+  assert.equal(await page.locator('#run-button').isDisabled(), true);
+  assert.equal(await page.locator('#lab-run-button').isDisabled(), true);
   assert.deepEqual(errors, []);
 });
 
@@ -309,6 +332,7 @@ test('authenticated workspace loads central runs, starts a selected rule lab, an
   await page.waitForFunction(() => document.querySelector('#model-select').value === 'rule-baseline');
   assert.equal(await page.locator('#lab-run-button').isEnabled(), true);
   await page.locator('#lab-run-button').click();
+  await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'REAL LAB / RULE');
   assert.deepEqual(mutations[0], { body: { mode: 'local-lab-rule', modelId: 'rule-baseline' }, csrf: 'csrf-live' });
   await page.locator('#history-review-panel [data-review-note]').fill('Synthetic evidence checked.');
@@ -352,6 +376,7 @@ test('vul-web2 site selection forwards its private origin to the rule IDOR lab a
     await page.screenshot({ path: process.env.CA3P_UI_SCREENSHOT_PATH });
   }
   await page.locator('#lab-run-button').click();
+  await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('#execution-label').textContent === 'REAL LAB / IDOR');
   assert.deepEqual(mutations[0], { body: { mode: 'local-lab-rule', modelId: 'rule-baseline', fixtureId: 'vul-web2-wonchang', target: 'http://192.168.0.84:4102' }, csrf: 'csrf-live' });
   assert.match(await page.locator('#run-context').textContent(), /원창대학교 IDOR/);
@@ -368,7 +393,7 @@ test('vul-web2 site selection forwards its private origin to the rule IDOR lab a
   assert.doesNotMatch(await page.locator('.report-document').textContent(), /과금/);
   assert.equal(await page.locator('#report-download-button').isDisabled(), true);
   assert.equal(await page.locator('#export-button').isEnabled(), true);
-  await page.locator('[data-view=dashboard]').click();
+  await page.locator('[data-view=assets]').click();
   await page.locator('#fixture-select').selectOption('vul-web-1');
   assert.equal(await page.locator('#model-select').isEnabled(), true);
   assert.match(await page.locator('#lab-title').textContent(), /vul-web-1 로컬 게시판/);
@@ -505,7 +530,9 @@ test('dashboard reads and compares two actual persisted worker runs through the 
   };
   const baseline = await finish(); const candidate = await finish();
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  browser = await chromium.launch({ headless: true }); const page = await browser.newPage(); const errors = [];
+  browser = await chromium.launch({ headless: true,
+    executablePath: process.env.CA3P_PLAYWRIGHT_EXECUTABLE || undefined });
+  const page = await browser.newPage(); const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.locator('#login-dialog').waitFor({ state: 'visible' });

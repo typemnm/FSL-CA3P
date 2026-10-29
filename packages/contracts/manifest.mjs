@@ -4,7 +4,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
-import { digest, CONTRACT_VERSIONS } from './index.mjs';
+import { digest, redact, CONTRACT_VERSIONS } from './index.mjs';
 
 export const PROJECT_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const EXCLUDED = new Set(['node_modules', '.git', '.runtime', 'data', '__pycache__', '.pytest_cache', '.ruff_cache', '.venv', 'reports', '.env']);
@@ -44,6 +44,40 @@ function attackCatalogSnapshot(path) {
   finally { database?.close(); }
 }
 export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
+  if (mode === 'external-general') {
+    const moduleNames = ['apps/application', 'apps/worker', 'packages/contracts', 'packages/run-store'];
+    const modules = Object.fromEntries(moduleNames.map(name => [name,
+      { contentDigest: treeDigest(join(PROJECT_ROOT, name)), packageVersion: null }]));
+    return { schemaVersion: CONTRACT_VERSIONS.runManifest, runId, createdAt: new Date().toISOString(),
+      source: { commitSha: git(['rev-parse', 'HEAD']), branch: git(['rev-parse', '--abbrev-ref', 'HEAD']),
+        dirty: Boolean(git(['status', '--porcelain'])), baselineSha: null,
+        ciWorkflowRunId: process.env.GITHUB_RUN_ID ?? null, ciAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
+      contracts: CONTRACT_VERSIONS, modules,
+      shared: { contractDigest: treeDigest(join(PROJECT_ROOT, 'packages/contracts')),
+        lockDigest: null, modelRegistryDigest: null },
+      execution: { mode, simulated: false, maxIterations: 1, delayMs: 0,
+        maxRequests: options.scope.maxRequests, maxDurationMs: options.scope.maxDurationMs,
+        inspectionMode: 'external-read-only' },
+      model: { id: modelId, provider: 'rules', requestedModel: null, reportedModel: null,
+        snapshot: null, adapterDigest: null, promptTemplateDigest: null, settings: model.settings ?? {},
+        actualPromptDigests: [], executionRole: 'not-used-read-only-observation' },
+      data: { logicalInputDigest: digest({ mode, target: options.target, scope: options.scope }),
+        datasetDigest: null, catalogDigest: null, caseSnapshotDigest: null, caseRevisions: [],
+        unavailableInputs: ['casper-db', 'authenticated-sessions', 'independent-verifiers'] },
+      target: { kind: 'external', fixtureId: null, entryUrl: redact(options.target),
+        origin: options.scope.origin, scope: options.scope, initialStateDigest: null,
+        stateCapture: 'external-live-state-not-snapshotted', testProfile: 'external-read-only' },
+      policy: { rulesetDigest: treeDigest(join(PROJECT_ROOT, 'apps/application/external-target.mjs')),
+        methods: ['GET', 'HEAD'], maxRequests: options.scope.maxRequests,
+        maxResponseBytes: options.scope.maxResponseBytes, requestTimeoutMs: options.scope.requestTimeoutMs,
+        maxDurationMs: options.scope.maxDurationMs,
+        redirects: 'manual-no-follow', mutationRetry: 'never', targetReset: 'not-required-read-only',
+        recovery: 'interrupted-new-run-required', maxIterations: 1 },
+      environment: { nodeVersion: process.version, pythonVersion: 'not-applicable',
+        browserVersion: 'not-applicable', playwrightVersion: 'not-applicable',
+        runnerImageDigest: process.env.CA3P_RUNNER_IMAGE_DIGEST ?? null },
+      provenance: 'captured-before-execution', missingValuesMean: 'unavailable' };
+  }
   const fixtureId = options.fixtureId ?? 'vul-web-1';
   const general = mode === 'local-lab-general';
   const universityOrigins = { 'vul-web2-daehan': 'http://127.0.0.1:4101', 'vul-web2-wonchang': 'http://127.0.0.1:4102' };

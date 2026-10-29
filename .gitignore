@@ -18,3 +18,9 @@ node_modules
 /casper-db/data/*.sqlite3-shm
 /casper-db/data/*.sqlite3-wal
 /reports/pentest-db-runs/
+
+# Keep the portable graph; regenerate local graphify caches per checkout.
+/graphify-out/*
+!/graphify-out/graph.json
+!/graphify-out/graph.html
+!/graphify-out/GRAPH_REPORT.md

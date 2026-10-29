@@ -56,6 +56,31 @@ test('queued general run stays a waiting state until a report exists', () => {
   assert.equal(renderGeneralReport(normalized), '');
 });
 
+test('external report displays observed scope, rejections and response receipt separately', () => {
+  const run = normalizeGeneralRun({ id: 'external-view', mode: 'external-general', status: 'completed',
+    target: 'https://example.org/start', requestAttempted: true, targetContacted: false,
+    startedAt: '2026-10-28T00:00:00Z', events: [{ id: 'event-1', stage: 'scope.rejected',
+      title: '외부 요청 후보 거부', module: 'external-observer', time: '2026-10-28T00:00:01Z' }],
+    report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
+      inspectionMode: 'external-read-only', partial: true, stopReason: 'partial_observation',
+      requestAttempted: true, targetContacted: false,
+      scope: { origin: 'https://example.org', pathPrefix: '/start', methods: ['GET'], maxRequests: 8 },
+      inventory: { pages: [{ url: 'https://example.org/start', status: 200, contentType: 'text/html', truncated: true }] },
+      coverage: { requestsUsed: 1, observedPages: 1, rejectedCandidates: 2 },
+      policyRejections: { total: 2, byReason: { query_link: 2 } },
+      observationErrors: [{ code: 'EXTERNAL_TIMEOUT', url: 'https://example.org/start/next' }],
+      findings: [], hypotheses: [], evidence: [], probes: [] },
+  });
+  assert.match(renderGeneralOverview(run), /공개 페이지 관찰/);
+  assert.match(renderGeneralLoop(run), /외부 대상 관찰 이벤트/);
+  const html = renderGeneralReport(run);
+  assert.match(html, /요청 시도/);
+  assert.match(html, /HTTP 응답 수신/);
+  assert.match(html, /query_link 2건/);
+  assert.match(html, /본문 제한으로 일부만 수신/);
+  assert.doesNotMatch(html, /모델 제안|가설 기준/);
+});
+
 test('general report shows evidence, incomplete coverage, model usage and escapes untrusted text', () => {
   const item = { report: result(), events: [{ stage: 'probe.verify' }] };
   const summary = generalSummary(item);

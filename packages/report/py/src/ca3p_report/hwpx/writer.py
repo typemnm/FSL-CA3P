@@ -9,6 +9,7 @@ a Markdown preview, so both outputs carry the same sections.
 from __future__ import annotations
 
 import html
+import base64
 import json
 import struct
 from pathlib import Path
@@ -545,6 +546,61 @@ def write_markdown(model: dict, out_path) -> Path:
                 else PHOTO_MISSING
             )
             lines += [_md(text), ""]
+    out = Path(out_path)
+    out.write_text("\n".join(lines), encoding="utf-8")
+    return out
+
+
+def write_html(model: dict, out_path, *, image_root=None) -> Path:
+    """Self-contained, inert preview of the same blocks rendered into the HWPX document."""
+    lines = [
+        "<!doctype html>", '<html lang="ko"><head><meta charset="utf-8">',
+        '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; '
+        "img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">",
+        '<meta name="viewport" content="width=device-width,initial-scale=1">',
+        '<title>CA3P 보고서 미리보기</title>',
+        "<style>body{font:15px/1.65 system-ui,sans-serif;color:#172438;max-width:960px;"
+        "margin:0 auto;padding:32px 24px;background:#fff}h1,h2,h3{line-height:1.3;"
+        "margin:1.8em 0 .65em}h1{font-size:1.55rem;border-bottom:2px solid #dce4ee;"
+        "padding-bottom:.4em}h2{font-size:1.3rem}h3{font-size:1.1rem}p{white-space:pre-wrap}"
+        "table{border-collapse:collapse;width:100%;margin:1em 0;table-layout:fixed}"
+        "th,td{border:1px solid #cbd5e1;padding:.55em .7em;text-align:left;"
+        "vertical-align:top;overflow-wrap:anywhere;white-space:pre-wrap}th{background:#edf3fa}"
+        "pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6fa;"
+        "padding:1em;border-radius:6px}aside{border-left:4px solid #7692b2;"
+        "background:#f3f6fa;padding:.7em 1em}aside p{margin:.35em 0}"
+        "figure{margin:1.3em 0}img{display:block;max-width:100%;height:auto}"
+        "figcaption{font-size:.9em;color:#46566c;margin-top:.5em}</style></head><body>",
+    ]
+    escape = lambda value: html.escape(str(value), quote=True)
+    for block in build_blocks(model):
+        kind = block[0]
+        if kind == "h":
+            level = min(max(int(block[1]), 1), 6)
+            lines.append(f"<h{level}>{escape(block[2])}</h{level}>")
+        elif kind == "p":
+            lines.append(f"<p>{escape(block[1])}</p>")
+        elif kind == "code":
+            lines.append(f"<pre><code>{escape(block[1])}</code></pre>")
+        elif kind == "box":
+            lines.append("<aside>" + "".join(f"<p>{escape(line)}</p>" for line in block[1]) + "</aside>")
+        elif kind == "table":
+            rows = block[1]
+            lines.append("<table><tbody>")
+            for index, row in enumerate(rows):
+                tag = "th" if index == 0 else "td"
+                lines.append("<tr>" + "".join(f"<{tag}>{escape(cell)}</{tag}>" for cell in row) + "</tr>")
+            lines.append("</tbody></table>")
+        elif kind == "image":
+            loaded = _load_png(block[1], image_root)
+            if loaded is None:
+                lines.append(f"<p>{escape(PHOTO_MISSING)}</p>")
+            else:
+                encoded = base64.b64encode(loaded[0]).decode("ascii")
+                caption = escape(_caption(block[1]))
+                lines.append(f'<figure><img src="data:image/png;base64,{encoded}" alt="{caption}">'
+                             f"<figcaption>{caption}</figcaption></figure>")
+    lines.append("</body></html>")
     out = Path(out_path)
     out.write_text("\n".join(lines), encoding="utf-8")
     return out
