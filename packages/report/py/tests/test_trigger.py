@@ -34,6 +34,14 @@ def test_history_defaults_to_none(tmp_path):
     assert parsed.history.kind == "none" and parsed.history.location is None
 
 
+def test_optional_general_finding_selection(tmp_path):
+    parsed = parse_trigger(trigger(tmp_path, options={"findingId": "finding:h-a"}))
+    assert parsed.finding_id == "finding:h-a"
+    for options in ({"findingId": "../escape"}, {"findingId": 1}, {"other": "x"}):
+        with pytest.raises(TriggerError):
+            parse_trigger(trigger(tmp_path, options=options))
+
+
 @pytest.mark.parametrize(
     "malform",
     [

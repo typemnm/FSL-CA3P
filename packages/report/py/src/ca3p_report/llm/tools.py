@@ -5,8 +5,8 @@
   replaying at most the one session-switch the collector recorded.
 - finish_report: mask the LLM-assembled ReportModel, render HWPX + Markdown + JSON, and end.
 
-Nothing here verifies the report's content (no verifier, PLAN §1.4.1); the tools only
-bound actions. Content accuracy rests on the prompt and human review.
+The legacy LLM path remains a draft for human review. General findings are
+selected and rendered from verified source data, with their identity checked here.
 """
 
 from __future__ import annotations
@@ -149,6 +149,33 @@ class ReportTools:
     def finish_report(self, *, model: dict, filename: str | None = None) -> dict:
         if not isinstance(model, dict):
             raise ToolError("model must be an object")
+        selection_path = self._bundle / "run" / "selection.json"
+        if selection_path.is_file():
+            try:
+                selection = json.loads(self._read_bundle_bytes("run/selection.json"))
+            except (ValueError, KeyError) as exc:
+                raise ToolError("general finding selection is invalid") from exc
+            finding_rows = model.get("findings")
+            finding = (
+                finding_rows[0]
+                if isinstance(finding_rows, list) and len(finding_rows) == 1 else None
+            )
+            common = finding.get("common") if isinstance(finding, dict) else None
+            model_run = model.get("run") if isinstance(model.get("run"), dict) else {}
+            generator = model.get("generator") if isinstance(model.get("generator"), dict) else {}
+            if (not isinstance(selection, dict)
+                or selection.get("schemaVersion") != "general-finding-selection/1"
+                or model.get("sourceFindingId") != selection.get("sourceFindingId")
+                or model.get("sourceEvidenceIds") != selection.get("verificationEvidenceIds")
+                or not isinstance(common, dict)
+                or common.get("findingId") != selection.get("sourceFindingId")
+                or common.get("status") != "confirmed"
+                or model_run.get("runId") != selection.get("runId")
+                or model_run.get("status") != selection.get("runStatus")
+                or generator.get("method") != "deterministic"):
+                raise ToolError("general report does not match the confirmed source finding")
+        elif "sourceFindingId" in model:
+            raise ToolError("legacy report cannot claim a general source finding")
         run_id = str(
             ((model.get("run") or {}) if isinstance(model.get("run"), dict) else {}).get("runId")
             or "report"

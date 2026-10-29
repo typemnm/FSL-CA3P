@@ -12,12 +12,17 @@ const digest = value => createHash('sha256').update(typeof value === 'string' ? 
 
 export function listModels(options = {}) {
   return definitions.map(model => {
-    if (model.provider === 'local') return { ...model, available: true, capabilities: ['structured-action', 'deterministic-reflection'], modelRole: 'rule-baseline' };
+    if (model.provider === 'local') return { ...model, available: true,
+      supportedModes: ['core-fixture', 'local-lab-rule'],
+      capabilities: ['structured-action', 'deterministic-reflection'], modelRole: 'rule-baseline' };
     try {
       config.resolveDeepSeekOptions({ ...options, env: { ...(options.env ?? process.env), DEEPSEEK_MODEL: model.id } });
-      return { ...model, available: true, capabilities: ['json', 'cancel', 'bounded-curl'], modelRole: 'constrained-planner' };
+      return { ...model, available: true, supportedModes: ['local-lab-deepseek', 'local-lab-general'],
+        capabilities: ['json', 'cancel', 'bounded-curl', 'general-evidence-planner'], modelRole: 'constrained-planner' };
     } catch {
-      return { ...model, available: false, reason: 'agent/.env의 DeepSeek API 설정이 필요합니다.', capabilities: ['json', 'cancel', 'bounded-curl'], modelRole: 'constrained-planner' };
+      return { ...model, available: false, reason: 'agent/.env의 DeepSeek API 설정이 필요합니다.',
+        supportedModes: ['local-lab-deepseek', 'local-lab-general'],
+        capabilities: ['json', 'cancel', 'bounded-curl', 'general-evidence-planner'], modelRole: 'constrained-planner' };
     }
   });
 }

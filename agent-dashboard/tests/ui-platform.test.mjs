@@ -335,7 +335,10 @@ test('authenticated workspace loads central runs, starts a selected rule lab, an
 test('vul-web2 site selection forwards its private origin to the rule IDOR lab and reopens evidence without XSS report claims', async t => {
   const { page, mutations, errors } = await setup(t);
   await page.locator('#fixture-select').selectOption('vul-web2-daehan');
-  assert.match(await page.locator('#lab-title').textContent(), /대한대학교 IDOR/);
+  assert.match(await page.locator('#lab-title').textContent(), /vul-web2 대한대학교/);
+  assert.doesNotMatch(await page.locator('#lab-title').textContent(), /XSS|IDOR/);
+  assert.match(await page.locator('#lab-check-scope').textContent(), /IDOR 읽기 권한 비교만/);
+  assert.match(await page.locator('#lab-run-label').textContent(), /IDOR 읽기 검사 시작/);
   assert.equal(await page.locator('#lab-target-origin').inputValue(), 'http://127.0.0.1:4101');
   assert.match(await page.locator('#lab-description').textContent(), /Compose/);
   assert.equal(await page.locator('#model-select').isDisabled(), true);
@@ -368,7 +371,10 @@ test('vul-web2 site selection forwards its private origin to the rule IDOR lab a
   await page.locator('[data-view=dashboard]').click();
   await page.locator('#fixture-select').selectOption('vul-web-1');
   assert.equal(await page.locator('#model-select').isEnabled(), true);
-  assert.match(await page.locator('#lab-title').textContent(), /저장형 XSS/);
+  assert.match(await page.locator('#lab-title').textContent(), /vul-web-1 로컬 게시판/);
+  assert.doesNotMatch(await page.locator('#lab-title').textContent(), /XSS|IDOR/);
+  assert.match(await page.locator('#lab-check-scope').textContent(), /저장형 XSS canary 1회/);
+  assert.match(await page.locator('#lab-run-label').textContent(), /저장형 XSS 검사 시작/);
   assert.equal(await page.locator('#lab-target-control').isHidden(), true);
   assert.deepEqual(errors, []);
 });

@@ -304,6 +304,7 @@ test('DeepSeekClient rejects empty, invalid, malformed-wire, and length-truncate
         userPayload: {},
       }), error => {
         assert.equal(typeof error.code, 'string');
+        if (name === 'length finish reason') assert.equal(error.finishReason, 'length');
       });
     });
   }

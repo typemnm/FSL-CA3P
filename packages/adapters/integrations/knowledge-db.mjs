@@ -110,3 +110,9 @@ export function createKnowledgeDb({ databasePath = process.env.CASPER_DB_PATH ??
 export async function readKnowledgeCatalog(options = {}) {
   return createKnowledgeDb(options).readCatalog();
 }
+
+/** List an existing catalog snapshot without initializing or changing its database. */
+export async function readKnowledgeCatalogReadOnly({ databasePath, python, signal } = {}) {
+  const database = absolutePath(databasePath, 'databasePath');
+  return exchangePython({ database, operation: 'list' }, { python, signal });
+}

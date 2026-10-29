@@ -1,6 +1,7 @@
 import { MODULES, validateTarget, formatElapsed } from './engine.js';
 import { initStarfield } from './starfield.js';
 import { createRuntimeClient } from './runtime-client.js';
+import { generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun, renderGeneralLiveResults, renderGeneralLoop, renderGeneralReport } from './general-results.js';
 
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -78,6 +79,13 @@ function isEvent(value) {
     (value.agentOutput === undefined || isObject(value.agentOutput));
 }
 function isRun(value) {
+  if (isGeneralAssessment(value)) return isObject(value) && typeof value.id === 'string' && value.id.length > 0
+    && Number.isFinite(Date.parse(value.startedAt)) && Number.isFinite(value.elapsedMs) && value.elapsedMs >= 0
+    && Array.isArray(value.events) && value.events.length <= 10000 && value.events.every(event => isObject(event)
+      && typeof event.id === 'string' && typeof event.title === 'string' && typeof event.time === 'string'
+      && Number.isFinite(Date.parse(event.time)) && isObject(event.request) && isObject(event.response))
+    && isObject(value.snapshots) && Array.isArray(value.reviewItems)
+    && ['queued','preparing','running','stopping','stopped','cancelled','interrupted','completed','failed'].includes(value.status);
   const fixture = value?.mode === 'core-fixture';
   const lab = ['local-lab-rule', 'local-lab-deepseek'].includes(value?.mode);
   return isObject(value) && (fixture || lab) && value.simulated === !lab &&
@@ -107,6 +115,8 @@ const settings = { motion: storedSettings?.motion !== false, autoScroll: storedS
 let run = { id: '', target: '', status: 'idle', startedAt: null, elapsedMs: 0, step: 0, totalSteps: 19, iterations: 1, events: [], snapshots: {}, reviewItems: [], mode: 'core-fixture', simulated: true, targetContacted: false };
 let instanceId = null;
 let labReadiness = { available: false };
+let assessmentModeTouched = false;
+let acceptedAssessmentMode = 'legacy';
 let connection = 'connecting';
 let connectionTransport = 'polling';
 let authSession = null;
@@ -182,19 +192,21 @@ const idorModuleDescriptions = {
   agent: '정해진 IDOR 검증 절차와 대조군으로 접근 권한을 판정합니다. AI 모델을 호출하지 않습니다.',
   webpage: '서버 에이전트에서 접근하는 등록된 vul-web2 실습 원점입니다.',
 };
-function isLab(item) { return ['local-lab-rule', 'local-lab-deepseek'].includes(item?.mode); }
-function isAiLab(item) { return item?.mode === 'local-lab-deepseek'; }
+function isLab(item) { return ['local-lab-rule', 'local-lab-deepseek', 'local-lab-general'].includes(item?.mode); }
+function isAiLab(item) { return item?.mode === 'local-lab-deepseek' || isGeneralAssessment(item); }
 function canOperate() { return authSession && (!authSession.authRequired || authSession.authenticated) && authSession.user?.role !== 'viewer'; }
 function selectedFixture() { return $('fixture-select').value || 'vul-web-1'; }
 function selectedIdorFixture() { return IDOR_FIXTURES[selectedFixture()]; }
-function selectedModel() { return models.find(item => item.id === (selectedIdorFixture() ? 'rule-baseline' : $('model-select').value)); }
+function generalLaunchSelected() { return $('assessment-mode').value === 'general'; }
+function selectedModel() { return models.find(item => item.id === (!generalLaunchSelected() && selectedIdorFixture() ? 'rule-baseline' : $('model-select').value)); }
 function isXssLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile) === 'stored_xss_canary'; }
 function isIdorLab(item) { return isLab(item) && (item.testProfile ?? item.report?.testProfile ?? item.manifest?.target?.testProfile) === 'known_record_idor_read'; }
 function idorFixture(item) { return IDOR_FIXTURES[item.fixtureId ?? item.manifest?.target?.fixtureId ?? item.report?.fixtureId]; }
-function describeModule(id, item = currentRun()) { const text = (isIdorLab(item) ? idorModuleDescriptions : isXssLab(item) ? labModuleDescriptions
+function describeModule(id, item = currentRun()) { if (isGeneralAssessment(item)) return '범용 점검의 단계·근거는 실행 이벤트와 리포트에서 확인합니다. 사용하지 않은 모듈은 실행된 것으로 표시하지 않습니다.';
+  const text = (isIdorLab(item) ? idorModuleDescriptions : isXssLab(item) ? labModuleDescriptions
   : isLab(item) ? legacyLabModuleDescriptions : moduleDescriptions)[id] || '이전 실행의 코어 이벤트입니다.';
   return isLab(item) && !isAiLab(item) ? text.replace('DeepSeek의 제한된 POST 선택', '규칙 엔진의 제한된 POST 선택') : text; }
-function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
+function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isGeneralAssessment(item) ? '범용 점검 · 증거 기반 결과' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
 const viewMeta = {
   dashboard: ['대시보드', 'Observe. Decide. <span>Iterate.</span>', '에이전트의 모든 판단과 흐름을, 한눈에.'],
   sessions: ['실행 이력', 'Every run. <span>Remembered.</span>', '중앙에 저장된 실행과 모듈별 증거를 다시 살펴보세요.'],
@@ -205,7 +217,9 @@ const viewMeta = {
   reports: ['리포트', 'From signals to <span>insight.</span>', '코어 실행 리포트와 모드별 검토 항목을 확인하세요.'],
 };
 function currentRun() { return inspectedRun || run; }
-function moduleById(id) { return MODULES.find((module) => module.id === id) || EVENT_CHANNELS[id] || { id, name: '알 수 없는 이벤트', role: '이벤트', icon: 'box' }; }
+function moduleById(id) { return MODULES.find((module) => module.id === id)
+  || (typeof id === 'string' && Object.hasOwn(EVENT_CHANNELS, id) ? EVENT_CHANNELS[id] : null)
+  || { id, name: typeof id === 'string' && id ? id : '알 수 없는 이벤트', role: '이벤트', icon: 'box' }; }
 function notify(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 3300); }
 function saveRun() {
   if (run.status === 'idle' || !isRun(run)) return;
@@ -220,7 +234,7 @@ function showRuntimeError(message) {
 }
 function acceptState(envelope) {
   let resetViews = false;
-  const next = redactTelemetry(envelope.run);
+  const next = normalizeGeneralRun(redactTelemetry(envelope.run));
   if (next.status !== 'idle' && !isRun(next)) throw new Error('코어 실행 상태의 데이터 형식이 올바르지 않습니다.');
   if (next.status === 'idle' && (!isObject(next.snapshots) || !Array.isArray(next.reviewItems) || next.step !== 0 || !Number.isInteger(next.totalSteps) || next.totalSteps < 1 || next.totalSteps > 128 || next.events.length !== 0)) throw new Error('코어 대기 상태의 데이터 형식이 올바르지 않습니다.');
   const nextEpoch = envelope.experiment?.epoch;
@@ -245,8 +259,13 @@ function acceptState(envelope) {
   if (!sameInstance && instanceId !== null) notify('로컬 런타임이 다시 시작되었습니다. 서버의 현재 상태를 표시합니다.');
   instanceId = envelope.instanceId;
   labReadiness = isObject(envelope.lab) && typeof envelope.lab.available === 'boolean'
-    ? { available: envelope.lab.available, model: envelope.lab.model, possibleRetries: envelope.lab.possibleRetries }
+    ? { available: envelope.lab.available, model: envelope.lab.model, possibleRetries: envelope.lab.possibleRetries,
+      generalSupported: envelope.lab.generalSupported === true, generalAvailable: envelope.lab.generalAvailable === true }
     : { available: false };
+  if (!assessmentModeTouched) {
+    acceptedAssessmentMode = labReadiness.generalSupported ? 'general' : 'legacy';
+    $('assessment-mode').value = acceptedAssessmentMode;
+  }
   run = structuredClone(next);
   if (resetViews) renderAllExperimentViews();
   saveRun();
@@ -256,6 +275,7 @@ function acceptState(envelope) {
   showRuntimeError(browserResetError || (experimentStatus === 'failed' ? '이전 실험 초기화가 완료되지 않았습니다. 모델 변경 확인 창에서 초기화를 다시 시도하세요.'
     : run.status === 'failed' ? run.error || '코어 실행에 실패했습니다.' : ''));
   render();
+  if (!assessmentModeTouched && !pendingModelChange && models.length) acceptedModelId = $('model-select').value;
   if (resetViews) void loadWorkspace();
   if (run.id === previousId && run.status !== previousStatus) {
     if (run.status === 'completed') notify('코어 실행이 완료되었습니다. 리포트를 확인하세요.');
@@ -296,6 +316,15 @@ function historyReplace(view) { window.history.replaceState(null, '', `#${view}`
 
 function renderStats() {
   const item = currentRun();
+  const general = isGeneralAssessment(item);
+  document.querySelector('.live-grid').classList.toggle('general-mode', general);
+  if (general && selectedEventId && !item.events.some(event => event.id === selectedEventId)) {
+    selectedEventId = null;
+  }
+  if (general && selectedModule !== 'agent') {
+    selectedModule = 'agent'; activeTab = 'agent';
+  }
+  const generalCounts = general ? generalSummary(item) : null;
   const running = !inspectedRun && run.status === 'running';
   const active = ['queued', 'preparing', 'running', 'stopping'].includes(run.status);
   const experimentBlocked = !!browserResetError || ['failed', 'resetting'].includes(experimentStatus);
@@ -306,18 +335,26 @@ function renderStats() {
   $('history-banner').hidden = !inspectedRun;
   $('run-status').textContent = inspectedRun ? '기록 보기' : statusNames[item.status];
   $('status-orb').className = `status-orb ${running && connected ? '' : 'stopped'}`;
-  $('run-context').textContent = inspectedRun ? `${modeLabel(item)} · 저장한 실행` : !connected ? '마지막 수신 상태 · 진행 상태 갱신 대기' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 격리 게시판 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'} 판단` : '실제 코어 · 외부 모듈 fixture';
-  $('execution-label').textContent = isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
-  $('dashboard-mode').textContent = isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
+  $('run-context').textContent = inspectedRun ? `${modeLabel(item)} · 저장한 실행` : !connected ? '마지막 수신 상태 · 진행 상태 갱신 대기' : general ? modeLabel(item) : isIdorLab(item) ? modeLabel(item) : lab ? `실제 격리 게시판 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'} 판단` : '실제 코어 · 외부 모듈 fixture';
+  $('execution-label').textContent = general ? 'GENERAL / EVIDENCE' : isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
+  $('dashboard-mode').textContent = general ? '범용 점검 결과 · 지원된 관측 범위' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
   $('elapsed-source').textContent = lab ? '로컬 실습 실행' : 'fixture 실행';
-  $('iteration-value').textContent = '01';
-  $('step-label').textContent = item.status === 'completed' ? '코어 실행 완료' : stage ? `최근 수신 · ${stage.role}` : '첫 이벤트 대기';
-  $('total-event-count').textContent = `${item.totalSteps} 이벤트`;
+  $('iteration-value').textContent = general ? String(generalCounts?.iteration ?? item.iterations ?? 0) : '01';
+  $('iteration-value').nextElementSibling.textContent = general ? '회' : '/ 01';
+  $('step-label').textContent = general ? (item.events.at(-1)?.stage || item.stage || '단계 기록 대기') : item.status === 'completed' ? '코어 실행 완료' : stage ? `최근 수신 · ${stage.role}` : '첫 이벤트 대기';
+  $('total-event-count').textContent = general ? '가변 단계' : `${item.totalSteps} 이벤트`;
   $('event-count').textContent = String(item.events.length).padStart(2, '0');
   $('elapsed-value').textContent = formatElapsed(item.elapsedMs);
-  $('progress-label').textContent = item.status === 'completed' ? '모든 이벤트 수신 완료' : `수신한 코어 이벤트 · ${statusNames[item.status]}`;
-  $('progress-number').textContent = `${String(item.step).padStart(2,'0')} / ${item.totalSteps} events`;
-  $('progress-fill').style.width = `${Math.min(100, item.step / item.totalSteps * 100)}%`;
+  $('progress-label').textContent = general
+    ? generalCounts ? `가설 ${generalCounts.totalHypotheses}건 · ${statusNames[item.status] || item.status}`
+      : `결과 대기 · ${statusNames[item.status] || item.status}`
+    : item.status === 'completed' ? '모든 이벤트 수신 완료' : `수신한 코어 이벤트 · ${statusNames[item.status]}`;
+  $('progress-number').textContent = general
+    ? generalCounts ? `${item.events.length} events · 검사 ${generalCounts.probes}건`
+      : `${item.events.length} events · 기록된 검사 ID ${generalObservedProbeCount(item)}개`
+    : `${String(item.step).padStart(2,'0')} / ${item.totalSteps} events`;
+  $('progress-fill').parentElement.hidden = general;
+  $('progress-fill').style.width = general ? '0%' : `${Math.min(100, item.step / item.totalSteps * 100)}%`;
   $('core-state').textContent = inspectedRun ? 'SAVED SESSION' : !connected ? connection === 'connecting' ? 'CONNECTING' : 'CONNECTION LOST' : {queued:'QUEUED',preparing:'LAB PREPARING',running:'CORE RUNNING',stopping:'CORE STOPPING',stopped:'CORE STOPPED',cancelled:'CANCELLED',interrupted:'INTERRUPTED',completed:'CORE COMPLETE',failed:'CORE FAILED',idle:'READY TO START'}[item.status];
   $('live-label').innerHTML = `<span class="tiny-dot ${connected && running ? 'green' : 'gray'}"></span>${inspectedRun ? 'SAVED' : !connected ? 'OFFLINE' : running ? 'LIVE' : 'IDLE'}`;
   $('stream-status').textContent = connected ? connectionTransport === 'polling' ? 'Polling · 1s connected' : 'SSE connected' : '상태 연결 재시도 중';
@@ -330,29 +367,46 @@ function renderStats() {
   $('stop-button').disabled = !canOperate() || !!inspectedRun || !connected || controlPending || !['queued','preparing','running'].includes(run.status);
   $('run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked;
   const idor = selectedIdorFixture();
-  if (idor) { $('model-select').value = 'rule-baseline'; acceptedModelId = 'rule-baseline'; }
+  const generalOption = $('assessment-mode').querySelector('option[value="general"]');
+  generalOption.disabled = !labReadiness.generalSupported;
+  generalOption.textContent = labReadiness.generalSupported ? '범용 취약점 점검 · 실제 모델' : '범용 취약점 점검 · 서버 연결 전';
+  $('assessment-mode').disabled = controlPending || active || !!pendingModelChange || !canOperate();
+  if (generalLaunchSelected() && !labReadiness.generalSupported) $('assessment-mode').value = 'legacy';
+  const launchGeneral = generalLaunchSelected();
+  if (!launchGeneral && idor) $('model-select').value = 'rule-baseline';
   for (const option of $('model-select').options) {
     const entry = models.find(item => item.id === option.value);
-    option.disabled = !entry?.available || (!!idor && entry.id !== 'rule-baseline');
-    if (entry) option.textContent = idor && entry.id === 'rule-baseline' ? '규칙 기반 · 알려진 레코드 IDOR 검증' : `${entry.name || entry.id}${entry.available ? '' : ' · 사용 불가'}`;
+    option.disabled = !entry?.available || (launchGeneral ? entry.provider !== 'deepseek' : !!idor && entry.id !== 'rule-baseline');
+    option.hidden = launchGeneral ? entry?.provider !== 'deepseek' : !!idor && entry?.id !== 'rule-baseline';
+    if (entry) option.textContent = !launchGeneral && idor && entry.id === 'rule-baseline' ? '규칙 기반 · 알려진 레코드 IDOR 검증' : `${entry.name || entry.id}${entry.available ? '' : ' · 사용 불가'}`;
   }
+  if ($('model-select').selectedOptions[0]?.disabled) $('model-select').value = Array.from($('model-select').options).find(option => !option.disabled)?.value || '';
   const model = selectedModel();
-  $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !model?.available;
+  $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || (launchGeneral && !labReadiness.generalAvailable);
   $('fixture-select').disabled = controlPending || active || !canOperate();
   $('lab-target-origin').disabled = controlPending || active || !canOperate();
   $('lab-target-control').hidden = !idor;
-  $('model-select').disabled = !!idor || controlPending || active || !canOperate();
+  $('model-select').disabled = (!launchGeneral && !!idor) || controlPending || active || !canOperate();
   $('model-reset-toggle').checked = settings.confirmModelReset;
   $('model-reset-toggle').disabled = controlPending || !!pendingModelChange;
   $('experiment-reset-button').disabled = !canOperate() || !connected || controlPending || active || !!pendingModelChange;
   $('model-reset-warning').hidden = !modelChangeUnreset;
-  $('lab-title').textContent = idor ? `vul-web2 · ${idor.name} IDOR 검증` : '실제 격리 실습 · 저장형 XSS 검증';
-  $('lab-description').textContent = idor ? `${idor.name}의 실습 IP와 포트를 아래에 입력하세요. vul-web2 Compose를 먼저 시작해야 하며 기본 포트는 ${idor.port}입니다. 에이전트가 알려진 가상 레코드의 조회 권한만 비교합니다. 위 DISPLAY URL은 사용하지 않습니다.` : '서버가 격리된 로컬 게시판을 열어 시험 글 한 건을 게시하고 브라우저 실행 여부를 확인합니다. 위 입력 URL은 사용하지 않습니다.';
-  $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : model?.available ? `${idor ? '규칙 기반 IDOR' : model.name || model.id} · 실행 준비됨` : '선택한 엔진을 사용할 수 없습니다. 서버 실행 환경과 모델 설정을 확인하세요.';
-  $('model-scope').textContent = idor ? '이 실습은 정해진 IDOR 검증 절차를 사용하며 AI 모델과 보고서 모델을 호출하지 않습니다. 결과와 근거는 실행 이력 및 JSON 내보내기에서 확인할 수 있습니다.' : model?.mode === 'local-lab-deepseek' ? 'AI는 허용된 단일 후보를 선택하며 최종 판정은 브라우저 증거와 규칙 엔진이 수행합니다. 검사와 완료 후 보고서 생성의 모델 API 호출은 과금될 수 있습니다.' : '규칙 엔진 검사는 모델 API를 호출하지 않습니다. 완료 후 자동 보고서는 설정된 보고서 모델을 호출하며 과금될 수 있습니다.';
+  $('lab-title').textContent = idor ? `실습 대상 · vul-web2 ${idor.name}` : '실습 대상 · vul-web-1 로컬 게시판';
+  $('lab-description').textContent = idor ? `${idor.name}의 실습 IP와 포트를 아래에 입력하세요. vul-web2 Compose를 먼저 시작해야 하며 기본 포트는 ${idor.port}입니다. 위 DISPLAY URL은 사용하지 않습니다.` : '서버가 격리된 로컬 게시판을 임시 포트로 시작합니다. 위 입력 URL은 사용하지 않습니다.';
+  $('lab-check-scope').textContent = launchGeneral ? '현재 실행 검사: 유형을 미리 한정하지 않고 발견한 공격면과 사용 가능한 증거에서 가설을 세웁니다. 지원되지 않는 검사는 미점검 사유로 기록합니다.' : idor ? '현재 실행 검사: 알려진 가상 레코드의 IDOR 읽기 권한 비교만 수행합니다.' : '현재 실행 검사: 저장형 XSS canary 1회. 게시글의 브라우저 실행 증거를 확인합니다.';
+  $('lab-run-label').textContent = launchGeneral ? '범용 취약점 점검 시작' : idor ? 'IDOR 읽기 검사 시작' : '저장형 XSS 검사 시작';
+  $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : launchGeneral && !labReadiness.generalSupported ? '범용 점검 서버 경로가 연결되지 않았습니다.' : launchGeneral && !labReadiness.generalAvailable ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 설정을 확인하세요.' : model?.available ? `${launchGeneral ? '범용 점검 · ' : idor ? '규칙 기반 IDOR · ' : ''}${model.name || model.id} · 실행 준비됨` : '선택한 엔진을 사용할 수 없습니다. 서버 실행 환경과 모델 설정을 확인하세요.';
+  $('model-scope').textContent = launchGeneral ? '실제 DeepSeek 모델을 호출합니다. 허용된 대상과 사용 가능한 도구 범위에서 검사하며 API 비용이 발생할 수 있습니다.' : idor ? '이 실습은 정해진 IDOR 검증 절차를 사용하며 AI 모델과 보고서 모델을 호출하지 않습니다. 결과와 근거는 실행 이력 및 JSON 내보내기에서 확인할 수 있습니다.' : model?.mode === 'local-lab-deepseek' ? 'AI는 허용된 단일 후보를 선택하며 최종 판정은 브라우저 증거와 규칙 엔진이 수행합니다. 검사와 완료 후 보고서 생성의 모델 API 호출은 과금될 수 있습니다.' : '규칙 엔진 검사는 모델 API를 호출하지 않습니다. 완료 후 자동 보고서는 설정된 보고서 모델을 호출하며 과금될 수 있습니다.';
   $('new-session-button').disabled = !canOperate() || !connected || controlPending || active;
-  $('export-button').disabled = item.events.length === 0;
+  $('export-button').disabled = item.events.length === 0 && !general;
   $('target-url').disabled = controlPending;
+  $('loop-subtitle').textContent = general ? '가변 단계 · 에이전트의 관측 및 검증 결과' : '5개 모듈 · 웹페이지 · Agent / RunOnce';
+  $('general-run-summary').hidden = !general;
+  $('loop-graph').hidden = general;
+  if (general) {
+    $('general-run-summary').innerHTML = renderGeneralLoop(item, selectedEventId);
+    return;
+  }
   $('loop-graph').classList.toggle('is-paused', !running || !connected);
   $('webpage-caption').textContent = isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} · IDOR` : lab ? '격리된 로컬 게시판' : '표시용 URL';
   $('agent-core').querySelector('strong').textContent = isIdorLab(item) ? 'IDOR 검증' : 'Agent / RunOnce';
@@ -381,6 +435,9 @@ function renderActivity() {
   $('activity-list').innerHTML = events.length ? events.map((event) => `<button class="activity-event ${event.id === selectedEventId ? 'active' : ''}" data-event="${escape(event.id)}"><span class="event-indicator">${icon(event.type === 'success' ? 'check' : moduleById(event.module).icon)}</span><span class="event-copy"><span class="event-meta"><span>${escape(moduleById(event.module).name.replace(' Engine','').replace('Observation Review','Observer'))}</span><span class="event-time">${escape(timeLabel(event.time))}</span></span><span class="event-title">${escape(event.title)}</span><span class="event-detail">${escape(event.detail)}</span></span></button>`).join('') : `<div class="empty-state compact"><span data-icon="pulse"></span><h3>${query ? '일치하는 이벤트가 없습니다' : '첫 코어 이벤트를 기다리는 중'}</h3><p>${query ? '다른 검색어를 입력해 보세요.' : isLab(item) ? '로컬 실습 서버가 준비되고 첫 이벤트가 도착하면 표시됩니다.' : '표시용 URL을 입력하고 코어 fixture를 시작하세요.'}</p></div>`;
   hydrateIcons($('activity-list'));
   $('activity-list').scrollTop = settings.autoScroll ? 0 : previousScroll;
+  const general = isGeneralAssessment(item);
+  $('general-live-results-panel').hidden = !general;
+  if (general) $('general-live-results-content').innerHTML = renderGeneralLiveResults(item);
   if (!$('notification-popover').hidden) renderNotifications();
 }
 function getSnapshot() { const item = currentRun(); return selectedEventId ? item.events.find((event) => event.id === selectedEventId) : item.snapshots[selectedModule]; }
@@ -394,6 +451,15 @@ function traceData() {
   const item = currentRun();
   const lab = isLab(item);
   if (activeTab === 'agent') {
+    if (isGeneralAssessment(item)) {
+      if (selectedEventId && snapshot) return { source: 'general-assessment/event', mode: item.mode,
+        event: { id: snapshot.id, stage: snapshot.stage ?? null, iteration: snapshot.iteration,
+          detail: snapshot.detail, request: snapshot.request, response: snapshot.response } };
+      return { source: 'general-assessment', mode: item.mode,
+        currentEvent: snapshot?.stage || null, input: { target: item.target, inventory: generalReport(item)?.inventory ?? null },
+        output: { hypotheses: generalReport(item)?.hypotheses ?? [], probes: generalReport(item)?.probes ?? [],
+          findings: generalReport(item)?.findings ?? [], coverage: generalReport(item)?.coverage ?? null } };
+    }
     if (isIdorLab(item)) return { source: 'known-record-idor', mode: item.mode,
       input: { fixtureId: item.fixtureId ?? item.manifest?.target?.fixtureId, target: item.target, testProfile: 'known_record_idor_read' },
       output: item.report ?? { status: 'waiting', message: '정해진 IDOR 조회와 대조군의 결과를 기다리고 있습니다.' } };
@@ -413,13 +479,14 @@ function highlightJSON(data) {
 function renderInspector() {
   const module = moduleById(selectedModule);
   const lab = isLab(currentRun());
+  const general = isGeneralAssessment(currentRun());
   const snapshot = getSnapshot();
   const contextEvent = activeTab === 'agent' ? getAgentEvent() : snapshot;
   $('selected-module-name').textContent = module.name;
-  $('context-module').textContent = activeTab === 'agent' && isIdorLab(currentRun()) ? 'IDOR 검증' : activeTab === 'agent' && isAiLab(currentRun()) ? 'Agent / RunOnce + DeepSeek' : activeTab === 'agent' ? 'Agent / RunOnce' : module.name;
+  $('context-module').textContent = activeTab === 'agent' && general ? '범용 점검 Agent' : activeTab === 'agent' && isIdorLab(currentRun()) ? 'IDOR 검증' : activeTab === 'agent' && isAiLab(currentRun()) ? 'Agent / RunOnce + DeepSeek' : activeTab === 'agent' ? 'Agent / RunOnce' : module.name;
   $('context-role').textContent = describeModule(activeTab === 'agent' ? 'agent' : selectedModule);
   $('correlation-value').textContent = contextEvent?.correlationId || '—';
-  $('trace-source').textContent = activeTab === 'agent' ? isIdorLab(currentRun()) ? '정해진 IDOR 조회 권한 검증' : isAiLab(currentRun()) ? 'DeepSeek · Agent / RunOnce' : lab ? '규칙 엔진 · 실제 격리 실습' : 'Agent / RunOnce · fixture 입력'
+  $('trace-source').textContent = activeTab === 'agent' ? general ? '범용 점검 · 출처가 있는 관측과 판정' : isIdorLab(currentRun()) ? '정해진 IDOR 조회 권한 검증' : isAiLab(currentRun()) ? 'DeepSeek · Agent / RunOnce' : lab ? '규칙 엔진 · 실제 격리 실습' : 'Agent / RunOnce · fixture 입력'
     : contextEvent?.source === 'local-curl-board' ? 'local-curl-board · curl 실행'
       : contextEvent?.source === 'local-loopback-board' ? '격리된 로컬 게시판'
         : contextEvent?.source === 'core-internal-event' ? 'Agent / RunOnce'
@@ -443,7 +510,8 @@ function renderSessions() {
 
 function renderModules() {
   const item = currentRun();
-  $('module-grid').innerHTML = MODULES.map((module) => {
+  const channels = isGeneralAssessment(item) ? [...new Set(item.events.map(event => event.module))].map(moduleById) : MODULES;
+  $('module-grid').innerHTML = channels.length ? channels.map((module) => {
     const count = item.events.filter((event) => event.module === module.id).length;
     const snapshot = item.snapshots[module.id];
     const source = !snapshot ? 'EVENT WAITING' : snapshot.source === 'local-curl-board' ? 'LOCAL CURL'
@@ -451,30 +519,88 @@ function renderModules() {
         : snapshot.source === 'core-internal-event' ? 'CORE EVENT'
           : snapshot.source === 'local-loopback-board' ? 'LOCAL BOARD'
             : isLab(item) ? 'LOCAL MODULE' : 'FIXTURE';
-    return `<article class="panel module-card"><div class="module-card-top"><span data-icon="${module.icon}"></span><span class="local-chip">${source}</span></div><h2>${escape(module.name)}</h2><p>${escape(describeModule(module.id, item))}</p><div class="module-metrics"><span><strong>${String(count).padStart(2,'0')}</strong>EVENTS</span><span><strong>${escape(snapshot?.latency ?? '—')}</strong>ELAPSED MS</span></div><button class="button secondary" data-open-module="${module.id}">데이터 확인 ${icon('code')}</button></article>`;
-  }).join('');
+    return `<article class="panel module-card"><div class="module-card-top"><span data-icon="${module.icon}"></span><span class="local-chip">${source}</span></div><h2>${escape(module.name)}</h2><p>${escape(describeModule(module.id, item))}</p><div class="module-metrics"><span><strong>${String(count).padStart(2,'0')}</strong>EVENTS</span><span><strong>${escape(snapshot?.latency ?? '—')}</strong>ELAPSED MS</span></div><button class="button secondary" data-open-module="${escape(module.id)}">데이터 확인 ${icon('code')}</button></article>`;
+  }).join('') : '<section class="panel empty-state"><h3>수신한 도구 이벤트 없음</h3><p>이번 실행에서 실제로 사용한 도구만 여기에 표시합니다.</p></section>';
   hydrateIcons($('module-grid'));
 }
+function generalReportDocumentsMarkup(item) {
+  const documents = item.reportDocuments;
+  if (documents?.schemaVersion !== 'general-report-documents/1') return null;
+  const entries = Array.isArray(documents.items) ? documents.items : [];
+  const findings = Array.isArray(generalReport(item)?.findings) ? generalReport(item).findings : [];
+  const byId = new Map(findings.filter(finding => finding && typeof finding.id === 'string')
+    .map(finding => [finding.id, finding]));
+  const confirmedCount = findings.filter(finding => finding?.status === 'confirmed').length;
+  const readyCount = entries.filter(document => document?.status === 'ready').length;
+  const status = documents.status;
+  const statusLabels = {
+    generating: '취약점별 HWPX 생성 중', ready: `HWPX ${readyCount}건 준비됨`,
+    partial: `HWPX ${readyCount}건 준비됨 · 일부 생성 실패`, failed: '취약점별 HWPX 생성 실패',
+    unavailable: '보고서 생성 환경 확인 필요', skipped: confirmedCount === 0 ? '확정된 취약점 없음 · HWPX 미작성' : 'HWPX 생성 생략',
+  };
+  const description = status === 'skipped' && confirmedCount === 0
+    ? '이번 실행에서 확인된 취약점이 없어 HWPX를 작성하지 않았습니다. 다른 점검 결과는 아래와 JSON에서 확인할 수 있습니다.'
+    : status === 'generating' ? '확정된 finding마다 문서를 작성하고 있습니다. 완료된 문서는 먼저 다운로드할 수 있습니다.'
+      : status === 'unavailable' ? '보고서 생성 환경을 확인하세요. 검사 결과와 증거는 JSON에 보존되어 있습니다.'
+        : status === 'partial' || status === 'failed' ? '문서 생성에 실패한 항목이 있습니다. 검사 결과와 성공한 문서는 보존되어 있습니다.'
+          : status === 'ready' ? '확정된 finding마다 작성한 HWPX 초안을 다운로드해 검토하세요.'
+            : '검사 결과와 증거는 아래와 JSON에서 확인할 수 있습니다.';
+  const rows = entries.map((document, index) => {
+    const findingId = typeof document?.findingId === 'string' ? document.findingId : '';
+    const finding = byId.get(findingId);
+    const title = finding ? `${finding.category || '분류 미상'} · ${finding.asset || '위치 미상'}` : findingId || `결과 ${index + 1}`;
+    const itemStatus = document?.status;
+    const itemLabels = { generating: '생성 중', ready: '준비됨', failed: '생성 실패', unavailable: '생성 환경 확인 필요', skipped: '생략' };
+    const ready = itemStatus === 'ready' && /^[a-f0-9]{64}$/u.test(document.artifactId || '') && !!item.id;
+    const button = ready
+      ? `<a class="button primary report-document-download" href="${escape(runtime.findingReportDownloadUrl(item.id, document.artifactId))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-label="${escape(findingId)} HWPX 다운로드">${icon('download')}HWPX 다운로드</a>`
+      : '<button class="button secondary report-document-download" disabled>HWPX 다운로드</button>';
+    return `<li class="report-document-item"><div><strong>${escape(title)}</strong><small>finding ID: ${escape(findingId || '—')} · ${escape(itemLabels[itemStatus] || itemStatus || '대기')}</small>${document?.message ? `<small>${escape(document.message)}</small>` : ''}</div>${button}</li>`;
+  }).join('');
+  return `<section class="panel report-document report-documents" aria-labelledby="report-document-title"><div><h2 id="report-document-title">확정 finding별 HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(statusLabels[status] || '보고서 상태 확인 중')}</p><small>${escape(description)}</small>${documents.message ? `<p class="report-document-message">${escape(documents.message)}</p>` : ''}<small class="report-cost-note">저장된 현재 검증 결과와 근거를 사용합니다.</small></div>${rows ? `<ul class="report-document-list">${rows}</ul>` : ''}</section>`;
+}
 function reportDocumentMarkup(item) {
+  if (isGeneralAssessment(item)) {
+    const multiple = generalReportDocumentsMarkup(item);
+    if (multiple) return multiple;
+  }
   const document = item.reportDocument;
   const idor = isIdorLab(item);
-  const status = document?.status ?? (idor || item.simulated || item.mode === 'core-fixture' ? 'skipped'
+  const general = isGeneralAssessment(item);
+  const status = document?.status ?? (general ? 'missing' : idor || item.simulated || item.mode === 'core-fixture' ? 'skipped'
     : ['completed', 'failed', 'stopped', 'cancelled', 'interrupted'].includes(item.status) ? 'missing' : 'waiting');
   const labels = { generating: '보고서 생성 중', ready: 'HWPX 보고서 준비됨', failed: '보고서 생성 실패', unavailable: '보고서 모델 설정 필요', skipped: '보고서 생성 생략', waiting: '실행 완료 후 보고서 생성', missing: '저장된 HWPX 보고서 없음' };
+  const generalUnsupported = general && status === 'skipped'
+    && document?.errorCode === 'GENERAL_DOCUMENT_UNSUPPORTED';
+  const statusLabel = generalUnsupported ? '범용 HWPX 미지원' : labels[status] || labels.waiting;
   const descriptions = {
     generating: '검사 결과로 보고서를 작성하고 있습니다. 생성이 완료되면 다운로드할 수 있습니다.',
     ready: '저장된 HWPX 문서를 다운로드할 수 있습니다.',
     failed: '검사 결과는 보존되어 있습니다. 보고서 생성 중 오류가 발생했습니다.',
     unavailable: '보고서 모델 설정을 확인하세요. 검사 결과 JSON은 계속 확인할 수 있습니다.',
-    skipped: idor ? 'IDOR 실습의 HWPX 보고서는 아직 지원하지 않습니다. 판정과 요청 근거는 아래에서 확인하고 JSON으로 내보낼 수 있습니다.' : '모의 fixture, 중지되었거나 최종 검사 결과가 없는 실행은 보고서를 생성하지 않습니다. 저장된 실행 기록은 JSON으로 내보낼 수 있습니다.',
+    skipped: generalUnsupported ? '범용 점검의 다중 결과는 아직 HWPX로 만들 수 없습니다. 화면의 가설별 결과와 JSON 내보내기를 확인하세요.' : general ? '이 실행에서는 HWPX 생성을 생략했습니다. 화면의 가설별 결과와 JSON 내보내기를 확인하세요.' : idor ? 'IDOR 실습의 HWPX 보고서는 아직 지원하지 않습니다. 판정과 요청 근거는 아래에서 확인하고 JSON으로 내보낼 수 있습니다.' : '모의 fixture, 중지되었거나 최종 검사 결과가 없는 실행은 보고서를 생성하지 않습니다. 저장된 실행 기록은 JSON으로 내보낼 수 있습니다.',
     waiting: '실제 격리 실습이 완료되면 설정된 모델로 보고서를 자동 생성합니다.',
-    missing: '이 실행에는 생성된 HWPX 보고서 기록이 없습니다. 검사 결과 JSON을 확인하세요.',
+    missing: general ? '이 범용 실행에는 HWPX 파일이 없습니다. 화면의 가설별 결과와 JSON 내보내기를 확인하세요.' : '이 실행에는 생성된 HWPX 보고서 기록이 없습니다. 검사 결과 JSON을 확인하세요.',
   };
   const ready = status === 'ready' && typeof document?.artifactId === 'string' && !!item.id;
-  return `<section class="panel report-document" aria-labelledby="report-document-title"><div><h2 id="report-document-title">HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(labels[status] || labels.waiting)}</p><small>${escape(descriptions[status] || descriptions.waiting)}</small>${document?.message ? `<p class="report-document-message">${escape(document.message)}</p>` : ''}<small class="report-cost-note">${idor ? '이 IDOR 실습은 AI 및 보고서 모델을 호출하지 않습니다.' : '실제 실습의 자동 보고서는 모델 API를 호출하며 과금될 수 있습니다.'}</small></div>${ready ? `<a class="button primary" id="report-download-button" href="${escape(runtime.reportDownloadUrl(item.id))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</a>` : `<button class="button secondary" id="report-download-button" disabled aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</button>`}</section>`;
+  return `<section class="panel report-document" aria-labelledby="report-document-title"><div><h2 id="report-document-title">HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(statusLabel)}</p><small>${escape(descriptions[status] || descriptions.waiting)}</small>${document?.message ? `<p class="report-document-message">${escape(document.message)}</p>` : ''}<small class="report-cost-note">${general ? '문서 생성 여부는 이 실행의 서버 기록을 따릅니다.' : idor ? '이 IDOR 실습은 AI 및 보고서 모델을 호출하지 않습니다.' : '실제 실습의 자동 보고서는 모델 API를 호출하며 과금될 수 있습니다.'}</small></div>${ready ? `<a class="button primary" id="report-download-button" href="${escape(runtime.reportDownloadUrl(item.id))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</a>` : `<button class="button secondary" id="report-download-button" disabled aria-describedby="report-document-status">${icon('download')}HWPX 다운로드</button>`}</section>`;
 }
 function renderReports() {
   const item = currentRun();
+  if (isGeneralAssessment(item)) {
+    if (!generalReport(item)) {
+      const message = item.status === 'failed' ? `점검을 완료하지 못했습니다. ${escape(item.error || '오류 내용을 실행 이력에서 확인하세요.')}`
+        : '관측과 검증이 진행 중입니다. 결과가 저장되면 가설별 근거와 미점검 사유를 표시합니다.';
+      $('report-content').innerHTML = `<section class="panel empty-state" role="status"><h2>범용 점검 결과 대기</h2><p>${message}</p></section>`;
+      if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
+      return;
+    }
+    $('report-content').innerHTML = `${reportDocumentMarkup(item)}${renderGeneralReport(item)}${jsonSection('범용 점검 결과 원문', generalReport(item))}`;
+    if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
+    if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
+    hydrateIcons($('report-content'));
+    return;
+  }
   const lab = isLab(item);
   const note = isIdorLab(item)
     ? `${escape(idorFixture(item)?.name || 'vul-web2')}의 등록된 실습 원점(${escape(item.target || '준비 중')})에서 알려진 가상 레코드의 IDOR를 검사합니다. 본인·다른 담당자·학생 세션의 조회 결과를 대조합니다. ${item.targetContacted ? '실습 사이트의 HTTP 응답을 수신했습니다.' : '아직 실습 사이트의 HTTP 응답을 수신하지 못했습니다.'} 정해진 검증 범위의 결과이며, 사이트 전체의 취약점 탐지나 자율 CERT 조사 결과를 뜻하지 않습니다. AI 모델과 브라우저를 사용하지 않습니다.`
@@ -535,7 +661,9 @@ $('target-form').addEventListener('submit', async (event) => {
 $('lab-run-button').addEventListener('click', async () => {
   if (browserResetError || ['failed', 'resetting'].includes(experimentStatus) || pendingModelChange) return;
   const model = selectedModel();
-  if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available) return;
+  const generalLaunch = generalLaunchSelected();
+  if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available
+    || (generalLaunch && (!labReadiness.generalSupported || !labReadiness.generalAvailable || model.provider !== 'deepseek'))) return;
   let target;
   if (selectedIdorFixture()) {
     try {
@@ -552,10 +680,10 @@ $('lab-run-button').addEventListener('click', async () => {
     }
   }
   await submitControl(async () => {
-    await runtime.startLab(model.id, model.mode, selectedFixture(), target);
+    await runtime.startLab(model.id, generalLaunch ? 'local-lab-general' : model.mode, selectedFixture(), target);
     inspectedRun = null;
     selectedEventId = null;
-    notify(selectedIdorFixture() ? `${selectedIdorFixture().name} IDOR 실습을 시작했습니다.` : `${model.name || model.id}로 실제 격리 실습을 시작했습니다.`);
+    notify(generalLaunch ? `${selectedIdorFixture()?.name || '로컬 게시판'} 범용 점검을 시작했습니다.` : selectedIdorFixture() ? `${selectedIdorFixture().name} IDOR 실습을 시작했습니다.` : `${model.name || model.id}로 실제 격리 실습을 시작했습니다.`);
   });
 });
 function commitFixture(id) {
@@ -566,13 +694,41 @@ function commitFixture(id) {
   $('lab-target-origin').removeAttribute('aria-invalid');
   renderStats();
 }
+$('assessment-mode').addEventListener('change', () => {
+  const targetMode = $('assessment-mode').value;
+  const previousMode = acceptedAssessmentMode;
+  assessmentModeTouched = true;
+  $('assessment-mode').value = previousMode;
+  if (targetMode === previousMode || pendingModelChange || controlPending || !canOperate()
+    || connection !== 'connected' || ['queued','preparing','running','stopping'].includes(run.status)) {
+    renderStats(); return;
+  }
+  const targetModelId = targetMode === 'general' && models.find(item => item.id === acceptedModelId)?.provider !== 'deepseek'
+    ? models.find(item => item.provider === 'deepseek' && item.available)?.id
+    : targetMode === 'legacy' && selectedIdorFixture() && acceptedModelId !== 'rule-baseline'
+      ? 'rule-baseline' : null;
+  if (targetModelId && targetModelId !== acceptedModelId) {
+    if (settings.confirmModelReset) {
+      openModelReset(targetModelId);
+      pendingModelChange.assessmentMode = targetMode;
+      $('model-reset-description').textContent = `${targetMode === 'general' ? '범용 점검' : '기존 대학 실습'}에 사용할 모델로 변경하기 전에 이전 실험의 상태를 초기화할까요?`;
+    } else {
+      pendingModelChange = { previousId: acceptedModelId, targetId: targetModelId, assessmentMode: targetMode };
+      completeModelChange(targetModelId);
+    }
+    return;
+  }
+  acceptedAssessmentMode = targetMode;
+  $('assessment-mode').value = targetMode;
+  renderStats();
+});
 $('fixture-select').addEventListener('change', () => {
   const targetFixtureId = $('fixture-select').value;
   if (pendingModelChange || controlPending || !canOperate()
     || ['queued','preparing','running','stopping'].includes(run.status)) {
     $('fixture-select').value = acceptedFixtureId; return;
   }
-  if (IDOR_FIXTURES[targetFixtureId] && acceptedModelId && acceptedModelId !== 'rule-baseline') {
+  if (!generalLaunchSelected() && IDOR_FIXTURES[targetFixtureId] && acceptedModelId && acceptedModelId !== 'rule-baseline') {
     $('fixture-select').value = acceptedFixtureId;
     if (settings.confirmModelReset) {
       openModelReset('rule-baseline');
@@ -610,7 +766,13 @@ function chooseModule(id, eventId = null) {
 }
 document.querySelectorAll('.graph-node').forEach((node) => node.addEventListener('click', () => chooseModule(node.dataset.module)));
 $('agent-core').addEventListener('click', () => chooseModule('agent'));
-$('activity-list').addEventListener('click', (event) => { const button = event.target.closest('[data-event]'); if (!button) return; const selected = currentRun().events.find((entry) => entry.id === button.dataset.event); if (selected) chooseModule(selected.module, selected.id); });
+$('general-run-summary').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-general-event]');
+  if (!button) return;
+  const selected = currentRun().events.find(entry => entry.id === button.dataset.generalEvent);
+  if (selected) chooseModule(isGeneralAssessment(currentRun()) ? 'agent' : selected.module, selected.id);
+});
+$('activity-list').addEventListener('click', (event) => { const button = event.target.closest('[data-event]'); if (!button) return; const selected = currentRun().events.find((entry) => entry.id === button.dataset.event); if (selected) chooseModule(isGeneralAssessment(currentRun()) ? 'agent' : selected.module, selected.id); });
 $('event-search').addEventListener('input', renderActivity);
 document.querySelectorAll('[data-tab]').forEach((tab) => tab.addEventListener('click', () => { activeTab = tab.dataset.tab; renderInspector(); }));
 document.querySelector('.inspector-tabs').addEventListener('keydown', (event) => {
@@ -648,6 +810,10 @@ $('menu-button').addEventListener('click', () => { $('sidebar').classList.toggle
 document.addEventListener('click', (event) => { if (!event.target.closest('#notification-popover') && !event.target.closest('#notifications-button')) { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); } if (innerWidth <= 760 && !event.target.closest('#sidebar') && !event.target.closest('#menu-button')) { $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
 document.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); navigate('dashboard'); $('target-url').focus(); $('target-url').select(); } if (event.key === 'Escape') { $('notification-popover').hidden = true; $('notifications-button').setAttribute('aria-expanded','false'); $('sidebar').classList.remove('open'); $('menu-button').setAttribute('aria-expanded','false'); } });
 function runModelName(item) {
+  if (isGeneralAssessment(item)) {
+    const call = generalReport(item)?.modelCalls?.find?.(entry => entry && typeof entry === 'object');
+    return item.manifest?.model?.id || item.modelId || call?.reportedModel || call?.requestedModel || '모델 정보 미기록';
+  }
   const model = item.manifest?.model || item.events?.find(event => event.agentOutput?.modelMetadata)?.agentOutput?.modelMetadata;
   return typeof model === 'string' ? model : model?.name || model?.model || model?.id || item.modelId || (isAiLab(item) ? 'DeepSeek' : 'RuleReasoningEngine');
 }
@@ -714,8 +880,8 @@ async function loadWorkspace() {
     models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string' && ['local-lab-rule', 'local-lab-deepseek'].includes(item.mode)) : [];
     $('model-select').innerHTML = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
     $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
-    acceptedModelId = $('model-select').value;
     renderStats();
+    acceptedModelId = $('model-select').value;
   })().catch(error => showRuntimeError(error.message)), (async () => {
     const payload = await runtime.getPlatform();
     if (generation !== workspaceGeneration) return;
@@ -750,9 +916,10 @@ async function refreshHistory() {
       offset += payload.runs.length;
       if (!payload.runs.length || !Number.isSafeInteger(payload.total) || offset >= payload.total) break;
     }
-    history = records.map(item => redactTelemetry(item)).filter(item => isRun(item) || isLegacyRun(item)).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+    history = records.map(item => normalizeGeneralRun(redactTelemetry(item))).filter(item => isRun(item) || isLegacyRun(item)).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
     const inspectedUpdate = inspectedRun && history.find(item => item.id === inspectedRun.id);
-    if (inspectedUpdate) inspectedRun = { ...inspectedRun, reportDocument: inspectedUpdate.reportDocument };
+    if (inspectedUpdate) inspectedRun = { ...inspectedRun, reportDocument: inspectedUpdate.reportDocument,
+      reportDocuments: inspectedUpdate.reportDocuments };
     if (run.id && isRun(run) && !history.some(item => item.id === run.id)) history.unshift(structuredClone(run));
     centralHistoryLoaded = true; historyError = ''; updateComparisonSelectors(); render();
   } catch (error) { historyError = error.message; if (activeView === 'sessions') renderSessions(); }
@@ -763,7 +930,7 @@ async function openStoredRun(id) {
   try {
     const payload = await runtime.getRun(id);
     if (generation !== workspaceGeneration) return;
-    const item = redactTelemetry(payload.run);
+    const item = normalizeGeneralRun(redactTelemetry(payload.run));
     if (isLegacyRun(item)) {
       inspectedRun = null; legacyDetail = item; selectedEventId = null;
       navigate('sessions'); $('legacy-detail').scrollIntoView({ block: 'start' });
@@ -882,11 +1049,16 @@ function renderPlatform() {
 }
 function completeModelChange(id, resetPerformed = false) {
   const fixtureId = pendingModelChange?.fixtureId;
+  const assessmentMode = pendingModelChange?.assessmentMode;
   acceptedModelId = id;
   $('model-select').value = id;
   modelChangeUnreset = !resetPerformed;
   settings.modelChangeUnreset = modelChangeUnreset; persistSettings();
   pendingModelChange = null;
+  if (assessmentMode) {
+    acceptedAssessmentMode = assessmentMode;
+    $('assessment-mode').value = assessmentMode;
+  }
   if (fixtureId) commitFixture(fixtureId);
   $('model-reset-dialog').close();
   renderStats();

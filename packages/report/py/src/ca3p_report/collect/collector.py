@@ -9,8 +9,9 @@ from pathlib import Path
 from ..trigger import Trigger
 from . import casper, pentest_db, run_store
 from .bundle import EVENTS_SCHEMA, HISTORY_SCHEMA, RUN_SCHEMA, BundleWriter
+from .general import select_finding
 from .hints import capture_hints
-from .model import RunRecord
+from .model import CollectError, RunRecord
 
 RUN_DRIVERS = {
     pentest_db.DRIVER: pentest_db.read_run,
@@ -31,6 +32,7 @@ class CollectResult:
     bundle: Path
     manifest: dict
     run: RunRecord
+    selection: dict | None = None
 
 
 def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
@@ -39,6 +41,9 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
         raise RunNotFound(trigger.run_id)
     if run.report is None:
         raise RunIncomplete(trigger.run_id)
+    if run.report.get("assessmentMode") == "general" and trigger.finding_id is None:
+        raise CollectError("general report collection requires options.findingId")
+    selection = select_finding(run, trigger.finding_id) if trigger.finding_id else None
 
     if trigger.history.kind == casper.DRIVER:
         history = casper.read_history(trigger.history.location, casper.history_refs(run.events))
@@ -62,6 +67,8 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
                 "report": run.report,
             },
         )
+        if selection is not None:
+            writer.add_json("run/selection.json", "general-finding-selection", selection)
         writer.add_json(
             "run/events.json",
             "run-events",
@@ -107,4 +114,4 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
     except BaseException:
         writer.discard()
         raise
-    return CollectResult(bundle=writer.root, manifest=manifest, run=run)
+    return CollectResult(bundle=writer.root, manifest=manifest, run=run, selection=selection)
