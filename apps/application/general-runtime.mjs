@@ -7,7 +7,7 @@ import generalPlanner from '../../agent/src/general-model-planner.js';
 import { probeSite } from '../../vul-web2/scripts/idor-probe.mjs';
 import { executeUniversityRead } from '../../packages/adapters/university-read.mjs';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
-import { collectWebInfo } from '../../packages/adapters/integrations/web-parser.mjs';
+import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
 
 const { runGeneralAssessment } = generalCore;
 const { createGeneralModelPlannerFromEnv } = generalPlanner;
@@ -728,7 +728,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       referenceSources: references,
       toolCapabilities: {
         http_get: 'input {path,sessionRole?}: GET on a declared or observed pathname at the selected origin; optional sessionRole uses only a prepared fixed demo session; redirects are not followed',
-        web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser and return observed web information (response, headers, cookies, page structure, loaded resources, technology analysis, discovered paths); optional sessionRole uses only a prepared fixed demo session',
+        web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
         repository_read: 'input {file,offset?}: read only an allowlisted local source or reference excerpt',
         ...(config.siteKey ? { known_record_idor_read:
           'input {}: guarded role comparison of registered virtual records; use access_control and the knownAssessmentAssets asset' }
@@ -759,6 +759,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       /^(?:access_control|idor|bola|cwe-639)$/iu.test(hypothesis?.category ?? '')
       && hypothesis?.asset === BOARD_ACCESS_ASSET;
     const failedModelCalls = [];
+    let evidenceCount = 0;
     const allowedPaths = new Set(config.routes.map(path => new URL(path, allowedOrigin).pathname));
     const extendPaths = page => {
       for (const path of [...(page.links ?? []), ...(page.forms ?? []).map(form => form.path)]) {
@@ -836,6 +837,12 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const url = safePath(probe.input.path, allowedOrigin);
         const sessionRole = probe.input.sessionRole;
         const cookie = sessionRole === undefined ? null : sessionCookies.get(sessionRole);
+        // The core ends the run when one execution returns more evidence than it has room for.
+        const remaining = (limits.maxEvidenceItems ?? LIMITS.maxEvidenceItems) - evidenceCount;
+        // A page can reflect a fixed session value (header, URL) or carry URL userinfo; keep both out.
+        const evidenceText = value => [...sessionCookies.values()].reduce(
+          (text, pair) => text.replaceAll(pair.slice(pair.indexOf('=') + 1), '[redacted]'),
+          safeText(value).replace(/\/\/[^/@\s]+:[^/@\s]+@/gu, '//[redacted]@'));
         // Session cookies are stored as a `name=value` pair; web-parser wants { name, value }.
         const cookiePair = cookie ? [{ name: cookie.slice(0, cookie.indexOf('=')),
           value: cookie.slice(cookie.indexOf('=') + 1) }] : null;
@@ -856,27 +863,17 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             const safe = safePath(discovered.pathname + discovered.search, allowedOrigin);
             if (safe) allowedPaths.add(safe.pathname);
           }
-          return { kind: 'web_info', result: summary, evidence: [{ id: evidenceId('probe', probe.id),
+          return { kind: 'web_info', result: summary, evidence: evidenceFromTargetInfo(info, {
+            idBase: evidenceId('probe', probe.id), sessionRole, remaining,
             source: 'web-parser/' + fixtureId + (sessionRole ? '/role:' + sessionRole : ''),
-            kind: 'web-info', asset: url.pathname + url.search,
-            summary: utf8Prefix(safeText('web_info ' + url.pathname + url.search
-              + (sessionRole ? ' as fixed ' + sessionRole : '')
-              + ': HTTP ' + (info.navigation.status ?? 'no response')
-              + ' ' + (info.navigation.contentType ?? 'unknown')
-              + '; technologies ' + (info.technologies.length
-                ? info.technologies.slice(0, 5).map(tech => tech.name
-                  + (tech.version ? ' ' + tech.version : '')).join(', ') : 'none')
-              + '; forms ' + info.structure.forms.length
-              + '; links ' + info.structure.links.length
-              + '; resources ' + info.resources.length
-              + '; paths ' + info.paths.length
-              + (info.errors.length ? '; errors ' + [...new Set(info.errors.map(item => item.stage))].join(',') : '')), 1200) }] };
+            asset: url.pathname + url.search, safeText: evidenceText, safeHeaderValue }) };
         } catch (error) {
           if (currentSignal?.aborted || error?.fatalProbe) throw error;
           return { kind: 'web_info', error: 'request_unavailable',
             evidence: [{ id: evidenceId('probe', probe.id), source: 'web-parser/' + fixtureId,
               kind: 'unavailable', asset: probe.input.path,
-              summary: 'web_info browser observation failed or timed out; the hypothesis remains unverified.' }] };
+              summary: 'web_info browser observation failed or timed out; the hypothesis remains unverified.' }]
+              .slice(0, remaining) };
         } finally {
           await invokeHook(afterProbe, probeRecord, { status: observedStatus,
             evidenceId: evidenceId('probe', probe.id) }, reservation);
@@ -1018,6 +1015,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       target: { fixtureId, origin: allowedOrigin }, observer, planner: wrappedPlanner,
       policy, executor, verifier, availableTools, limits, signal: currentSignal,
       onEvent: async event => {
+        // The core reports its stored evidence count (initial observation included) before each probe.
+        evidenceCount = event.progress?.evidenceCount ?? evidenceCount;
         const iteration = eventCount(event.iteration) ?? run.iterations;
         run.iterations = Math.max(run.iterations, iteration);
         appendEvent({ ...projectGeneralEvent(event), iteration });

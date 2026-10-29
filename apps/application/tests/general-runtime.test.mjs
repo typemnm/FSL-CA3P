@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -921,4 +922,146 @@ test('web_info honors cancellation mid-run', async () => {
   assert.equal(run.status, 'stopped');
   assert.equal(run.report.status, 'cancelled');
   await runtime.close();
+});
+
+const SESSION_VALUE = 'SessionCookieValue12345';
+const TRACKER_VALUE = 'TrackerCookieValue67890';
+
+/** A loopback stand-in for the isolated board: session login, Set-Cookie page, robots.txt and JSON. */
+async function loopbackBoard() {
+  const server = createServer((req, res) => {
+    const path = new URL(req.url, 'http://127.0.0.1').pathname;
+    if (req.method === 'POST' && path === '/api/session') {
+      res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'sid=' + SESSION_VALUE + '; HttpOnly; Path=/' });
+      return res.end('{"ok":true}');
+    }
+    if (path === '/robots.txt') {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      return res.end('User-agent: *\nDisallow: /hidden-admin\n');
+    }
+    if (path.startsWith('/api/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end('{"posts":[]}');
+    }
+    // A logged-in page reflects the session value in a header and a link.
+    const reflected = req.headers.cookie?.includes(SESSION_VALUE) ? SESSION_VALUE : null;
+    res.writeHead(200, { 'content-type': 'text/html', server: 'nginx/1.25.3',
+      'set-cookie': 'tracker=' + TRACKER_VALUE + '; Path=/; SameSite=Lax',
+      ...(reflected ? { 'x-echo': reflected } : {}) });
+    return res.end('<html><head><title>Loopback Board</title></head><body>'
+      + '<a href="/robots.txt">robots</a><a href="/api/data">data</a>'
+      + (reflected ? '<a href="/echo?ref=' + reflected + '">echo</a>' : '')
+      + '<form action="/api/posts" method="post"><input name="title"><textarea name="content"></textarea></form></body></html>');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return { origin: 'http://127.0.0.1:' + server.address().port,
+    close: async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
+}
+
+test('web_info evidence shows the planner real page details from a browser without cookie values', async () => {
+  const contexts = [];
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web-1', modelId: 'deepseek-flash', runIdFactory: () => 'web-info-evidence',
+    boardFactory: loopbackBoard,
+    plannerFactory: () => ({ async propose(context) {
+      contexts.push(JSON.stringify({ inventory: context.inventory, evidence: context.evidence }));
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration', asset: '/',
+        rationale: 'Observe the board with a browser.', evidenceIds: [context.evidence[0].id] }],
+      probes: [
+        { id: 'w-home', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/' } },
+        { id: 'w-robots', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/robots.txt' } },
+        { id: 'w-json', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/api/data' } },
+        { id: 'w-alice', hypothesisId: 'h-web', tool: 'web_info', input: { path: '/', sessionRole: 'alice' } },
+      ] };
+    } }),
+  });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    const seen = JSON.parse(contexts[1]).evidence;
+    const of = id => run.report.probes.find(item => item.id === id).evidenceIds
+      .map(evidenceId => seen.find(item => item.id === evidenceId));
+    const [home, homePaths, homeSurface] = of('w-home');
+    assert.deepEqual([home.kind, homePaths.kind, homeSurface.kind], ['web-info', 'web-info-paths', 'web-info-surface']);
+    assert.match(home.summary, /HTTP 200 text\/html; title "Loopback Board"/u);
+    assert.match(home.summary, /"name":"Nginx","version":"1\.25\.3"/u);
+    assert.match(homePaths.summary, /"url":"\/robots\.txt"/u);
+    assert.match(homeSurface.summary, /"action":"\/api\/posts","method":"post","fields":\[\{"name":"title","type":"text"\},\{"name":"content","type":"textarea"\}\]/u);
+    assert.match(homeSurface.summary, /"name":"tracker","httpOnly":false/u);
+    const [robots, robotsPaths] = of('w-robots');
+    assert.match(robots.summary, /HTTP 200 text\/plain/u);
+    assert.match(robotsPaths.summary, /"url":"\/hidden-admin","sources":\["robots:disallow"\]/u);
+    assert.match(of('w-json')[0].summary, /HTTP 200 application\/json/u);
+    const aliceSurface = of('w-alice').find(item => item.kind === 'web-info-surface');
+    assert.equal(aliceSurface.source, 'web-parser/vul-web-1/role:alice');
+    assert.match(aliceSurface.summary, /"name":"sid",/u);
+    assert.match(aliceSurface.summary, /"name":"x-echo","value":"\[redacted\]"/u);
+    assert.match(of('w-alice').find(item => item.kind === 'web-info-paths').summary, /"url":"\/echo\?ref \[redacted\]"/u);
+    for (const item of seen.filter(entry => entry.kind.startsWith('web-info'))) {
+      assert.ok(Buffer.byteLength(item.summary, 'utf8') <= 2048 && Buffer.byteLength(JSON.stringify(item), 'utf8') <= 4096);
+    }
+    for (const text of [JSON.stringify(run.report), ...contexts]) {
+      assert.doesNotMatch(text, new RegExp(SESSION_VALUE + '|' + TRACKER_VALUE, 'u'));
+    }
+  } finally { await runtime.close(); }
+});
+
+function largeTargetInfo(url) {
+  const info = fakeTargetInfo(url, Array.from({ length: 400 }, (_, i) => ({ url: new URL('/p/' + i + '?q=1', url).href,
+    sources: ['robots:disallow'], methods: ['GET'], sameOrigin: true, params: ['q'] })));
+  const fields = Array.from({ length: 60 }, (_, i) => ({ name: '필드' + i, type: 'text' }));
+  info.structure.forms = Array.from({ length: 25 }, (_, i) => ({ action: url + 'f' + i, method: 'POST', fields }));
+  info.headers = Array.from({ length: 80 }, (_, i) => ({ name: 'X-Header-' + i, value: '값'.repeat(300) }));
+  return info;
+}
+
+async function runWebInfoBudget({ limits, probes, onEvidence }) {
+  const runtime = createGeneralRuntime({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => 'web-info-budget', fetchImpl: universityLoginFetch(), limits,
+    webParserCollect: async url => ({ info: largeTargetInfo(url), summary: {} }),
+    plannerFactory: () => ({ async propose(context) {
+      onEvidence?.(context.evidence);
+      if (context.iteration > 1 || !probes.length) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration', asset: '/',
+        rationale: 'Observe a large page.', evidenceIds: [context.evidence[0].id] }],
+      probes: probes.map(([id, path]) => ({ id, hypothesisId: 'h-web', tool: 'web_info', input: { path } })) };
+    } }),
+  });
+  try {
+    const done = terminal(runtime);
+    runtime.startLab();
+    return await done;
+  } finally { await runtime.close(); }
+}
+
+test('web_info evidence from a large page stays within core limits and marks shown/total', async () => {
+  const run = await runWebInfoBudget({ probes: [['w-large', '/']] });
+  assert.equal(run.status, 'completed', run.error);
+  const items = run.report.evidence.filter(item => item.kind.startsWith('web-info'));
+  assert.deepEqual(items.map(item => item.kind), ['web-info', 'web-info-paths', 'web-info-surface']);
+  for (const item of items) {
+    assert.ok(Buffer.byteLength(item.summary, 'utf8') <= 2048 && Buffer.byteLength(JSON.stringify(item), 'utf8') <= 4096);
+  }
+  assert.match(items[1].summary, /paths \d+\/400: \[\{"url":"\/p\/0\?q=1"/u);
+  assert.match(items[2].summary, /forms 1\/25: .*"\+30 more"\]\}\]; headers \d+\/80: /u);
+});
+
+test('web_info fits the remaining evidence budget with one and then zero free slots', async () => {
+  let initial = 0;
+  await runWebInfoBudget({ probes: [], onEvidence: evidence => { initial = evidence.length; } });
+  assert.ok(initial > 0);
+  const limits = { maxIterations: 3, maxProbes: 24, maxEvidenceItems: initial + 1 };
+  const run = await runWebInfoBudget({ limits, probes: [['w-one', '/'], ['w-zero', '/about']] });
+  assert.equal(run.status, 'completed', run.error);
+  assert.equal(run.report.stopReason, 'planner_done');
+  const probe = id => run.report.probes.find(item => item.id === id);
+  assert.equal(probe('w-one').evidenceIds.length, 1);
+  assert.equal(run.report.evidence.find(item => item.id === probe('w-one').evidenceIds[0]).kind, 'web-info');
+  assert.equal(probe('w-zero').status, 'inconclusive');
+  assert.equal(probe('w-zero').reason, 'no_evidence');
+  assert.equal(run.report.evidence.length, initial + 1);
 });
