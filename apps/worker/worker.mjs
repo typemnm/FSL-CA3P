@@ -55,7 +55,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
   reportGenerator = generateReportDocument,
   idorRuntimeFactory = createIdorRuntime, generalRuntimeFactory = createGeneralRuntime,
   externalRuntimeFactory = createExternalRuntime, externalRequestImpl,
-  generalPlannerFactory, generalFetchImpl, generalIdorProbe, generalBoardFactory } = {}) {
+  generalPlannerFactory, generalFetchImpl, generalBoardFactory } = {}) {
   const store = createRunRepository({ path: storePath });
   let stopping = false; let runtime = null; let activeLease = null; let activeController = null; let busy = false; let timer; let shutdownTask;
   const notify = () => { if (process.connected) process.send({ type: 'state' }); };
@@ -129,7 +129,6 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         cleanupRegistryPath: join(dirname(store.path), 'lab-sessions'),
         ...(generalPlannerFactory ? { plannerFactory: generalPlannerFactory } : {}),
         ...(generalFetchImpl ? { fetchImpl: generalFetchImpl } : {}),
-        ...(generalIdorProbe ? { idorProbe: generalIdorProbe } : {}),
         ...(generalBoardFactory ? { boardFactory: generalBoardFactory } : {}),
         modelId: lease.modelId,
         env, ...(envFile ? { envFile } : {}), signal: controller.signal,

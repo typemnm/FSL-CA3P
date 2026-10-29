@@ -30,14 +30,7 @@ function response(path) {
   });
 }
 
-const confirmedIdor = () => ({ finding: { status: 'confirmed' }, evidence: [
-  { check: 'firstOwner', recordId: 1, status: 200, ownerId: 4 },
-  { check: 'secondOwner', recordId: 3, status: 200, ownerId: 5 },
-  { check: 'crossOwner', recordId: 3, status: 200, ownerId: 5 },
-  { check: 'studentRole', recordId: 3, status: 403, ownerId: null },
-] });
-
-test('general university run uses multiple model hypotheses and confirms only the guarded role comparison', async () => {
+test('general university run uses multiple model hypotheses and confirms nothing without an attack record', async () => {
   const origin = 'http://127.0.0.1:53987';
   const calls = [];
   const modelCalls = [];
@@ -69,13 +62,10 @@ test('general university run uses multiple model hypotheses and confirms only th
         { id: 'h-xss', category: 'xss', asset: '/api/search?token=event-private-asset',
           rationale: 'A query input exists but no browser verifier is connected.',
           evidenceIds: [id], secret: 'event-private-extra' },
-      ], probes: [{ id: 'p-idor', hypothesisId: 'h-idor', tool: 'known_record_idor_read', input: {} }],
+      ], probes: [{ id: 'p-idor', hypothesisId: 'h-idor', tool: 'http_get',
+        input: { path: '/api/admissions/partner/applications/1' } }],
       modelMetadata: { provider: 'deepseek', model: 'deepseek-flash' } };
     } }),
-    idorProbe: async options => {
-      assert.equal(options.origin, origin);
-      return confirmedIdor();
-    },
   });
   const detach = runtime.subscribe(({ run }) => {
     const event = run.events.find(item => item.stage === 'verify' && item.request?.probeId === 'p-idor');
@@ -87,7 +77,7 @@ test('general university run uses multiple model hypotheses and confirms only th
   assert.equal(run.status, 'completed');
   assert.equal(run.report.schemaVersion, 'general-assessment/1');
   assert.equal(run.report.assessmentMode, 'general');
-  assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-idor').status, 'confirmed');
+  assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-idor').status, 'inconclusive');
   assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-xss').status, 'not_tested');
   assert.equal(run.report.modelCalls.length, 2);
   assert.equal(modelCalls.length, 2);
@@ -103,7 +93,7 @@ test('general university run uses multiple model hypotheses and confirms only th
   const plan = liveVerify.events.find(item => item.stage === 'plan');
   assert.deepEqual(plan.request.hypothesisIds, ['h-idor', 'h-xss']);
   assert.deepEqual(plan.request.probeLinks, [
-    { probeId: 'p-idor', hypothesisId: 'h-idor', tool: 'known_record_idor_read' },
+    { probeId: 'p-idor', hypothesisId: 'h-idor', tool: 'http_get' },
   ]);
   assert.deepEqual(plan.request.hypothesisSummaries, [
     { id: 'h-idor', category: 'access_control',
@@ -118,15 +108,15 @@ test('general university run uses multiple model hypotheses and confirms only th
     && item.request?.probeId === 'p-idor');
   const probeEvidenceId = run.report.probes.find(item => item.id === 'p-idor').evidenceIds[0];
   assert.deepEqual(executed.response.evidenceSummaries, [{ id: probeEvidenceId,
-    kind: 'role-comparison', asset: '/api/admissions/partner/applications/:id' }]);
+    kind: 'http-response', asset: '/api/admissions/partner/applications/1' }]);
   assert.equal(plan.response.progress.hypothesisCount, 2);
   assert.equal(liveVerify.event.request.hypothesisId, 'h-idor');
-  assert.equal(liveVerify.event.request.tool, 'known_record_idor_read');
-  assert.equal(liveVerify.event.response.status, 'confirmed');
+  assert.equal(liveVerify.event.request.tool, 'http_get');
+  assert.equal(liveVerify.event.response.status, 'inconclusive');
   assert.deepEqual(liveVerify.event.response.evidenceIds,
     run.report.probes.find(item => item.id === 'p-idor').evidenceIds);
-  assert.equal(liveVerify.event.response.progress.confirmedProbeCount, 1);
-  assert.equal(run.events.find(item => item.stage === 'complete').response.coverage.confirmed, 1);
+  assert.equal(liveVerify.event.response.progress.confirmedProbeCount, 0);
+  assert.equal(run.events.find(item => item.stage === 'complete').response.coverage.confirmed, 0);
   assert.equal(run.events.some(item => 'runId' in item || 'input' in item.request), false);
   assert.doesNotMatch(JSON.stringify(run.events.filter(item => item.stage)),
     /event-private-marker|event-private-asset|event-private-extra/u);
@@ -330,80 +320,6 @@ test('wrong private service fails identity binding before the model or general p
   assert.equal(run.error, 'FIXTURE_IDENTITY_MISMATCH');
   assert.deepEqual(paths, ['/']);
   assert.equal(modelUsed, false);
-  await runtime.close();
-});
-
-test('a model cannot turn guarded IDOR evidence into an XSS confirmation', async () => {
-  let idorCalls = 0;
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
-    runIdFactory: () => 'mislabelled-idor',
-    fetchImpl: async url => response(new URL(url).pathname),
-    plannerFactory: () => ({ async propose(context) {
-      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-      return { done: false, hypotheses: [{ id: 'wrong-type', category: 'xss',
-        asset: '/api/search', rationale: 'Incorrectly linked probe.',
-        evidenceIds: [context.evidence[0].id] }],
-      probes: [{ id: 'p1', hypothesisId: 'wrong-type', tool: 'known_record_idor_read', input: {} }] };
-    } }),
-    idorProbe: async () => { idorCalls += 1; return confirmedIdor(); },
-  });
-  const done = terminal(runtime);
-  runtime.startLab();
-  const run = await done;
-  assert.equal(run.status, 'completed');
-  assert.equal(run.report.probes[0].status, 'blocked');
-  assert.equal(run.report.probes[0].reason, 'hypothesis_tool_mismatch');
-  assert.equal(run.report.findings[0].status, 'not_tested');
-  assert.equal(run.report.findings[0].reason, 'hypothesis_tool_mismatch');
-  assert.equal(run.report.coverage.confirmed, 0);
-  assert.equal(idorCalls, 0);
-  await runtime.close();
-});
-
-test('mismatched IDOR probes leave the one-shot comparison for the registered asset', async () => {
-  let idorCalls = 0;
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
-    runIdFactory: () => 'idor-mismatch-then-valid',
-    fetchImpl: async url => response(new URL(url).pathname),
-    plannerFactory: () => ({ async propose(context) {
-      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-      const evidenceIds = [context.evidence[0].id];
-      return { done: false, hypotheses: [
-        { id: 'wrong-category', category: 'xss',
-          asset: '/api/admissions/partner/applications/:id',
-          rationale: 'Wrong vulnerability class.', evidenceIds },
-        { id: 'wrong-asset', category: 'access_control', asset: '/api/search',
-          rationale: 'Wrong registered asset.', evidenceIds },
-        { id: 'registered-idor', category: 'access_control',
-          asset: '/api/admissions/partner/applications/:id',
-          rationale: 'Compare registered records.', evidenceIds },
-      ], probes: [
-        { id: 'p-wrong-category', hypothesisId: 'wrong-category',
-          tool: 'known_record_idor_read', input: {} },
-        { id: 'p-wrong-asset', hypothesisId: 'wrong-asset',
-          tool: 'known_record_idor_read', input: {} },
-        { id: 'p-valid', hypothesisId: 'registered-idor',
-          tool: 'known_record_idor_read', input: {} },
-      ] };
-    } }),
-    idorProbe: async () => { idorCalls += 1; return confirmedIdor(); },
-  });
-  const done = terminal(runtime);
-  runtime.startLab();
-  const run = await done;
-  assert.equal(run.status, 'completed', run.error);
-  assert.deepEqual(run.report.probes.map(item => item.status), ['blocked', 'blocked', 'confirmed']);
-  assert.deepEqual(run.report.probes.slice(0, 2).map(item => item.reason),
-    ['hypothesis_tool_mismatch', 'hypothesis_tool_mismatch']);
-  assert.equal(run.events.find(item => item.stage === 'policy'
-    && item.request?.probeId === 'p-wrong-category').response.reason,
-  'hypothesis_tool_mismatch');
-  assert.ok(run.report.probes.slice(0, 2).every(item => item.evidenceIds.length === 0));
-  assert.equal(run.report.findings.find(item => item.hypothesisId === 'registered-idor').status,
-    'confirmed');
-  assert.equal(idorCalls, 1);
   await runtime.close();
 });
 
@@ -678,193 +594,6 @@ test('a custom planner cannot forge extra model call attempts', async () => {
   assert.equal(recorded.length, 1);
   assert.equal(run.report.modelCalls.length, 1);
   assert.doesNotMatch(JSON.stringify(run.report), /PRIVATE_MODEL_RESPONSE/u);
-  await runtime.close();
-});
-
-async function runRealBoardCanary(safeMode) {
-  const hooks = [];
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
-    runIdFactory: () => safeMode ? 'safe-board-canary' : 'vulnerable-board-canary',
-    boardFactory: async () => {
-      const { startLocalLab } = await import('../../../packages/adapters/local-lab-gateway.mjs');
-      return startLocalLab({ safeMode });
-    },
-    beforeProbe: async probe => { hooks.push(probe); },
-    plannerFactory: () => ({ async propose(context) {
-      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-      return { done: false, hypotheses: [{ id: 'h-board', category: 'access_control',
-        asset: '/api/posts/:id', rationale: 'Compare fresh Bob post deletion from Alice.',
-        evidenceIds: [context.evidence[0].id] }],
-      probes: [{ id: 'p-board', hypothesisId: 'h-board',
-        tool: 'known_cross_user_delete_canary', input: {} }] };
-    } }),
-  });
-  try {
-    const done = terminal(runtime);
-    runtime.startLab();
-    return { run: await done, hooks };
-  } finally { await runtime.close(); }
-}
-
-test('fresh isolated board canary independently confirms cross-user deletion', async () => {
-  const { run, hooks } = await runRealBoardCanary(false);
-  assert.equal(run.status, 'completed');
-  assert.equal(run.report.findings[0].status, 'confirmed', JSON.stringify(run.report.evidence));
-  assert.equal(run.report.coverage.confirmed, 1);
-  const canaryHooks = hooks.filter(item => item.tool === 'known_cross_user_delete_canary');
-  assert.equal(canaryHooks.length, 8);
-  assert.equal(canaryHooks.filter(item => item.method === 'DELETE').length, 2);
-  assert.equal(new Set(canaryHooks.map(item => item.id)).size, canaryHooks.length);
-  assert.ok(canaryHooks.every(item => item.url.startsWith(run.target)));
-  assert.match(run.report.evidence.find(item => item.kind === 'cross-user-delete-comparison').summary,
-    /Bob post still present.*independent authorization verdict=confirmed/u);
-});
-
-test('safe isolated board retains Bob post and is not reproduced', async () => {
-  const { run } = await runRealBoardCanary(true);
-  assert.equal(run.status, 'completed');
-  assert.equal(run.report.findings[0].status, 'not_reproduced', JSON.stringify(run.report.evidence));
-  assert.equal(run.report.coverage.notReproduced, 1);
-  assert.match(run.report.evidence.find(item => item.kind === 'cross-user-delete-comparison').summary,
-    /Alice cross-user delete HTTP 403.*remains=true/u);
-});
-
-function fakeBoardResponses({ removeOnControl = false, onCandidate } = {}) {
-  let posts = [];
-  return async (urlValue, init = {}) => {
-    const url = new URL(urlValue);
-    const method = init.method ?? 'GET';
-    const json = (value, status = 200, headers = {}) =>
-      new Response(JSON.stringify(value), { status,
-        headers: { 'content-type': 'application/json', ...headers } });
-    if (url.pathname === '/' && method === 'GET') return new Response('<html>Local board</html>', {
-      status: 200, headers: { 'content-type': 'text/html' },
-    });
-    if (url.pathname === '/api/session' && method === 'GET') return json({ user: { id: 'alice' } });
-    if (url.pathname === '/api/session' && method === 'POST') {
-      const id = JSON.parse(init.body).userId;
-      return json({ user: { id } }, 200,
-        { 'set-cookie': 'board_session=' + id + 'Secret123456; HttpOnly' });
-    }
-    if (url.pathname === '/api/posts' && method === 'GET') return json({ posts });
-    if (url.pathname === '/api/posts' && method === 'POST') {
-      const body = JSON.parse(init.body);
-      const post = { id: 7, authorId: 'bob', ...body };
-      posts = [...posts, post];
-      return json({ post }, 201);
-    }
-    if (url.pathname === '/api/posts/7' && method === 'DELETE') {
-      if (!url.search) {
-        if (removeOnControl) posts = [];
-        return json({ error: 'denied' }, 403);
-      }
-      onCandidate?.();
-      posts = [];
-      return json({ ok: true }, 200);
-    }
-    return json({ error: 'not_found' }, 404);
-  };
-}
-
-function fakeBoardPlanner() {
-  return { async propose(context) {
-    if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-    return { done: false, hypotheses: [{ id: 'h-board', category: 'access_control',
-      asset: '/api/posts/:id', rationale: 'Compare a fresh Bob-owned post.',
-      evidenceIds: [context.evidence[0].id] }],
-    probes: [{ id: 'p-board', hypothesisId: 'h-board',
-      tool: 'known_cross_user_delete_canary', input: {} }] };
-  } };
-}
-
-test('mismatched board probes leave the one-shot canary for the registered asset', async () => {
-  let candidateSent = 0;
-  const hooks = [];
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
-    runIdFactory: () => 'board-mismatch-then-valid',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
-    fetchImpl: fakeBoardResponses({ onCandidate: () => { candidateSent += 1; } }),
-    beforeProbe: async hook => { hooks.push(hook); },
-    plannerFactory: () => ({ async propose(context) {
-      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-      const evidenceIds = [context.evidence[0].id];
-      return { done: false, hypotheses: [
-        { id: 'board-wrong-category', category: 'xss', asset: '/api/posts/:id',
-          rationale: 'Wrong vulnerability class.', evidenceIds },
-        { id: 'board-wrong-asset', category: 'access_control', asset: '/api/posts/7',
-          rationale: 'Concrete post is not the registered asset.', evidenceIds },
-        { id: 'board-valid', category: 'access_control', asset: '/api/posts/:id',
-          rationale: 'Compare isolated cross-user delete.', evidenceIds },
-      ], probes: [
-        { id: 'p-board-wrong-category', hypothesisId: 'board-wrong-category',
-          tool: 'known_cross_user_delete_canary', input: {} },
-        { id: 'p-board-wrong-asset', hypothesisId: 'board-wrong-asset',
-          tool: 'known_cross_user_delete_canary', input: {} },
-        { id: 'p-board-valid', hypothesisId: 'board-valid',
-          tool: 'known_cross_user_delete_canary', input: {} },
-      ] };
-    } }),
-  });
-  const done = terminal(runtime);
-  runtime.startLab();
-  const run = await done;
-  assert.equal(run.status, 'completed', run.error);
-  assert.deepEqual(run.report.probes.map(item => item.status), ['blocked', 'blocked', 'confirmed']);
-  assert.deepEqual(run.report.probes.slice(0, 2).map(item => item.reason),
-    ['hypothesis_tool_mismatch', 'hypothesis_tool_mismatch']);
-  assert.equal(run.events.find(item => item.stage === 'policy'
-    && item.request?.probeId === 'p-board-wrong-category').response.reason,
-  'hypothesis_tool_mismatch');
-  assert.ok(run.report.probes.slice(0, 2).every(item => item.evidenceIds.length === 0));
-  assert.equal(run.report.findings.find(item => item.hypothesisId === 'board-valid').status,
-    'confirmed');
-  assert.equal(candidateSent, 1);
-  assert.equal(hooks.filter(item => item.tool === 'known_cross_user_delete_canary').length, 8);
-  await runtime.close();
-});
-
-test('denied control that removes the canary never proceeds to candidate deletion', async () => {
-  let candidateSent = 0;
-  const runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
-    runIdFactory: () => 'anomalous-control',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
-    fetchImpl: fakeBoardResponses({ removeOnControl: true,
-      onCandidate: () => { candidateSent += 1; } }),
-    plannerFactory: () => fakeBoardPlanner(),
-  });
-  const done = terminal(runtime);
-  runtime.startLab();
-  const run = await done;
-  assert.equal(run.status, 'completed');
-  assert.equal(run.report.findings[0].status, 'inconclusive');
-  assert.equal(candidateSent, 0);
-  assert.match(run.report.evidence.find(item => item.kind === 'cross-user-delete-comparison').summary,
-    /did not survive the denied control/u);
-  await runtime.close();
-});
-
-test('cancellation before candidate write prevents the delete and stops the run', async () => {
-  let candidateSent = 0;
-  let runtime;
-  runtime = createGeneralRuntime({
-    fixtureId: 'vul-web-1', modelId: 'deepseek-flash',
-    runIdFactory: () => 'cancel-board-canary',
-    boardFactory: async () => ({ origin: 'http://127.0.0.1:49678', close: async () => {} }),
-    fetchImpl: fakeBoardResponses({ onCandidate: () => { candidateSent += 1; } }),
-    beforeProbe: async hook => {
-      if (hook.id.endsWith('-alice-candidate')) runtime.stop('cancel-board-canary');
-    },
-    plannerFactory: () => fakeBoardPlanner(),
-  });
-  const done = terminal(runtime);
-  runtime.startLab();
-  const run = await done;
-  assert.equal(run.status, 'stopped');
-  assert.equal(run.report.status, 'cancelled');
-  assert.equal(candidateSent, 0);
   await runtime.close();
 });
 

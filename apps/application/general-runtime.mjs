@@ -9,8 +9,6 @@ import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../p
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
-import { probeSite } from '../../vul-web2/scripts/idor-probe.mjs';
-import { executeUniversityRead } from '../../packages/adapters/university-read.mjs';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
 import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
 import { createAttackToolBridge } from '../../packages/adapters/integrations/attack-tool.mjs';
@@ -25,7 +23,6 @@ const MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
 const WEB_INFO_EVIDENCE_BUDGET_BYTES = 6800;
 const MAX_BODY_BYTES = 24 * 1024;
 const MAX_INITIAL_PAGES = 14;
-const BOARD_ACCESS_ASSET = '/api/posts/:id';
 const CATALOG_SOURCE = 'casper-db/attack-catalog';
 const FIXTURES = Object.freeze({
   'vul-web-1': {
@@ -52,7 +49,6 @@ const FIXTURES = Object.freeze({
       'vul-web2/docs/사전_침해분석_및_취약점_보고서.md': '../../vul-web2/docs/사전_침해분석_및_취약점_보고서.md',
     },
     manifest: 'vul-web2/package.json',
-    idorAsset: '/api/admissions/partner/applications/:id',
   },
   'vul-web2-wonchang': {
     name: '원창대학교', siteKey: 'wonchang', origin: 'http://127.0.0.1:4102',
@@ -69,7 +65,6 @@ const FIXTURES = Object.freeze({
       'vul-web2/docs/사전_침해분석_및_취약점_보고서.md': '../../vul-web2/docs/사전_침해분석_및_취약점_보고서.md',
     },
     manifest: 'vul-web2/wonchang/pom.xml',
-    idorAsset: '/api/staff/mobile/cases/:id',
   },
 });
 
@@ -278,23 +273,6 @@ function responseSummary(path, response, body, origin) {
     securityHeaderPresence: headers, securityHeaderValues, ...surface };
 }
 
-function validIdorResult(result) {
-  if (!Array.isArray(result?.evidence) || result.evidence.length !== 4) return 'inconclusive';
-  const byCheck = Object.fromEntries(result.evidence.map(item => [item.check, item]));
-  if (Object.keys(byCheck).length !== 4) return 'inconclusive';
-  const first = byCheck.firstOwner; const second = byCheck.secondOwner;
-  const cross = byCheck.crossOwner; const student = byCheck.studentRole;
-  const controls = first?.recordId === 1 && first?.status === 200 && first?.ownerId === 4
-    && second?.recordId === 3 && second?.status === 200 && second?.ownerId === 5
-    && student?.recordId === 3 && student?.status === 403;
-  if (!controls) return 'inconclusive';
-  if (cross?.recordId === 3 && cross?.status === 200 && cross?.ownerId === 5
-    && result.finding?.status === 'confirmed') return 'confirmed';
-  if (cross?.recordId === 3 && [403, 404].includes(cross?.status)
-    && result.finding?.status === 'not_confirmed') return 'not_reproduced';
-  return 'inconclusive';
-}
-
 /**
  * Judges one tool result that carries an AttackRecord with the AI verifier and maps the result to the core verdict.
  * The core accepts a non-inconclusive verdict only when it cites this probe's evidence, and rejects an empty reason.
@@ -321,13 +299,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   runIdFactory = () => 'general-' + randomUUID(), env = process.env, envFile,
   signal, onModelCall, beforeProbe, afterProbe, caseSnapshot, unavailableInputs = [],
   historyProvider, plannerFactory, boardFactory, cleanupRegistryPath, fetchImpl = fetch,
-  idorProbe = probeSite, catalogReader = readKnowledgeCatalogReadOnly,
+  catalogReader = readKnowledgeCatalogReadOnly,
   webParserCollect = collectWebInfo, verificationRoot, verifyAttackImpl = verifyAttack, verifierModel,
   limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!MODELS.has(modelId)) throw new TypeError('A registered DeepSeek model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
-    || typeof idorProbe !== 'function' || typeof catalogReader !== 'function'
+    || typeof catalogReader !== 'function'
     || typeof webParserCollect !== 'function' || typeof verifyAttackImpl !== 'function') {
     throw new TypeError('Invalid general runtime dependency.');
   }
@@ -511,104 +489,6 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     }
     return { pages, evidence };
   }
-  async function boardCrossUserDeleteCanary(allowedOrigin, modelProbe, currentSignal) {
-    if (config.siteKey || board?.origin !== allowedOrigin) {
-      throw new Error('A server-owned isolated board is required for the delete canary.');
-    }
-    const marker = randomUUID();
-    const title = 'ca3p-general-' + marker;
-    const content = 'Authorization canary ' + marker;
-    async function request(stage, method, path, { cookie, data } = {}) {
-      const permitted = method === 'POST' && ['/api/session', '/api/posts'].includes(path)
-        || method === 'GET' && path === '/api/posts'
-        || method === 'DELETE' && /^\/api\/posts\/[1-9]\d*(?:\?authorId=bob)?$/u.test(path);
-      if (!permitted) throw new Error('The isolated board canary attempted an unregistered action.');
-      currentSignal?.throwIfAborted();
-      const url = safePath(path, allowedOrigin);
-      if (!url || url.origin !== board.origin) throw new Error('The isolated board origin changed.');
-      const body = data === undefined ? undefined : JSON.stringify(data);
-      const hook = { id: modelProbe.id + '-' + stage, probeId: modelProbe.id,
-        iteration: run.iterations, tool: 'known_cross_user_delete_canary',
-        session: stage.includes('bob') ? 'bob' : stage.includes('alice') ? 'alice' : 'fixture',
-        method, url: url.href,
-        ...(body ? { payloadDigest: createHash('sha256').update(body).digest('hex') } : {}) };
-      const reservation = await invokeHook(beforeProbe, hook);
-      let response;
-      try {
-        currentSignal?.throwIfAborted();
-        const timeout = AbortSignal.timeout(5000);
-        response = await fetchImpl(url, { method, redirect: 'manual',
-          headers: { ...(cookie ? { cookie } : {}),
-            ...(body ? { 'content-type': 'application/json' } : {}) },
-          ...(body ? { body } : {}),
-          signal: currentSignal ? AbortSignal.any([currentSignal, timeout]) : timeout });
-        run.targetContacted = true;
-        const raw = await limitedBody(response);
-        let parsed = null;
-        try { parsed = JSON.parse(raw); } catch { /* A malformed reply cannot establish a verdict. */ }
-        return { status: response.status, json: parsed,
-          setCookie: response.headers.get('set-cookie') };
-      } finally {
-        await invokeHook(afterProbe, hook, { status: response?.status ?? null }, reservation);
-      }
-    }
-    function sessionCookie(reply, expected) {
-      if (reply.status !== 200 || reply.json?.user?.id !== expected) return null;
-      const cookie = reply.setCookie?.split(';', 1)[0]?.trim();
-      return cookie && /^[A-Za-z][A-Za-z0-9_-]{0,39}=[A-Za-z0-9._~-]{8,500}$/u.test(cookie)
-        ? cookie : null;
-    }
-    function exactCanary(posts, id) {
-      return Array.isArray(posts)
-        && posts.some(post => post?.id === id && post?.authorId === 'bob'
-          && post?.title === title && post?.content === content);
-    }
-    const bobLogin = await request('bob-login', 'POST', '/api/session', { data: { userId: 'bob' } });
-    const bobCookie = sessionCookie(bobLogin, 'bob');
-    if (!bobCookie) return { verdictStatus: 'inconclusive',
-      summary: 'Fresh Bob fixture session was not established; no delete was attempted.' };
-    const created = await request('bob-create', 'POST', '/api/posts', { cookie: bobCookie,
-      data: { title, content } });
-    const post = created.json?.post;
-    if (created.status !== 201 || !Number.isSafeInteger(post?.id) || post.id < 1
-      || post.authorId !== 'bob' || post.title !== title || post.content !== content) {
-      return { verdictStatus: 'inconclusive',
-        summary: 'Fresh synthetic Bob post was not confirmed; no delete was attempted.' };
-    }
-    const canaryLabel = 'freshPostId=' + post.id + ', markerDigest='
-      + createHash('sha256').update(marker).digest('hex').slice(0, 12);
-    const aliceLogin = await request('alice-login', 'POST', '/api/session', { data: { userId: 'alice' } });
-    const aliceCookie = sessionCookie(aliceLogin, 'alice');
-    if (!aliceCookie) return { verdictStatus: 'inconclusive',
-      summary: 'Fresh Alice fixture session was not established; no delete was attempted.' };
-    const before = await request('bob-before', 'GET', '/api/posts', { cookie: bobCookie });
-    if (before.status !== 200 || !exactCanary(before.json?.posts, post.id)) {
-      return { verdictStatus: 'inconclusive',
-        summary: 'The newly created Bob post was absent from the before-control list; no delete was attempted.' };
-    }
-    const control = await request('alice-control', 'DELETE', '/api/posts/' + post.id,
-      { cookie: aliceCookie });
-    if (control.status !== 403) return { verdictStatus: 'inconclusive',
-      summary: canaryLabel + ': the missing-authorId control did not return 403; the candidate delete was not sent.' };
-    const controlAfter = await request('bob-control-check', 'GET', '/api/posts',
-      { cookie: bobCookie });
-    if (controlAfter.status !== 200 || !exactCanary(controlAfter.json?.posts, post.id)) {
-      return { verdictStatus: 'inconclusive',
-        summary: canaryLabel + ': the exact synthetic Bob post did not survive the denied control; the candidate delete was not sent.' };
-    }
-    const candidate = await request('alice-candidate', 'DELETE',
-      '/api/posts/' + post.id + '?authorId=bob', { cookie: aliceCookie });
-    const after = await request('bob-after', 'GET', '/api/posts', { cookie: bobCookie });
-    const remains = after.status === 200 && exactCanary(after.json?.posts, post.id);
-    const verdictStatus = after.status !== 200 ? 'inconclusive'
-      : candidate.status === 200 && !remains ? 'confirmed'
-        : candidate.status === 403 && remains ? 'not_reproduced' : 'inconclusive';
-    return { verdictStatus,
-      summary: canaryLabel + ': fresh Bob-owned synthetic post, Alice no-authorId control HTTP '
-        + control.status + ' with Bob post still present, Alice cross-user delete HTTP ' + candidate.status
-        + ', Bob after-list HTTP ' + after.status + ', exact canary remains=' + remains
-        + '; independent authorization verdict=' + verdictStatus + '.' };
-  }
   async function sourceReferences() {
     const entries = [];
     try {
@@ -748,21 +628,11 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       authenticatedPages: authenticated.pages,
       declaredRoutes: [...config.routes],
       repositoryFiles: Object.keys(config.files),
-      knownAssessmentAssets: config.siteKey ? [{ category: 'access_control',
-        asset: config.idorAsset, tool: 'known_record_idor_read',
-        source: 'registered-lab-contract', currentRunVerified: false }]
-        : [{ category: 'access_control', asset: BOARD_ACCESS_ASSET,
-          tool: 'known_cross_user_delete_canary',
-          source: 'registered-isolated-board-contract', currentRunVerified: false }],
       referenceSources: references,
       toolCapabilities: {
         http_get: 'input {path,sessionRole?}: GET on a declared or observed pathname at the selected origin; optional sessionRole uses only a prepared fixed demo session; redirects are not followed',
         web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); once the cumulative web_info evidence budget of the run is spent, returns only a one-line overview (status, content type, list counts); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
         repository_read: 'input {file,offset?}: read only an allowlisted local source or reference excerpt',
-        ...(config.siteKey ? { known_record_idor_read:
-          'input {}: guarded role comparison of registered virtual records; use access_control and the knownAssessmentAssets asset' }
-          : { known_cross_user_delete_canary:
-            'input {}: on a fresh isolated board, create one synthetic Bob post and compare an Alice delete with denied control and before/after lists; use access_control and the knownAssessmentAssets asset' }),
       },
       limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; no independent browser-execution verifier is connected for this general run.',
         'GET and repository references do not independently confirm most weakness classes.',
@@ -780,14 +650,6 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     let observed = false;
     let inventory;
     const probeHypotheses = new Map();
-    let usedIdor = false;
-    let usedBoardDelete = false;
-    const matchesIdorHypothesis = hypothesis =>
-      /^(?:access_control|idor|cwe-639)$/iu.test(hypothesis?.category ?? '')
-      && hypothesis?.asset === config.idorAsset;
-    const matchesBoardAccessHypothesis = hypothesis =>
-      /^(?:access_control|idor|bola|cwe-639)$/iu.test(hypothesis?.category ?? '')
-      && hypothesis?.asset === BOARD_ACCESS_ASSET;
     const failedModelCalls = [];
     let evidenceCount = 0;
     let webInfoBytes = 0;
@@ -828,20 +690,6 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           && (probe.input.offset === undefined || Number.isSafeInteger(probe.input.offset)
             && probe.input.offset >= 0 && probe.input.offset <= 32 * 1024),
         reason: 'file_out_of_scope' };
-      if (probe.tool === 'known_record_idor_read') {
-        if (!matchesIdorHypothesis(hypothesis)) {
-          return { allowed: false, reason: 'hypothesis_tool_mismatch' };
-        }
-        return { allowed: !!config.siteKey && !usedIdor && Object.keys(probe.input).length === 0,
-          reason: 'fixed_probe_unavailable' };
-      }
-      if (probe.tool === 'known_cross_user_delete_canary') {
-        if (!matchesBoardAccessHypothesis(hypothesis)) {
-          return { allowed: false, reason: 'hypothesis_tool_mismatch' };
-        }
-        return { allowed: !config.siteKey && !usedBoardDelete && Object.keys(probe.input).length === 0,
-          reason: 'fixed_probe_unavailable' };
-      }
       return { allowed: false, reason: 'tool_unavailable' };
     } };
     const executor = { async execute({ probe, signal: executionSignal }) {
@@ -942,80 +790,11 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             summary: 'Requested local reference could not be read.' }] };
         }
       }
-      if (probe.tool === 'known_cross_user_delete_canary') {
-        usedBoardDelete = true;
-        try {
-          const result = await boardCrossUserDeleteCanary(allowedOrigin, probe, probeSignal);
-          return { kind: probe.tool, verdictStatus: result.verdictStatus, result,
-            evidence: [{ id: evidenceId('probe', probe.id),
-              source: 'vul-web-1/isolated-board-canary', kind: 'cross-user-delete-comparison',
-              asset: BOARD_ACCESS_ASSET, summary: result.summary }] };
-        } catch (error) {
-          if (probeSignal?.aborted || error?.fatalProbe) throw error;
-          return { kind: probe.tool, verdictStatus: 'inconclusive',
-            evidence: [{ id: evidenceId('probe', probe.id),
-              source: 'vul-web-1/isolated-board-canary', kind: 'unavailable',
-              asset: BOARD_ACCESS_ASSET,
-              summary: 'Isolated cross-user delete comparison could not complete; no authorization verdict was confirmed.' }] };
-        }
-      }
-      usedIdor = true;
-      try {
-        const result = await idorProbe({ siteKey: config.siteKey, origin: allowedOrigin,
-          runId: run.id, signal: probeSignal,
-          fetchImpl: async (url, options) => {
-            const requestUrl = new URL(url);
-            if (requestUrl.origin !== allowedOrigin) throw new Error('IDOR login origin changed.');
-            const hook = { id: probe.id + '-login-' + createHash('sha256').update(String(options.body)).digest('hex').slice(0, 8),
-              probeId: probe.id, iteration: run.iterations, tool: probe.tool,
-              session: 'fixture-login', method: 'POST', url: requestUrl.href };
-            const reservation = await invokeHook(beforeProbe, hook);
-            let response;
-            try {
-              response = await fetchImpl(url, { ...options, redirect: 'manual' });
-              run.targetContacted = true;
-              return response;
-            } finally {
-              await invokeHook(afterProbe, hook, { status: response?.status ?? null }, reservation);
-            }
-          },
-          curlImpl: async (command, options) => {
-            const url = new URL(command.url);
-            if (url.origin !== allowedOrigin) throw new Error('IDOR read origin changed.');
-            const hook = { id: probe.id + '-read-' + url.pathname.split('/').at(-1) + '-'
-                + createHash('sha256').update(options.cookie ?? '').digest('hex').slice(0, 8),
-              probeId: probe.id, iteration: run.iterations, tool: probe.tool,
-              session: 'fixture-role', method: 'GET', url: url.href };
-            const reservation = await invokeHook(beforeProbe, hook);
-            let response;
-            try {
-              response = await executeUniversityRead(command, options);
-              run.targetContacted = true;
-              return response;
-            } finally {
-              await invokeHook(afterProbe, hook, { status: response?.status ?? null }, reservation);
-            }
-          },
-        });
-        const verdictStatus = validIdorResult(result);
-        return { kind: 'known_record_idor_read', verdictStatus, result,
-          evidence: [{ id: evidenceId('probe', probe.id),
-            source: 'vul-web2/guarded-idor-read', kind: 'role-comparison',
-            asset: config.idorAsset,
-            summary: 'Registered virtual-record control comparison: '
-              + result.evidence.map(item => item.check + '=' + item.status
-                + '/owner:' + item.ownerId).join(', ') + '; verifier=' + verdictStatus }] };
-      } catch (error) {
-        if (probeSignal?.aborted || error?.fatalProbe) throw error;
-        return { kind: 'known_record_idor_read', verdictStatus: 'inconclusive',
-          evidence: [{ id: evidenceId('probe', probe.id),
-            source: 'vul-web2/guarded-idor-read', kind: 'unavailable',
-            asset: config.idorAsset, summary: 'Guarded role comparison could not complete; no access-control verdict was confirmed.' }] };
-      }
+      return { kind: probe.tool, evidence: [] };
     } };
-    const verifier = { async verify({ execution, hypothesis, probe, signal }) {
+    const verifier = { async verify({ execution, probe, signal }) {
       const id = execution.evidence?.[0]?.id;
-      // Any tool whose result carries an AttackRecord is judged by the AI verifier; the fixed tools below keep their own verdicts.
+      // Any tool whose result carries an AttackRecord is judged by the AI verifier; nothing else is confirmed here.
       if (execution.attackRecord && id) {
         const sessions = Object.fromEntries([...sessionCookies].map(([role, cookie]) => [role,
           [{ name: cookie.slice(0, cookie.indexOf('=')), value: cookie.slice(cookie.indexOf('=') + 1) }]]));
@@ -1023,23 +802,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           outDir: verificationRoot ? join(verificationRoot, probe.id) : undefined, model: verifierModel,
           env, envFile, signal });
       }
-      const idorHypothesis = matchesIdorHypothesis(hypothesis);
-      const boardAccessHypothesis = matchesBoardAccessHypothesis(hypothesis);
-      if (execution.kind === 'known_record_idor_read'
-        && idorHypothesis
-        && ['confirmed', 'not_reproduced'].includes(execution.verdictStatus)) {
-        return { status: execution.verdictStatus, completed: true, evidenceIds: [id] };
-      }
-      if (execution.kind === 'known_cross_user_delete_canary'
-        && boardAccessHypothesis
-        && ['confirmed', 'not_reproduced'].includes(execution.verdictStatus)) {
-        return { status: execution.verdictStatus, completed: true, evidenceIds: [id] };
-      }
-      return { status: 'inconclusive', reason: execution.kind === 'known_record_idor_read'
-        ? idorHypothesis ? 'control_incomplete' : 'hypothesis_tool_mismatch'
-        : execution.kind === 'known_cross_user_delete_canary'
-          ? boardAccessHypothesis ? 'control_incomplete' : 'hypothesis_tool_mismatch'
-        : 'independent_verification_unavailable', evidenceIds: id ? [id] : [] };
+      return { status: 'inconclusive', reason: 'independent_verification_unavailable', evidenceIds: id ? [id] : [] };
     } };
     const wrappedPlanner = { async propose(context) {
       let plan;
@@ -1079,8 +842,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       }
       return plan;
     } };
-    const availableTools = ['http_get', 'web_info', 'repository_read',
-      config.siteKey ? 'known_record_idor_read' : 'known_cross_user_delete_canary'];
+    const availableTools = ['http_get', 'web_info', 'repository_read'];
     // Each vulnerability worker receives its own authenticated logical client.
     // The daemon owns the transport, while target and policy authority remain in
     // this runtime; model input cannot install an executor or change its scope.
@@ -1118,10 +880,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     report.fixtureId = fixtureId;
     report.targetContacted = run.targetContacted;
     report.scope = { fixtureId, origin: allowedOrigin,
-      methods: config.siteKey ? ['GET'] : ['GET', 'POST', 'DELETE'],
-      ...(config.siteKey ? { sessionBootstrap: 'POST /login using fixed demo accounts' } : {}),
-      ...(!config.siteKey ? { boundedMutationTool: 'known_cross_user_delete_canary',
-        mutationTarget: 'fresh synthetic post only', mutationPathPattern: BOARD_ACCESS_ASSET } : {}),
+      methods: ['GET'],
+      sessionBootstrap: (config.siteKey ? 'POST /login' : 'POST /api/session') + ' using fixed demo accounts',
       toolIds: availableTools, allowedPaths: [...allowedPaths].sort(), ...limits };
     return report;
   }
@@ -1132,7 +892,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       if (!config.siteKey) {
         const factory = boardFactory ?? (async () => {
           const { startLocalLab } = await import('../../packages/adapters/local-lab-gateway.mjs');
-          return startLocalLab({ profile: 'stored_xss_canary', cleanupRegistryPath });
+          return startLocalLab({ cleanupRegistryPath });
         });
         board = await factory();
         if (!board || typeof board.origin !== 'string' || typeof board.close !== 'function'

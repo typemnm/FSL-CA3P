@@ -30,6 +30,6 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/check-boundaries.mjs
 - 직접 주입할 수도 있다. `verifyAttack(record, { model })`의 `model`은 `completeJson({ systemPrompt, userPayload, signal })`를 가지고 `{ value, metadata }`를 돌려주면 된다. 테스트는 이 방식으로 스크립트 모델을 넣는다.
 
 ## 현재 한계
-- 범용 점검의 판정 칸은 AttackRecord를 가진 실행 결과를 모두 이 verifier로 판정한다. 지금은 그런 결과를 만드는 도구가 없고, attack-tool이 연결되면 첫 입력이 된다. verifier와 판정 칸은 실습 대상(vul-web-1, vul-web2)에 의존하지 않는다.
+- 범용 점검의 판정 칸은 AttackRecord를 가진 실행 결과를 모두 이 verifier로 판정한다. 다른 판정 경로는 없다. 지금은 그런 결과를 만드는 도구가 없어서 범용 점검이 아무것도 확정하지 않는다. attack-tool이 연결되면 첫 입력이 된다. verifier와 범용 점검은 실습 대상(vul-web-1, vul-web2)에 의존하지 않는다.
 - 보고서는 worker가 넘긴 handoff에서 판정 사유와 스크린샷을 HWPX에 싣는다. 연결 흐름은 [CONTRACT.md](./CONTRACT.md) 6절에 있다.
 - 브라우저 방문은 최대 2번이다.

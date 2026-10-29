@@ -16,7 +16,7 @@ async function waitFor(check) {
   assert.fail('general integration run did not finish');
 }
 
-test('service, worker, and general runtime create a real HWPX for a confirmed finding without a report model API',
+test('service, worker, and general runtime finish a general run and skip HWPX when nothing is confirmed',
   { timeout: 60_000 }, async () => {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   mkdirSync(runtimeRoot, { recursive: true });
@@ -67,33 +67,22 @@ test('service, worker, and general runtime create a real HWPX for a confirmed fi
           rationale: 'Search input exists, but browser verification is unavailable.',
           evidenceIds: [observedEvidenceId] },
       ], probes: [{ id: 'p-access', hypothesisId: 'h-access',
-        tool: 'known_record_idor_read', input: {} }],
+        tool: 'http_get', input: { path: '/api/admissions/partner/applications/1' } }],
       modelMetadata: { provider: 'deepseek', requestedModel: 'deepseek-flash',
         status: 'completed', usage: { prompt_tokens: 12, completion_tokens: 5 } } };
     } });
-    const generalIdorProbe = async options => {
-      assert.equal(options.origin, origin);
-      return { finding: { status: 'confirmed' }, evidence: [
-        { check: 'firstOwner', recordId: 1, status: 200, ownerId: 4 },
-        { check: 'secondOwner', recordId: 3, status: 200, ownerId: 5 },
-        { check: 'crossOwner', recordId: 3, status: 200, ownerId: 5 },
-        { check: 'studentRole', recordId: 3, status: 403, ownerId: null },
-      ] };
-    };
     worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 20,
-      env, generalPlannerFactory, generalFetchImpl, generalIdorProbe });
+      env, generalPlannerFactory, generalFetchImpl });
     const final = await waitFor(() => { const run = service.getRun(id); return run.status === 'completed' && run; });
     assert.equal(final.assessmentMode, 'general');
     assert.equal(final.report.schemaVersion, 'general-assessment/1');
     assert.equal(final.report.findings.length, 2);
-    assert.equal(final.report.findings.find(item => item.hypothesisId === 'h-access').status, 'confirmed');
+    assert.equal(final.report.findings.find(item => item.hypothesisId === 'h-access').status, 'inconclusive');
     assert.equal(final.report.findings.find(item => item.hypothesisId === 'h-xss').status, 'not_tested');
     assert.equal(final.modelCalls.length, 2);
-    assert.equal(final.reportDocuments.status, 'ready', JSON.stringify(final.reportDocuments));
-    assert.deepEqual(final.reportDocuments.items.map(item => [item.findingId, item.status]),
-      [['finding:h-access', 'ready']]);
-    assert.match(final.reportDocuments.items[0].filename, /\.hwpx$/);
-    assert.equal(worker.store.getArtifact(final.reportDocuments.items[0].artifactId).kind, 'hwpx-report');
+    // Nothing is confirmed without an attack record, so no HWPX is written.
+    assert.equal(final.reportDocuments.status, 'skipped', JSON.stringify(final.reportDocuments));
+    assert.equal(final.reportDocuments.errorCode, 'NO_CONFIRMED_FINDINGS');
     assert.equal(final.historyWrite.status, 'skipped');
     assert.ok(final.artifacts.some(item => item.kind === 'run-report'));
     assert.ok(fetchCalls.length >= 2);
@@ -108,7 +97,7 @@ test('service, worker, and general runtime create a real HWPX for a confirmed fi
       envFile: null, env: {} });
     const saved = reopened.getRun(id);
     assert.equal(saved.report.findings.length, 2);
-    assert.equal(saved.reportDocuments.items.length, 1);
+    assert.equal(saved.reportDocuments.items.length, 0);
     assert.equal(saved.modelCalls.length, 2);
     assert.equal(reopened.listRuns().items[0].id, id);
   } finally {
