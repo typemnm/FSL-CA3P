@@ -52,8 +52,10 @@ for (const safe of [false, true]) test('real SQL template packets pass guardrail
   const client = addClient(daemon, { guardrail });
   assert.equal((await client.listTools()).tools.length, 2);
   const { templates } = await client.call('list_attack_templates', { attackType: 'CWE-89', runtime: 'node' });
-  assert.equal(templates.length, 1);
-  const result = await client.call('execute_attack_template', { templateId: templates[0].templateId, payload: templates[0].payloads[0] });
+  assert.deepEqual(templates, listTemplates({ attackType: 'CWE-89', runtime: 'node' }));
+  const original = templates.find(template => template.templateId === 'sqli-like-tautology');
+  assert.ok(original);
+  const result = await client.call('execute_attack_template', { templateId: original.templateId, payload: original.payloads[0] });
   assert.equal(result.verification.status, safe ? 'not_reproduced' : 'confirmed');
   assert.equal(guardrail.audit().length, 2);
   assert.equal(guardrail.metrics().requestCount, 2);
@@ -112,7 +114,7 @@ test('bridge creates category workers and reauthorizes every request', async t =
   assert.equal(authorized, 2); assert.equal(bridge.agentIds.length, 2);
   assert.equal(results[1].evidence[0].id, 1);
   assert.equal(listTemplates({ library: 'other' }).length, 0);
-  assert.equal(bridge.templates.length, 1);
+  assert.deepEqual(bridge.templates, listTemplates());
 });
 
 test('invalid templates and oversized JSON never execute target requests', async t => {
@@ -120,7 +122,8 @@ test('invalid templates and oversized JSON never execute target requests', async
   const daemon = await setup(t);
   const client = addClient(daemon, { guardrail: { execute: async () => { calls += 1; } } });
   await assert.rejects(client.call('execute_attack_template', { templateId: 'sqli-like-tautology', payload: 'anything' }), { code: 'INVALID_TEMPLATE' });
-  await assert.rejects(client.call('execute_attack_template', { templateId: 'sqli-like-tautology', payload: listTemplates()[0].payloads[0], origin: 'http://other' }), { code: 'INVALID_TEMPLATE' });
+  const original = listTemplates().find(template => template.templateId === 'sqli-like-tautology');
+  await assert.rejects(client.call('execute_attack_template', { templateId: original.templateId, payload: original.payloads[0], origin: 'http://other' }), { code: 'INVALID_TEMPLATE' });
   await assert.rejects(client.call('list_attack_templates', { library: 'a'.repeat(130 * 1024) }));
   assert.equal(calls, 0);
 });

@@ -7,7 +7,32 @@ casper-db snapshot → Agent → attack-tool HTTP JSON-RPC → Guardrail → tar
                       ↑          실행 결과·증거·검증 결과 ←────────┘
 ```
 
-기본 `sqli-like-tautology` 패킷 템플릿과 Workspace에서 등록한 JSON 템플릿을 함께 사용한다. 공격 유형/CWE와 runtime/framework/library로 검색한다. `origin`은 서버가 고정하며 AI는 템플릿 ID와 후보 payload만 보낸다. baseline과 공격 패킷 모두 `guardrail` 모듈의 검사를 통과해야 한다. 문자열을 shell에서 실행하지 않는다.
+`templates/`의 기본 패킷 템플릿과 Workspace에서 등록한 JSON 템플릿을 함께 사용한다. 공격 유형/CWE와 runtime/framework/library로 검색한다. `origin`은 서버가 고정하며 AI는 템플릿 ID와 후보 payload만 보낸다. baseline과 공격 패킷 모두 `guardrail` 모듈의 검사를 통과해야 한다. 문자열을 shell에서 실행하지 않는다.
+
+## 기본 점검 템플릿
+
+모든 기본 템플릿의 신뢰 상태는 `unverified`다. 등록 과정에서는 실제 대상 요청이나 결과 검증을 수행하지 않는다. 일반 평가 Agent에는 전체 카탈로그가 참고 자료로 전달되며, 전용 자동 실행 도구는 지원 형식과 서버의 대상별 정책을 모두 충족하는 템플릿만 실행한다.
+
+| ID | 의존성 / 점검 내용 | 전용 자동 실행 |
+| --- | --- | --- |
+| `sqli-like-tautology` | 기존 `node:sqlite` SQLi 후보 | GET `q` + `resultCount` 지원 |
+| `search-sqli-template` | 사용자 제공 검색 SQLi | GET `q` + `resultCount` 지원 |
+| `access-control-idor-template` | 담당자 간 접수 상세의 객체 인가 비교 | 참고용: 담당자 세션, 경로 ID 치환, 응답 소유자 비교 필요 |
+| `json5-inherited-filter-template` | JSON5 반환 객체의 상속 검색 필터 | 참고용: `filters` 입력과 결과 배열의 길이·유형 비교 필요 |
+| `lodash-prototype-canary-template` | lodash 설정 경로의 프로토타입 canary | 참고용: 관리자 POST, 동일 프로세스의 속성 관찰·정리 필요 |
+| `commons-text-interpolation-template` | Commons Text 보간 입력 도달 경로 | 참고용: 관리자 POST, 저장된 설정값·lookup 정책 확인 필요 |
+| `snakeyaml-type-tag-template` | SnakeYAML Java 타입 태그 수용 | 참고용: 관리자 POST와 YAML 미리보기 비교 필요 |
+
+`access-control-idor-template`는 동일하게 제공된 네 건을 한 건으로 정리했다. 저장 계약에 맞춰 `target.endpoint`와 `request.packet.path`를 `/api/admissions/partner/applications/:id`로 통일하고, `integer`/`ids` 선언을 ID 문자열 `payloads: ["1", "3"]`로 표현했다. HTTP 상태 코드는 숫자로 저장한다. 실제 대한대학교 API는 `daehan_sid` 세션 쿠키와 `partner` 역할을 요구하므로 원문의 관리자 Bearer 헤더는 실행 패킷에 저장하지 않았다. `partner1`의 본인 접수 1과 다른 담당자 소유 접수 3을 같은 세션으로 비교하며, `partner_user_id` 확인이 필요하다. 관리자 200 응답만으로 객체 인가 결함을 판정하지 않는다.
+
+외부 의존성 템플릿의 근거와 관찰 범위는 다음과 같다. 대상 버전과 호출 경로는 `vul-web2/package.json`, `vul-web2/wonchang/pom.xml` 및 해당 서버 구현을 기준으로 정했다.
+
+- JSON5 2.2.1: [개발자 권고 CVE-2022-46175](https://github.com/json5/json5/security/advisories/GHSA-9c47-m6qq-7p4h). 상속된 `type`·`limit`가 결과에 적용되는지 비교한다. 전역 `Object.prototype` 오염으로 판정하지 않는다.
+- lodash 4.17.15: [프로젝트 변경 이력](https://github.com/lodash/lodash/wiki/Changelog)과 [CVE-2020-8203 권고](https://github.com/advisories/GHSA-p6mc-m468-83gw). 임시 인스턴스에서 프로토타입 canary를 직접 관찰하고 삭제한다. HTTP 302는 판정 근거로 충분하지 않다.
+- Commons Text 1.9: [Apache 보안 권고](https://commons.apache.org/proper/commons-text/security.html)와 [공식 lookup API](https://commons.apache.org/proper/commons-text/javadocs/api-release/org/apache/commons/text/lookup/StringLookupFactory.html). 부작용이 없는 `base64Decoder` 보간으로 입력 도달 경로를 확인한다. 보간 자체는 수정 버전에서도 제공되므로 CVE나 코드 실행 확정에는 버전·lookup 정책의 추가 근거가 필요하다.
+- SnakeYAML 1.33: [Google Security Research 권고 CVE-2022-1471](https://github.com/google/security-research/security/advisories/GHSA-mjmj-j48q-9wg2). `java.util.ArrayList` 태그와 짧은 문자열로 타입 태그 수용 여부를 확인한다. 코드 실행이나 외부 연결은 시험하지 않는다.
+
+각 참고용 템플릿의 `description`과 `blanks.payload.desc`에 필요한 세션, 기준 입력, 판정 근거를 기록했다. 카탈로그 등록·조회는 실제 취약성 재현을 의미하지 않으며, 미지원 형식은 `executionSupport.supported: false`와 이유를 반환한다.
 
 ## Workspace 템플릿 관리
 
