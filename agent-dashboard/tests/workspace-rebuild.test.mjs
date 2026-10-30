@@ -47,8 +47,11 @@ test('workspace navigation, external target preflight and report preview use the
     const json = value => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
     if (request.method() === 'POST' && path !== '/api/db/intakes') requests.push({ path, body: request.postDataJSON() });
     if (path === '/api/auth/session') return json({ authenticated: true, authRequired: false, user: { role, name: 'Test' }, csrfToken: 'csrf-test' });
-    if (path === '/api/state') return json({ instanceId: 'workspace-test', mode: activeRun.mode, run: activeRun, lab: { available: true, generalSupported: true, generalAvailable: false } });
-    if (path === '/api/models') return json({ models: [{ id: 'rule-baseline', name: 'Rule', provider: 'local', mode: 'local-lab-rule', available: true }] });
+    if (path === '/api/state') return json({ instanceId: 'workspace-test', mode: activeRun.mode, run: activeRun, lab: { available: true, generalSupported: true, generalAvailable: true, externalSupported: true, externalAvailable: true } });
+    if (path === '/api/models') return json({ models: [
+      { id: 'deepseek-primary', name: 'DeepSeek Primary', provider: 'deepseek', mode: 'local-lab-general', supportedModes: ['local-lab-general', 'external-general'], available: true },
+      { id: 'deepseek-flash', name: 'DeepSeek Flash', provider: 'deepseek', mode: 'local-lab-general', supportedModes: ['local-lab-general', 'external-general'], available: true },
+    ] });
     if (path === '/api/platform') return json({ source: {}, modules: [] });
     if (path === '/api/ci-results') return json({ runs: [] });
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs: [run], total: 1 });
@@ -63,7 +66,7 @@ test('workspace navigation, external target preflight and report preview use the
       return json({ ready: true, allowed: true, normalizedUrl: 'https://example.org/start',
         scope: { origin: 'https://example.org', pathPrefix: '/', methods: ['GET','HEAD'], maxRequests: 20 }, token: 'token-1', message: '준비 완료' });
     }
-    if (path === '/api/runs' && request.method() === 'POST') return json({ instanceId: 'workspace-test', mode: idle.mode, run: idle, lab: { available: true, generalSupported: true, generalAvailable: false } });
+    if (path === '/api/runs' && request.method() === 'POST') return json({ instanceId: 'workspace-test', mode: idle.mode, run: idle, lab: { available: true, generalSupported: true, generalAvailable: true, externalSupported: true, externalAvailable: true } });
     if (path === '/api/runs/stored-report/report-preview/finding-1') return json({
       markdown: '# 보고서 본문\n\n검증 근거', html: '<!doctype html><html><body><h1>보고서 본문</h1><table><tr><td>검증 근거</td></tr></table></body></html>',
       filename: 'report.md',
@@ -117,8 +120,10 @@ test('workspace navigation, external target preflight and report preview use the
   await page.locator('.parser-preview-card').first().waitFor();
   assert.match(await page.locator('.parser-preview-card').first().textContent(), /Bootstrap.*jQuery/s);
   assert.match(await page.locator('.parser-preview-card').first().textContent(), /브라우저 DOM과 실행 후 JavaScript 상태/);
-  assert.equal(await page.locator('#model-select').inputValue(), 'rule-baseline');
-  assert.equal(await page.locator('#model-select').isDisabled(), true);
+  assert.equal(await page.locator('#engine-step').isVisible(), true);
+  await page.locator('#model-reset-toggle').uncheck();
+  await page.locator('#model-select').selectOption('deepseek-flash');
+  assert.equal(await page.locator('#model-select').inputValue(), 'deepseek-flash');
   assert.equal(await page.locator('#lab-run-button').isEnabled(), true);
   await page.locator('#lab-run-button').click();
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
@@ -126,7 +131,7 @@ test('workspace navigation, external target preflight and report preview use the
     { path: '/api/targets/preview', body: { url: 'https://example.org/start', authorizationConfirmed: true } },
     { path: '/api/targets/preflight', body: { target: 'https://example.org/start', scope: { pathPrefix: '/' }, authorizationConfirmed: true } },
     { path: '/api/runs', body: { mode: 'external-general', target: 'https://example.org/start', scope: { pathPrefix: '/' },
-      preflightToken: 'token-1', authorizationConfirmed: true, modelId: 'rule-baseline', previewId: 'preview-external' } },
+      preflightToken: 'token-1', authorizationConfirmed: true, modelId: 'deepseek-flash', previewId: 'preview-external' } },
   ]);
   await page.locator('[data-view=reports]').click();
   await page.locator('#report-run-select').selectOption('stored-report');

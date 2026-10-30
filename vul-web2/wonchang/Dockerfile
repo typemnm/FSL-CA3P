@@ -18,11 +18,15 @@ RUN case "$TARGETARCH" in \
 
 FROM eclipse-temurin:17-jre-jammy
 WORKDIR /app
-RUN groupadd --system --gid 1000 wonchang \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 1000 wonchang \
     && useradd --system --uid 1000 --gid 1000 --home-dir /app --no-create-home wonchang \
-    && install -d -o wonchang -g wonchang /app/data
+    && install -d -o wonchang -g wonchang /app/data /app/.reset-backups
 COPY --from=build --chown=wonchang:wonchang /build/target/wonchang-university-1.0.0.jar /app/wonchang.jar
 COPY --from=build --chown=wonchang:wonchang /build/native/libsqlitejdbc.so /app/native/libsqlitejdbc.so
+COPY --chown=wonchang:wonchang wonchang/reset-supervisor.py /app/reset-supervisor.py
 USER wonchang
 ENV SERVER_PORT=4102 WONCHANG_DB_PATH=/app/data/wonchang.sqlite \
     JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=/tmp -Dorg.sqlite.lib.path=/app/native -Djava.library.path=/app/native"

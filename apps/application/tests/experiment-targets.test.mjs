@@ -14,6 +14,11 @@ const readOnlyExternal = {
   targetKind: 'external', modelId: 'rule-baseline', simulated: false,
   targetContacted: true, target: 'https://example.org/start',
 };
+const generalExternal = {
+  ...readOnlyExternal, testProfile: 'external-general', modelId: 'deepseek-flash',
+  manifest: { execution: { inspectionMode: 'external-general' },
+    policy: { methods: ['GET', 'HEAD'] } },
+};
 
 test('historical private board and scripted fixtures need no remote management request', async () => {
   const plan = await prepareTargetReset({ runs: [{ fixtureId: 'vul-web-1', targetContacted: true },
@@ -26,6 +31,17 @@ test('the registered read-only external observer needs no remote reset hook', as
   const plan = await prepareTargetReset({ runs: [readOnlyExternal], env: {},
     fetchImpl: () => assert.fail('read-only external observation must not request a remote reset') });
   assert.deepEqual(await plan.execute(), { status: 'clean', targets: [], localLabs: { removed: 0 } });
+});
+
+test('scoped GET-only external general runs need no remote reset hook', async () => {
+  assert.deepEqual(targetResetObligationsForRuns([generalExternal]), []);
+  const plan = await prepareTargetReset({ runs: [generalExternal], env: {},
+    fetchImpl: () => assert.fail('scoped external assessment must not request a remote reset') });
+  assert.deepEqual(await plan.execute(), { status: 'clean', targets: [], localLabs: { removed: 0 } });
+  for (const changed of [{ manifest: undefined }, { modelId: 'rule-baseline' },
+    { manifest: { execution: { inspectionMode: 'external-general' }, policy: { methods: ['POST'] } } }]) {
+    assert.equal(targetResetObligationsForRuns([{ ...generalExternal, ...changed }]).length, 1);
+  }
 });
 
 test('other contacted external executions still require managed restoration', async () => {

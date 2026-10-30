@@ -8,17 +8,23 @@ const REQUIRED_SCOPES = ['database', 'sessions', 'process', 'files'];
 const RESET_PATH = '/_ca3p/experiment-reset';
 const fault = (status, message) => Object.assign(new Error(message), { status, code: 'EXPERIMENT_TARGET_RESET_BLOCKED' });
 
-function isReadOnlyExternalObservation(run) {
-  return run.mode === 'external-general' && run.testProfile === 'external-read-only'
-    && run.fixtureId === null && run.targetKind === 'external'
-    && run.modelId === 'rule-baseline' && run.simulated === false;
+function isReadOnlyExternalRun(run) {
+  if (run.mode !== 'external-general' || run.fixtureId !== null
+    || run.targetKind !== 'external' || run.simulated !== false) return false;
+  if (run.testProfile === 'external-read-only') return run.modelId === 'rule-baseline';
+  return run.testProfile === 'external-general'
+    && ['deepseek-flash', 'deepseek-v4-pro'].includes(run.modelId)
+    && run.manifest?.execution?.inspectionMode === 'external-general'
+    && Array.isArray(run.manifest?.policy?.methods)
+    && run.manifest.policy.methods.length > 0
+    && run.manifest.policy.methods.every(method => ['GET', 'HEAD'].includes(method));
 }
 
 /** Keep only the target facts needed by a later full reset after run history is removed. */
 export function targetResetObligationsForRuns(runs = []) {
   const obligations = [];
   for (const run of runs) {
-    if (run.mode === 'core-fixture' || run.simulated === true || isReadOnlyExternalObservation(run)) continue;
+    if (run.mode === 'core-fixture' || run.simulated === true || isReadOnlyExternalRun(run)) continue;
     const fixtureId = run.fixtureId ?? run.manifest?.target?.fixtureId;
     if (UNIVERSITY_FIXTURES.has(fixtureId)) {
       obligations.push({ fixtureId,
@@ -64,7 +70,7 @@ export async function prepareTargetReset({ runs = [], env = process.env, fetchIm
   if (!Array.isArray(runs) || typeof fetchImpl !== 'function') throw fault(400, 'Invalid experiment target reset request.');
   const touched = new Map();
   for (const run of runs) {
-    if (run.mode === 'core-fixture' || run.simulated === true || isReadOnlyExternalObservation(run)) continue;
+    if (run.mode === 'core-fixture' || run.simulated === true || isReadOnlyExternalRun(run)) continue;
     const fixtureId = run.fixtureId ?? run.manifest?.target?.fixtureId;
     if (UNIVERSITY_FIXTURES.has(fixtureId)) {
       const origins = [run.manifest?.target?.origin, run.coreTargetOrigin, run.target, run.report?.target?.origin]

@@ -137,7 +137,7 @@ function previewError(value) {
   return typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)
     ? code : 'PARSER_PREVIEW_FAILED';
 }
-function modelPreviewPages(parserPreview, origin, maxBytes = MAX_PREVIEW_INVENTORY_BYTES) {
+export function modelPreviewPages(parserPreview, origin, maxBytes = MAX_PREVIEW_INVENTORY_BYTES) {
   if (!parserPreview) return { pages: [], bytes: 0 };
   if (parserPreview.pages.length > MAX_PREVIEW_PAGES) {
     throw new TypeError('Parser preview contains more URLs than the supported model inventory.');
@@ -243,7 +243,7 @@ function eventMetadataText(value, maxBytes, { asset = false } = {}) {
   }
   return utf8Prefix(safeSourceExcerpt(text), maxBytes) || undefined;
 }
-function projectGeneralEvent(event, limits) {
+export function projectGeneralEvent(event, limits) {
   const stage = eventIdentifier(event.stage) ?? 'unknown';
   const request = {};
   const response = {};
@@ -428,18 +428,18 @@ export function recordForProbe({ probe, hypothesis, execution, origin, relatedEv
  * The core accepts a non-inconclusive verdict only when it cites this probe's evidence, and rejects an empty reason.
  */
 export async function judgeAttackRecord(record, { evidenceId, outDir, sessions = {}, verify = verifyAttack,
-  model, env, envFile, signal } = {}) {
+  model, env, envFile, signal, browserFactory } = {}) {
   try {
     const directory = outDir ?? await mkdtemp(join(tmpdir(), 'ca3p-verify-'));
     await mkdir(directory, { recursive: true });
-    const result = await verify(record, { outDir: directory, sessions, model, env, envFile, signal });
+    const result = await verify(record, { outDir: directory, sessions, model, env, envFile, signal, browserFactory });
     if (outDir) await writeReportHandoff(result, { outDir: directory });
     const reason = utf8Prefix(String(result.reason ?? ''), 500).trim() || 'verifier_no_reason';
     return ['confirmed', 'not_reproduced'].includes(result.status)
       ? { status: result.status, completed: true, evidenceIds: [evidenceId], reason }
       : { status: 'inconclusive', evidenceIds: [evidenceId], reason };
   } catch (error) {
-    if (error?.name === 'AbortError') throw error;
+    if (error?.name === 'AbortError' || error?.fatalProbe) throw error;
     return { status: 'inconclusive', evidenceIds: [evidenceId], reason: 'verifier_failed' };
   }
 }

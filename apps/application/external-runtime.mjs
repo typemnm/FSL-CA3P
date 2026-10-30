@@ -3,6 +3,8 @@ import { emptyRun, assertIdentifier, redact } from '../../packages/contracts/ind
 import { externalScopeRejectionReason, normalizeExternalTarget, requestExternalHttp } from './external-target.mjs';
 import { fingerprintObservedResponse } from '../../packages/adapters/integrations/web-parser.mjs';
 
+export { createExternalGeneralRuntime } from './external-general-runtime.mjs';
+
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const safeText = value => String(value ?? '').replace(/[\u0000-\u001f]/gu, ' ').slice(0, 180);
@@ -178,7 +180,9 @@ export function createExternalRuntime({ targetUrl, scope: suppliedScope, modelId
           if (html && !response.truncated && !budgetSignal.aborted) {
             try {
               const observed = await analyzeImpl(url,
-                { ...response, headers: Array.isArray(response.headers) ? response.headers : [] },
+                { ...response,
+                  headers: Array.isArray(response.fingerprintHeaders) ? response.fingerprintHeaders
+                    : Array.isArray(response.headers) ? response.headers : [] },
                 { timeoutMs: Math.min(3000, Math.max(1, deadlineAt - Date.now())) });
               runSignal.throwIfAborted();
               page.parser = visibleParserResult(observed);

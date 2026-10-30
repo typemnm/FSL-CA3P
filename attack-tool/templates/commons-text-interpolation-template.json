@@ -1,0 +1,17 @@
+{
+  "templateId": "commons-text-interpolation-template",
+  "title": "Commons Text 입력값 보간 경로 점검",
+  "description": "원창대학교 commons-text@1.9의 StringSubstitutor 입력 도달 경로를 확인하는 참고용 템플릿입니다. 관리자 세션에서 application/x-www-form-urlencoded의 payload 필드를 POST하고, 임시 DB settings의 site_preferences.theme.ca3pTemplateProbe 값이 CA3P_PROBE로 바뀌는지 확인합니다. 기준 입력은 보간 표현식이 없는 CA3P_COMMONS_TEXT_BASELINE입니다. base64Decoder 보간은 수정 버전에서도 제공되므로 이 canary만으로 CVE-2022-42889나 코드 실행을 확정하지 않습니다. 취약성 판단에는 설치 버전과 허용 lookup 정책의 추가 확인이 필요합니다. 네트워크·명령 실행 없이 경로만 확인하며, 세션·POST·저장값 관찰은 현재 자동 실행기가 지원하지 않습니다.",
+  "attackType": { "name": "untrusted_interpolation", "cwe": "CWE-94" },
+  "dependency": { "runtime": "java", "framework": "spring-boot", "library": "commons-text" },
+  "target": { "method": "POST", "endpoint": "/admin/settings" },
+  "request": { "packet": { "method": "POST", "path": "/admin/settings", "body": { "payload": "{{payload}}" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "관리자 세션과 임시 DB를 사용합니다. HTTP 응답과 별도로 저장된 설정값을 확인하고 원래 값으로 복구합니다." }
+  },
+  "payloads": ["{\"path\":\"theme.ca3pTemplateProbe\",\"value\":\"${base64Decoder:Q0EzUF9QUk9CRQ==}\"}"],
+  "verify": { "mode": "storedCanary", "baseline": { "status": 302 }, "attack": { "status": 302 } },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

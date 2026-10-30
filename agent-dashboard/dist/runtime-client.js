@@ -146,11 +146,11 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       receive(value); return value;
     },
     preflightExternal(target, pathPrefix = '/') { return api('/api/targets/preflight', { method: 'POST', body: { target, scope: { pathPrefix }, authorizationConfirmed: true } }); },
-    async startExternal({ target, pathPrefix, preflightToken, previewId }) {
+    async startExternal({ target, pathPrefix, preflightToken, modelId, previewId }) {
       if (typeof previewId !== 'string' || !previewId) throw new TypeError('A parser preview is required before assessment.');
       const value = await api('/api/runs', { method: 'POST', body: {
         mode: 'external-general', target, scope: { pathPrefix }, preflightToken,
-        authorizationConfirmed: true, modelId: 'rule-baseline', previewId,
+        authorizationConfirmed: true, modelId, previewId,
       } });
       receive(value); return value;
     },

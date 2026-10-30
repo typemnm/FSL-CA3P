@@ -69,13 +69,17 @@ test('external preview fingerprints one pinned GET response without launching th
     externalRequest: async (url, options) => {
       requests.push({ url, method: options.method, scope: options.scope });
       return { status: 200, contentType: 'text/html', contentEncoding: 'identity', truncated: false,
-        headers: [{ name: 'content-type', value: 'text/html' }],
+        headers: { 'x-content-type-options': 'nosniff' },
+        fingerprintHeaders: [{ name: 'content-type', value: 'text/html' }],
         body: '<title>Public site</title><a href="/docs">Docs</a>'
           + '<a href="http://127.0.0.1/admin">internal</a>'
           + '<a href="/signed?token=PRIVATE">signed</a>PRIVATE_BODY' };
     },
-    externalFingerprint: async () => ({ technologies: [{ name: 'Nginx', version: '1.25' }],
-      libraries: [{ name: 'jQuery', version: '3.6.0', evidenceFields: ['scriptSrc'] }] }) });
+    externalFingerprint: async (_url, observed) => {
+      assert.deepEqual(observed.headers, [{ name: 'content-type', value: 'text/html' }]);
+      return { technologies: [{ name: 'Nginx', version: '1.25' }],
+        libraries: [{ name: 'jQuery', version: '3.6.0', evidenceFields: ['scriptSrc'] }] };
+    } });
   const result = await service.preview({ url: 'https://8.8.8.8/start' });
   assert.equal(result.targetKind, 'external');
   assert.equal(result.fixtureId, null);

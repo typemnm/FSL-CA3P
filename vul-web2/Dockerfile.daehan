@@ -7,9 +7,10 @@ COPY --chmod=0644 package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY --chown=node:node src/ ./src/
+COPY --chown=node:node scripts/daehan-reset-supervisor.mjs ./scripts/
 COPY --chown=node:node views/ ./views/
 COPY --chown=node:node public/ ./public/
-RUN install -d -o node -g node /app/data
+RUN install -d -o node -g node /app/data /app/.reset-backups
 
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=4101
 USER node

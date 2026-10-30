@@ -208,7 +208,7 @@ export function renderGeneralOverview(item) {
   const last = list(item.events).at(-1);
   const stage = text(item.stage) || text(summary.report.stage) || text(last?.stage) || '실행 상태 수신 대기';
   const stopped = text(summary.report.stopReason);
-  if (item.mode === 'external-general') {
+  if (summary.report.inspectionMode === 'external-read-only') {
     const coverage = object(summary.report.coverage) ? summary.report.coverage : {};
     return `<section class="general-overview" aria-label="외부 대상 관찰 진행"><div class="eyebrow">EXTERNAL / READ ONLY</div><h3>공개 페이지 관찰${summary.partial ? ' · 부분 결과' : ''}</h3><p>현재 단계: <strong>${escape(stage)}</strong></p><div class="general-overview-counts"><span>요청 <strong>${count(coverage.requestsUsed) ?? 0}</strong></span><span>응답 페이지 <strong>${count(coverage.observedPages) ?? 0}</strong></span><span>거부 후보 <strong>${count(coverage.rejectedCandidates) ?? 0}</strong></span></div><p class="muted">비인증 읽기 요청만 수행합니다. 독립 검증기가 없어 취약점 확정을 수행하지 않습니다.</p>${stopped ? `<p>종료 사유: ${escape(stopped)}</p>` : ''}</section>`;
   }
@@ -301,7 +301,7 @@ export function renderGeneralReport(item) {
   const evidence = new Map(list(report.evidence).filter(value => object(value) && text(value.id)).map(value => [value.id, value]));
   const unresolved = hypotheses.filter(value => value.status === 'not_tested' || value.status === 'inconclusive');
   const target = displayTarget(item.target) || displayTarget(report.target) || '대상 미기록';
-  if (item.mode === 'external-general' || report.inspectionMode === 'external-read-only') {
+  if (report.inspectionMode === 'external-read-only') {
     const coverage = object(report.coverage) ? report.coverage : {};
     const scope = object(report.scope) ? report.scope : {};
     const pages = list(report.inventory?.pages).filter(object);

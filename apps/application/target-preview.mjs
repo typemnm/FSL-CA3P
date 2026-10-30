@@ -240,7 +240,9 @@ async function externalPage(url, scope, request, fingerprint, timeoutMs = 12_000
   let observed = { technologies: [], libraries: [] };
   const errors = [];
   if (html && !response?.truncated && response?.status >= 200 && response.status < 300) {
-    try { observed = await fingerprint(url, response); }
+    try { observed = await fingerprint(url, { ...response,
+      headers: Array.isArray(response.fingerprintHeaders) ? response.fingerprintHeaders
+        : Array.isArray(response.headers) ? response.headers : [] }); }
     catch { errors.push({ code: 'WEB_PARSER_UNAVAILABLE' }); }
   }
   const status = Number.isInteger(response?.status) ? response.status : null;

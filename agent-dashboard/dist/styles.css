@@ -103,8 +103,8 @@
 .target-kind-switch button.active{background:#2c6445;border-color:#7cbd90;color:#ecfff0}
 .external-target-form{display:grid;grid-template-columns:minmax(0,2fr) minmax(170px,1fr) auto;gap:13px;align-items:end}
 .external-target-form>label,.ops-filters label,.ops-upload-form>label,.ops-edit-grid label,.ops-review-item label,.ops-panel label{display:flex;flex-direction:column;gap:6px;color:#bdd4c2;font-size:15px}
-.external-target-form input,.ops-panel input,.ops-panel select,.ops-panel textarea,.report-picker select{width:100%;padding:10px 11px;color:#e4f0e6;background:#0c1911;border:1px solid #405b48;border-radius:5px;font:15px var(--mono)}
-.external-target-form input:focus-visible,.ops-panel input:focus-visible,.ops-panel select:focus-visible,.ops-panel textarea:focus-visible,.report-picker select:focus-visible{outline:2px solid #9ad9a8;outline-offset:2px}
+.external-target-form input,.external-target-form select,.ops-panel input,.ops-panel select,.ops-panel textarea,.report-picker select{width:100%;padding:10px 11px;color:#e4f0e6;background:#0c1911;border:1px solid #405b48;border-radius:5px;font:15px var(--mono)}
+.external-target-form input:focus-visible,.external-target-form select:focus-visible,.ops-panel input:focus-visible,.ops-panel select:focus-visible,.ops-panel textarea:focus-visible,.report-picker select:focus-visible{outline:2px solid #9ad9a8;outline-offset:2px}
 .external-scope-note{grid-column:1/-1;color:#9db9a8;font-size:15px;line-height:1.6}
 #external-preflight-status{grid-column:1/-1;padding:10px 12px;border-left:2px solid #75b58b;background:#172a1e;color:#c9decf;font-size:15px;line-height:1.6;overflow-wrap:anywhere}
 #external-run-button{justify-self:start}
@@ -323,9 +323,11 @@ button.ops-row:hover{background:#1c3324}
 .template-editor .template-file-label { margin-bottom: 18px; }
 .template-editor label small { color: #8daa97; font-size: 12px; }
 .template-editor textarea { min-height: 260px; resize: vertical; font-size: 12px; line-height: 1.8; tab-size: 2; }
-.template-editor .template-import-preview, .template-delete-confirm { margin-top: 18px; padding: 14px; border: 1px solid #52715a; border-radius: 5px; background: #182c20; }
-.template-import-preview h3 { margin: 0 0 6px; }
-.template-import-preview p { font-size: 13px; }
+.template-delete-confirm { margin-top: 18px; padding: 14px; border: 1px solid #52715a; border-radius: 5px; background: #182c20; }
+.template-card .template-unverified { align-self: flex-start; color: #e8c888; border-color: #6d5d37; background: #302919; }
+.template-trust-note { margin: 18px 0; padding: 14px; border: 1px solid #6d5d37; border-radius: 5px; background: #272419; color: #e8c888; }
+.template-trust-note strong { font-size: 14px; }
+.template-trust-note p { margin: 6px 0 0; font-size: 13px; line-height: 1.8; }
 .template-catalog-heading .template-notice { margin-top: 12px; color: var(--mint); }
 @media (max-width: 1100px) { .template-workspace { grid-template-columns: minmax(260px, .8fr) minmax(0, 1fr); gap: 12px; } }
 @media (max-width: 900px) { .template-workspace { grid-template-columns: 1fr; } .template-list { max-height: 420px; } }

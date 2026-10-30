@@ -22,7 +22,7 @@
 | CASPER DB | `packages/history/check-sync.mjs`가 원본 DB에 실험 check를 기록. 사람이 검토하면 다음 snapshot과 과거 사례 매칭에 영향을 줄 수 있음 | 삭제 대상 run ID에 연결된 draft/reviewed check만 삭제. curated cases·case_versions와 무관한 check는 보존. 저장 당시와 다른 DB 설정이면 중단 |
 | 퇴역한 `vul-web-1` 기록 | 이전 실행의 registry·보고서·파일 | 과거 기록은 조회 가능하다. 실험 초기화는 위 실행 registry·파일 규칙에 따라 해당 기록을 삭제하며 새 게시판 프로세스는 시작하지 않는다. |
 | `vul-web2` | 대한/원창 SQLite volume, 게시물·조회수·요청·일정·설정·서버 세션, 프로세스와 파일 상태 | 로그인 probe는 finally 로그아웃. 전체 초기화는 운영자가 등록한 관리 훅이 DB·세션·프로세스·파일 복원을 확인해야 함. 미설정·실패 시 전체 초기화 차단 |
-| 외부 URL 읽기 관찰 | 등록된 `external-general` 경로는 비인증 GET/HEAD로 공개 페이지만 관찰 | 앱 소유 실행 기록·파일은 삭제한다. 대상 복원 훅은 요구하지 않으며 외부 사이트의 로그·조회 기록은 복원하지 않는다. 다른 미등록 외부 실행은 계속 차단 |
+| 외부 URL 범용 점검 | 등록된 `external-general` 경로는 허용 원점·경로에서 비인증 GET 검사와 독립 검증을 수행한다. 기존 읽기 관찰 기록도 보존한다 | 앱 소유 실행 기록·파일은 삭제한다. 쓰기 요청이 없어 대상 복원 훅은 요구하지 않으며 외부 사이트의 로그·조회 기록은 복원하지 않는다. 다른 미등록 외부 실행은 계속 차단 |
 | parser/관찰 브라우저 | 쿠키·local/session storage·IndexedDB·서비스워커·HTTP cache | `web-parser/collect.mjs`는 수집마다 별도 Chromium과 임시 profile을 만들고 finally에서 닫은 뒤 profile을 삭제. 보고서 capture는 새 browser/context를 만들고 finally close; 서비스워커 차단. 영구 사용자 profile 재사용 없음 |
 | attack/guardrail/agent | 요청 예산, 모델 messages/응답 | 실행별 런타임 생성. 초기화 전 worker의 종료 확인으로 이전 메모리 제거 |
 | 대시보드 브라우저 | 앱 소유 localStorage fallback 이력, 상세·비교·검토 초안·진행 중 조회/SSE | 앱 실행 cache만 비우고 epoch로 늦은 응답을 거부. 같은 브라우저 탭은 storage event, 연결된 다른 브라우저는 SSE epoch로 폐기. 인증·사용자 설정 보존 |
@@ -34,7 +34,7 @@
 
 `GET /api/experiment-reset`은 삭제 범위·개수·현재 초기화 상태를 조회한다. `POST /api/experiment-reset`은 정확히 `{ "confirmed": true }`를 요구한다. 기존 인증·운영자 권한·CSRF·배포 중 mutation 차단을 적용한다. 기존 `/api/reset`은 화면 초기화로 유지한다.
 
-실행 목록만 정리할 때는 운영자/관리자 인증과 CSRF 토큰으로 `POST /api/run-history/clear`에 정확히 `{ "confirmed": true }`를 보낸다. 이 경로는 실행 registry의 이력·비교 자료, 실행별 JSON/HWPX·snapshot·보고서 파일, 해당 run에 연결된 CASPER check를 삭제하고 epoch를 올려 대시보드 캐시와 legacy 재가져오기를 차단한다. 계정·API 설정·검토된 사례와 대학 실습 대상의 상태는 보존한다. 대학 대상의 복원 의무는 별도 DB 기록으로 남으므로, 관리 훅이 필요한 경우 또는 이전 전체 초기화가 실패한 경우 새 실행은 계속 차단된다. 등록된 외부 URL 읽기 관찰은 대상 복원 의무를 만들지 않는다. 이후 `POST /api/experiment-reset`은 남은 의무를 확인하고 전체 대상 복원을 마쳐야 실행을 다시 허용한다.
+실행 목록만 정리할 때는 운영자/관리자 인증과 CSRF 토큰으로 `POST /api/run-history/clear`에 정확히 `{ "confirmed": true }`를 보낸다. 이 경로는 실행 registry의 이력·비교 자료, 실행별 JSON/HWPX·snapshot·보고서 파일, 해당 run에 연결된 CASPER check를 삭제하고 epoch를 올려 대시보드 캐시와 legacy 재가져오기를 차단한다. 계정·API 설정·검토된 사례와 대학 실습 대상의 상태는 보존한다. 대학 대상의 복원 의무는 별도 DB 기록으로 남으므로, 관리 훅이 필요한 경우 또는 이전 전체 초기화가 실패한 경우 새 실행은 계속 차단된다. 등록된 외부 URL의 GET 전용 범용 점검과 기존 읽기 관찰은 대상 복원 의무를 만들지 않는다. 이후 `POST /api/experiment-reset`은 남은 의무를 확인하고 전체 대상 복원을 마쳐야 실행을 다시 허용한다.
 
 이전 버전에서 출처 정보 없이 저장된 외부 대상 복원 의무는 읽기 전용 실행인지 확인할 수 없으므로 자동 면제하지 않는다. 원본 실행 기록이 남아 있는 실패 상태는 새 코드로 전체 초기화를 재시도할 수 있다.
 
@@ -66,7 +66,13 @@
 { "status": "clean", "fixtureId": "vul-web2-daehan", "targetOrigin": "http://127.0.0.1:4101", "scopes": ["database", "sessions", "process", "files"] }
 ```
 
-대학을 접촉한 이력이 있는데 훅이 없으면 초기화를 완료할 수 없다. dashboard 컨테이너에 Docker socket을 노출하거나 임의 서버에 삭제 요청을 보내는 우회는 하지 않는다. 대학 전체 복원 서비스 배포는 운영 환경에 맞춰 별도로 준비해야 한다.
+대학을 접촉한 이력이 있는데 훅이 없으면 초기화를 완료할 수 없다. dashboard 컨테이너에 Docker socket을 노출하거나 임의 서버에 삭제 요청을 보내는 우회는 하지 않는다. 일반 `vul-web2/compose.yaml`만으로 실행한 대학 사이트에는 관리 훅이 없으며, 운영 배포의 전체 복원 서비스는 해당 환경에 맞춰 별도로 준비해야 한다.
+
+### Docker 로컬 대학 실험
+
+Windows에서는 프로젝트 루트에서 `./scripts/start-local-internal-experiment.ps1`을 실행한다. 스크립트는 `vul-web2/compose.reset.yaml`을 기존 대학 Compose에 겹쳐 대한대·원창대 서버를 자식 프로세스로 소유하는 관리자를 시작한다. 관리 주소 `http://daehan:54101`, `http://wonchang:54102`는 각각의 전용 Docker 네트워크에서만 접근하고 호스트에 포트를 공개하지 않는다. 별도 4175 대시보드는 `docker-compose.vul-web2-reset.yml`로 두 관리 훅과 대상 원점 `http://daehan:4101`, `http://wonchang:4102`를 등록한다. 토큰은 Git에서 제외한 `.runtime/experiment-reset.env`에 무작위로 생성하고 재사용한다. Docker socket은 공유하지 않는다.
+
+관리 훅은 사이트 프로세스를 중지하고 알려진 SQLite 파일을 전용 백업 볼륨에 복사한 뒤 삭제한다. 새 프로세스가 기준 DB를 생성하면 상태·세션·DB 기준값을 확인하고 네 scope(`database`, `sessions`, `process`, `files`)를 반환한다. 대시보드는 두 관리 응답을 검증한 후 나머지 실험 기록을 정리한다. 백업 볼륨의 이전 DB는 자동 실험 입력으로 사용하지 않으며, 보존·폐기는 운영자가 별도로 관리한다. 중간 실패는 초기화 성공으로 표시하지 않으며 신규 실행을 차단한다. 이전에 다른 원점(예: 호스트의 `127.0.0.1`)으로 기록된 대학 실행은 Docker 서비스 원점과 일치하지 않아 자동 초기화 대상이 되지 않는다.
 
 ### 로컬 대한대 실습 실행
 

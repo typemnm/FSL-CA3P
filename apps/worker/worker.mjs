@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../packages/run-store/index.mjs';
 import { createIdorRuntime } from '../application/idor-runtime.mjs';
 import { createGeneralRuntime } from '../application/general-runtime.mjs';
-import { createExternalRuntime } from '../application/external-runtime.mjs';
+import { createExternalGeneralRuntime } from '../application/external-runtime.mjs';
 import { digest } from '../../packages/contracts/index.mjs';
 import { syncRunChecks } from '../../packages/history/check-sync.mjs';
 import { PROJECT_ROOT, treeDigest } from '../../packages/contracts/manifest.mjs';
@@ -53,8 +53,8 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
   pollMs = 150, leaseMs = 15_000, heartbeatMs = 1000, envFile, env = process.env,
   reportGenerator = generateReportDocument,
   idorRuntimeFactory = createIdorRuntime, generalRuntimeFactory = createGeneralRuntime,
-  externalRuntimeFactory = createExternalRuntime, externalRequestImpl,
-  generalPlannerFactory, generalFetchImpl } = {}) {
+  externalRuntimeFactory = createExternalGeneralRuntime, externalRequestImpl,
+  generalPlannerFactory, generalFetchImpl, generalBoardFactory } = {}) {
   const store = createRunRepository({ path: storePath });
   let stopping = false; let runtime = null; let activeLease = null; let activeController = null; let busy = false; let timer; let shutdownTask;
   const notify = () => { if (process.connected) process.send({ type: 'state' }); };
@@ -110,9 +110,9 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         && (lease.options.testProfile !== 'general' || lease.modelId === 'rule-baseline')) {
         throw Object.assign(new Error('General assessment requires its own profile and a registered model.'), { code: 'INVALID_GENERAL_RUN' });
       }
-      if (externalRun && (lease.options.testProfile !== 'external-read-only' || lease.modelId !== 'rule-baseline'
+      if (externalRun && (lease.options.testProfile !== 'external-general' || lease.modelId === 'rule-baseline'
         || lease.options.fixtureId !== null)) {
-        throw Object.assign(new Error('External observation requires its read-only profile.'), { code: 'INVALID_EXTERNAL_RUN' });
+        throw Object.assign(new Error('External assessment requires its general profile and a registered model.'), { code: 'INVALID_EXTERNAL_RUN' });
       }
       let persistenceError = null;
       const historyProvider = () => store.listRuns({ limit: 50 }).items
@@ -137,10 +137,11 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
           ...(externalRequestImpl ? { requestImpl: externalRequestImpl } : {}) } : {}),
         caseSnapshot: lease.options.caseSnapshot,
         unavailableInputs: lease.options.unavailableInputs ?? [],
-        ...(generalLab && !externalRun ? { limits: lease.options.loopBudget, verificationRoot } : {}),
+        ...(generalLab ? { limits: lease.options.loopBudget, verificationRoot } : {}),
         historyProvider,
         ...(generalPlannerFactory ? { plannerFactory: generalPlannerFactory } : {}),
         ...(generalFetchImpl ? { fetchImpl: generalFetchImpl } : {}),
+        ...(generalBoardFactory ? { boardFactory: generalBoardFactory } : {}),
         modelId: lease.modelId,
         env, ...(envFile ? { envFile } : {}), signal: controller.signal,
         onModelCall(metadata) { store.recordModelCall(lease, metadata); notify(); },

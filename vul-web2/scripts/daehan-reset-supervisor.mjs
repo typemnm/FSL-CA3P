@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
-// Local-only owner of the Daehan fixture process and its experiment reset.
+// Owner of the Daehan fixture process and its experiment reset. Docker mode
+// advertises the Compose service origin while probing the child over loopback.
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { constants } from 'node:fs';
 import { copyFile, lstat, mkdir, readdir, rm } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { daehanDatabasePath } from '../src/db.mjs';
 import { siteConfigs } from '../src/sites.mjs';
@@ -39,10 +40,31 @@ function configFrom(env) {
   if (managementPort === targetPort) throw new Error('Management and target ports must differ.');
   const databasePath = daehanDatabasePath(env);
   if (basename(databasePath) !== 'daehan.sqlite') throw new Error('Unexpected Daehan database path.');
+  const managementBind = env.CA3P_DAEHAN_RESET_BIND ?? '127.0.0.1';
+  const targetBind = env.CA3P_DAEHAN_TARGET_BIND ?? '127.0.0.1';
+  if (!['127.0.0.1', '0.0.0.0'].includes(managementBind)
+    || targetBind !== managementBind) throw new Error('Daehan management and target binds must both be loopback or both be Docker-wide.');
+  const dockerMode = managementBind === '0.0.0.0';
+  const targetOrigin = env.CA3P_DAEHAN_TARGET_ORIGIN
+    ?? `http://127.0.0.1:${targetPort}`;
+  if (targetOrigin !== (dockerMode ? `http://daehan:${targetPort}` : `http://127.0.0.1:${targetPort}`)) {
+    throw new Error('Daehan target origin must match the selected bind mode.');
+  }
+  const configuredBackupRoot = env.CA3P_DAEHAN_RESET_BACKUP_ROOT
+    ?? join(dirname(dirname(databasePath)), '.reset-backups');
+  if (typeof configuredBackupRoot !== 'string' || !isAbsolute(configuredBackupRoot)) {
+    throw new Error('Daehan reset backup root must be an absolute path outside the data directory.');
+  }
+  const backupRoot = resolve(configuredBackupRoot);
+  const dataDirectory = resolve(dirname(databasePath));
+  if (backupRoot === dataDirectory || backupRoot.startsWith(`${dataDirectory}${sep}`)) {
+    throw new Error('Daehan reset backup root must be an absolute path outside the data directory.');
+  }
   return {
     token, managementPort, targetPort, databasePath,
-    targetOrigin: `http://127.0.0.1:${targetPort}`,
-    backupRoot: join(dirname(dirname(databasePath)), '.reset-backups'),
+    managementBind, targetBind, targetOrigin,
+    targetHealthOrigin: `http://127.0.0.1:${targetPort}`,
+    backupRoot,
   };
 }
 
@@ -159,7 +181,7 @@ export async function startDaehanResetSupervisor({ env = process.env } = {}) {
   let managementServer = null;
 
   async function checkTargetHealth() {
-    const response = await fetch(`${config.targetOrigin}/_diag/config`, {
+    const response = await fetch(`${config.targetHealthOrigin}/_diag/config`, {
       redirect: 'error', signal: AbortSignal.timeout(3000),
     });
     if (response.status !== 200 || response.redirected) throw new Error('Daehan target is unhealthy.');
@@ -174,7 +196,7 @@ export async function startDaehanResetSupervisor({ env = process.env } = {}) {
     try {
       await new Promise((resolve, reject) => {
         probe.once('error', reject);
-        probe.listen(config.targetPort, '127.0.0.1', resolve);
+        probe.listen(config.targetPort, config.targetBind, resolve);
       });
     } catch {
       throw new Error('Daehan target port is already occupied.');
@@ -184,7 +206,7 @@ export async function startDaehanResetSupervisor({ env = process.env } = {}) {
   }
 
   async function launchChild() {
-    const childEnv = { ...env, NODE_ENV: env.NODE_ENV ?? 'production', HOST: '127.0.0.1', PORT: String(config.targetPort) };
+    const childEnv = { ...env, NODE_ENV: env.NODE_ENV ?? 'production', HOST: config.targetBind, PORT: String(config.targetPort) };
     delete childEnv.CA3P_DAEHAN_RESET_TOKEN;
     delete childEnv.CA3P_EXPERIMENT_RESET_TARGETS;
     const next = spawn(process.execPath, [serverPath, 'daehan'], {
@@ -195,7 +217,7 @@ export async function startDaehanResetSupervisor({ env = process.env } = {}) {
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => finish(new Error('Daehan child startup timed out.')), 10_000);
         const onMessage = message => {
-          if (message?.type === 'ca3p-daehan-ready' && message.host === '127.0.0.1' && message.port === config.targetPort) finish();
+          if (message?.type === 'ca3p-daehan-ready' && message.host === config.targetBind && message.port === config.targetPort) finish();
         };
         const onExit = () => finish(new Error('Daehan child exited during startup.'));
         const onError = () => finish(new Error('Daehan child failed to start.'));
@@ -289,7 +311,7 @@ export async function startDaehanResetSupervisor({ env = process.env } = {}) {
     }); });
     await new Promise((resolve, reject) => {
       managementServer.once('error', reject);
-      managementServer.listen(config.managementPort, '127.0.0.1', () => {
+      managementServer.listen(config.managementPort, config.managementBind, () => {
         managementServer.off('error', reject); resolve();
       });
     });

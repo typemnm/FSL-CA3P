@@ -9,6 +9,7 @@ import { createGeneralRuntime, judgeAttackRecord, recordForProbe } from '../gene
 import { readReportHandoff } from '../../../packages/verifier/report-handoff.mjs';
 import plannerModule from '../../../agent/src/general-model-planner.js';
 import { readKnowledgeCatalog } from '../../../packages/adapters/integrations/knowledge-db.mjs';
+import { listTemplates } from '../../../attack-tool/templates.mjs';
 
 // Every executed probe goes to the AI verifier; tests script it so no real model is ever called.
 const scriptedVerdicts = (status = 'not_reproduced', seen = []) => async (record, options) => {
@@ -1025,14 +1026,14 @@ test('web_info fits the remaining evidence budget with one and then zero free sl
 
 test('general runtime routes vulnerability workers through two daemon ports and closes them after completion', async t => {
   let advertised;
+  const expectedTemplates = listTemplates();
   const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:53988',
     modelId: 'deepseek-flash', runIdFactory: () => 'general-attack-tool-workers',
     fetchImpl: async url => response(new URL(url).pathname),
     plannerFactory: () => ({ async propose(context) {
       advertised = context.inventory.attackTool;
-      assert.equal(advertised.templates.length, 1);
-      assert.equal(advertised.templates[0].templateId, 'sqli-like-tautology');
+      assert.deepEqual(advertised.templates, expectedTemplates);
       assert.equal(new Set(advertised.endpoints).size, 2);
       if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
       const evidenceIds = [context.evidence[0].id];
@@ -1058,7 +1059,7 @@ test('general runtime routes vulnerability workers through two daemon ports and 
   assert.equal(new Set(run.report.attackTool.agentIds).size, 2);
   assert.deepEqual(run.report.attackTool.endpoints, advertised.endpoints);
   assert.deepEqual(run.report.attackTool.flow, ['agent', 'attack-tool', 'guardrail', 'executor']);
-  assert.deepEqual(run.report.attackTool.templateIds, ['sqli-like-tautology']);
+  assert.deepEqual(run.report.attackTool.templateIds, expectedTemplates.map(template => template.templateId));
   assert.doesNotMatch(JSON.stringify(run.report.attackTool), /Bearer|authorization|token|secret/i);
   for (const endpoint of advertised.endpoints) {
     await assert.rejects(fetch(endpoint, { signal: AbortSignal.timeout(1000) }));
@@ -1079,6 +1080,23 @@ test('judgeAttackRecord maps an AI verdict to a core verdict that cites the prob
   assert.deepEqual(verdict, { status: 'confirmed', completed: true, evidenceIds: ['ev-1'], reason: 'effect shown' });
   assert.equal(seen[0].options.outDir, outDir);
   assert.equal((await readReportHandoff(outDir)).result.attackId, 'p-any');
+});
+
+test('judgeAttackRecord forwards a browser boundary when the verifier requests a visit', async () => {
+  const requested = [];
+  const model = { async completeJson({ userPayload }) {
+    if (userPayload.round === 1) return { value: { browser: { path: 'https://elsewhere.example/' }, reason: 'check page' } };
+    assert.deepEqual(userPayload.browserObservation, { error: 'EXTERNAL_BROWSER_DISABLED' });
+    return { value: { verdict: 'invalid', reason: 'browser evidence unavailable' } };
+  } };
+  const verdict = await judgeAttackRecord(attackRecord, { evidenceId: 'ev-1', model,
+    browserFactory: async origin => {
+      requested.push(origin);
+      throw Object.assign(new Error('External browser visits are disabled.'), { code: 'EXTERNAL_BROWSER_DISABLED' });
+    } });
+  assert.deepEqual(requested, ['https://example.com']);
+  assert.deepEqual(verdict, { status: 'not_reproduced', completed: true,
+    evidenceIds: ['ev-1'], reason: 'browser evidence unavailable' });
 });
 
 test('judgeAttackRecord keeps inconclusive results, fills an empty reason and caps a long one', async () => {
