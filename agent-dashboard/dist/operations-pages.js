@@ -52,7 +52,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
   let llmLogRefreshPending = false;
   const templates = { items: [], support: {}, revisions: {}, q: '', type: '', selected: null, detail: null,
     loading: false, detailLoading: false, busy: false, error: '', notice: '', editor: null,
-    draft: '', validated: null, preview: null, confirmDelete: false, generation: 0, request: 0 };
+    draft: '', confirmDelete: false, generation: 0, request: 0 };
 
   function reset() {
     db.cases = []; db.intakes = []; db.caseDetail = null; db.intakeDetail = null; db.selectedFile = null;
@@ -66,13 +66,15 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     templates.generation += 1; templates.request += 1;
     Object.assign(templates, { items: [], support: {}, revisions: {}, selected: null, detail: null,
       loading: false, detailLoading: false, busy: false, error: '', notice: '', editor: null,
-      draft: '', validated: null, preview: null, confirmDelete: false });
+      draft: '', confirmDelete: false });
     if (templateRoot) templateRoot.textContent = '로그인 후 템플릿을 불러옵니다.';
   }
 
   const templateEndpoint = '/api/attack-templates';
   const templateLabel = item => item.title || item.templateId;
   const templateTarget = item => `${item.target?.method || item.request?.packet?.method || '—'} ${item.target?.endpoint || item.request?.packet?.path || '—'}`;
+  const templateTrustLabel = '검증되지 않은 템플릿';
+  const templateTrustNote = `<div class="template-trust-note" role="note"><strong>${templateTrustLabel}</strong><p>근거: 등록 과정에서는 실제 대상에 요청을 실행하거나 결과를 검증하지 않습니다.</p></div>`;
   function filteredTemplates() {
     const query = templates.q.toLowerCase();
     return templates.items.filter(item => (!templates.type || item.attackType?.name === templates.type)
@@ -82,7 +84,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     const items = filteredTemplates();
     if (templates.loading && !templates.items.length) return '<p class="ops-empty" role="status">템플릿을 불러오는 중입니다.</p>';
     if (!items.length) return `<div class="ops-empty">${templates.q || templates.type ? '검색 조건에 맞는 템플릿이 없습니다.' : '등록된 템플릿이 없습니다.'}</div>`;
-    return items.map(item => `<button type="button" class="template-card${templates.selected === item.templateId ? ' selected' : ''}" data-template-id="${escape(item.templateId)}" aria-pressed="${templates.selected === item.templateId}"><span class="template-card-heading"><strong>${escape(templateLabel(item))}</strong><span class="state-chip">${templates.support[item.templateId]?.supported ? '실행 형식 지원' : '참고용'}</span></span><small class="mono">${escape(item.templateId)}</small><span>${escape(item.attackType?.name || '유형 미기록')} · ${escape(item.attackType?.cwe || 'CWE 미기록')}</span><span class="mono">${escape(templateTarget(item))}</span><small>${escape(Object.values(item.dependency || {}).filter(Boolean).join(' · ') || '의존성 미기록')} · payload ${item.payloads?.length || 0}개</small></button>`).join('');
+    return items.map(item => `<button type="button" class="template-card${templates.selected === item.templateId ? ' selected' : ''}" data-template-id="${escape(item.templateId)}" aria-pressed="${templates.selected === item.templateId}"><span class="template-card-heading"><strong>${escape(templateLabel(item))}</strong><span class="state-chip">${templates.support[item.templateId]?.supported ? '실행 형식 지원' : '참고용'}</span></span><span class="state-chip template-unverified">${templateTrustLabel}</span><small class="mono">${escape(item.templateId)}</small><span>${escape(item.attackType?.name || '유형 미기록')} · ${escape(item.attackType?.cwe || 'CWE 미기록')}</span><span class="mono">${escape(templateTarget(item))}</span><small>${escape(Object.values(item.dependency || {}).filter(Boolean).join(' · ') || '의존성 미기록')} · payload ${item.payloads?.length || 0}개</small></button>`).join('');
   }
   function templateDetail() {
     if (templates.detailLoading) return '<section class="panel ops-panel"><p role="status">템플릿 상세를 불러오는 중입니다.</p></section>';
@@ -91,13 +93,12 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     const item = detail.template;
     const support = detail.executionSupport || templates.support[item.templateId] || {};
     const disabled = templates.busy ? ' disabled' : '';
-    return `<section class="panel ops-panel template-detail" aria-labelledby="template-detail-title"><div class="ops-panel-head"><div><h2 id="template-detail-title">${escape(templateLabel(item))}</h2><p class="mono">${escape(item.templateId)}${item.version ? ` · ${escape(item.version)}` : ''}</p></div><span class="state-chip">${support.supported ? '실행 형식 지원' : '참고용'}</span></div>${item.description ? `<p>${escape(item.description)}</p>` : ''}<dl class="template-facts"><div><dt>취약점 유형</dt><dd>${escape(item.attackType?.name)} · ${escape(item.attackType?.cwe)}</dd></div><div><dt>대상 요청</dt><dd class="mono">${escape(templateTarget(item))}</dd></div><div><dt>의존성</dt><dd>${escape(Object.entries(item.dependency || {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || '미기록')}</dd></div><div><dt>검증 방식</dt><dd>${escape(item.verify?.mode || '미기록')}</dd></div><div><dt>실행기 / 신뢰 상태</dt><dd>${escape(item.executor)} / ${escape(item.trust)}</dd></div></dl><p class="template-support-note">${escape(support.reason || '실제 실행에는 서버가 허용한 대상과 가드레일 정책이 적용됩니다.')}</p><h3>Payload ${item.payloads?.length || 0}개</h3><ul class="template-payloads">${(item.payloads || []).map(payload => `<li><code>${escape(payload)}</code></li>`).join('')}</ul><details><summary>요청 패킷과 검증 조건</summary><pre>${escape(json({ request: item.request, verify: item.verify, blanks: item.blanks }))}</pre></details><details><summary>전체 JSON</summary><pre id="template-raw-json" tabindex="0">${escape(json(item))}</pre></details><div class="ops-form-actions"><button class="button secondary" type="button" data-template-action="download"${disabled}>JSON 다운로드</button>${canEdit() ? `<button class="button secondary" type="button" data-template-action="copy"${disabled}>복사해서 추가</button><button class="button secondary" type="button" data-template-action="edit"${disabled}>수정</button><button class="button secondary" type="button" data-template-action="delete"${disabled}>삭제</button>` : ''}</div>${templates.confirmDelete && canEdit() ? `<div class="template-delete-confirm"><p><strong>${escape(item.templateId)}</strong> 템플릿을 삭제합니다.</p><div class="ops-form-actions"><button class="button primary" type="button" data-template-action="confirm-delete"${disabled}>삭제 확인</button><button class="button secondary" type="button" data-template-action="cancel-delete"${disabled}>취소</button></div></div>` : ''}</section>`;
+    return `<section class="panel ops-panel template-detail" aria-labelledby="template-detail-title"><div class="ops-panel-head"><div><h2 id="template-detail-title">${escape(templateLabel(item))}</h2><p class="mono">${escape(item.templateId)}${item.version ? ` · ${escape(item.version)}` : ''}</p></div><span class="state-chip">${support.supported ? '실행 형식 지원' : '참고용'}</span></div>${templateTrustNote}${item.description ? `<p>${escape(item.description)}</p>` : ''}<dl class="template-facts"><div><dt>취약점 유형</dt><dd>${escape(item.attackType?.name)} · ${escape(item.attackType?.cwe)}</dd></div><div><dt>대상 요청</dt><dd class="mono">${escape(templateTarget(item))}</dd></div><div><dt>의존성</dt><dd>${escape(Object.entries(item.dependency || {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || '미기록')}</dd></div><div><dt>검증 방식</dt><dd>${escape(item.verify?.mode || '미기록')}</dd></div><div><dt>실행기 / 신뢰 상태</dt><dd>${escape(item.executor)} / ${escape(item.trust)}</dd></div></dl><p class="template-support-note">${escape(support.reason || '실제 실행에는 서버가 허용한 대상과 가드레일 정책이 적용됩니다.')}</p><h3>Payload ${item.payloads?.length || 0}개</h3><ul class="template-payloads">${(item.payloads || []).map(payload => `<li><code>${escape(payload)}</code></li>`).join('')}</ul><details><summary>요청 패킷과 검증 조건</summary><pre>${escape(json({ request: item.request, verify: item.verify, blanks: item.blanks }))}</pre></details><details><summary>전체 JSON</summary><pre id="template-raw-json" tabindex="0">${escape(json(item))}</pre></details><div class="ops-form-actions"><button class="button secondary" type="button" data-template-action="download"${disabled}>JSON 다운로드</button>${canEdit() ? `<button class="button secondary" type="button" data-template-action="copy"${disabled}>복사해서 추가</button><button class="button secondary" type="button" data-template-action="edit"${disabled}>수정</button><button class="button secondary" type="button" data-template-action="delete"${disabled}>삭제</button>` : ''}</div>${templates.confirmDelete && canEdit() ? `<div class="template-delete-confirm"><p><strong>${escape(item.templateId)}</strong> 템플릿을 삭제합니다.</p><div class="ops-form-actions"><button class="button primary" type="button" data-template-action="confirm-delete"${disabled}>삭제 확인</button><button class="button secondary" type="button" data-template-action="cancel-delete"${disabled}>취소</button></div></div>` : ''}</section>`;
   }
   function templateEditor() {
     if (!templates.editor || !canEdit()) return '';
     const editing = templates.editor.mode === 'edit';
-    const preview = templates.preview;
-    return `<section class="panel ops-panel template-editor" aria-labelledby="template-editor-title"><div class="ops-panel-head"><div><h2 id="template-editor-title">${editing ? '템플릿 수정' : 'JSON 템플릿 추가'}</h2><p>${editing ? `템플릿 ID ${escape(templates.editor.id)}는 유지하세요. 저장 시 최신 버전을 확인합니다.` : '템플릿 객체 1개, 배열 또는 {"templates": [...]} 형식으로 입력하세요. 한 번에 최대 100개를 가져옵니다.'}</p></div><button class="button secondary" type="button" data-template-action="close-editor" ${templates.busy ? 'disabled' : ''}>닫기</button></div><form id="template-editor-form">${editing ? '' : `<label class="template-file-label">JSON 파일 가져오기<input id="template-json-file" type="file" accept=".json,application/json" ${templates.busy ? 'disabled' : ''}><small>최대 1 MB · 파일을 읽은 후 내용을 확인하고 등록합니다.</small></label>`}<label for="template-json-input">템플릿 JSON<textarea id="template-json-input" rows="16" spellcheck="false" required ${templates.busy ? 'disabled' : ''} placeholder='[{"templateId": "my-template", ...}]'>${escape(templates.draft)}</textarea></label><div class="ops-form-actions">${editing ? `<button class="button primary" type="submit" ${templates.busy ? 'disabled' : ''}>${templates.busy ? '저장 중…' : '변경 저장'}</button>` : `<button class="button secondary" type="button" data-template-action="validate" ${templates.busy || !templates.draft.trim() ? 'disabled' : ''}>${templates.busy ? '처리 중…' : '검증 및 미리보기'}</button><button class="button primary" type="submit" ${templates.busy || templates.validated !== templates.draft ? 'disabled' : ''}>템플릿 등록</button>`}</div></form>${preview ? `<div class="template-import-preview" role="status"><h3>등록 미리보기</h3><p>새로 추가 ${preview.created}개 · 같은 내용 ${preview.unchanged}개 · 등록 후 총 ${preview.total}개</p><p>JSON을 바꾸면 다시 검증해야 합니다.</p></div>` : ''}</section>`;
+    return `<section class="panel ops-panel template-editor" aria-labelledby="template-editor-title"><div class="ops-panel-head"><div><h2 id="template-editor-title">${editing ? '템플릿 수정' : 'JSON 템플릿 추가'}</h2><p>${editing ? `템플릿 ID ${escape(templates.editor.id)}는 유지하세요. 저장 시 최신 버전을 확인합니다.` : '템플릿 객체 1개, 배열 또는 {"templates": [...]} 형식으로 입력하세요. 한 번에 최대 100개를 가져옵니다. 사전 검증 없이 바로 등록할 수 있습니다.'}</p></div><button class="button secondary" type="button" data-template-action="close-editor" ${templates.busy ? 'disabled' : ''}>닫기</button></div>${templateTrustNote}<form id="template-editor-form">${editing ? '' : `<label class="template-file-label">JSON 파일 가져오기<input id="template-json-file" type="file" accept=".json,application/json" ${templates.busy ? 'disabled' : ''}><small>최대 1 MB · 파일을 읽은 후 내용을 확인하고 등록합니다.</small></label>`}<label for="template-json-input">템플릿 JSON<textarea id="template-json-input" rows="16" spellcheck="false" required ${templates.busy ? 'disabled' : ''} placeholder='[{"templateId": "my-template", ...}]'>${escape(templates.draft)}</textarea></label><div class="ops-form-actions"><button class="button primary" type="submit" ${templates.busy || !templates.draft.trim() ? 'disabled' : ''}>${templates.busy ? '저장 중…' : editing ? '변경 저장' : '템플릿 등록'}</button></div></form></section>`;
   }
   function renderTemplates() {
     if (!templateRoot) return;
@@ -144,7 +145,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     templates.editor = { mode, id: mode === 'edit' ? item.templateId : null,
       revision: mode === 'edit' ? templates.detail.revision : null };
     templates.draft = mode === 'edit' ? json(item) : mode === 'copy' ? json([{ ...item, templateId: `${item.templateId}-copy` }]) : '';
-    templates.validated = null; templates.preview = null; templates.confirmDelete = false;
+    templates.confirmDelete = false;
     templates.error = ''; templates.notice = ''; renderTemplates();
     document.getElementById('template-json-input')?.focus();
   }
@@ -174,21 +175,18 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
         templates.detail = result; templates.selected = result.template.templateId;
         templates.editor = null; templates.notice = '템플릿 변경을 저장했습니다.';
       } else {
-        if (action === 'save' && templates.validated !== source) throw new Error('현재 JSON을 검증한 후 등록하세요.');
-        const result = await runtime.api(templateEndpoint, { method: 'POST', body: { templates: importTemplatesInput(), dryRun: action === 'validate' } });
+        const result = await runtime.api(templateEndpoint, { method: 'POST', body: { templates: importTemplatesInput(), dryRun: false } });
         if (generation !== templates.generation) return;
-        if (action === 'validate') { templates.validated = source; templates.preview = result; return; }
         templates.notice = `템플릿 ${result.created}개를 추가했습니다. 같은 내용 ${result.unchanged}개 · 총 ${result.total}개`;
-        templates.editor = null; templates.validated = null; templates.preview = null;
+        templates.editor = null;
       }
       notify(templates.notice);
     } catch (error) { if (generation === templates.generation) {
       templates.error = error.message + (error.status === 409 && templates.editor
         ? ' 입력 내용은 유지됩니다. 편집기를 닫고 템플릿을 다시 선택한 후 최신 내용을 확인하세요.' : '');
-      if (action === 'validate') { templates.validated = null; templates.preview = null; }
     } }
     finally { if (generation === templates.generation) { templates.busy = false; renderTemplates(); } }
-    if (generation === templates.generation && !templates.error && action !== 'validate') await refreshTemplates();
+    if (generation === templates.generation && !templates.error) await refreshTemplates();
   }
 
   async function refreshDb() {
@@ -762,8 +760,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     if (!canEdit() || templates.busy) return;
     if (action === 'new') startTemplateEditor('create');
     if (['edit', 'copy'].includes(action) && templates.detail) startTemplateEditor(action);
-    if (action === 'close-editor') { templates.editor = null; templates.validated = null; templates.preview = null; renderTemplates(); }
-    if (action === 'validate') void mutateTemplates('validate');
+    if (action === 'close-editor') { templates.editor = null; renderTemplates(); }
     if (action === 'delete' && templates.detail) { templates.confirmDelete = true; renderTemplates(); }
     if (action === 'cancel-delete') { templates.confirmDelete = false; renderTemplates(); }
     if (action === 'confirm-delete' && templates.detail && templates.confirmDelete) void mutateTemplates('delete');
@@ -779,11 +776,8 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
       document.getElementById('template-count').textContent = `${filteredTemplates().length} / ${templates.items.length}개`;
     }
     if (event.target.id === 'template-json-input') {
-      templates.draft = event.target.value; templates.validated = null; templates.preview = null;
-      templateRoot.querySelector('.template-import-preview')?.remove();
-      const validate = templateRoot.querySelector('[data-template-action="validate"]');
-      if (validate) validate.disabled = !templates.draft.trim();
-      if (templates.editor?.mode !== 'edit') templateRoot.querySelector('#template-editor-form [type="submit"]').disabled = true;
+      templates.draft = event.target.value;
+      templateRoot.querySelector('#template-editor-form [type="submit"]').disabled = templates.busy || !templates.draft.trim();
     }
   });
   templateRoot?.addEventListener('change', async event => {
@@ -796,7 +790,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
       if (!/\.json$/i.test(file.name) || file.size > 1024 * 1024) throw new Error('최대 1 MB의 JSON 파일을 선택하세요.');
       const source = await file.text();
       if (generation !== templates.generation || editor !== templates.editor) return;
-      templates.draft = source; templates.validated = null; templates.preview = null; templates.error = '';
+      templates.draft = source; templates.error = '';
       renderTemplates();
     } catch (error) { if (generation === templates.generation) { templates.error = error.message; renderTemplates(); } }
   });

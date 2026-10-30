@@ -74,39 +74,45 @@ async function setup(t, role = 'admin') {
   return { page, errors, writes, items, revisions, setConflict: () => { conflict = true; } };
 }
 
-test('Workspace templates support safe browsing, JSON batch import, edit conflicts and deletion', async t => {
+test('Workspace templates support direct JSON batch import, unverified evidence, safe browsing, edit conflicts and deletion', async t => {
   const { page, errors, writes, items, revisions, setConflict } = await setup(t);
   assert.equal(await page.locator('.primary-nav[aria-label="주 메뉴"] [data-view="templates"]').textContent(), '템플릿');
   assert.equal(await page.locator('#breadcrumb-group').textContent(), 'Workspace');
   assert.equal(await page.locator('[data-view="templates"]').getAttribute('aria-current'), 'page');
+  assert.match(await page.locator('[data-template-id="sqli-like-tautology"]').textContent(), /검증되지 않은 템플릿/);
   await page.locator('[data-template-id="reference-only"]').click();
   await page.locator('#template-detail-title').waitFor();
   assert.match(await page.locator('.template-detail').textContent(), /참고용.*지원하지 않는 검증/s);
+  assert.match(await page.locator('.template-detail').textContent(), /검증되지 않은 템플릿/);
+  assert.match(await page.locator('.template-detail').textContent(), /근거/);
+  assert.match(await page.locator('.template-detail').textContent(), /실행.*검증|검증.*실행/s);
   assert.equal(await page.locator('#workspace-templates-content img, #workspace-templates-content script').count(), 0);
   assert.match(await page.locator('.template-payloads').textContent(), /<script>alert\(1\)<\/script>/);
   await page.locator('#template-query').fill('nonexistent');
   assert.match(await page.locator('#template-list').textContent(), /검색 조건에 맞는 템플릿이 없습니다/);
   await page.locator('#template-query').fill('');
   await page.locator('[data-template-action="new"]').click();
+  assert.equal(await page.locator('[data-template-action="validate"]').count(), 0);
+  assert.equal(await page.locator('#template-editor-form [type="submit"]').isDisabled(), true);
+  await page.locator('#template-json-input').fill(' \n ');
+  assert.equal(await page.locator('#template-editor-form [type="submit"]').isDisabled(), true);
   const batch = ['new-a', 'new-b'].map(templateId => ({ ...builtin, templateId }));
   await page.locator('#template-json-file').setInputFiles({ name: 'templates.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(batch)) });
   await page.waitForFunction(() => document.getElementById('template-json-input').value.includes('new-a'));
   assert.equal(writes.length, 0);
-  assert.equal(await page.locator('#template-editor-form [type="submit"]').isDisabled(), true);
-  await page.locator('[data-template-action="validate"]').click();
-  await page.locator('.template-import-preview').waitFor();
-  assert.deepEqual(writes.at(-1), { path: '/api/attack-templates', method: 'POST', body: { templates: batch, dryRun: true }, csrf: 'csrf-template' });
+  assert.equal(await page.locator('#template-editor-form [type="submit"]').isDisabled(), false);
   assert.equal(items.size, 2);
-  await page.locator('#template-json-input').fill(JSON.stringify(batch, null, 2));
-  assert.equal(await page.locator('#template-editor-form [type="submit"]').isDisabled(), true);
-  await page.locator('[data-template-action="validate"]').click();
-  await page.locator('.template-import-preview').waitFor();
+  await page.locator('#template-json-input').fill(JSON.stringify(batch, null, 2) + '\n');
+  assert.equal(await page.locator('#template-editor-form [type="submit"]').isDisabled(), false);
   await page.locator('#template-editor-form [type="submit"]').click();
   await page.locator('[data-template-id="new-a"]').waitFor();
   assert.equal(items.size, 4);
-  assert.equal(writes.at(-1).body.dryRun, false);
+  assert.deepEqual(writes, [{ path: '/api/attack-templates', method: 'POST', body: { templates: batch, dryRun: false }, csrf: 'csrf-template' }]);
+  assert.match(await page.locator('[data-template-id="new-a"]').textContent(), /검증되지 않은 템플릿/);
   await page.locator('[data-template-id="new-a"]').click();
   await page.locator('#template-detail-title').waitFor();
+  assert.match(await page.locator('.template-detail').textContent(), /검증되지 않은 템플릿/);
+  assert.match(await page.locator('.template-detail').textContent(), /근거/);
   await page.locator('[data-template-action="edit"]').click();
   const changed = { ...batch[0], title: '검토한 템플릿', description: '수정한 설명' };
   await page.locator('#template-json-input').fill(JSON.stringify(changed));
@@ -160,20 +166,49 @@ test('Workspace templates support safe browsing, JSON batch import, edit conflic
   assert.deepEqual(errors, []);
 });
 
-test('JSON field errors keep registration disabled and viewers have browse controls only', async t => {
+test('direct registration preserves invalid JSON for correction and viewers have browse controls only', async t => {
   const admin = await setup(t);
   await admin.page.locator('[data-template-action="new"]').click();
-  await admin.page.locator('#template-json-input').fill(JSON.stringify({ ...builtin, payloads: [] }));
-  await admin.page.locator('[data-template-action="validate"]').click();
+  const invalidSource = JSON.stringify({ ...builtin, templateId: 'correctable-template', payloads: [] });
+  await admin.page.locator('#template-json-input').fill(invalidSource);
+  assert.equal(await admin.page.locator('#template-editor-form [type="submit"]').isDisabled(), false);
+  await admin.page.locator('#template-editor-form [type="submit"]').click();
   await admin.page.locator('#template-error').waitFor();
   assert.match(await admin.page.locator('#template-error').textContent(), /templates\[0\]\.payloads/);
-  assert.equal(await admin.page.locator('#template-editor-form [type="submit"]').isDisabled(), true);
+  assert.equal(await admin.page.locator('#template-json-input').inputValue(), invalidSource);
+  assert.equal(await admin.page.locator('#template-editor-form [type="submit"]').isDisabled(), false);
+  assert.equal(admin.items.has('correctable-template'), false);
+  const corrected = { ...builtin, templateId: 'correctable-template' };
+  await admin.page.locator('#template-json-input').fill(JSON.stringify(corrected));
+  await admin.page.locator('#template-editor-form [type="submit"]').click();
+  await admin.page.locator('[data-template-id="correctable-template"]').waitFor();
+  assert.deepEqual(admin.items.get('correctable-template'), corrected);
+  assert.equal(admin.writes.length, 2);
+  assert.equal(admin.writes.every(write => write.method === 'POST' && write.body.dryRun === false), true);
   const viewer = await setup(t, 'viewer');
   assert.equal(await viewer.page.locator('[data-template-action="new"]').count(), 0);
   await viewer.page.locator('[data-template-id="sqli-like-tautology"]').click();
   await viewer.page.locator('#template-detail-title').waitFor();
   assert.equal(await viewer.page.locator('[data-template-action="edit"], [data-template-action="delete"]').count(), 0);
   assert.equal(await viewer.page.locator('[data-template-action="download"]').count(), 1);
+  assert.match(await viewer.page.locator('.template-detail').textContent(), /검증되지 않은 템플릿/);
   assert.deepEqual(viewer.writes, []);
   assert.deepEqual([...admin.errors, ...viewer.errors], []);
+});
+
+test('copying a template registers a new unverified template without a validation request', async t => {
+  const { page, writes, items, errors } = await setup(t);
+  await page.locator('[data-template-id="sqli-like-tautology"]').click();
+  await page.locator('#template-detail-title').waitFor();
+  await page.locator('[data-template-action="copy"]').click();
+  assert.equal(await page.locator('[data-template-action="validate"]').count(), 0);
+  assert.equal(await page.locator('#template-editor-form [type="submit"]').isDisabled(), false);
+  const copied = { ...builtin, templateId: 'sqli-like-tautology-copy' };
+  assert.deepEqual(JSON.parse(await page.locator('#template-json-input').inputValue()), [copied]);
+  await page.locator('#template-editor-form [type="submit"]').click();
+  await page.locator('[data-template-id="sqli-like-tautology-copy"]').waitFor();
+  assert.deepEqual(writes, [{ path: '/api/attack-templates', method: 'POST', body: { templates: [copied], dryRun: false }, csrf: 'csrf-template' }]);
+  assert.deepEqual(items.get(copied.templateId), copied);
+  assert.match(await page.locator('[data-template-id="sqli-like-tautology-copy"]').textContent(), /검증되지 않은 템플릿/);
+  assert.deepEqual(errors, []);
 });
