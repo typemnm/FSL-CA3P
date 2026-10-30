@@ -216,17 +216,46 @@ test('run service persists an external run only after bound preflight and confir
     { request: async () => ({ status: 200 }) });
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-external-'));
   const service = createRunService({ storePath: join(directory, 'runs.sqlite3'),
-    autoStartWorker: false, importLegacy: false });
+    autoStartWorker: false, importLegacy: false, envFile: null,
+    env: { DEEPSEEK_API_KEY: 'test-key' } });
   try {
-    const body = { mode: 'external-general', modelId: 'rule-baseline',
+    const body = { mode: 'external-general',
       target: checked.normalizedUrl, scope: { pathPrefix: '/' },
       preflightToken: checked.token, authorizationConfirmed: true };
+    assert.equal(service.getState().lab.externalAvailable, true);
+    assert.equal(service.getState().lab.models.find(model => model.id === 'deepseek-flash')
+      .supportedModes.includes('external-general'), true);
     await assert.rejects(service.start({ ...body, authorizationConfirmed: false }), { status: 400 });
     await assert.rejects(service.start({ ...body, target: 'https://8.8.8.8/changed' }), { status: 400 });
+    await assert.rejects(service.start({ ...body, modelId: 'rule-baseline' }), { status: 400 });
     const state = await service.start(body);
     assert.equal(state.run.mode, 'external-general');
+    assert.equal(state.run.modelId, 'deepseek-flash');
+    assert.equal(state.run.testProfile, 'external-general');
     assert.equal(state.run.manifest.target.kind, 'external');
     assert.equal(state.run.manifest.policy.methods[0], 'GET');
+    assert.equal(state.run.manifest.model.provider, 'deepseek');
+    assert.deepEqual(state.run.manifest.execution.loopBudget, service.getGeneralLoopBudget());
     assert.equal(service.getRun(state.run.id).target, checked.normalizedUrl);
+    const lease = service.store.claimNext('external-options-test');
+    assert.equal(lease.options.testProfile, 'external-general');
+    assert.deepEqual(lease.options.loopBudget, service.getGeneralLoopBudget());
+    assert.equal(lease.options.caseSnapshot, undefined);
+    service.store.finish(lease, 'completed');
+  } finally { await service.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('external general assessment requires a configured model before queueing', async () => {
+  const checked = await preflightExternalTarget({ target: 'https://8.8.8.8/start' },
+    { request: async () => ({ status: 200 }) });
+  const directory = mkdtempSync(join(tmpdir(), 'ca3p-external-model-'));
+  const service = createRunService({ storePath: join(directory, 'runs.sqlite3'),
+    autoStartWorker: false, importLegacy: false, envFile: null, env: { DEEPSEEK_API_KEY: '' } });
+  try {
+    assert.equal(service.getState().lab.externalAvailable, false);
+    await assert.rejects(service.start({ mode: 'external-general', target: checked.normalizedUrl,
+      scope: { pathPrefix: '/' }, preflightToken: checked.token,
+      authorizationConfirmed: true }), { status: 503 });
+    assert.equal(service.store.listRuns({ limit: 1 }).total, 0);
   } finally { await service.close(); rmSync(directory, { recursive: true, force: true }); }
 });

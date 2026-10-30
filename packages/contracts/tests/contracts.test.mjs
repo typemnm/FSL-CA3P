@@ -87,6 +87,32 @@ test('general university manifests record model execution and omit deferred XSS 
   assert.equal(manifest.environment.browserVersion, 'not-applicable');
 });
 
+test('external general manifest binds the model, verifier, loop budget and public scope', () => {
+  const scope = { origin: 'https://example.com', pathPrefix: '/audit', methods: ['GET', 'HEAD'],
+    maxRequests: 8, maxResponseBytes: 65536, requestTimeoutMs: 5000, maxDurationMs: 30000 };
+  const loopBudget = { maxIterations: 4, maxProbes: 8, maxEvidenceItems: 64 };
+  const manifest = createRunManifest({ runId: 'external-general-manifest', mode: 'external-general',
+    modelId: 'deepseek-flash', model: { provider: 'deepseek' },
+    options: { target: 'https://example.com/audit', scope, loopBudget } });
+  assert.equal(manifest.execution.inspectionMode, 'external-general');
+  assert.deepEqual(manifest.execution.loopBudget, loopBudget);
+  assert.deepEqual(manifest.execution.effectiveLoopBudget,
+    { maxIterations: 4, maxProbes: 6, maxEvidenceItems: 64 });
+  assert.equal(manifest.execution.targetHttpDurationMs, 30000);
+  assert.equal(manifest.execution.assessmentDurationMs, 300000);
+  assert.equal(manifest.policy.maxIterations, 4);
+  assert.equal(manifest.policy.maxRequests, 8);
+  assert.equal(manifest.policy.durationMeasure, 'cumulative-target-http-time');
+  assert.equal(manifest.model.provider, 'deepseek');
+  assert.equal(manifest.model.requestedModel, 'deepseek-flash');
+  assert.ok(manifest.model.promptTemplateDigest);
+  assert.ok(manifest.modules.agent.contentDigest);
+  assert.ok(manifest.modules['packages/verifier'].contentDigest);
+  assert.equal(manifest.target.testProfile, 'external-general');
+  assert.deepEqual(manifest.target.scope, scope);
+  assert.equal(manifest.data.unavailableInputs.includes('independent-verifiers'), false);
+});
+
 test('general manifests bind the unified catalog snapshot and actual execution dependencies', t => {
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-general-catalog-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

@@ -13,11 +13,11 @@ export function listModels(options = {}) {
       capabilities: ['structured-action', 'deterministic-reflection'], modelRole: 'rule-baseline' };
     try {
       config.resolveDeepSeekOptions({ ...options, env: { ...(options.env ?? process.env), DEEPSEEK_MODEL: model.id } });
-      return { ...model, available: true, supportedModes: ['local-lab-general'],
+      return { ...model, available: true, supportedModes: ['local-lab-general', 'external-general'],
         capabilities: ['json', 'cancel', 'bounded-curl', 'general-evidence-planner'], modelRole: 'constrained-planner' };
     } catch {
       return { ...model, available: false, reason: 'agent/.env의 DeepSeek API 설정이 필요합니다.',
-        supportedModes: ['local-lab-general'],
+        supportedModes: ['local-lab-general', 'external-general'],
         capabilities: ['json', 'cancel', 'bounded-curl', 'general-evidence-planner'], modelRole: 'constrained-planner' };
     }
   });

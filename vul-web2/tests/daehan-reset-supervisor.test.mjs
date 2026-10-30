@@ -125,6 +125,94 @@ test('local Daehan reset revokes sessions, reseeds and backs up its database, an
   assert.equal((await readdir(join(temporaryRoot, '.reset-backups'))).length, 2);
 });
 
+test('Docker Daehan reset advertises its service origin while restarting the child and restoring data', async t => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'ca3p-daehan-reset-test-'));
+  const dbPath = join(temporaryRoot, 'data', 'daehan.sqlite');
+  const backupRoot = join(temporaryRoot, 'mounted-backups');
+  const targetPort = await availablePort();
+  const token = 'isolated-docker-reset-token-0123456789';
+  const env = {
+    ...process.env, NODE_ENV: 'test', LAB_MEMORY_DB: '0',
+    CA3P_TEST_DAEHAN_DB_PATH: dbPath,
+    CA3P_TEST_DAEHAN_PORT: String(targetPort),
+    CA3P_DAEHAN_RESET_PORT: '0',
+    CA3P_DAEHAN_RESET_TOKEN: token,
+    CA3P_DAEHAN_RESET_BIND: '0.0.0.0',
+    CA3P_DAEHAN_TARGET_BIND: '0.0.0.0',
+    CA3P_DAEHAN_TARGET_ORIGIN: `http://daehan:${targetPort}`,
+    CA3P_DAEHAN_RESET_BACKUP_ROOT: backupRoot,
+  };
+  let supervisor;
+  t.after(async () => {
+    if (supervisor) await supervisor.close();
+    assert.equal(basename(temporaryRoot).startsWith('ca3p-daehan-reset-test-'), true);
+    await rm(temporaryRoot, { recursive: true, force: true });
+  });
+  supervisor = await startDaehanResetSupervisor({ env });
+  assert.equal(supervisor.targetOrigin, `http://daehan:${targetPort}`);
+  assert.equal((await (await fetch(`${supervisor.origin}/health`)).json()).targetOrigin, supervisor.targetOrigin);
+  const localTarget = `http://127.0.0.1:${targetPort}`;
+  assert.equal((await fetch(localTarget)).status, 200);
+  const baselinePosts = count(dbPath, 'posts');
+  const firstPid = supervisor.childPid;
+
+  const login = await fetch(`${localTarget}/login`, {
+    method: 'POST', redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ username: 'admin', password: 'admin1234', next: '/admin' }),
+  });
+  assert.equal(login.status, 302);
+  const cookie = login.headers.get('set-cookie')?.split(';', 1)[0];
+  const created = await fetch(`${localTarget}/admin/posts`, {
+    method: 'POST', redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie },
+    body: new URLSearchParams({ type: 'notice', title: 'docker reset mutation', body: 'temporary' }),
+  });
+  assert.equal(created.status, 302);
+  assert.equal(count(dbPath, 'posts'), baselinePosts + 1);
+
+  const body = { confirmation: 'reset-experiment-target', fixtureId: 'vul-web2-daehan', targetOrigin: supervisor.targetOrigin };
+  const request = candidate => fetch(`${supervisor.origin}/_ca3p/experiment-reset`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(candidate),
+  });
+  assert.equal((await request({ ...body, targetOrigin: localTarget })).status, 400);
+  const clean = await request(body);
+  assert.equal(clean.status, 200);
+  assert.deepEqual(await clean.json(), {
+    status: 'clean', fixtureId: body.fixtureId, targetOrigin: body.targetOrigin,
+    scopes: ['database', 'sessions', 'process', 'files'],
+  });
+  assert.notEqual(supervisor.childPid, firstPid);
+  assert.equal(count(dbPath, 'posts'), baselinePosts);
+  assert.equal((await (await fetch(`${localTarget}/_diag/config`)).json()).activeSessions, 0);
+  assert.equal((await fetch(`${localTarget}/admin`, { headers: { cookie } })).status, 403);
+  assert.deepEqual(await readdir(join(temporaryRoot, 'data')), ['daehan.sqlite']);
+  const backups = await readdir(backupRoot);
+  assert.equal(backups.length, 1);
+  assert.equal(count(join(backupRoot, backups[0], 'daehan.sqlite'), 'posts'), baselinePosts + 1);
+});
+
+test('Docker-wide binds require the fixed Daehan service origin and a separate absolute backup root', async () => {
+  const dbPath = join(tmpdir(), 'ca3p-daehan-reset-configuration', 'data', 'daehan.sqlite');
+  const baseline = {
+    NODE_ENV: 'test', LAB_MEMORY_DB: '0',
+    CA3P_TEST_DAEHAN_DB_PATH: dbPath,
+    CA3P_TEST_DAEHAN_PORT: '52123', CA3P_DAEHAN_RESET_PORT: '0',
+    CA3P_DAEHAN_RESET_TOKEN: 'isolated-docker-reset-token-0123456789',
+    CA3P_DAEHAN_RESET_BIND: '0.0.0.0', CA3P_DAEHAN_TARGET_BIND: '0.0.0.0',
+  };
+  await assert.rejects(startDaehanResetSupervisor({ env: baseline }), /target origin must match/u);
+  await assert.rejects(startDaehanResetSupervisor({ env: {
+    ...baseline, CA3P_DAEHAN_TARGET_ORIGIN: 'http://daehan:4101',
+  } }), /target origin must match/u);
+  await assert.rejects(startDaehanResetSupervisor({ env: {
+    ...baseline, CA3P_DAEHAN_TARGET_ORIGIN: 'http://daehan:52123',
+    CA3P_DAEHAN_RESET_BACKUP_ROOT: join(tmpdir(), 'ca3p-daehan-reset-configuration', 'data', 'backups'),
+  } }), /backup root must be an absolute path outside/u);
+});
+
 test('supervisor rejects missing authentication before creating a child', async () => {
   await assert.rejects(startDaehanResetSupervisor({ env: {
     NODE_ENV: 'test', CA3P_TEST_DAEHAN_DB_PATH: join(tmpdir(), 'daehan.sqlite'),

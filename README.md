@@ -121,6 +121,8 @@ Windows에서 화면 코드를 수정한 뒤 실행 중인 대시보드에 반�
 
 DeepSeek를 사용하는 로컬 실습에는 `agent/.env.example`을 참고해 `agent/.env`에 `DEEPSEEK_API_KEY`를 설정한 뒤 컨테이너를 시작하세요. 대학 IDOR 검사에는 이 파일이 필요하지 않습니다. 키는 Git이나 Docker 이미지에 포함하지 마세요. 로컬 실습은 저장소의 격리된 게시판만 대상으로 사용하며 모델 API 호출에는 과금이 발생할 수 있습니다.
 
+대한대·원창대 실습과 **전체 실험 초기화**를 함께 사용하려면 Windows에서 `./scripts/start-local-internal-experiment.ps1`을 실행합니다. 이 스크립트는 두 대학 사이트를 Docker로 시작하고, 기존 4173 대시보드는 유지하면서 독립적인 [실험 대시보드](http://127.0.0.1:4175)를 띄웁니다. 대상 주소에는 `http://daehan:4101` 또는 `http://wonchang:4102`를 입력합니다. 초기화 관리 토큰은 Git에서 제외된 `.runtime/experiment-reset.env`에 처음 실행할 때 생성되어 이후 재시작에도 재사용됩니다. 관리 포트와 Docker socket은 호스트에 공개하지 않습니다. 전체 초기화는 이 실험 대시보드의 관리자 계정으로 실행하며, 실행 이력·보고서와 대학 실습 DB·세션·프로세스 상태를 복원합니다. 실행별 `vul-web-1` 게시판도 기존 초기화 경로에서 정리됩니다. 상세 절차는 [실험 초기화](docs/EXPERIMENT_RESET.md)를 참고하세요.
+
 `casper-db`의 통합 SQLite 파일과 기존 실행 보고서는 Docker named volume에 보존됩니다. 컨테이너를 내렸다가 다시 올려도 이 데이터는 남습니다. 기존 호스트의 `casper-db/data/cases.sqlite3`와 `reports/`는 새 컨테이너에 자동으로 복사되지 않습니다. 기존 과거 사례 DB가 필요하면 실습을 실행하지 않는 상태에서 `docker compose cp casper-db/data/cases.sqlite3 dashboard:/app/casper-db/data/cases.sqlite3`로 가져올 수 있습니다. 개별 보고서는 대시보드의 JSON 내보내기로 저장할 수 있습니다.
 
 ```powershell

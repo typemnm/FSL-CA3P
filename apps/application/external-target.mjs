@@ -10,6 +10,11 @@ const MAX_REQUESTS = 8;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 5000;
 const MAX_DURATION_MS = 30_000;
+const VISIBLE_RESPONSE_HEADERS = Object.freeze([
+  'content-security-policy', 'x-frame-options', 'x-content-type-options',
+  'strict-transport-security', 'access-control-allow-origin',
+  'access-control-allow-credentials', 'access-control-allow-methods',
+]);
 const blockedV4 = new BlockList();
 for (const [address, bits] of [
   ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
@@ -169,6 +174,10 @@ export async function requestExternalHttp(input, { scope, method = 'GET', signal
       if (!connected || connected !== pinned.address) {
         res.destroy(); finish(fault(403, 'DNS 연결 주소가 검증한 주소와 다릅니다.', 'EXTERNAL_DNS_REBIND')); return;
       }
+      const visibleHeaders = Object.fromEntries(VISIBLE_RESPONSE_HEADERS.flatMap(name => {
+        const value = res.headers[name];
+        return typeof value === 'string' ? [[name, value.slice(0, 256)]] : [];
+      }));
       const chunks = []; let length = 0; let truncated = false;
       res.on('data', chunk => {
         length += chunk.length;
@@ -178,6 +187,7 @@ export async function requestExternalHttp(input, { scope, method = 'GET', signal
           finish(null, { url: url.href, status: res.statusCode ?? 0,
             contentType: String(res.headers['content-type'] ?? ''),
             contentEncoding: String(res.headers['content-encoding'] ?? ''),
+            headers: visibleHeaders,
             location: String(res.headers.location ?? ''), body: Buffer.concat(chunks).toString('utf8'),
             truncated, durationMs: Date.now() - startedAt });
         } else chunks.push(chunk);
@@ -185,6 +195,7 @@ export async function requestExternalHttp(input, { scope, method = 'GET', signal
       res.on('end', () => finish(null, { url: url.href, status: res.statusCode ?? 0,
         contentType: String(res.headers['content-type'] ?? ''),
         contentEncoding: String(res.headers['content-encoding'] ?? ''),
+        headers: visibleHeaders,
         location: String(res.headers.location ?? ''),
         body: Buffer.concat(chunks).toString('utf8'), truncated, durationMs: Date.now() - startedAt }));
       res.on('error', error => finish(error));

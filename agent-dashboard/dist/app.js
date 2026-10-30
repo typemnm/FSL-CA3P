@@ -199,7 +199,10 @@ const idorModuleDescriptions = {
 };
 function isLab(item) { return ['local-lab-rule', 'local-lab-deepseek', 'local-lab-general'].includes(item?.mode); }
 function isExternalRun(item) { return item?.mode === 'external-general'; }
-function isAiLab(item) { return item?.mode === 'local-lab-deepseek' || isGeneralAssessment(item) && !isExternalRun(item); }
+function isExternalObservation(item) { return isExternalRun(item)
+  && (item.testProfile === 'external-read-only' || item.report?.inspectionMode === 'external-read-only'
+    || item.modelId === 'rule-baseline'); }
+function isAiLab(item) { return item?.mode === 'local-lab-deepseek' || isGeneralAssessment(item) && !isExternalObservation(item); }
 function canOperate() { return authSession && (!authSession.authRequired || authSession.authenticated) && authSession.user?.role !== 'viewer'; }
 function selectedFixture() { return $('fixture-select').value || 'vul-web-1'; }
 function selectedIdorFixture() { return IDOR_FIXTURES[selectedFixture()]; }
@@ -211,7 +214,7 @@ function describeModule(id, item = currentRun()) { if (isGeneralAssessment(item)
   const text = (isIdorLab(item) ? idorModuleDescriptions : isXssLab(item) ? labModuleDescriptions
   : isLab(item) ? legacyLabModuleDescriptions : moduleDescriptions)[id] || '이전 실행의 코어 이벤트입니다.';
   return isLab(item) && !isAiLab(item) ? text.replace('DeepSeek의 제한된 POST 선택', '규칙 엔진의 제한된 POST 선택') : text; }
-function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : isGeneralAssessment(item) ? '범용 점검 · 증거 기반 결과' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
+function modeLabel(item) { return isLegacyRun(item) ? '이전 보고서 · 출처 일부 미기록' : isExternalObservation(item) ? '외부 URL · 공개 페이지 읽기 관찰' : isExternalRun(item) ? '외부 URL · 범용 취약점 점검' : isGeneralAssessment(item) ? '범용 점검 · 증거 기반 결과' : isIdorLab(item) ? `${idorFixture(item)?.name || 'vul-web2'} IDOR 실습 · 규칙 엔진` : isLab(item) ? `${isXssLab(item) ? '저장형 XSS' : '격리'} 실제 실습 · ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '모의 코어 · fixture'; }
 const viewMeta = {
   chat: ['AI 채팅', 'AI <span>채팅</span>', '모델과 대화하며 실행 결과와 로컬 코드를 함께 살펴봅니다.'],
   assets: ['자산', '점검 <span>자산</span>', '등록 실습 대상과 외부 URL을 선택하고 점검을 시작합니다.'],
@@ -285,6 +288,7 @@ function acceptState(envelope) {
   labReadiness = isObject(envelope.lab) && typeof envelope.lab.available === 'boolean'
     ? { available: envelope.lab.available, model: envelope.lab.model, possibleRetries: envelope.lab.possibleRetries,
       generalSupported: envelope.lab.generalSupported === true, generalAvailable: envelope.lab.generalAvailable === true,
+      externalSupported: envelope.lab.externalSupported === true, externalAvailable: envelope.lab.externalAvailable === true,
       targetOrigins: isObject(envelope.lab.targetOrigins) ? envelope.lab.targetOrigins : {} }
     : { available: false };
   run = structuredClone(next);
@@ -368,8 +372,8 @@ function renderStats() {
   const connected = connection === 'connected';
   const connectionLabel = { connecting: '런타임 연결 중', connected: connectionTransport === 'polling' ? '1초 간격 상태 연결됨' : 'SSE 연결됨', disconnected: '연결 끊김 · 자동 재연결 중' }[connection];
   $('history-banner').hidden = !inspectedRun || !['dashboard', 'sessions', 'compare', 'reports'].includes(activeView);
-  $('execution-label').textContent = activeView === 'chat' ? 'WORKSPACE / AI CHAT' : !item.id ? 'WORKSPACE / READY' : isExternalRun(item) ? 'EXTERNAL / READ ONLY' : general ? 'GENERAL / EVIDENCE' : isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
-  $('dashboard-mode').textContent = !item.id ? '점검 대기 · 자산에서 대상을 선택하세요' : isExternalRun(item) ? '외부 URL · 공개 페이지 읽기 관찰' : general ? '범용 점검 결과 · 지원된 관측 범위' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
+  $('execution-label').textContent = activeView === 'chat' ? 'WORKSPACE / AI CHAT' : !item.id ? 'WORKSPACE / READY' : isExternalObservation(item) ? 'EXTERNAL / READ ONLY' : general ? 'GENERAL / EVIDENCE' : isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
+  $('dashboard-mode').textContent = !item.id ? '점검 대기 · 자산에서 대상을 선택하세요' : isExternalObservation(item) ? '외부 URL · 공개 페이지 읽기 관찰' : general ? '범용 점검 결과 · 지원된 관측 범위' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
   $('progress-label').textContent = !item.id ? '점검 대기' : general
     ? generalCounts ? `가설 ${generalCounts.totalHypotheses}건 · ${statusNames[item.status] || item.status}`
       : `결과 대기 · ${statusNames[item.status] || item.status}`
@@ -393,7 +397,16 @@ function renderStats() {
   const model = selectedModel();
   $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || !labReadiness.generalSupported || !labReadiness.generalAvailable;
   $('external-preflight-button').disabled = !canOperate() || !connected || active || externalPreflightPending;
-  $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || !externalPreflight?.ready;
+  $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange
+    || !externalPreflight?.ready || !model?.available || model.provider !== 'deepseek'
+    || !model.supportedModes?.includes('external-general')
+    || !labReadiness.externalSupported || !labReadiness.externalAvailable;
+  $('external-model-select').value = $('model-select').value;
+  $('external-model-select').disabled = controlPending || active || !canOperate();
+  $('external-model-readiness').textContent = !labReadiness.externalSupported ? '외부 범용 점검 서버 경로가 연결되지 않았습니다.'
+    : !labReadiness.externalAvailable || !model?.available ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 설정을 확인하세요.'
+      : !model.supportedModes?.includes('external-general') ? '외부 범용 점검을 지원하는 모델을 선택하세요.'
+      : `${model.name || model.id} · 외부 범용 점검 준비됨. 모델 API 호출에는 비용이 발생할 수 있습니다.`;
   $('fixture-select').disabled = controlPending || active || !canOperate();
   $('lab-target-origin').disabled = controlPending || active || !canOperate();
   $('lab-target-control').hidden = !idor;
@@ -678,7 +691,7 @@ $('external-target-form').addEventListener('submit', async event => {
     if (generation !== externalPreflightGeneration || $('external-url').value.trim() !== target || ($('external-path').value.trim() || '/') !== pathPrefix) return;
     externalPreflight = result.ready && result.allowed && result.token ? result : null;
     $('external-preflight-status').textContent = result.ready
-      ? `${result.normalizedUrl} · ${result.scope?.pathPrefix || '/'} · GET/HEAD 읽기 관찰 · 최대 ${result.scope?.maxRequests ?? '설정된'}요청. ${result.message || ''}`
+      ? `${result.normalizedUrl} · ${result.scope?.pathPrefix || '/'} · 허용된 읽기 요청 · 최대 ${result.scope?.maxRequests ?? '설정된'}요청. ${result.message || ''}`
       : result.message || '이 대상은 현재 점검할 수 없습니다.';
     if (result.normalizedUrl) $('external-url').value = result.normalizedUrl;
     if (result.scope?.pathPrefix) $('external-path').value = result.scope.pathPrefix;
@@ -694,15 +707,19 @@ $('external-target-form').addEventListener('submit', async event => {
 $('external-run-button').addEventListener('click', async () => {
   if (!externalPreflight?.ready) return;
   if (['queued','preparing','running','stopping'].includes(run.status)) return;
+  const model = selectedModel();
+  if (!model?.available || model.provider !== 'deepseek' || !model.supportedModes?.includes('external-general')
+    || !labReadiness.externalSupported || !labReadiness.externalAvailable
+    || pendingModelChange || browserResetError || ['failed', 'resetting'].includes(experimentStatus)) return;
   await submitControl(async () => {
     await runtime.startExternal({ target: externalPreflight.normalizedUrl,
-      pathPrefix: externalPreflight.scope.pathPrefix, preflightToken: externalPreflight.token });
+      pathPrefix: externalPreflight.scope.pathPrefix, preflightToken: externalPreflight.token, modelId: model.id });
     inspectedRun = null;
     selectedEventId = null;
     externalPreflight = null;
-    $('external-preflight-status').textContent = '외부 대상 관찰을 시작했습니다. 재실행하려면 사전 점검을 다시 수행하세요.';
+    $('external-preflight-status').textContent = '외부 범용 점검을 시작했습니다. 재실행하려면 사전 점검을 다시 수행하세요.';
     showAttackProgress();
-    notify('외부 URL의 공개 페이지 읽기 관찰을 시작했습니다.');
+    notify('외부 URL의 범용 취약점 점검을 시작했습니다.');
   });
 });
 $('lab-run-button').addEventListener('click', async () => {
@@ -933,7 +950,11 @@ async function loadWorkspace() {
     if (generation !== workspaceGeneration) return;
     const previous = $('model-select').value;
     models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string' && item.provider === 'deepseek' && item.mode === 'local-lab-general') : [];
-    $('model-select').innerHTML = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
+    const options = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
+    const externalModels = models.filter(item => item.supportedModes?.includes('external-general'));
+    const externalOptions = externalModels.length ? externalModels.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">외부 점검 모델 없음</option>';
+    $('model-select').innerHTML = options;
+    $('external-model-select').innerHTML = externalOptions;
     $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
     renderStats();
     acceptedModelId = $('model-select').value;
@@ -1106,6 +1127,7 @@ function renderPlatform() {
 function completeModelChange(id, resetPerformed = false) {
   acceptedModelId = id;
   $('model-select').value = id;
+  $('external-model-select').value = id;
   modelChangeUnreset = !resetPerformed;
   settings.modelChangeUnreset = modelChangeUnreset; persistSettings();
   pendingModelChange = null;
@@ -1155,6 +1177,10 @@ $('model-select').addEventListener('change', () => {
   if (!models.some(item => item.id === targetId && item.available)) return;
   if (!settings.confirmModelReset) { completeModelChange(targetId); return; }
   openModelReset(targetId);
+});
+$('external-model-select').addEventListener('change', () => {
+  $('model-select').value = $('external-model-select').value;
+  $('model-select').dispatchEvent(new Event('change'));
 });
 $('experiment-reset-button').addEventListener('click', () => {
   if (pendingModelChange || controlPending || !canOperate() || connection !== 'connected'
