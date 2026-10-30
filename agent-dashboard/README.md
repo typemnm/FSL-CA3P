@@ -31,6 +31,45 @@ npm run dev
 
 진단이 시작되면 수집한 URL별 결과 전체가 실행에 묶이고 실행 기록과 보고서에 저장됩니다. DeepSeek 범용 진단은 그 URL별 관찰 요약을 초기 AI 입력으로 받습니다. 기존 고정 IDOR 규칙 엔진은 파싱 결과를 판정 입력으로 사용하지 않습니다. 상세 초기화 범위는 [실험 초기화 안내](../docs/EXPERIMENT_RESET.md)에 있습니다.
 
+### 자산 탭 파싱 JSON
+
+**파싱하기**의 응답은 [원본 파서 `TargetInfo`](../web-parser/CONTRACT.md#3-출력--targetinfo-원본-그대로)를 화면과 진단에 맞게 줄인 미리보기입니다. 원본 HTML·쿠키·헤더 값과 기술 매칭 문자열은 넣지 않습니다. 아래 키 이름은 이 API의 출력 계약이며, 각 값은 웹 응답 관찰 또는 앱 내부 계산에서 생성합니다. 미리보기 JSON에는 `schemaVersion`이 없습니다.
+
+| 최상위 키 | 값과 생성 근거 |
+| --- | --- |
+| `previewId` | 서버가 발급한 임시 미리보기 ID. URL을 추가하거나 진단을 시작할 때 같은 결과를 찾는 데 사용합니다. |
+| `targetKind`, `fixtureId` | 시작 URL의 원점이 등록 대학과 일치하면 각각 `lab`과 대학 ID, 아니면 `external`과 `null`입니다. |
+| `origin`, `entryUrl` | 입력 URL에서 정규화한 원점과 시작 URL입니다. 웹사이트가 제공한 필드가 아닙니다. |
+| `pages` | 실제로 수집한 URL별 관찰 요약 배열입니다. 아래 표의 `pages[]` 키를 사용합니다. |
+| `discoveredPaths` | 각 페이지의 `paths[].url`을 합쳐 중복을 제거한 표시용 URL 목록입니다. 최대 60개이며 전부 방문했다는 뜻은 아닙니다. |
+| `crawl` | 이 앱이 시작 URL에서 발견한 페이지 후보를 자동 방문한 진행 결과입니다. 웹사이트 응답의 필드가 아닙니다. |
+| `expiresAt` | 서버 메모리의 미리보기 만료 시각(ISO 날짜 문자열). 수집 완료 후 15분입니다. |
+
+| `pages[]` 키 | 값과 생성 근거 |
+| --- | --- |
+| `url` | 실제 수집을 요청한 URL입니다. |
+| `status`, `contentType` | 최종 문서의 HTTP 상태 코드와 `Content-Type`입니다. 응답이 없으면 `null`입니다. |
+| `title` | 수집한 HTML의 `<title>` 텍스트입니다. 없으면 `null`입니다. |
+| `technologies[]` | Wappalyzer 규칙과 보완 규칙이 응답에서 찾은 기술입니다. `name`은 기술명, `version`은 확인된 버전 또는 `null`, `categories`는 규칙의 분류, `confidence`는 규칙의 매칭 점수(0~100), `evidenceFields`는 매칭에 사용된 입력 종류입니다. |
+| `libraries[]` | 기술 중 라이브러리·프레임워크 분류에 해당하거나 공개 JS·CSS 단서로 보강한 항목입니다. `name`, `version`, `evidenceFields`를 가지며, 파일명·주석 보완 규칙으로만 잡힌 경우 `source: "indicator"`가 추가됩니다. 서버 설치 패키지 전체 목록이 아닙니다. |
+| `forms[]` | 대학 브라우저가 읽은 DOM의 `<form>`입니다. `action`은 제출 URL, `method`는 HTTP 메서드, `fields[].name/type`은 폼 필드의 이름과 유형입니다. 외부 URL의 HTTP 전용 미리보기에서는 빈 배열입니다. |
+| `paths[]` | 링크·폼·리다이렉트·관찰된 요청 등에서 찾은 URL입니다. `url`은 발견 주소, `sources`는 발견 위치(`link`, `form`, `request` 등)입니다. 경로 발견과 실제 방문은 다릅니다. |
+| `errors[].code` | 페이지 수집 단계에서 발생한 오류의 코드입니다. 빈 배열은 해당 페이지에 기록된 수집 오류가 없다는 뜻입니다. |
+| `truncated` | 그 페이지의 본문·구조·표시 항목이 크기나 개수 제한으로 잘렸으면 `true`입니다. |
+| `mode` | 대학은 Chromium 관찰을 뜻하는 `browser`, 외부 URL은 제한된 HTTP 응답 분석을 뜻하는 `http-response`입니다. |
+
+기술 식별의 입력은 대상이 돌려준 HTTP 헤더와 HTML, HTML에 적힌 메타·스크립트·스타일 URL, 대학 브라우저가 읽은 일부 JS·CSS 본문 및 관찰한 DOM·JavaScript 전역·네트워크 요청입니다. `evidenceFields: ["headers"]`는 헤더 매칭, `["dom"]`은 DOM 매칭, `["implies"]`는 다른 기술의 탐지 규칙에서 추론한 항목이라는 뜻입니다. 외부 URL은 브라우저를 실행하지 않으므로 DOM·실행 후 JavaScript 상태나 별도 JS·CSS 파일 본문을 근거로 삼지 않습니다. `version: null`은 버전 단서가 없다는 뜻이고, `confidence`는 취약점 판정이나 기술 사용의 확률이 아닙니다.
+
+| `crawl` 키 | 값과 생성 근거 |
+| --- | --- |
+| `maxPages` | 이번 미리보기의 페이지 방문 한도: 등록 대학 48, 외부 URL 8입니다. |
+| `visited` | 실제 수집을 시도해 `pages`에 기록한 URL 수입니다. HTTP 200 건수와 같지 않을 수 있습니다. |
+| `queued` | 종료 시 방문 대기 중이거나 대기열 한도를 넘어서 제외된 후보 URL 수입니다. |
+| `truncated` | 페이지·시간·안전·후보 대기열·페이지 내용 한도로 수집이 중단됐으면 `true`입니다. `pages[].truncated`와 별개입니다. |
+| `stopReason` | 중단 이유: `page-limit`, `time-limit`, `safety-block`, `candidate-limit`, `page-content-limit` 또는 한도 중단이 없을 때 `null`입니다. |
+
+`crawl.queued: 0`과 `stopReason: null`은 **발견하여 방문 대상으로 선택한 URL의 대기열**을 비웠다는 뜻입니다. 로그인 뒤에만 보이는 경로, 쿼리가 필요한 페이지, 폼 제출 경로, 페이지가 링크하지 않은 경로까지 모두 파싱했다는 뜻은 아닙니다.
+
 범용 모델 요청의 기본 최대 출력은 2,048토큰입니다. `DEEPSEEK_MAX_TOKENS`를 명시하면 그 값을 우선 사용합니다.
 
 범용 점검은 HTTP/인증 읽기 관측, 허용된 저장소 소스·의존성, 이전 실행과 `casper-db`의 사례·공격 정보 요약을 출처와 함께 모델에 제공합니다. 모델은 유형을 미리 지정받지 않고 여러 가설을 제안하지만, 실행은 등록된 대상·경로·요청 예산으로 제한됩니다. 대학 대상에서는 알려진 레코드의 역할별 읽기를 비교할 수 있습니다. 확인 가능한 근거가 없는 가설은 `inconclusive` 또는 `not_tested`로 남깁니다. 범용 경로에는 브라우저 실행을 확인하는 도구가 없으므로 브라우저 실행 증거가 필요한 XSS는 확정하지 않습니다. 범용 다중 결과는 실행 이력과 JSON에 저장하고, 최종 `confirmed` finding마다 HWPX 초안을 한 개씩 작성합니다. 다른 상태에는 HWPX를 작성하지 않습니다.
