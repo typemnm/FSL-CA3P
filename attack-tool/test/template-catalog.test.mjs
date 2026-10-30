@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -9,6 +9,9 @@ import { createTemplateCatalog, templateRevision, validateTemplate, templateSche
 import { renderTemplate, templateExecutionSupport, verifyTemplate } from '../templates.mjs';
 
 const original = JSON.parse(await readFile(new URL('../templates/sqli-like-tautology.json', import.meta.url), 'utf8'));
+const builtinTemplates = await Promise.all((await readdir(new URL('../templates/', import.meta.url)))
+  .filter(name => name.endsWith('.json')).map(async name => JSON.parse(await readFile(new URL(`../templates/${name}`, import.meta.url), 'utf8'))));
+const builtinCount = builtinTemplates.length;
 const example = (templateId, extra = {}) => ({ ...structuredClone(original), templateId, ...extra });
 async function setup(t) {
   const dir = await mkdtemp(join(tmpdir(), 'ca3p-templates-'));
@@ -21,7 +24,7 @@ test('builtin JSON and strict schema have isolated public values', async t => {
   const { catalog } = await setup(t);
   assert.deepEqual(catalog.get(original.templateId), original);
   assert.equal(templateSchema.additionalProperties, false);
-  const values = catalog.list(); values[0].payloads.push('mutated');
+  const values = catalog.list(); values.find(value => value.templateId === original.templateId).payloads.push('mutated');
   assert.deepEqual(catalog.get(original.templateId).payloads, original.payloads);
 });
 
@@ -30,8 +33,8 @@ test('single, array and wrapped imports persist; identical IDs are idempotent', 
   assert.equal((await catalog.import(example('one'))).created, 1);
   assert.equal((await catalog.import([example('two'), example('three')])).created, 2);
   const result = await catalog.import({ templates: [example('four'), example('one')] });
-  assert.equal(result.created, 1); assert.equal(result.unchanged, 1); assert.equal(result.total, 5);
-  assert.equal(createTemplateCatalog({ filePath }).list().length, 5);
+  assert.equal(result.created, 1); assert.equal(result.unchanged, 1); assert.equal(result.total, builtinCount + 4);
+  assert.equal(createTemplateCatalog({ filePath }).list().length, builtinCount + 4);
   const reordered = Object.fromEntries(Object.entries(example('one')).reverse());
   assert.equal((await catalog.import(reordered)).unchanged, 1);
 });
@@ -39,7 +42,7 @@ test('single, array and wrapped imports persist; identical IDs are idempotent', 
 test('dry run and invalid later rows never partially commit', async t => {
   const { catalog } = await setup(t);
   const result = await catalog.import({ templates: [example('planned')], dryRun: true });
-  assert.equal(result.created, 1); assert.equal(result.dryRun, true); assert.equal(result.total, 2);
+  assert.equal(result.created, 1); assert.equal(result.dryRun, true); assert.equal(result.total, builtinCount + 1);
   assert.equal(catalog.get('planned'), null);
   await assert.rejects(catalog.import([example('pending'), { ...original, description: 'conflict' }]),
     { status: 409, code: 'TEMPLATE_CONFLICT', index: 1 });
@@ -72,9 +75,10 @@ test('builtin and custom updates require current revisions and preserve IDs', as
 
 test('builtin deletion persists as a tombstone and import restores it', async t => {
   const { catalog, filePath } = await setup(t);
+  const remaining = catalog.list().filter(template => template.templateId !== original.templateId);
   await catalog.remove(original.templateId, { expectedRevision: templateRevision(original) });
   assert.equal(createTemplateCatalog({ filePath }).get(original.templateId), null);
-  assert.deepEqual(catalog.list(), []);
+  assert.deepEqual(catalog.list(), remaining);
   await assert.rejects(catalog.remove(original.templateId, { expectedRevision: templateRevision(original) }), { status: 404 });
   assert.equal((await catalog.import(original)).created, 1);
   const modified = { ...original, title: 'Restored and changed' };
@@ -86,7 +90,7 @@ test('builtin deletion persists as a tombstone and import restores it', async t 
 test('concurrent imports across instances preserve all templates', async t => {
   const { catalog, filePath } = await setup(t);
   await Promise.all(Array.from({ length: 12 }, (_, index) => createTemplateCatalog({ filePath }).import(example(`parallel-${index}`))));
-  assert.equal(catalog.list().length, 13);
+  assert.equal(catalog.list().length, builtinCount + 12);
   assert.equal(JSON.parse(await readFile(filePath, 'utf8')).templates.length, 12);
 });
 
@@ -95,7 +99,7 @@ test('filesystem locking prevents lost updates across independent processes', as
   const module = new URL('../template-catalog.mjs', import.meta.url).href, script = join(dir, 'writer.mjs');
   await writeFile(script, `import { createTemplateCatalog } from ${JSON.stringify(module)};\nconst template = ${JSON.stringify(original)};\ntemplate.templateId = process.argv[3];\nawait createTemplateCatalog({filePath:process.argv[2]}).import(template);\n`);
   await Promise.all(['process-a', 'process-b', 'process-c'].map(id => promisify(execFile)(process.execPath, [script, filePath, id])));
-  assert.equal(catalog.list().length, 4);
+  assert.equal(catalog.list().length, builtinCount + 3);
 });
 
 test('invalid authority/code fields, paths and oversized payloads are rejected', async t => {
@@ -109,7 +113,7 @@ test('invalid authority/code fields, paths and oversized payloads are rejected',
   for (const value of invalid) await assert.rejects(catalog.import(value), { status: 400 });
   await assert.rejects(catalog.import(Array.from({ length: 101 }, (_, i) => example(`item-${i}`))), { status: 400 });
   await assert.rejects(catalog.import({ templates: [], dryRun: true }), { status: 400 });
-  assert.equal(catalog.list().length, 1);
+  assert.equal(catalog.list().length, builtinCount);
 });
 
 test('corrupt persisted state fails closed without replacing the original file', async t => {
@@ -132,10 +136,15 @@ test('the whole JSON template is bounded so a daemon page can always hold one en
 
 test('search combines human metadata with exact dependency filters', async t => {
   const { catalog } = await setup(t);
+  const dependencyIds = catalog.list({ q: 'node:sqlite' }).map(template => template.templateId);
+  const endpointIds = catalog.list({ q: '/api/search' }).map(template => template.templateId);
+  assert.ok(dependencyIds.includes(original.templateId));
+  assert.ok(endpointIds.includes(original.templateId));
   await catalog.import(example('searchable', { title: 'Custom Title', description: 'Human explanation' }));
   assert.equal(catalog.list({ q: 'CUSTOM TITLE', attackType: 'CWE-89', runtime: 'node' }).length, 1);
-  assert.equal(catalog.list({ q: 'node:sqlite' }).length, 2);
-  assert.equal(catalog.list({ q: '/api/search' }).length, 2);
+  const sorted = ids => ids.sort((a, b) => a.localeCompare(b));
+  assert.deepEqual(catalog.list({ q: 'node:sqlite' }).map(template => template.templateId), sorted([...dependencyIds, 'searchable']));
+  assert.deepEqual(catalog.list({ q: '/api/search' }).map(template => template.templateId), sorted([...endpointIds, 'searchable']));
   assert.equal(catalog.list({ q: 'human', runtime: 'python' }).length, 0);
 });
 
