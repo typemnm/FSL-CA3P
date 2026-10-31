@@ -3,17 +3,17 @@
  * web-parser opens exactly one endpoint in an isolated browser and returns the web
  * information it observes (response, headers, cookies, page structure, loaded
  * resources, Wappalyzer analysis, discovered paths). It does not judge, attack, or
- * crawl; the next endpoint is the model's choice (CONTRACT §1).
+ * crawl; the next endpoint is the model's choice.
  *
  * The returned TargetInfo is an untrusted browser observation, not an API or
  * ownership assertion. Secret redaction is the core's job (redactSensitive), not
- * this module's, so the summary carries observed fields as-is (CONTRACT §6).
+ * this module's, so the summary carries observed fields as-is.
  */
 
 import { collect as collectDefault } from '../../../web-parser/collect.mjs';
 
 // Keep an abort that lands during Wappalyzer analysis bounded: the Worker match
-// finishes within timeoutMs before the call rejects (CONTRACT §2), so cap at 15s.
+// finishes within timeoutMs before collect() rejects, so cap at 15s.
 export const DEFAULT_TIMEOUT_MS = 15000;
 // Section count caps for the model summary; a truncated section carries { shown, total }.
 export const MAX_SUMMARY_BYTES = 40 * 1024;
@@ -27,9 +27,9 @@ function section(list, cap, map = value => value) {
   return items.length < array.length ? { shown: items.length, total: array.length, items } : items;
 }
 
-const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', nbsp: ' ' };
+const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', nbsp: '\u00a0' };
 const codePoint = code => code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
-  ? String.fromCodePoint(code) : '�';
+  ? String.fromCodePoint(code) : '\ufffd';
 
 function extractTitle(html) {
   if (typeof html !== 'string') return null;
@@ -63,7 +63,7 @@ function build(info, caps) {
     links: section(structure.links, caps.links, link => link.href),
     resources: section(info.resources, caps.resources, resource => ({ kind: resource.kind,
       method: resource.method, url: resource.url, status: resource.status })),
-    // robots/sitemap results surface here too: paths[].sources carries robots:* and sitemap* (CONTRACT §3).
+    // robots/sitemap results surface here too: paths[].sources carries robots:* and sitemap*.
     paths: section(info.paths, caps.paths, path => ({ url: path.url, sources: path.sources,
       methods: path.methods, sameOrigin: path.sameOrigin, params: path.params,
       ...(path.wildcard ? { wildcard: true } : {}) })),
@@ -75,7 +75,7 @@ function build(info, caps) {
 /**
  * Compact TargetInfo for the model. Fields are taken as-is (no masking); only the
  * item counts are capped, and a capped section keeps { shown, total } so the model
- * sees that it was truncated rather than silently losing entries (CONTRACT §3).
+ * sees that it was truncated rather than silently losing entries.
  */
 export function summarizeTargetInfo(info, { maxBytes = MAX_SUMMARY_BYTES } = {}) {
   const caps = { ...CAPS };
@@ -106,9 +106,6 @@ const list = value => Array.isArray(value) ? value : [];
 const compact = value => Object.fromEntries(Object.entries(value)
   .filter(([, item]) => item != null && !(Array.isArray(item) && !item.length)));
 const capped = (items, cap) => items.length > cap ? [...items.slice(0, cap), `+${items.length - cap} more`] : items;
-const framesOf = structure => [
-  ...list(structure.iframes).map(frame => ({ tag: 'iframe', src: frame.src, sandbox: frame.sandbox ?? null })),
-  ...list(structure.frames).map(frame => ({ tag: 'frame', src: frame.src, sandbox: null }))].filter(frame => frame.src);
 
 /**
  * `lead; label shown/total: [item,...]`, adding whole JSON items while the summary and the
@@ -155,7 +152,8 @@ export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRol
   };
   const subject = `web_info ${clean(asset)}${sessionRole ? ` as fixed ${sessionRole}` : ''}`;
   const base = (suffix, kind) => ({ id: suffix ? `${idBase}-${suffix}` : idBase, source, kind, asset });
-  const frames = framesOf(structure);
+  const frames = [...list(structure.iframes).map(frame => ({ tag: 'iframe', src: frame.src, sandbox: frame.sandbox })),
+    ...list(structure.frames).map(frame => ({ tag: 'frame', src: frame.src }))].filter(frame => frame.src);
   const finalUrl = info.target?.finalUrl;
   const title = extractTitle(info.html);
   const counts = { headers: list(info.headers).length, cookies: list(info.cookies).length,
@@ -204,116 +202,6 @@ export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRol
       `${subject} page surface; response body, cookie values and secret header values are not retained`,
       surface) : null,
   ].filter(Boolean).slice(0, Math.max(0, remaining));
-}
-
-// The UI view is stored as a run artifact; nested lists are named `<section>.<list>`.
-export const MAX_VIEW_BYTES = 256 * 1024;
-const VIEW_TEXT_LENGTH = 2000;
-const VIEW_CAPS = Object.freeze({ redirectChain: 30, technologies: 100, 'technologies.evidence': 10,
-  paths: 500, forms: 100, 'forms.fields': 50, frames: Infinity, headers: 100, cookies: 100, hosts: 100, errors: 50 });
-
-/** Loaded resources grouped by URL host, in first-seen order. */
-function hostsOf(resources, origin) {
-  const hosts = new Map();
-  for (const resource of list(resources)) {
-    let url;
-    try { url = new URL(resource.url); } catch { continue; }
-    if (!url.host) continue;
-    const entry = hosts.get(url.host) ?? { host: url.host, sameOrigin: false, requests: 0, kinds: [] };
-    entry.sameOrigin ||= url.origin === origin;
-    entry.requests += 1;
-    if (resource.kind != null && !entry.kinds.includes(resource.kind)) entry.kinds.push(resource.kind);
-    hosts.set(url.host, entry);
-  }
-  return [...hosts.values()];
-}
-
-function buildView(info, { probeId, iteration, sessionRole }, caps, text, headerValue) {
-  const hit = new Set();
-  const shown = {};
-  const clip = (name, items) => {
-    const array = list(items);
-    if (array.length > caps[name]) hit.add(name);
-    shown[name] = Math.max(shown[name] ?? 0, Math.min(array.length, caps[name]));
-    return array.slice(0, caps[name]);
-  };
-  const value = item => typeof item === 'string' ? text(item)
-    : typeof item === 'number' || typeof item === 'boolean' ? item : null;
-  const strings = items => list(items).map(value);
-  const structure = info.structure ?? {};
-  const navigation = info.navigation ?? {};
-  const tls = navigation.securityDetails;
-  const libraries = new Set(list(info.libraries).map(library => library.name));
-  const view = {
-    schemaVersion: 'web-info-view/1', probeId: value(probeId), iteration: value(iteration),
-    sessionRole: value(sessionRole),
-    target: { requestedUrl: value(info.target?.requestedUrl), finalUrl: value(info.target?.finalUrl),
-      origin: value(info.target?.origin) },
-    response: { status: value(navigation.status), contentType: value(navigation.contentType),
-      loadTimingMs: value(navigation.loadTimingMs), title: value(extractTitle(info.html)),
-      tls: tls ? { protocol: value(tls.protocol), issuer: value(tls.issuer), subjectName: value(tls.subjectName),
-        validFrom: value(tls.validFrom), validTo: value(tls.validTo) } : null },
-    redirectChain: clip('redirectChain', navigation.redirectChain).map(hop => ({ from: value(hop.from),
-      to: value(hop.to), status: value(hop.status), kind: value(hop.kind) })),
-    technologies: clip('technologies', info.technologies).map(tech => ({ name: value(tech.name),
-      version: value(tech.version), categories: strings(tech.categories), confidence: value(tech.confidence),
-      library: libraries.has(tech.name),
-      // `key` would be blanked by redact(); a cookie or secret-header match is part of the secret value.
-      evidence: clip('technologies.evidence', tech.evidence).map(item => ({ field: value(item.field),
-        ...(item.key != null ? { name: value(item.key) } : {}),
-        match: item.field === 'cookies' || item.field === 'headers' && SECRET_HEADER.test(item.key ?? '')
-          ? null : value(item.match) })) })),
-    paths: { total: list(info.paths).length, items: clip('paths', info.paths).map(path => ({ url: value(path.url),
-      sources: strings(path.sources), methods: strings(path.methods), sameOrigin: path.sameOrigin === true,
-      params: strings(path.params), ...(path.wildcard ? { wildcard: true } : {}) })) },
-    forms: { total: list(structure.forms).length, items: clip('forms', structure.forms).map(form => ({
-      action: value(form.action), method: value(form.method),
-      fields: clip('forms.fields', form.fields).map(field => ({ name: value(field.name), type: value(field.type) })) })) },
-    frames: clip('frames', framesOf(structure)).map(frame => ({ tag: frame.tag, src: value(frame.src),
-      sandbox: value(frame.sandbox) })),
-    headers: clip('headers', info.headers).map(header => SECRET_HEADER.test(header.name)
-      ? { name: value(header.name) } : { name: value(header.name), value: value(headerValue(header.value ?? '')) }),
-    cookies: clip('cookies', info.cookies).map(cookie => ({ name: value(cookie.name), domain: value(cookie.domain),
-      path: value(cookie.path), expires: value(cookie.expires), httpOnly: value(cookie.httpOnly),
-      secure: value(cookie.secure), sameSite: value(cookie.sameSite) })),
-    hosts: clip('hosts', hostsOf(info.resources, info.target?.origin)).map(host => ({ host: value(host.host),
-      sameOrigin: host.sameOrigin, requests: host.requests, kinds: strings(host.kinds) })),
-    errors: clip('errors', info.errors).map(error => ({ stage: value(error.stage), message: value(error.message) })),
-    truncated: { source: info.truncated === true, sections: [...hit] },
-  };
-  return { view, shown };
-}
-
-/**
- * One UI-sized view of a TargetInfo (`web-info-view/1`), stored as a run artifact. Pure; no I/O.
- * Never carries html, body, inline scripts, meta, media, cookie values or secret header values.
- * Header values go through `safeHeaderValue`, then every string through `safeText` (cut to 2000
- * characters first, so a mask is never split). The JSON stays within MAX_VIEW_BYTES by halving the
- * list showing the most items; every capped list is named in `truncated.sections`.
- */
-export function webInfoView(info, { probeId, iteration, sessionRole = null, safeText = String,
-  safeHeaderValue = String } = {}) {
-  const masked = new Map();
-  const text = raw => {
-    if (!masked.has(raw)) {
-      let result;
-      // Masking can lengthen a string; cut the raw text shorter instead of cutting the masked one.
-      for (let length = VIEW_TEXT_LENGTH; ; length = Math.floor(length / 2)) {
-        result = String(safeText(raw.slice(0, length)));
-        if (result.length <= VIEW_TEXT_LENGTH || !length) break;
-      }
-      masked.set(raw, result);
-    }
-    return masked.get(raw);
-  };
-  const caps = { ...VIEW_CAPS };
-  for (;;) {
-    const { view, shown } = buildView(info, { probeId, iteration, sessionRole }, caps, text, safeHeaderValue);
-    if (Buffer.byteLength(JSON.stringify(view), 'utf8') <= MAX_VIEW_BYTES) return view;
-    const widest = Object.keys(shown).reduce((best, key) => shown[key] > (shown[best] ?? 0) ? key : best, null);
-    if (!widest) return view; // only scalars are left
-    caps[widest] = Math.floor(shown[widest] / 2);
-  }
 }
 
 /**
