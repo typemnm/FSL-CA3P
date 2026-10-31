@@ -28,6 +28,27 @@ function pageItems(page) {
   if (Array.isArray(page)) return page;
   return page?.runs ?? page?.items ?? [];
 }
+const SAFE_ID = /^[a-zA-Z0-9._:-]{1,128}$/;
+const cleanText = (value, max) => typeof value === 'string'
+  ? redact(value).replace(/[\u0000-\u001f\u007f]/gu, ' ').slice(0, max) : null;
+// Whitelisted web_info.collected fields so the module page can show what was collected.
+function webInfoLog(event) {
+  if (event.stage !== 'web_info.collected') return {};
+  const counts = event.counts && typeof event.counts === 'object' ? event.counts : {};
+  return {
+    detail: cleanText(event.detail, 200),
+    asset: cleanText(event.asset, 512),
+    sessionRole: typeof event.sessionRole === 'string' && /^[a-zA-Z0-9._:-]{1,64}$/.test(event.sessionRole) ? event.sessionRole : null,
+    probeId: typeof event.probeId === 'string' && SAFE_ID.test(event.probeId) ? event.probeId : null,
+    iteration: Number.isSafeInteger(event.iteration) && event.iteration >= 0 ? event.iteration : null,
+    ok: event.ok === true,
+    httpStatus: Number.isInteger(event.status) && event.status >= 100 && event.status <= 599 ? event.status : null,
+    ...(typeof event.artifactId === 'string' && /^[a-f0-9]{64}$/.test(event.artifactId) ? { artifactId: event.artifactId } : {}),
+    counts: Object.fromEntries(['technologies', 'paths', 'forms', 'errors']
+      .map(key => [key, Number.isSafeInteger(counts[key]) && counts[key] >= 0 ? counts[key] : 0])),
+    truncated: event.truncated === true,
+  };
+}
 function safeLog(event, run) {
   const guardrail = event.module === 'guardrail' && event.response?.payload;
   const ruleId = typeof guardrail?.ruleId === 'string' && /^[a-zA-Z0-9._:-]{1,80}$/.test(guardrail.ruleId)
@@ -48,6 +69,7 @@ function safeLog(event, run) {
     ...(typeof guardrail?.decision === 'string' ? { decision: guardrail.decision } : {}),
     ...(typeof event.correlationId === 'string' && /^[a-zA-Z0-9._:-]{1,128}$/.test(event.correlationId)
       ? { correlationId: event.correlationId } : {}),
+    ...webInfoLog(event),
   };
 }
 function belongsTo(event, item) {
