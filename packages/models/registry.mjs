@@ -1,4 +1,5 @@
 import config from '../../agent/src/deepseek-config.js';
+import { listLocalPlannerModels } from './local-planner.mjs';
 
 const definitions = Object.freeze([
   { id: 'rule-baseline', name: '규칙 기반 · 대학 실습 IDOR', provider: 'local', mode: 'local-lab-rule' },
@@ -7,12 +8,14 @@ const definitions = Object.freeze([
 ]);
 
 export function listModels(options = {}) {
-  return definitions.map(model => {
+  const env = options.env ?? process.env;
+  const envFile = options.envFile;
+  const remote = definitions.map(model => {
     if (model.provider === 'local') return { ...model, available: true,
       supportedModes: ['local-lab-rule'],
       capabilities: ['structured-action', 'deterministic-reflection'], modelRole: 'rule-baseline' };
     try {
-      config.resolveDeepSeekOptions({ ...options, env: { ...(options.env ?? process.env), DEEPSEEK_MODEL: model.id } });
+      config.resolveDeepSeekOptions({ ...options, env: { ...env, DEEPSEEK_MODEL: model.id } });
       return { ...model, available: true, supportedModes: ['local-lab-general', 'external-general'],
         capabilities: ['json', 'cancel', 'bounded-curl', 'general-evidence-planner'], modelRole: 'constrained-planner' };
     } catch {
@@ -21,6 +24,7 @@ export function listModels(options = {}) {
         capabilities: ['json', 'cancel', 'bounded-curl', 'general-evidence-planner'], modelRole: 'constrained-planner' };
     }
   });
+  return [...remote, ...listLocalPlannerModels({ env, envFile })];
 }
 
 export const modelDefinitions = definitions;

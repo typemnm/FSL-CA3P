@@ -77,12 +77,12 @@ export function computeContext(session, { content = '', context = null,
   };
 }
 
-const LOCAL_RUNTIME_LABELS = Object.freeze({ 'llama-cpp': 'llama.cpp', ollama: 'Ollama', 'lm-studio': 'LM Studio',
+export const LOCAL_RUNTIME_LABELS = Object.freeze({ 'llama-cpp': 'llama.cpp', ollama: 'Ollama', 'lm-studio': 'LM Studio',
   'docker-model-runner': 'Docker Model Runner', openai: 'OpenAI 호환' });
-const LOCAL_MAX_OUTPUT_TOKENS = 2048;
+export const LOCAL_MAX_OUTPUT_TOKENS = 2048;
 const LOCAL_CONTEXT_MARGIN = 512;
-const LOCAL_DISCOVERY_TIMEOUT_MS = 1200;
-const LOCAL_COMPLETION_TIMEOUT_MS = 120000;
+export const LOCAL_DISCOVERY_TIMEOUT_MS = 1200;
+export const LOCAL_COMPLETION_TIMEOUT_MS = 120000;
 const LOCAL_DEFAULTS = Object.freeze([
   { label: 'ollama', endpoint: 'http://127.0.0.1:11434', protocol: 'ollama' },
   { label: 'lm-studio', endpoint: 'http://127.0.0.1:1234/v1', protocol: 'openai' },
@@ -103,7 +103,7 @@ function localEndpoint(raw) {
   return value.toString().replace(/\/+$/, '');
 }
 
-function localConfigs(env, envFile) {
+export function localConfigs(env, envFile) {
   let values = {};
   if (envFile !== false && envFile !== null) {
     try { values = config.parseEnvText(readFileSync(envFile ?? config.DEFAULT_ENV_FILE, 'utf8')); }
@@ -149,7 +149,7 @@ function localConfigs(env, envFile) {
   return [{ label, endpoint, protocol, configured: true, apiKey, contextWindowTokens, model }];
 }
 
-const safeLocalModelName = value => typeof value === 'string' && value.trim() && value.length <= 160
+export const safeLocalModelName = value => typeof value === 'string' && value.trim() && value.length <= 160
   && !/[\u0000-\u001f\u007f]/u.test(value) && Buffer.byteLength(value, 'utf8') <= 320;
 const localModelId = (label, name) => `local:${label}:${createHash('sha256').update(name).digest('hex').slice(0, 20)}`;
 function localModelRow(server, name, available, reason = null) {
@@ -162,7 +162,7 @@ function localModelRow(server, name, available, reason = null) {
     applicationBudgetTokens, contextWindowTokens: server.contextWindowTokens, maxOutputTokens: LOCAL_MAX_OUTPUT_TOKENS };
 }
 
-async function localJson(fetchImpl, url, { method = 'GET', body, apiKey, signal, timeoutMs, limit = 512 * 1024 } = {}) {
+export async function localJson(fetchImpl, url, { method = 'GET', body, apiKey, signal, timeoutMs, limit = 512 * 1024 } = {}) {
   const controller = new AbortController(); let timedOut = false;
   const abort = () => controller.abort(signal?.reason);
   if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });

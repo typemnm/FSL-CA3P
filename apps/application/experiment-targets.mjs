@@ -12,7 +12,7 @@ function isReadOnlyExternalRun(run) {
     || run.targetKind !== 'external' || run.simulated !== false) return false;
   if (run.testProfile === 'external-read-only') return run.modelId === 'rule-baseline';
   return run.testProfile === 'external-general'
-    && ['deepseek-flash', 'deepseek-v4-pro'].includes(run.modelId)
+    && ['deepseek-flash', 'deepseek-v4-pro', 'local-llm'].includes(run.modelId)
     && run.manifest?.execution?.inspectionMode === 'external-general'
     && Array.isArray(run.manifest?.policy?.methods)
     && run.manifest.policy.methods.length > 0

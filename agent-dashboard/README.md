@@ -4,7 +4,7 @@
 
 ## 실행
 
-대시보드 서버만 실행하려면 Node.js 24가 필요합니다. 등록 실습과 외부 URL의 범용 점검은 실제 DeepSeek 설정이 필요합니다. AI 채팅에서 지원하는 로컬 LLM 설정과 범용 점검의 모델 지원은 별개입니다. 범용 점검에는 PATH에서 실행할 수 있는 `curl`, Python 3.11 이상과 `casper-db`의 의존성도 필요합니다. 설치 명령은 [루트 README](../README.md)에 있습니다. 프로젝트 루트에서 실행합니다.
+대시보드 서버만 실행하려면 Node.js 24가 필요합니다. 등록 실습과 외부 URL의 범용 점검은 DeepSeek 또는 이 장치의 로컬 LLM(`CA3P_CHAT_LOCAL_ENDPOINT`)이 필요합니다. 채팅과 같은 로컬 서버 설정을 점검 플래너·검증기에도 사용합니다. 범용 점검에는 PATH에서 실행할 수 있는 `curl`, Python 3.11 이상과 `casper-db`의 의존성도 필요합니다. 설치 명령은 [루트 README](../README.md)에 있습니다. 프로젝트 루트에서 실행합니다.
 
 ```powershell
 npm start
