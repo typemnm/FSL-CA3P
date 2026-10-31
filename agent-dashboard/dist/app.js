@@ -2,6 +2,7 @@ import { MODULES, validateTarget, formatElapsed } from './telemetry-view.js';
 import { initStarfield } from './starfield.js';
 import { createRuntimeClient } from './runtime-client.js';
 import { generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun, renderGeneralReport } from './general-results.js';
+import { renderWebInfoDetail, renderWebInfoSection } from './web-info-view.js';
 import { createOperationsPages } from './operations-pages.js';
 import { createWorkspaceChat } from './workspace-chat.js';
 
@@ -603,11 +604,17 @@ function renderReports() {
     if (!generalReport(item)) {
       const message = item.status === 'failed' ? `점검을 완료하지 못했습니다. ${escape(item.error || '오류 내용을 실행 이력에서 확인하세요.')}`
         : '관측과 검증이 진행 중입니다. 결과가 저장되면 가설별 근거와 미점검 사유를 표시합니다.';
-      $('report-content').innerHTML = `<section class="panel empty-state" role="status"><h2>범용 점검 결과 대기</h2><p>${message}</p></section>`;
+      const previousWebInfo = $('report-content').querySelector('.web-info-section');
+      const webInfo = renderWebInfoSection(item);
+      $('report-content').innerHTML = `<section class="panel empty-state" role="status"><h2>범용 점검 결과 대기</h2><p>${message}</p></section>${webInfo}`;
+      keepWebInfoSection(previousWebInfo, webInfo);
       if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
       return;
     }
-    $('report-content').innerHTML = `${reportDocumentMarkup(item)}${renderGeneralReport(item)}${jsonSection('범용 점검 결과 원문', generalReport(item))}`;
+    const previousWebInfo = $('report-content').querySelector('.web-info-section');
+    const webInfo = renderWebInfoSection(item);
+    $('report-content').innerHTML = `${reportDocumentMarkup(item)}${renderGeneralReport(item)}${webInfo}${jsonSection('범용 점검 결과 원문', generalReport(item))}`;
+    keepWebInfoSection(previousWebInfo, webInfo);
     if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
     if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
     hydrateIcons($('report-content'));
@@ -625,6 +632,30 @@ function renderReports() {
   hydrateIcons($('report-content'));
   if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
   if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
+}
+// Polling re-renders the report every second; keep open web-info cards and their loaded details.
+let webInfoMarkup = '';
+const webInfoViews = new Map();
+function keepWebInfoSection(previous, markup) {
+  const next = $('report-content').querySelector('.web-info-section');
+  if (previous && next && markup === webInfoMarkup) next.replaceWith(previous);
+  else if (previous && next) next.querySelectorAll('details[data-web-info-artifact]').forEach(card => {
+    card.open = !!previous.querySelector(`details[data-web-info-artifact="${card.dataset.webInfoArtifact}"][open]`);
+  });
+  webInfoMarkup = markup;
+}
+async function loadWebInfo(card) {
+  const id = card.dataset.webInfoArtifact;
+  const body = card.querySelector('.web-info-detail');
+  if (!webInfoViews.has(id)) webInfoViews.set(id, runtime.api(`/api/artifacts/${id}`).then(view => renderWebInfoDetail(redactTelemetry(view))));
+  try { body.innerHTML = await webInfoViews.get(id); }
+  catch (error) {
+    webInfoViews.delete(id);
+    const message = error.status === 404 ? '저장된 상세 정보를 찾을 수 없습니다.'
+      : error.status === 409 ? '저장된 상세 정보가 무결성 또는 민감 정보 검사를 통과하지 못해 표시하지 않습니다.'
+        : '상세 정보를 불러오지 못했습니다. 연결을 확인한 뒤 카드를 다시 펼치세요.';
+    body.innerHTML = `<p class="web-info-note web-info-error" role="alert">${escape(message)}</p>`;
+  }
 }
 function renderNotifications() {
   $('notification-list').innerHTML = currentRun().events.slice(-3).reverse().map((event) => `<div class="notification-event">${escape(event.title)}<small>${escape(moduleById(event.module).name)} · ${escape(timeLabel(event.time))}</small></div>`).join('') || '<div class="notification-event">아직 이벤트가 없습니다.</div>';
@@ -829,6 +860,10 @@ $('report-run-select').addEventListener('change', async event => {
   } catch (error) { showRuntimeError(error.message); }
 });
 $('report-preview-close').addEventListener('click', () => { reportPreviewGeneration += 1; $('report-preview').hidden = true; $('report-preview-frame').srcdoc = ''; });
+// toggle does not bubble; capture it for the web-info cards.
+$('report-content').addEventListener('toggle', event => {
+  if (event.target.matches?.('details[data-web-info-artifact]') && event.target.open) void loadWebInfo(event.target);
+}, true);
 $('report-content').addEventListener('click', async event => {
   const button = event.target.closest('[data-preview-finding]');
   if (!button || !currentRun().id) return;

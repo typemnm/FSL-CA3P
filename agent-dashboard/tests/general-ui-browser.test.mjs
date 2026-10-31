@@ -278,3 +278,103 @@ test('confirmed general findings have separate HWPX downloads and partial failur
   assert.match(await page.locator('#report-document-status').textContent(), /확정된 취약점 없음/);
   assert.equal(await page.locator('.report-document-download').count(), 0);
 });
+
+test('web-parser result cards load each artifact once and survive polling re-renders', async t => {
+  const viewId = 'd'.repeat(64); const missingId = 'e'.repeat(64);
+  const webEvent = (artifactId, overrides = {}) => ({ stage: 'web_info.collected', module: 'web-parser', source: 'web-parser',
+    type: 'info', title: '웹 정보 수집', detail: 'GET /board → HTTP 200', probeId: `p-${artifactId?.[0] ?? 'x'}`, iteration: 1,
+    asset: '/board?page=2', sessionRole: 'member', ok: true, status: 200, artifactId,
+    counts: { technologies: 1, paths: 2, forms: 0, errors: 0 }, truncated: false, time: '2026-10-26T00:00:01Z', ...overrides });
+  const webRun = { ...structuredClone(run), id: 'web-info-run', status: 'completed', report: structuredClone(report),
+    reportDocument: { status: 'skipped', errorCode: 'GENERAL_DOCUMENT_UNSUPPORTED' },
+    events: [{ stage: 'inventory.collect', title: 'Inventory', module: 'agent', time: '2026-10-26T00:00:00Z' },
+      webEvent(viewId), webEvent(missingId, { asset: '/gone' }),
+      webEvent(null, { asset: '/down', ok: false, status: null, type: 'warning', detail: '웹 정보 수집 실패',
+        counts: { technologies: 0, paths: 0, forms: 0, errors: 1 } })] };
+  const view = { schemaVersion: 'web-info-view/1', probeId: 'p-d', iteration: 1, sessionRole: 'member',
+    target: { requestedUrl: 'https://app.test/board?page=2', finalUrl: 'https://app.test/board?page=2', origin: 'https://app.test' },
+    response: { status: 200, contentType: 'text/html', loadTimingMs: 12, title: '<img src=x onerror=alert(1)>', tls: null },
+    redirectChain: [], frames: [], cookies: [], hosts: [], errors: [], truncated: { source: false, sections: [] },
+    headers: [{ name: 'Content-Type', value: 'text/html' }],
+    technologies: [{ name: 'jQuery', version: '3.6.0', categories: ['JavaScript libraries'], confidence: 100, library: true,
+      evidence: [{ field: 'scriptSrc', match: 'jquery.min.js' }] }],
+    paths: { total: 2, items: [
+      { url: 'https://app.test/board/view', sources: ['link'], methods: ['GET'], sameOrigin: true, params: ['id'] },
+      { url: 'https://cdn.example.net/lib.js', sources: ['request:script'], methods: ['GET'], sameOrigin: false, params: [] }] },
+    forms: { total: 0, items: [] } };
+  const fetches = [];
+  const localChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  const browser = await chromium.launch({ headless: true,
+    ...(process.platform === 'win32' && !existsSync(chromium.executablePath()) && existsSync(localChrome)
+      ? { executablePath: localChrome } : {}) });
+  t.after(async () => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => { window.EventSource = undefined; });
+  await page.route('**/*', async route => {
+    const file = new URL(route.request().url()).pathname.split('/').pop() || 'index.html';
+    if (!/^[a-z-]+\.(?:html|js|css|svg)$/.test(file)) return route.fulfill({ status: 404, body: '' });
+    const bytes = await readFile(new URL(`../dist/${file}`, import.meta.url));
+    return route.fulfill({ contentType: ({ html: 'text/html', js: 'text/javascript', css: 'text/css', svg: 'image/svg+xml' })[file.split('.').pop()], body: bytes });
+  });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    const json = (value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
+    if (path.startsWith('/api/artifacts/')) {
+      fetches.push(path);
+      return path.endsWith(viewId) ? json(view) : json({ error: 'Artifact not found.' }, 404);
+    }
+    if (path === '/api/auth/session') return json({ authenticated: true, authRequired: false, user: { role: 'operator', name: 'Test' } });
+    if (path === '/api/state') return json({ instanceId: 'web-info-test', mode: webRun.mode, run: webRun,
+      lab: { available: true, generalSupported: true, generalAvailable: true } });
+    if (path === '/api/runs') return json({ runs: [webRun], total: 1 });
+    if (path === `/api/runs/${webRun.id}`) return json({ run: webRun });
+    if (path === '/api/models') return json({ models: [] });
+    if (path === '/api/platform') return json({ source: {}, modules: [] });
+    if (path === '/api/ci-results') return json({ runs: [] });
+    return json({});
+  });
+  await page.goto('http://ca3p.invalid/#dashboard');
+  await page.locator('[data-view=reports]').click();
+  const section = page.locator('#report-content .web-info-section');
+  await section.waitFor();
+  assert.equal(await page.locator('.web-info-card').count(), 3);
+  assert.equal(await page.locator('details[data-web-info-artifact]').count(), 2);
+  assert.match(await section.textContent(), /상세 정보 없음/);
+  assert.deepEqual(fetches, []);
+  // Placed after the findings and before the raw JSON section.
+  assert.equal(await page.evaluate(() => {
+    const web = document.querySelector('#report-content .web-info-section');
+    const finding = document.querySelector('#report-content .general-finding');
+    const raw = [...document.querySelectorAll('#report-content .core-report')].at(-1);
+    return !!(finding.compareDocumentPosition(web) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && !!(web.compareDocumentPosition(raw) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }), true);
+
+  const card = page.locator(`details[data-web-info-artifact="${viewId}"]`);
+  await card.locator('summary').click();
+  await card.locator('.web-info-table').first().waitFor();
+  assert.match(await card.locator('.web-info-block').first().textContent(), /jQuery[\s\S]*3\.6\.0/);
+  assert.equal(await card.getByText('https://app.test/board/view').isVisible(), true);
+  assert.equal(await card.getByText('https://cdn.example.net/lib.js').isVisible(), false);
+  await card.locator('.web-info-external > summary').click();
+  assert.equal(await card.getByText('https://cdn.example.net/lib.js').isVisible(), true);
+  // Polling replaces the report every second; the open card, its nested toggle and its content stay.
+  await page.waitForTimeout(1500);
+  assert.equal(await card.evaluate(element => element.open), true);
+  assert.equal(await card.locator('.web-info-external').evaluate(element => element.open), true);
+  assert.equal(await card.getByText('https://cdn.example.net/lib.js').isVisible(), true);
+  await card.locator('summary').first().click();
+  await card.locator('summary').first().click();
+  await card.locator('.web-info-table').first().waitFor();
+  assert.deepEqual(fetches, [`/api/artifacts/${viewId}`]);
+
+  const missing = page.locator(`details[data-web-info-artifact="${missingId}"]`);
+  await missing.locator('summary').click();
+  await missing.getByText('저장된 상세 정보를 찾을 수 없습니다.').waitFor();
+  assert.equal(await page.locator('#report-content script, .web-info-section img, .web-info-section a').count(), 0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  assert.deepEqual(errors, []);
+});
