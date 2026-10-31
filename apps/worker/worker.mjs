@@ -150,6 +150,11 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
             status: result?.status ?? 'completed', evidenceId: result?.evidenceId ?? null,
           });
         },
+        async onWebInfo({ probeId, view }) {
+          store.assertLease(lease);
+          return { artifactId: store.writeArtifact(lease.runId, 'web-info', view, { contentType: 'application/json',
+            provenance: 'web-parser-observation', probeId }).id };
+        },
       });
       let resolveTerminal;
       const terminal = new Promise(resolve => { resolveTerminal = resolve; });
