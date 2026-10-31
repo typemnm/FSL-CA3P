@@ -406,6 +406,20 @@ test('registered universities and board launch general assessments with their se
   assert.deepEqual(errors, []);
 });
 
+test('local planner model starts a general assessment from the assets screen', async t => {
+  const { page, mutations, errors } = await setup(t, 'operator', null, {
+    models: [{ id: 'local-llm', name: '로컬 LLM · qwen3', provider: 'local', local: true,
+      mode: 'local-lab-general', available: true, supportedModes: ['local-lab-general', 'external-general'] }],
+  });
+  await page.waitForFunction(() => document.querySelector('#model-select').value === 'local-llm');
+  assert.equal(await page.locator('#lab-run-button').isEnabled(), true);
+  assert.match(await page.locator('#lab-readiness').textContent(), /로컬 LLM/);
+  await page.locator('#lab-run-button').click();
+  await page.locator('#view-dashboard').waitFor({ state: 'visible' });
+  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'local-llm' }, csrf: 'csrf-live' });
+  assert.deepEqual(errors, []);
+});
+
 test('saved IDOR evidence remains readable after single-check launch controls are removed', async t => {
   const historical = { ...snapshot('candidate', 'local-lab-rule'), fixtureId: 'vul-web2-wonchang',
     testProfile: 'known_record_idor_read', target: 'http://127.0.0.1:4102',

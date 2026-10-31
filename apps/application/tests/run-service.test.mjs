@@ -162,7 +162,8 @@ test('general run freezes configured loop limits in queued options and manifest'
 });
 
 test('general assessment requires a real configured model and registered target scope', async t => {
-  const { service } = setup(t, { autoStartWorker: false, importLegacy: false });
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: '', CA3P_CHAT_LOCAL_ENDPOINT: '', LOCAL_LLM_BASE_URL: '', SLLM_ENDPOINT: '', OLLAMA_HOST: '' } });
   assert.equal(service.getState().lab.generalSupported, true);
   assert.equal(service.getState().lab.generalAvailable, false);
   await assert.rejects(service.start({ mode: 'local-lab-general', fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash' }), { status: 503 });
@@ -178,6 +179,23 @@ test('general assessment requires a real configured model and registered target 
   ]) await assert.rejects(configured.start(options), { status: 400 });
   assert.equal(service.listRuns().total, 0);
   assert.equal(configured.listRuns().total, 0);
+});
+
+test('a configured local planner queues a general assessment without DeepSeek', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false, env: {
+    DEEPSEEK_API_KEY: '', CA3P_CHAT_LOCAL_ENDPOINT: 'http://127.0.0.1:11434',
+    CA3P_CHAT_LOCAL_RUNTIME: 'ollama', CA3P_CHAT_LOCAL_MODEL: 'qwen3',
+  } });
+  assert.equal(service.getState().lab.generalAvailable, true);
+  const local = service.getState().lab.models.find(item => item.id === 'local-llm');
+  assert.equal(local.available, true);
+  const state = await service.start({ mode: 'local-lab-general', modelId: 'local-llm', fixtureId: 'vul-web-1' });
+  assert.equal(state.run.status, 'queued');
+  assert.equal(state.run.modelId, 'local-llm');
+  assert.equal(state.run.manifest.model.provider, 'local');
+  const lease = service.store.claimNext('local-planner-test');
+  assert.equal(lease.modelId, 'local-llm');
+  service.store.finish(lease, 'completed');
 });
 
 test('general board run records unavailable case history instead of failing to queue', async t => {

@@ -42,7 +42,8 @@ function sanitizeMetadata(metadata) {
     usage: null,
   };
   if (!isPlainObject(metadata)) return safe;
-  if (SUPPORTED_MODELS.has(metadata.model)) safe.model = metadata.model;
+  if (metadata.provider === 'local') safe.provider = 'local';
+  if (SUPPORTED_MODELS.has(metadata.model) || metadata.model === 'local-llm') safe.model = metadata.model;
   if (typeof metadata.reportedModel === 'string' && /^[a-zA-Z0-9._:/-]{1,128}$/.test(metadata.reportedModel)) safe.reportedModel = metadata.reportedModel;
   if (metadata.finishReason === 'stop') safe.finishReason = metadata.finishReason;
   if (isPlainObject(metadata.usage)) {

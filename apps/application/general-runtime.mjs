@@ -11,12 +11,11 @@ import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
 import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
-import { createAttackToolBridge } from '../../packages/adapters/integrations/attack-tool.mjs';
+import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse } from '../../packages/adapters/integrations/attack-tool.mjs';
+import { createAssessmentPlanner, createLocalJsonClient, isGeneralPlannerModel, LOCAL_PLANNER_MODEL_ID } from '../../packages/models/local-planner.mjs';
 
 const { runGeneralAssessment } = generalCore;
-const { createGeneralModelPlannerFromEnv } = generalPlanner;
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
-const MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
 // Planner prompt cap 65,536 − 8,192 margin − 39,894 measured worst non-web_info context (daehan inventory 13,859,
 // initial evidence 3,833, 40 hypotheses 19,867, system/rest/probe IDs 2,335) − 24 one-line overviews × 441 = 6,866.
 // Measured with the default loop budget (maxProbes 24); a larger maxProbes shrinks the headroom the core prompt has.
@@ -323,7 +322,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   webParserCollect = collectWebInfo, verificationRoot, verifyAttackImpl = verifyAttack, verifierModel,
   limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
-  if (!MODELS.has(modelId)) throw new TypeError('A registered DeepSeek model is required for a general assessment.');
+  if (!isGeneralPlannerModel(modelId)) throw new TypeError('A registered planner model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
     || typeof catalogReader !== 'function'
     || typeof webParserCollect !== 'function' || typeof verifyAttackImpl !== 'function') {
@@ -340,7 +339,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   const initial = () => ({ ...emptyRun(), mode: 'local-lab-general', assessmentMode: 'general',
     testProfile: 'general', fixtureId, target: origin ?? 'http://127.0.0.1/',
     coreTargetOrigin: origin, simulated: false, targetContacted: false,
-    totalSteps: 1, iterations: 0, modelId, provider: 'deepseek' });
+    totalSteps: 1, iterations: 0, modelId, provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek' });
   let run = initial();
   let controller = null;
   let task = null;
@@ -352,7 +351,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   function getState() {
     if (ACTIVE.has(run.status)) run.elapsedMs = Date.now() - Date.parse(run.startedAt);
     return structuredClone({ run, mode: run.mode, instanceId,
-      lab: { available: true, generalSupported: true, generalAvailable: true, model: modelId, provider: 'deepseek' } });
+      lab: { available: true, generalSupported: true, generalAvailable: true, model: modelId,
+        provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek' } });
   }
   function publish() {
     const state = getState();
@@ -653,6 +653,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         http_get: 'input {path,sessionRole?}: GET on a declared or observed pathname at the selected origin; optional sessionRole uses only a prepared fixed demo session; redirects are not followed',
         web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); once the cumulative web_info evidence budget of the run is spent, returns only a one-line overview (status, content type, list counts); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
         repository_read: 'input {file,offset?}: read only an allowlisted local source or reference excerpt',
+        execute_attack_template: 'input {templateId,payload,sessionRole?}: run a catalog GET template baseline and attack through the same origin policy, then compare result counts; only templates advertised as executable are allowed',
       },
       limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; an AI verifier judges every executed probe as valid or invalid for its hypothesis and may open a read-only browser.',
         'GET and repository references do not independently confirm most weakness classes.',
@@ -665,8 +666,10 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   async function execute(allowedOrigin, currentSignal) {
     const planner = plannerFactory
       ? await plannerFactory({ modelId, env, envFile, signal: currentSignal })
-      : createGeneralModelPlannerFromEnv({ env: { ...env, DEEPSEEK_MODEL: modelId }, envFile });
+      : await createAssessmentPlanner({ modelId, env, envFile });
     if (!planner || typeof planner.propose !== 'function') throw new TypeError('General planner is unavailable.');
+    const localVerifier = verifierModel ?? (modelId === LOCAL_PLANNER_MODEL_ID && verifyAttackImpl === verifyAttack
+      ? await createLocalJsonClient({ env, envFile }) : undefined);
     let observed = false;
     let inventory;
     const probeHypotheses = new Map();
@@ -710,6 +713,28 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           && (probe.input.offset === undefined || Number.isSafeInteger(probe.input.offset)
             && probe.input.offset >= 0 && probe.input.offset <= 32 * 1024),
         reason: 'file_out_of_scope' };
+      if (probe.tool === 'execute_attack_template') {
+        const input = probe.input;
+        if (!record(input) || Object.keys(input).some(key => !['templateId', 'payload', 'sessionRole'].includes(key))
+          || typeof input.templateId !== 'string' || typeof input.payload !== 'string'
+          || input.sessionRole !== undefined && (typeof input.sessionRole !== 'string'
+            || !sessionCookies.has(input.sessionRole))) {
+          return { allowed: false, reason: 'invalid_execute_attack_template_input' };
+        }
+        let rendered;
+        try { rendered = renderTemplate({ templateId: input.templateId, payload: input.payload }); }
+        catch (error) {
+          return { allowed: false, reason: error?.code === 'UNSUPPORTED_TEMPLATE'
+            ? 'unsupported_template' : 'invalid_template' };
+        }
+        const query = new URLSearchParams(rendered.packet.query).toString();
+        const url = safePath(rendered.packet.path + (query ? '?' + query : ''), allowedOrigin);
+        const baselineQuery = new URLSearchParams(rendered.baseline.query).toString();
+        const baselineUrl = safePath(rendered.baseline.path + (baselineQuery ? '?' + baselineQuery : ''), allowedOrigin);
+        return { allowed: Boolean(url && baselineUrl && allowedPaths.has(url.pathname)
+          && allowedPaths.has(baselineUrl.pathname) && templateExecutionSupport(rendered.template).supported),
+          reason: 'path_out_of_scope' };
+      }
       return { allowed: false, reason: 'tool_unavailable' };
     } };
     const executor = { async execute({ probe, signal: executionSignal }) {
@@ -810,6 +835,73 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             summary: 'Requested local reference could not be read.' }] };
         }
       }
+      if (probe.tool === 'execute_attack_template') {
+        const rendered = renderTemplate({ templateId: probe.input.templateId, payload: probe.input.payload });
+        const sessionRole = probe.input.sessionRole;
+        const cookie = sessionRole === undefined ? null : sessionCookies.get(sessionRole);
+        const headers = cookie ? { cookie } : undefined;
+        async function templateGet(packet, label) {
+          const query = new URLSearchParams(packet.query).toString();
+          const url = safePath(packet.path + (query ? '?' + query : ''), allowedOrigin);
+          const timeout = AbortSignal.timeout(5000);
+          const combined = probeSignal ? AbortSignal.any([probeSignal, timeout]) : timeout;
+          const record = { id: probe.id + '-' + label, probeId: probe.id, iteration: run.iterations,
+            tool: probe.tool, session: sessionRole ?? 'public', method: 'GET', url: url.href };
+          const reservation = await invokeHook(beforeProbe, record);
+          let response;
+          try {
+            response = await fetchImpl(url, { method: 'GET', redirect: 'manual',
+              ...(headers ? { headers } : {}), signal: combined });
+            run.targetContacted = true;
+            const body = await limitedBody(response);
+            let json;
+            try { json = JSON.parse(body); } catch { json = undefined; }
+            return { url: url.href, status: response.status,
+              headers: { 'content-type': response.headers.get('content-type') ?? '' },
+              json, body, truncated: Buffer.byteLength(body, 'utf8') >= MAX_BODY_BYTES };
+          } finally {
+            await invokeHook(afterProbe, record, { status: response?.status ?? null,
+              evidenceId: evidenceId('probe', probe.id) }, reservation);
+          }
+        }
+        try {
+          const baseline = await templateGet(rendered.baseline, 'baseline');
+          const attack = await templateGet(rendered.packet, 'attack');
+          const verification = verifyTemplate(baseline, attack, rendered.template);
+          const baselineView = projectTemplateResponse(baseline);
+          const attackView = projectTemplateResponse(attack);
+          return {
+            kind: 'execute_attack_template',
+            result: { status: attack.status, verification: verification.status },
+            attackRecord: {
+              schemaVersion: 'attack-record/1', id: probe.id, kind: rendered.template.attackType?.name ?? 'template',
+              target: { origin: allowedOrigin },
+              info: { tool: 'execute_attack_template', templateId: rendered.template.templateId,
+                payload: probe.input.payload, verification: verification.status,
+                ...(sessionRole ? { session: sessionRole } : {}) },
+              request: { method: 'GET', url: attack.url, headers: {}, body: null },
+              response: { status: attack.status, bodyText: attackView.bodyExcerpt,
+                truncated: attackView.truncated || attackView.excerptTruncated },
+              control: { request: { method: 'GET', url: baseline.url, headers: {}, body: null },
+                response: { status: baseline.status, bodyText: baselineView.bodyExcerpt,
+                  truncated: baselineView.truncated || baselineView.excerptTruncated } },
+            },
+            evidence: [{ id: evidenceId('probe', probe.id),
+              source: 'attack-tool/' + fixtureId + (sessionRole ? '/role:' + sessionRole : ''),
+              kind: 'template-exchange', asset: rendered.packet.path,
+              summary: utf8Prefix(safeText('template ' + rendered.template.templateId
+                + ' baseline HTTP ' + baseline.status + ' count=' + (verification.baselineCount ?? 'none')
+                + '; attack HTTP ' + attack.status + ' count=' + (verification.attackCount ?? 'none')
+                + '; compare ' + verification.status), 1200) }],
+          };
+        } catch (error) {
+          if (probeSignal?.aborted || error?.fatalProbe) throw error;
+          return { kind: 'execute_attack_template', error: 'request_unavailable',
+            evidence: [{ id: evidenceId('probe', probe.id), source: 'attack-tool/' + fixtureId,
+              kind: 'unavailable', asset: probe.input.templateId,
+              summary: 'Attack template baseline or attack request failed; the hypothesis remains unverified.' }] };
+        }
+      }
       return { kind: probe.tool, evidence: [] };
     } };
     // Evidence already judged per hypothesis, so each verdict covers everything known so far.
@@ -825,7 +917,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       // Every executed result goes to the AI verifier, which decides valid or invalid for the hypothesis.
       return judgeAttackRecord(recordForProbe({ probe, hypothesis, execution, origin: allowedOrigin,
         relatedEvidence: [...cited, ...earlier] }), { evidenceId: id, sessions, verify: verifyAttackImpl,
-        outDir: verificationRoot ? join(verificationRoot, probe.id) : undefined, model: verifierModel,
+        outDir: verificationRoot ? join(verificationRoot, probe.id) : undefined, model: localVerifier,
         env, envFile, signal });
     } };
     const wrappedPlanner = { async propose(context) {
@@ -839,8 +931,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           await onModelCall?.(attempt);
         }
         if (attempts.length && error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR') throw error;
-        const failed = { provider: 'deepseek', requestedModel: modelId,
-          status: 'failed', iteration: context.iteration };
+        const failed = { provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek',
+          requestedModel: modelId, status: 'failed', iteration: context.iteration };
         if (planner instanceof generalPlanner.GeneralModelPlanner
           && error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR'
           && typeof error.message === 'string' && error.message.length <= 200
@@ -866,7 +958,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       }
       return plan;
     } };
-    const availableTools = ['http_get', 'web_info', 'repository_read'];
+    const availableTools = ['http_get', 'web_info', 'repository_read', 'execute_attack_template'];
     // Each vulnerability worker receives its own authenticated logical client.
     // The daemon owns the transport, while target and policy authority remain in
     // this runtime; model input cannot install an executor or change its scope.
@@ -875,8 +967,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         hypothesis: probeHypotheses.get(probe.id) }),
       execute: input => executor.execute(input),
     });
-    const toolExecutor = { execute: ({ probe }) => attackTool.execute({ probe,
-      hypothesis: probeHypotheses.get(probe.id), signal: currentSignal }) };
+    const toolExecutor = { execute: ({ probe, signal }) => attackTool.execute({ probe,
+      hypothesis: probeHypotheses.get(probe.id), signal: signal ?? currentSignal }) };
     let report;
     try {
       ({ report } = await runGeneralAssessment({

@@ -307,6 +307,9 @@ test('general runtime rejects unregistered targets and rule-only models', () => 
   assert.throws(() => runtimeWith({ fixtureId: 'vul-web-1', modelId: 'rule-baseline' }));
   assert.throws(() => runtimeWith({ fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
     targetOrigin: 'http://8.8.8.8:4101' }));
+  const local = runtimeWith({ fixtureId: 'vul-web2-daehan', modelId: 'local-llm',
+    targetOrigin: 'http://127.0.0.1:4101' });
+  assert.equal(local.getState().lab.provider, 'local');
 });
 
 test('wrong private service fails identity binding before the model or general probes run', async () => {
@@ -964,6 +967,49 @@ test('general runtime routes vulnerability workers through two daemon ports and 
   for (const endpoint of advertised.endpoints) {
     await assert.rejects(fetch(endpoint, { signal: AbortSignal.timeout(1000) }));
   }
+});
+
+test('general runtime executes a catalog SQLi template through GET baseline and attack comparison', async () => {
+  const origin = 'http://127.0.0.1:53987';
+  const queries = [];
+  const runtime = runtimeWith({
+    fixtureId: 'vul-web2-daehan', targetOrigin: origin,
+    modelId: 'deepseek-flash', runIdFactory: () => 'general-template-sqli',
+    unavailableInputs: ['casper-db'],
+    fetchImpl: async (url, init) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/api/search') {
+        queries.push(parsed.searchParams.get('q'));
+        const q = parsed.searchParams.get('q');
+        const results = q === "' OR '1'='1" ? [{ id: 1, title: 'hit' }] : [];
+        return new Response(JSON.stringify({ site: '대한대학교', results }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }
+      return response(parsed.pathname);
+    },
+    plannerFactory: () => ({ async propose(context) {
+      assert.ok(context.availableTools.includes('execute_attack_template'));
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      const id = context.evidence[0].id;
+      return { done: false, hypotheses: [{ id: 'h-sqli', category: 'sql_injection', asset: '/api/search',
+        rationale: 'Search query is interpolated.', evidenceIds: [id] }],
+      probes: [{ id: 'p-sqli', hypothesisId: 'h-sqli', tool: 'execute_attack_template',
+        input: { templateId: 'search-sqli-template', payload: "' OR '1'='1" } }] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  const probe = run.report.probes.find(item => item.id === 'p-sqli');
+  assert.equal(probe.status, 'not_reproduced');
+  assert.ok(queries.includes('zzqnomatch'));
+  assert.ok(queries.includes("' OR '1'='1"));
+  const evidence = run.report.evidence.find(item => item.id === probe.evidenceIds[0]);
+  assert.equal(evidence.kind, 'template-exchange');
+  assert.match(evidence.summary, /compare confirmed/u);
+  await runtime.close();
 });
 
 const attackRecord = { schemaVersion: 'attack-record/1', id: 'p-any', kind: 'any',

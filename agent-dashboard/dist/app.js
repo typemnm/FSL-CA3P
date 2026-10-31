@@ -398,13 +398,14 @@ function renderStats() {
   $('lab-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange || !model?.available || !labReadiness.generalSupported || !labReadiness.generalAvailable;
   $('external-preflight-button').disabled = !canOperate() || !connected || active || externalPreflightPending;
   $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange
-    || !externalPreflight?.ready || !model?.available || model.provider !== 'deepseek'
+    || !externalPreflight?.ready || !model?.available
+    || !(model.provider === 'deepseek' || (model.provider === 'local' && model.supportedModes?.includes('external-general')))
     || !model.supportedModes?.includes('external-general')
     || !labReadiness.externalSupported || !labReadiness.externalAvailable;
   $('external-model-select').value = $('model-select').value;
   $('external-model-select').disabled = controlPending || active || !canOperate();
   $('external-model-readiness').textContent = !labReadiness.externalSupported ? '외부 범용 점검 서버 경로가 연결되지 않았습니다.'
-    : !labReadiness.externalAvailable || !model?.available ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 설정을 확인하세요.'
+    : !labReadiness.externalAvailable || !model?.available ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 또는 이 장치의 로컬 LLM 설정을 확인하세요.'
       : !model.supportedModes?.includes('external-general') ? '외부 범용 점검을 지원하는 모델을 선택하세요.'
       : `${model.name || model.id} · 외부 범용 점검 준비됨. 모델 API 호출에는 비용이 발생할 수 있습니다.`;
   $('fixture-select').disabled = controlPending || active || !canOperate();
@@ -419,7 +420,7 @@ function renderStats() {
   $('lab-description').textContent = idor ? `${idor.name}의 실습 IP와 포트를 아래에 입력하세요. vul-web2 Compose를 먼저 시작해야 하며 기본 포트는 ${idor.port}입니다.` : '서버가 격리된 로컬 게시판을 임시 포트로 시작합니다.';
   $('lab-check-scope').textContent = '발견한 공격면과 사용 가능한 증거에서 가설을 세우고, 실행 예산 안에서 반복 점검합니다. 지원되지 않는 검사는 미점검 사유로 기록합니다.';
   $('lab-run-label').textContent = '범용 취약점 점검 시작';
-  $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : !labReadiness.generalSupported ? '범용 점검 서버 경로가 연결되지 않았습니다.' : !labReadiness.generalAvailable ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 설정을 확인하세요.' : model?.available ? `${model.name || model.id} · 범용 점검 준비됨` : '사용 가능한 범용 점검 모델이 없습니다. 서버의 모델 설정을 확인하세요.';
+  $('lab-readiness').textContent = authSession?.user?.role === 'viewer' ? '조회 권한으로 로그인했습니다. 실행은 운영자만 시작할 수 있습니다.' : !labReadiness.generalSupported ? '범용 점검 서버 경로가 연결되지 않았습니다.' : !labReadiness.generalAvailable ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 또는 이 장치의 로컬 LLM 설정을 확인하세요.' : model?.available ? `${model.name || model.id} · 범용 점검 준비됨` : '사용 가능한 범용 점검 모델이 없습니다. 서버의 모델 설정을 확인하세요.';
   $('model-scope').textContent = '실제 모델을 호출합니다. 허용된 대상과 사용 가능한 도구 범위에서 검사하며 API 비용이 발생할 수 있습니다.';
   $('new-session-button').disabled = !canOperate() || !connected || controlPending || active;
   $('export-button').disabled = item.events.length === 0 && !general;
@@ -708,7 +709,8 @@ $('external-run-button').addEventListener('click', async () => {
   if (!externalPreflight?.ready) return;
   if (['queued','preparing','running','stopping'].includes(run.status)) return;
   const model = selectedModel();
-  if (!model?.available || model.provider !== 'deepseek' || !model.supportedModes?.includes('external-general')
+  if (!model?.available || !model.supportedModes?.includes('external-general')
+    || !(model.provider === 'deepseek' || (model.provider === 'local' && model.supportedModes.includes('external-general')))
     || !labReadiness.externalSupported || !labReadiness.externalAvailable
     || pendingModelChange || browserResetError || ['failed', 'resetting'].includes(experimentStatus)) return;
   await submitControl(async () => {
@@ -726,7 +728,8 @@ $('lab-run-button').addEventListener('click', async () => {
   if (browserResetError || ['failed', 'resetting'].includes(experimentStatus) || pendingModelChange) return;
   const model = selectedModel();
   if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available
-    || !labReadiness.generalSupported || !labReadiness.generalAvailable || model.provider !== 'deepseek') return;
+    || !labReadiness.generalSupported || !labReadiness.generalAvailable
+    || !(model.provider === 'deepseek' || (model.provider === 'local' && model.supportedModes?.includes('local-lab-general')))) return;
   let target;
   if (selectedIdorFixture()) {
     try {
@@ -949,7 +952,10 @@ async function loadWorkspace() {
     const payload = await runtime.getModels();
     if (generation !== workspaceGeneration) return;
     const previous = $('model-select').value;
-    models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string' && item.provider === 'deepseek' && item.mode === 'local-lab-general') : [];
+    models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string'
+      && ((item.supportedModes ?? []).includes('local-lab-general') || item.mode === 'local-lab-general')
+      && (item.provider === 'deepseek' || item.provider === 'local')
+      && item.id !== 'rule-baseline') : [];
     const options = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
     const externalModels = models.filter(item => item.supportedModes?.includes('external-general'));
     const externalOptions = externalModels.length ? externalModels.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">외부 점검 모델 없음</option>';
