@@ -7,7 +7,7 @@ import { Worker } from 'node:worker_threads';
 const { Wappalyzer } = createRequire(import.meta.url)('wapalyzer-core');
 const DATA = new URL('./data/webappanalyzer/', import.meta.url);
 // categories.json ids reported as libraries: JavaScript frameworks, Web frameworks, JavaScript graphics,
-// Mobile frameworks, JavaScript libraries, UI frameworks (24 Rich text editors deliberately left out, CONTRACT §3).
+// Mobile frameworks, JavaScript libraries, UI frameworks (24 Rich text editors deliberately left out).
 export const LIBRARY_CATEGORIES = new Set([12, 18, 25, 26, 59, 66]);
 // Matcher input cap for html/scripts (this module's own bound): head and tail, similar in shape to the Wappalyzer
 // driver's html sampling (whose window is far larger, ~3M + 3M chars). The dataset's
