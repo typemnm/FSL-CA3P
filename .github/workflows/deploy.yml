@@ -10,6 +10,17 @@ on:
         required: false
         default: staging
         type: string
+  workflow_dispatch:
+    inputs:
+      image:
+        required: true
+        type: string
+        description: Immutable GHCR digest published by CA3P integration
+      environment:
+        required: false
+        default: staging
+        type: string
+        description: GitHub environment to deploy (staging or production)
 
 permissions:
   contents: read
@@ -23,6 +34,7 @@ jobs:
   deploy:
     # No public pull request code is ever scheduled onto the deployment runner.
     if: >-
+      (github.event_name == 'workflow_call' || github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.event_name != 'pull_request' && github.event_name != 'merge_group' &&
       (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') &&
       (inputs.environment == 'staging' || inputs.environment == 'production')
