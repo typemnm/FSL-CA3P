@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { readAttackCatalogSync } from '../../casper-db/client.mjs';
 
 /** Resolve one versioned definition; an explicit JSON path remains a legacy input. */
-export function loadAttackInfo({ catalogPath, vulnType, application, databasePath } = {}) {
+export function loadAttackInfo({ catalogPath, vulnType, application, endpoint, databasePath } = {}) {
   let patterns;
   let catalogSha256;
   if (catalogPath !== undefined) {
@@ -22,8 +22,9 @@ export function loadAttackInfo({ catalogPath, vulnType, application, databasePat
     catalogSha256 = catalog.provenance.sha256;
   }
   const matching = patterns.filter(item => item.definition?.vulnType === vulnType
-    && (application === undefined || item.definition.target?.application === application));
-  if (matching.length > 1) throw new Error('Ambiguous attack definition; specify application.');
+    && (application === undefined || item.definition.target?.application === application)
+    && (endpoint === undefined || item.definition.target?.endpoint === endpoint));
+  if (matching.length > 1) throw new Error('Ambiguous attack definition; specify application and endpoint.');
   if (!matching.length) return null;
   const pattern = matching[0];
   return { definition: pattern.definition, provenance: {
