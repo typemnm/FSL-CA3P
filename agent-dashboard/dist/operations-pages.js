@@ -310,7 +310,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
       mod.summary = modules.find(item => moduleAliases[slug].includes(item.id)) || null;
       mod.id = mod.summary?.id || moduleAliases[slug][0];
       const [config, logs, models, budgetResult] = await Promise.all([
-        runtime.api(`/api/modules/${encodeURIComponent(mod.id)}/config`),
+        slug === 'web-parser' ? Promise.resolve(null) : runtime.api(`/api/modules/${encodeURIComponent(mod.id)}/config`),
         runtime.api(`/api/modules/${encodeURIComponent(mod.id)}/logs`),
         slug === 'llm' ? runtime.getModels() : Promise.resolve({ models: [] }),
         slug === 'llm' ? runtime.api('/api/modules/llm/loop-budget').then(value => ({ value }), error => ({ error }))
@@ -345,14 +345,20 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
   }
 
   function renderModule() {
+    if (mod.slug === 'web-parser') {
+      // Operator decision: this page is only the collection log; errors and loading stay visible.
+      moduleRoot.innerHTML = `${mod.error ? `<p class="runtime-error" role="alert">${escape(mod.error)}</p>` : ''}${
+        mod.loading ? '<p role="status">수집 로그를 불러오는 중입니다.</p>' : ''}${!mod.loading || mod.logs.length
+        ? renderWebParserLog(mod.logs, { query: mod.query, failedOnly: mod.failedOnly, total: mod.logTotal }) : ''}`;
+      renderLlmCallLog();
+      return;
+    }
     const name = moduleNames[mod.slug] || 'Module';
     const config = mod.config || {};
     const logs = mod.logs.filter(item => !mod.query || json(item).toLowerCase().includes(mod.query.toLowerCase()));
     moduleRoot.innerHTML = `<section class="panel ops-panel"><div class="ops-panel-head"><div><div class="eyebrow">MODULE OPERATIONS</div><h2>${escape(name)}</h2><p>모듈 ID ${escape(mod.id || '확인 중')} · ${escape(mod.summary?.status || '상태 확인 중')}</p></div><button class="button secondary" data-action="refresh-module">새로고침</button></div>${mod.error ? `<p class="runtime-error" role="alert">${escape(mod.error)}</p>` : ''}${mod.loading ? '<p role="status">설정과 로그를 불러오는 중입니다.</p>' : ''}
       <div class="ops-module-facts"><span><small>소스 경로</small><strong>${escape(config.config?.path || mod.summary?.path || '—')}</strong></span><span><small>버전 / revision</small><strong>${escape(config.revision || mod.summary?.revision || mod.summary?.version || '—')}</strong></span><span><small>설정 적용</small><strong>${config.editable ? '서버 관리' : '배포 설정 · 읽기 전용'}</strong></span></div>
-      ${mod.slug === 'db' ? renderDbHealth(config, canEdit()) : ''}<div class="${mod.slug === 'llm' || mod.slug === 'web-parser' ? 'ops-llm-config' : 'ops-two-column'}"><section class="ops-subpanel"><h3>현재 유효 설정</h3><p>설정은 실행 환경과 배포 계약을 따릅니다. 변경 가능한 필드가 제공되지 않으면 이 화면에서 저장하지 않습니다.</p><pre>${escape(json(config.config || {}))}</pre>${mod.slug === 'llm' ? `<h3>등록 모델</h3><div class="ops-list">${mod.models.map(item => `<div class="ops-row"><span><strong>${escape(item.name || item.id)}</strong><small>${escape(item.provider || '')}</small></span><span class="state-chip">${item.available ? '사용 가능' : '사용 불가'}</span></div>`).join('') || '<p>등록 모델 없음</p>'}</div>` : ''}</section>${mod.slug === 'llm' || mod.slug === 'web-parser' ? '' : `<section class="ops-subpanel"><div class="ops-panel-head"><h3>모듈 로그</h3><label>검색<input id="module-log-search" type="search" value="${escape(mod.query)}" placeholder="실행 ID, 단계, 메시지"></label></div><div class="ops-log-list">${logs.length ? logs.map(item => `<details class="ops-log"><summary><span>${escape(date(item.createdAt || item.time || item.timestamp))}</span><strong>${escape(item.level || item.type || item.stage || '이벤트')}</strong><span>${escape(item.detail || item.message || item.title || '')}</span></summary><pre>${escape(json(item))}</pre></details>`).join('') : '<div class="ops-empty">표시할 로그가 없습니다.</div>'}</div></section>`}</div></section>`;
-    if (mod.slug === 'web-parser' && !mod.loading) moduleRoot.insertAdjacentHTML('beforeend',
-      renderWebParserLog(mod.logs, { query: mod.query, failedOnly: mod.failedOnly, total: mod.logTotal }));
+      ${mod.slug === 'db' ? renderDbHealth(config, canEdit()) : ''}<div class="${mod.slug === 'llm' ? 'ops-llm-config' : 'ops-two-column'}"><section class="ops-subpanel"><h3>현재 유효 설정</h3><p>설정은 실행 환경과 배포 계약을 따릅니다. 변경 가능한 필드가 제공되지 않으면 이 화면에서 저장하지 않습니다.</p><pre>${escape(json(config.config || {}))}</pre>${mod.slug === 'llm' ? `<h3>등록 모델</h3><div class="ops-list">${mod.models.map(item => `<div class="ops-row"><span><strong>${escape(item.name || item.id)}</strong><small>${escape(item.provider || '')}</small></span><span class="state-chip">${item.available ? '사용 가능' : '사용 불가'}</span></div>`).join('') || '<p>등록 모델 없음</p>'}</div>` : ''}</section>${mod.slug === 'llm' ? '' : `<section class="ops-subpanel"><div class="ops-panel-head"><h3>모듈 로그</h3><label>검색<input id="module-log-search" type="search" value="${escape(mod.query)}" placeholder="실행 ID, 단계, 메시지"></label></div><div class="ops-log-list">${logs.length ? logs.map(item => `<details class="ops-log"><summary><span>${escape(date(item.createdAt || item.time || item.timestamp))}</span><strong>${escape(item.level || item.type || item.stage || '이벤트')}</strong><span>${escape(item.detail || item.message || item.title || '')}</span></summary><pre>${escape(json(item))}</pre></details>`).join('') : '<div class="ops-empty">표시할 로그가 없습니다.</div>'}</div></section>`}</div></section>`;
     moduleRoot.insertAdjacentHTML('beforeend', renderLlmBudget());
     if (mod.slug === 'attack') moduleRoot.insertAdjacentHTML('afterbegin', '<section class="panel ops-panel template-catalog-heading"><div class="ops-panel-head"><div><h2>공격 템플릿</h2><p>Workspace의 템플릿 화면에서 JSON 템플릿을 조회·추가·수정·삭제합니다.</p></div><a class="button secondary" href="#workspace/templates">템플릿 관리</a></div></section>');
     renderLlmCallLog();

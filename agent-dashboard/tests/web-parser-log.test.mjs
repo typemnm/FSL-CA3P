@@ -31,7 +31,7 @@ test('the summary strip counts collections only and the rows are newest first', 
   const html = renderWebParserLog(logs(), { total: 4 });
   assert.deepEqual(facts(html), [['수집 횟수', '3'], ['성공 / 실패', '2 / 1'], ['수집 페이지', '3'], ['포함된 실행', '2'],
     ['마지막 수집', new Date('2026-11-01T06:03:05Z').toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })]]);
-  assert.match(html, /<span class="local-chip">3건<\/span>/);
+  assert.match(html, /<div class="panel-heading">[\s\S]*<div class="web-parser-log-actions"><span class="local-chip">3건<\/span><button type="button" class="button secondary" data-action="refresh-module">새로고침<\/button><\/div><\/div><div class="web-parser-log-content">/);
   const order = ['log-fail', 'log-new', 'log-old'].map(id => html.indexOf(`data-log-id="${id}"`));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
   assert.ok(order[0] > 0);

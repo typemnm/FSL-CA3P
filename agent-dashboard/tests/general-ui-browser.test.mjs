@@ -395,7 +395,7 @@ test('web-parser module page shows a readable collection log and expands a row i
     response: { status: 200, contentType: 'text/html', title: '게시판' },
     technologies: [{ name: 'jQuery', version: '3.6.0', categories: ['JavaScript libraries'], confidence: 100, library: true, evidence: [] }],
     paths: { total: 1, items: [{ url: 'https://app.test/board/view', sources: ['link'], methods: ['GET'], sameOrigin: true, params: ['id'] }] } };
-  const fetches = [];
+  const fetches = []; const moduleRequests = [];
   const localChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
   const browser = await chromium.launch({ headless: true,
     ...(process.platform === 'win32' && !existsSync(chromium.executablePath()) && existsSync(localChrome)
@@ -414,11 +414,13 @@ test('web-parser module page shows a readable collection log and expands a row i
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname;
     const json = value => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
+    if (/^\/api\/modules\/[a-z-]+\/(?:config|logs)$/.test(path)) moduleRequests.push(path);
     if (path.startsWith('/api/artifacts/')) { fetches.push(path); return json(view); }
     if (path === '/api/auth/session') return json({ authenticated: true, authRequired: false, user: { role: 'operator', name: 'Test' } });
     if (path === '/api/state') return json({ instanceId: 'module-log-test', mode: run.mode, run,
       lab: { available: true, generalSupported: true, generalAvailable: true } });
-    if (path === '/api/modules') return json({ modules: [{ id: 'web-parser', name: 'Web Parser', status: 'active' }] });
+    if (path === '/api/modules') return json({ modules: [{ id: 'attack', name: 'Attack Tool', status: 'active' },
+      { id: 'web-parser', name: 'Web Parser', status: 'active' }] });
     if (path === '/api/modules/web-parser/config') return json({ config: { integrationId: 'web-parser', path: 'web-parser' },
       revision: 'digest', editable: false });
     if (path === '/api/modules/web-parser/logs') return json({ logs, total: 250, truncated: false });
@@ -428,9 +430,18 @@ test('web-parser module page shows a readable collection log and expands a row i
   await page.goto('http://ca3p.invalid/#modules/web-parser');
   const panel = page.locator('.web-parser-log');
   await panel.waitFor();
+  // Startup loads the module twice (navigation, then session); let both finish before interacting.
+  await page.waitForLoadState('networkidle');
   assert.match(await panel.locator('.web-parser-log-strip').textContent(), /수집 횟수2성공 \/ 실패1 \/ 1수집 페이지2포함된 실행1/);
   assert.match(await panel.textContent(), /최근 3건만 표시합니다 \(전체 로그 250건\)/);
   assert.equal(await page.locator('#module-detail-content .ops-log-list').count(), 0);
+  // Operator decision: no MODULE OPERATIONS block or config JSON; 새로고침 lives in the log panel heading.
+  assert.doesNotMatch(await page.locator('#module-detail-content').textContent(), /MODULE OPERATIONS|현재 유효 설정|모듈 ID|소스 경로|integrationId/);
+  assert.equal(await page.locator('#module-detail-content .ops-panel, #module-detail-content pre').count(), 0);
+  assert.ok(moduleRequests.length > 0 && moduleRequests.every(path => path === '/api/modules/web-parser/logs'));
+  const loadsBefore = moduleRequests.length;
+  assert.equal(await page.locator('#module-detail-content [data-action="refresh-module"]').count(), 1);
+  assert.equal(await panel.locator('.panel-heading [data-action="refresh-module"]').count(), 1);
   const rows = panel.locator('.web-parser-log-row');
   assert.deepEqual(await rows.evaluateAll(items => items.map(item => item.dataset.logId)), ['fail-row', 'ok-row']);
   assert.deepEqual(fetches, []);
@@ -457,5 +468,19 @@ test('web-parser module page shows a readable collection log and expands a row i
   assert.equal(await page.locator('#module-detail-content img, #module-detail-content script').count(), 0);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+
+  const reload = page.waitForResponse(response => new URL(response.url()).pathname === '/api/modules/web-parser/logs');
+  await panel.locator('[data-action="refresh-module"]').click();
+  await reload;
+  await page.locator('.web-parser-log [data-action="refresh-module"]').waitFor();
+  assert.equal(moduleRequests.length, loadsBefore + 1);
+  assert.ok(moduleRequests.every(path => path === '/api/modules/web-parser/logs'));
+  // Other module pages keep their operations block.
+  await page.evaluate(() => { location.hash = 'modules/attack'; });
+  await page.locator('#module-detail-content .ops-panel', { hasText: 'MODULE OPERATIONS' }).waitFor();
+  assert.match(await page.locator('#module-detail-content').textContent(), /현재 유효 설정[\s\S]*모듈 로그/);
+  assert.equal(await page.locator('#module-detail-content .web-parser-log').count(), 0);
+  assert.equal(await page.locator('#module-detail-content .ops-panel-head [data-action="refresh-module"]').count(), 1);
+  assert.ok(moduleRequests.includes('/api/modules/attack/config'));
   assert.deepEqual(errors, []);
 });

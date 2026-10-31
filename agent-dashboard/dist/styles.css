@@ -494,7 +494,7 @@ button.ops-row:hover{background:#1c3324}
 @media(max-width:390px){.web-info-counts{flex-basis:100%}.web-info-card>summary,.web-info-summary{gap:6px}}
 
 /* web-parser module page: summary strip + one-line collection log rows (own .panel, not .ops-panel, so its broad details/label rules stay out). */
-.web-parser-log{margin-top:16px}
+.web-parser-log-actions{display:flex;align-items:center;gap:10px;flex:none}
 .web-parser-log-content{padding:16px 19px 20px}
 .web-parser-log-strip{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px}
 .web-parser-log-strip strong{font-family:var(--mono);color:var(--mint)}
