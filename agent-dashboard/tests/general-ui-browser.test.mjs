@@ -378,3 +378,84 @@ test('web-parser result cards load each artifact once and survive polling re-ren
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
   assert.deepEqual(errors, []);
 });
+
+test('web-parser module page shows a readable collection log and expands a row into the detail', async t => {
+  const artifactId = 'f'.repeat(64);
+  const runId = 'general-11111111-2222-3333-4444-aaaaaaaaaaaa';
+  const collected = (id, overrides = {}) => ({ id, runId, sequence: 1, module: 'web-parser', stage: 'web_info.collected',
+    status: 200, title: '웹 정보 수집', createdAt: '2026-11-01T06:01:05Z', detail: 'GET /board → HTTP 200', asset: '/board?page=2',
+    sessionRole: 'member', probeId: `p-${id}`, iteration: 1, ok: true, httpStatus: 200, artifactId,
+    counts: { technologies: 1, paths: 1, forms: 0, errors: 0 }, truncated: false, ...overrides });
+  const logs = [collected('ok-row'),
+    collected('fail-row', { createdAt: '2026-11-01T06:02:05Z', asset: '/down', ok: false, httpStatus: null, status: null,
+      artifactId: undefined, detail: '웹 정보 수집 실패', counts: { technologies: 0, paths: 0, forms: 0, errors: 1 } }),
+    { id: 'legacy-row', runId: 'run-legacy', module: 'xss-parser', stage: 'observe', status: 'completed',
+      title: '<img src=x onerror=alert(1)>', createdAt: '2026-10-01T00:00:00Z' }];
+  const view = { schemaVersion: 'web-info-view/1', target: { requestedUrl: 'https://app.test/board?page=2' },
+    response: { status: 200, contentType: 'text/html', title: '게시판' },
+    technologies: [{ name: 'jQuery', version: '3.6.0', categories: ['JavaScript libraries'], confidence: 100, library: true, evidence: [] }],
+    paths: { total: 1, items: [{ url: 'https://app.test/board/view', sources: ['link'], methods: ['GET'], sameOrigin: true, params: ['id'] }] } };
+  const fetches = [];
+  const localChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  const browser = await chromium.launch({ headless: true,
+    ...(process.platform === 'win32' && !existsSync(chromium.executablePath()) && existsSync(localChrome)
+      ? { executablePath: localChrome } : {}) });
+  t.after(async () => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => { window.EventSource = undefined; });
+  await page.route('**/*', async route => {
+    const file = new URL(route.request().url()).pathname.split('/').pop() || 'index.html';
+    if (!/^[a-z-]+\.(?:html|js|css|svg)$/.test(file)) return route.fulfill({ status: 404, body: '' });
+    const bytes = await readFile(new URL(`../dist/${file}`, import.meta.url));
+    return route.fulfill({ contentType: ({ html: 'text/html', js: 'text/javascript', css: 'text/css', svg: 'image/svg+xml' })[file.split('.').pop()], body: bytes });
+  });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    const json = value => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
+    if (path.startsWith('/api/artifacts/')) { fetches.push(path); return json(view); }
+    if (path === '/api/auth/session') return json({ authenticated: true, authRequired: false, user: { role: 'operator', name: 'Test' } });
+    if (path === '/api/state') return json({ instanceId: 'module-log-test', mode: run.mode, run,
+      lab: { available: true, generalSupported: true, generalAvailable: true } });
+    if (path === '/api/modules') return json({ modules: [{ id: 'web-parser', name: 'Web Parser', status: 'active' }] });
+    if (path === '/api/modules/web-parser/config') return json({ config: { integrationId: 'web-parser', path: 'web-parser' },
+      revision: 'digest', editable: false });
+    if (path === '/api/modules/web-parser/logs') return json({ logs, total: 250, truncated: false });
+    if (path === '/api/runs') return json({ runs: [], total: 0 });
+    return json({});
+  });
+  await page.goto('http://ca3p.invalid/#modules/web-parser');
+  const panel = page.locator('.web-parser-log');
+  await panel.waitFor();
+  assert.match(await panel.locator('.web-parser-log-strip').textContent(), /수집 횟수2성공 \/ 실패1 \/ 1수집 페이지2포함된 실행1/);
+  assert.match(await panel.textContent(), /최근 3건만 표시합니다 \(전체 로그 250건\)/);
+  assert.equal(await page.locator('#module-detail-content .ops-log-list').count(), 0);
+  const rows = panel.locator('.web-parser-log-row');
+  assert.deepEqual(await rows.evaluateAll(items => items.map(item => item.dataset.logId)), ['fail-row', 'ok-row']);
+  assert.deepEqual(fetches, []);
+
+  const row = panel.locator('[data-log-id="ok-row"]');
+  await row.locator('summary').click();
+  await row.locator('.web-info-table').first().waitFor();
+  assert.match(await row.locator('.web-info-detail').textContent(), /jQuery[\s\S]*3\.6\.0[\s\S]*https:\/\/app\.test\/board\/view/);
+  // Filtering keeps the open row open and does not refetch it.
+  await page.locator('#web-parser-log-search').fill('board');
+  assert.deepEqual(await rows.evaluateAll(items => items.map(item => item.dataset.logId)), ['ok-row']);
+  assert.equal(await panel.locator('[data-log-id="ok-row"]').evaluate(element => element.open), true);
+  await panel.locator('[data-log-id="ok-row"] .web-info-table').first().waitFor();
+  assert.equal(await page.locator('#web-parser-log-search').evaluate(element => element === document.activeElement), true);
+  await page.locator('#web-parser-log-search').fill('');
+  await page.locator('#web-parser-failed-only').check();
+  assert.deepEqual(await rows.evaluateAll(items => items.map(item => item.dataset.logId)), ['fail-row']);
+  await panel.locator('[data-log-id="fail-row"] summary').click();
+  assert.match(await panel.locator('[data-log-id="fail-row"]').textContent(), /상세 정보 없음/);
+  assert.deepEqual(fetches, [`/api/artifacts/${artifactId}`]);
+
+  await panel.locator('.web-parser-other-logs > summary').click();
+  assert.match(await panel.locator('.web-parser-other-logs').textContent(), /<img src=x onerror=alert\(1\)>/);
+  assert.equal(await page.locator('#module-detail-content img, #module-detail-content script').count(), 0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  assert.deepEqual(errors, []);
+});
