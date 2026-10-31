@@ -1,7 +1,9 @@
 {
   "templateId": "lodash-prototype-canary-template",
   "title": "lodash 프로토타입 오염 canary 점검",
-  "description": "대한대학교 lodash@4.17.15의 CVE-2020-8203 관련 경로를 확인하는 참고용 템플릿입니다. 격리된 임시 실습 인스턴스에서 관리자 세션 쿠키와 application/x-www-form-urlencoded 본문으로 payload 필드를 보냅니다. 기준 입력은 일반 경로 theme.ca3pTemplateProbe에 같은 값을 저장합니다. 공격 후 동일 서버 프로세스의 Object.prototype.ca3pTemplateProbe 값과 자신의 속성이 없는 새 객체의 상속값을 확인하고, 확인이 끝나면 해당 프로토타입 속성을 삭제하고 인스턴스를 폐기합니다. HTTP 302만으로 오염을 확정하지 않습니다. 세션·POST·프로세스 내부 관찰을 요구하므로 현재 자동 실행기는 지원하지 않습니다.",
+  "sessionRole": "admin",
+  "fixtures": ["vul-web2-daehan"],
+  "description": "대한대학교 lodash@4.17.15의 CVE-2020-8203 경로입니다. 관리자 POST /admin/settings 가 path를 lodash.set에 전달합니다. 오염 여부는 같은 Node 프로세스의 Object.prototype 관찰이 필요해서 HTTP 비교만으로는 확정하지 않습니다. 현재 자동 실행기는 지원하지 않습니다.",
   "attackType": { "name": "prototype_pollution", "cwe": "CWE-1321" },
   "dependency": { "runtime": "node", "framework": "express", "library": "lodash" },
   "target": { "method": "POST", "endpoint": "/admin/settings" },

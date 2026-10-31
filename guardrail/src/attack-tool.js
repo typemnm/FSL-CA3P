@@ -8,11 +8,6 @@ function record(value) {
     && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 }
 
-function keys(value, expected) {
-  return record(value) && Object.keys(value).length === expected.length
-    && expected.every(key => Object.hasOwn(value, key));
-}
-
 function exactOrigin(value) {
   let url;
   try { url = new URL(value); } catch { throw new TypeError('A trusted targetOrigin is required.'); }
@@ -76,7 +71,7 @@ async function readBounded(response) {
 }
 
 /**
- * Trusted transport for attack-tool's initial GET packet template. Scope and
+ * Trusted transport for attack-tool GET/POST packet templates. Scope and
  * budget are configured by the host; model/tool packet fields cannot set them.
  * No curl command or shell string is interpreted here.
  */
@@ -112,28 +107,48 @@ function createAttackToolGuardrail({ targetOrigin, maxRequests = 16,
       if (!record(context) || Object.keys(context).some(key => !['signal', 'runId', 'agentId'].includes(key))) {
         reject('invalid_execution_context', {});
       }
-      if (!keys(packet, ['method', 'path', 'query']) || packet.method !== 'GET'
-        || !exactPath(packet.path, origin) || !paths.has(packet.path)
-        || !keys(packet.query, ['q']) || typeof packet.query.q !== 'string'
-        || Buffer.byteLength(packet.query.q, 'utf8') > MAX_QUERY_BYTES) {
+      if (!record(packet) || Object.keys(packet).some(key => !['method', 'path', 'query', 'body'].includes(key))
+        || !['GET', 'POST'].includes(packet.method)
+        || !exactPath(packet.path, origin) || !paths.has(packet.path)) {
         reject('packet_out_of_scope', context);
+      }
+      if (packet.method === 'GET' && packet.body !== undefined) reject('packet_out_of_scope', context);
+      if (packet.method === 'POST' && packet.query !== undefined) reject('packet_out_of_scope', context);
+      if (packet.query !== undefined) {
+        const names = record(packet.query) ? Object.keys(packet.query) : [];
+        if (!record(packet.query) || names.length !== 1 || !['q', 'filters'].includes(names[0])
+          || typeof packet.query[names[0]] !== 'string'
+          || Buffer.byteLength(packet.query[names[0]], 'utf8') > MAX_QUERY_BYTES) {
+          reject('packet_out_of_scope', context);
+        }
+      }
+      if (packet.body !== undefined) {
+        if (!record(packet.body) || Object.keys(packet.body).length > 8
+          || Object.entries(packet.body).some(([key, value]) => typeof key !== 'string' || typeof value !== 'string'
+            || key.length > 40 || Buffer.byteLength(value, 'utf8') > MAX_QUERY_BYTES)) {
+          reject('packet_out_of_scope', context);
+        }
       }
       context.signal?.throwIfAborted();
       if (requestCount >= maxRequests) reject('request_budget_exhausted', context);
       const url = new URL(packet.path, origin);
-      // URLSearchParams encodes the payload as data, including quotes and '&'.
-      url.searchParams.set('q', packet.query.q);
+      if (packet.query) {
+        for (const [key, value] of Object.entries(packet.query)) url.searchParams.set(key, value);
+      }
       requestCount += 1;
-      note('ALLOW', 'scoped_get_packet', context, { method: 'GET', path: packet.path });
+      note('ALLOW', packet.method === 'GET' ? 'scoped_get_packet' : 'scoped_post_packet', context,
+        { method: packet.method, path: packet.path });
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(new DOMException('Attack-tool request timed out.', 'TimeoutError')), timeoutMs);
       const signal = context.signal ? AbortSignal.any([context.signal, controller.signal]) : controller.signal;
       try {
-        const response = await fetchImpl(url.href, {
-          method: 'GET', redirect: 'manual', signal,
-          headers: { accept: 'application/json' },
-        });
-        if (response.status >= 300 && response.status < 400) {
+        const init = { method: packet.method, redirect: 'manual', signal,
+          headers: packet.method === 'POST'
+            ? { 'content-type': 'application/x-www-form-urlencoded', accept: 'text/html,application/json' }
+            : { accept: 'application/json,text/html' } };
+        if (packet.body) init.body = new URLSearchParams(packet.body).toString();
+        const response = await fetchImpl(url.href, init);
+        if (packet.method === 'GET' && response.status >= 300 && response.status < 400) {
           await response.body?.cancel();
           reject('redirect_not_allowed', context);
         }

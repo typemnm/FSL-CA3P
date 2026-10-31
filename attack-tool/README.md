@@ -15,15 +15,19 @@ casper-db snapshot → Agent → attack-tool HTTP JSON-RPC → Guardrail → tar
 
 | ID | 의존성 / 점검 내용 | 전용 자동 실행 |
 | --- | --- | --- |
-| `sqli-like-tautology` | 기존 `node:sqlite` SQLi 후보 | GET `q` + `resultCount` 지원 |
-| `search-sqli-template` | 사용자 제공 검색 SQLi | GET `q` + `resultCount` 지원 |
-| `access-control-idor-template` | 담당자 간 접수 상세의 객체 인가 비교 | 참고용: 담당자 세션, 경로 ID 치환, 응답 소유자 비교 필요 |
-| `json5-inherited-filter-template` | JSON5 반환 객체의 상속 검색 필터 | 참고용: `filters` 입력과 결과 배열의 길이·유형 비교 필요 |
-| `lodash-prototype-canary-template` | lodash 설정 경로의 프로토타입 canary | 참고용: 관리자 POST, 동일 프로세스의 속성 관찰·정리 필요 |
-| `commons-text-interpolation-template` | Commons Text 보간 입력 도달 경로 | 참고용: 관리자 POST, 저장된 설정값·lookup 정책 확인 필요 |
-| `snakeyaml-type-tag-template` | SnakeYAML Java 타입 태그 수용 | 참고용: 관리자 POST와 YAML 미리보기 비교 필요 |
+| `sqli-like-tautology` | 기존 `node:sqlite` SQLi 후보 | GET `q` + `resultCount` |
+| `search-sqli-template` | 사용자 제공 검색 SQLi | GET `q` + `resultCount` |
+| `json5-inherited-filter-template` | JSON5 반환 객체의 상속 검색 필터 | GET `filters` + `inheritedFilter` |
+| `access-control-idor-template` | 대한대학교 협력기관 상세 IDOR | GET `:id` + `ownershipComparison`, `owner` 세션 |
+| `wonchang-staff-idor-template` | 원창대학교 교직원 상세 IDOR | GET `:id` + `ownershipComparison`, `owner` 세션 |
+| `student-request-idor-template` | 학생 문의 상세 IDOR | GET `:id` + `ownershipComparison`, `student` 세션 |
+| `unauth-featured-post-delete-template` | 비로그인 대표 공지 삭제와 홈 500 | POST `:id` + GET `statusSequence` |
+| `diag-config-disclosure-template` | 공개 `GET /_diag/config` 필드 노출 | GET + `containsFields` |
+| `snakeyaml-type-tag-template` | SnakeYAML Java 타입 태그 수용 canary | 관리자 POST + `tagAcceptance`. 코드 실행은 확정하지 않음 |
+| `lodash-prototype-canary-template` | lodash 설정 경로의 프로토타입 canary | 참고용: 동일 프로세스의 속성 관찰이 필요함 |
+| `commons-text-interpolation-template` | Commons Text 보간 입력 도달 경로 | 참고용: 저장된 설정값 관찰이 필요함 |
 
-`access-control-idor-template`는 동일하게 제공된 네 건을 한 건으로 정리했다. 저장 계약에 맞춰 `target.endpoint`와 `request.packet.path`를 `/api/admissions/partner/applications/:id`로 통일하고, `integer`/`ids` 선언을 ID 문자열 `payloads: ["1", "3"]`로 표현했다. HTTP 상태 코드는 숫자로 저장한다. 실제 대한대학교 API는 `daehan_sid` 세션 쿠키와 `partner` 역할을 요구하므로 원문의 관리자 Bearer 헤더는 실행 패킷에 저장하지 않았다. `partner1`의 본인 접수 1과 다른 담당자 소유 접수 3을 같은 세션으로 비교하며, `partner_user_id` 확인이 필요하다. 관리자 200 응답만으로 객체 인가 결함을 판정하지 않는다.
+`access-control-idor-template`는 제공된 네 건을 한 건으로 정리했다. `target.endpoint`와 `request.packet.path`는 `/api/admissions/partner/applications/:id`이고, 공격 payload는 다른 담당자 ID `3`이다. 기준 요청은 `verify.baseline.path`의 본인 접수 ID 1이다. HTTP 상태 코드는 숫자로 저장한다. 실제 대한대학교 API는 `daehan_sid`와 `partner` 역할을 요구하므로 원문의 관리자 Bearer 헤더는 실행 패킷에 넣지 않았다. 같은 `owner` 세션으로 본인 접수와 다른 담당자 접수의 `partner_user_id`를 비교한다. 200만으로 객체 인가 결함을 판정하지 않는다.
 
 외부 의존성 템플릿의 근거와 관찰 범위는 다음과 같다. 대상 버전과 호출 경로는 `vul-web2/package.json`, `vul-web2/wonchang/pom.xml` 및 해당 서버 구현을 기준으로 정했다.
 
@@ -87,7 +91,7 @@ casper-db snapshot → Agent → attack-tool HTTP JSON-RPC → Guardrail → tar
 ]
 ```
 
-현재 실행기는 GET 패킷, `q` 하나의 query 입력, `resultCount` 검증을 지원한다. 그 밖의 템플릿은 목록과 상세에서 참고용으로 확인하며 실행 도구에는 포함하지 않는다. 지원되는 템플릿도 서버에 설정한 origin·허용 경로·예산을 통과해야 실행된다. JSON을 등록한다고 허용 경로가 추가되지는 않는다.
+현재 실행기는 `resultCount`, `inheritedFilter`, `ownershipComparison`, `containsFields`, `statusSequence`, `tagAcceptance`를 지원한다. lodash prototype canary와 Commons Text 저장값 관찰은 참고용이며 실행 요청은 거부한다. 지원되는 템플릿도 서버에 설정한 origin·허용 경로·예산을 통과해야 실행된다. JSON을 등록한다고 허용 경로가 추가되지는 않는다. 세션 쿠키는 패킷이 아니라 평가 런타임이 템플릿의 `sessionRole`로 붙인다.
 
 ## 독립 실행
 

