@@ -43,30 +43,36 @@ const block = (title, size, body) => `<section class="web-info-block"><h3>${titl
 const fold = (title, size, body, empty) => `<details class="web-info-fold"><summary>${title} ${mono(size)}</summary>${
   size ? body : note(empty)}</details>`;
 
+function normalize(entry, status) {
+  const counts = object(entry.counts) ? entry.counts : {};
+  return {
+    probeId: text(entry.probeId), iteration: count(entry.iteration), asset: text(entry.asset),
+    sessionRole: text(entry.sessionRole) || null, ok: entry.ok === true, status: httpStatus(status),
+    artifactId: ARTIFACT_ID.test(text(entry.artifactId)) ? entry.artifactId : null,
+    counts: Object.fromEntries(['technologies', 'paths', 'forms', 'errors'].map(key => [key, count(counts[key]) ?? 0])),
+    truncated: entry.truncated === true,
+  };
+}
+
+function summaryChips(entry) {
+  const { technologies, paths, forms, errors } = entry.counts;
+  return `<span class="web-info-asset mono">${escape(entry.asset || '자산 미기록')}</span>`
+    + chip(entry.sessionRole ? `세션 ${entry.sessionRole}` : '세션 없음')
+    + statusChip(entry.status)
+    + `<span class="web-info-counts">기술 ${technologies} · 경로 ${paths} · 폼 ${forms} · 오류 ${errors}</span>`
+    + (entry.ok ? chip('수집 완료', 'ci-passed') : chip('수집 실패', 'ci-failed'))
+    + (entry.truncated ? chip('일부 생략', 'ci-incomplete') : '');
+}
+
 export function webInfoEvents(item) {
-  return objects(item?.events).filter(event => event.stage === 'web_info.collected').map(event => {
-    const counts = object(event.counts) ? event.counts : {};
-    return {
-      probeId: text(event.probeId), iteration: count(event.iteration), asset: text(event.asset),
-      sessionRole: text(event.sessionRole) || null, ok: event.ok === true, status: httpStatus(event.status),
-      artifactId: ARTIFACT_ID.test(text(event.artifactId)) ? event.artifactId : null,
-      counts: Object.fromEntries(['technologies', 'paths', 'forms', 'errors'].map(key => [key, count(counts[key]) ?? 0])),
-      truncated: event.truncated === true,
-    };
-  });
+  return objects(item?.events).filter(event => event.stage === 'web_info.collected').map(event => normalize(event, event.status));
 }
 
 export function renderWebInfoSection(item) {
   const events = webInfoEvents(item);
   if (!events.length) return '';
   const cards = events.map(event => {
-    const { technologies, paths, forms, errors } = event.counts;
-    const summary = `<span class="web-info-asset mono">${escape(event.asset || '자산 미기록')}</span>`
-      + chip(event.sessionRole ? `세션 ${event.sessionRole}` : '세션 없음')
-      + statusChip(event.status)
-      + `<span class="web-info-counts">기술 ${technologies} · 경로 ${paths} · 폼 ${forms} · 오류 ${errors}</span>`
-      + (event.ok ? chip('수집 완료', 'ci-passed') : chip('수집 실패', 'ci-failed'))
-      + (event.truncated ? chip('일부 생략', 'ci-incomplete') : '')
+    const summary = summaryChips(event)
       + `<small>반복 ${event.iteration ?? '?'} · 검사 ${escape(event.probeId || 'ID 미기록')}</small>`;
     return event.artifactId
       ? `<details class="web-info-card" data-web-info-artifact="${event.artifactId}"><summary>${summary}</summary><div class="web-info-detail">${note('상세 정보를 불러오는 중입니다.')}</div></details>`
@@ -175,4 +181,76 @@ export function renderWebInfoDetail(view) {
     return note(`지원하지 않는 웹 정보 형식입니다${version ? ` (${version})` : ''}. 대시보드 버전을 확인하세요.`);
   }
   return head(view) + technologies(view) + paths(view) + forms(view) + folds(view);
+}
+
+/** Resolve an artifact id to detail markup: one request per id; failures are retried on the next open. */
+export function createWebInfoLoader(api, prepare = view => view) {
+  const views = new Map();
+  return async id => {
+    if (!ARTIFACT_ID.test(text(id))) return note('상세 정보 없음');
+    if (!views.has(id)) views.set(id, api(`/api/artifacts/${id}`).then(view => renderWebInfoDetail(prepare(view))));
+    try { return await views.get(id); }
+    catch (error) {
+      views.delete(id);
+      const message = error?.status === 404 ? '저장된 상세 정보를 찾을 수 없습니다.'
+        : error?.status === 409 ? '저장된 상세 정보가 무결성 또는 민감 정보 검사를 통과하지 못해 표시하지 않습니다.'
+          : '상세 정보를 불러오지 못했습니다. 연결을 확인한 뒤 다시 펼치세요.';
+      return `<p class="web-info-note web-info-error" role="alert">${escape(message)}</p>`;
+    }
+  };
+}
+
+/* web-parser module page: `/api/modules/web-parser/logs` entries (newest first). */
+const logTime = value => Number.isFinite(Date.parse(value))
+  ? new Date(value).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) : '시각 미기록';
+
+function collectionLogs(logs) {
+  return objects(logs).filter(log => log.stage === 'web_info.collected')
+    .map(log => ({ ...normalize(log, log.httpStatus), id: text(log.id), runId: text(log.runId),
+      createdAt: log.createdAt, detail: text(log.detail) }))
+    .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+}
+
+function logRow(entry) {
+  // Run ids share a mode prefix (general-, external-general-); the UUID tail tells them apart.
+  const run = entry.runId.length > 12 ? `…${entry.runId.slice(-8)}` : entry.runId || '실행 ID 미기록';
+  const meta = [`검사 ${entry.probeId || 'ID 미기록'}`, `반복 ${entry.iteration ?? '?'}`, entry.detail].filter(Boolean).join(' · ');
+  return `<details class="web-parser-log-row" data-log-id="${escape(entry.id)}"${entry.artifactId ? ` data-web-info-artifact="${entry.artifactId}"` : ''}><summary><span class="web-parser-log-time mono">${
+    escape(logTime(entry.createdAt))}</span><span class="web-parser-log-run mono" title="${escape(entry.runId)}">${escape(run)}</span>${summaryChips(entry)}${
+    entry.artifactId ? '' : chip('상세 정보 없음', 'web-info-absent')}</summary><div class="web-parser-log-body">${note(meta)}${
+    entry.artifactId ? `<div class="web-info-detail">${note('상세 정보를 불러오는 중입니다.')}</div>` : note('상세 정보 없음')}</div></details>`;
+}
+
+/** Rows plus the folded legacy list; re-rendered alone when the search or the failed-only toggle changes. */
+export function renderWebParserLogBody(logs, { query = '', failedOnly = false } = {}) {
+  const needle = text(query).trim().toLowerCase();
+  const matches = values => !needle || values.filter(value => value !== null && value !== undefined && value !== '')
+    .join(' ').toLowerCase().includes(needle);
+  const rows = collectionLogs(logs).filter(entry => (!failedOnly || !entry.ok) && matches([entry.asset, entry.runId,
+    entry.probeId, entry.status === null ? '응답 없음' : `HTTP ${entry.status}`, entry.ok ? '수집 완료' : '수집 실패',
+    entry.sessionRole, entry.detail]));
+  const others = objects(logs).filter(log => log.stage !== 'web_info.collected')
+    .filter(log => matches([text(log.title), text(log.stage), text(log.detail), text(log.runId), text(log.status)]));
+  return (rows.length ? `<div class="web-parser-log-rows">${rows.map(logRow).join('')}</div>`
+    : note(needle || failedOnly ? '조건에 맞는 수집 기록이 없습니다.' : '수집 기록이 없습니다.'))
+    + (others.length ? `<details class="web-info-fold web-parser-other-logs"><summary>기타 로그 ${mono(others.length)}</summary><ul class="web-info-list">${
+      others.map(log => `<li>${mono(logTime(log.createdAt))} ${escape(text(log.title) || '제목 없음')} ${chip(text(log.stage) || '단계 미기록')}${
+        text(log.detail) ? ` · ${escape(log.detail)}` : ''}</li>`).join('')}</ul></details>` : '');
+}
+
+export function renderWebParserLog(logs, { query = '', failedOnly = false, total = null } = {}) {
+  const entries = collectionLogs(logs);
+  const succeeded = entries.filter(entry => entry.ok).length;
+  const loaded = objects(logs).length;
+  const facts = [
+    ['수집 횟수', entries.length], ['성공 / 실패', `${succeeded} / ${entries.length - succeeded}`],
+    ['수집 페이지', new Set(entries.map(entry => entry.asset).filter(Boolean)).size],
+    ['포함된 실행', new Set(entries.map(entry => entry.runId).filter(Boolean)).size],
+    ['마지막 수집', entries.length ? logTime(entries[0].createdAt) : '—'],
+  ];
+  return `<section class="panel web-parser-log" aria-labelledby="web-parser-log-title"><div class="panel-heading"><div><div class="eyebrow">WEB-PARSER / COLLECTION LOG</div><h2 id="web-parser-log-title">웹 정보 수집 로그</h2><span class="panel-subtitle">web_info 검사마다 web-parser가 수집한 응답 기록입니다. 관측 기록이며 판정을 포함하지 않습니다. 행을 펼치면 수집 상세를 불러옵니다.</span></div><span class="local-chip">${entries.length}건</span></div><div class="web-parser-log-content"><div class="ops-module-facts web-parser-log-strip">${
+    facts.map(([label, value]) => `<span><small>${label}</small><strong>${escape(value)}</strong></span>`).join('')}</div><div class="web-parser-log-toolbar"><label>검색<input id="web-parser-log-search" type="search" value="${
+    escape(query)}" placeholder="자산, 실행 ID, 검사 ID, 상태"></label><label class="web-parser-log-failed"><input id="web-parser-failed-only" type="checkbox"${failedOnly ? ' checked' : ''}> 실패만 보기</label></div>${
+    count(total) !== null && total > loaded ? note(`최근 ${loaded}건만 표시합니다 (전체 로그 ${total}건). 요약도 불러온 기록 기준입니다.`) : ''
+  }<div id="web-parser-log-body">${renderWebParserLogBody(logs, { query, failedOnly })}</div></div></section>`;
 }

@@ -2,7 +2,7 @@ import { MODULES, validateTarget, formatElapsed } from './telemetry-view.js';
 import { initStarfield } from './starfield.js';
 import { createRuntimeClient } from './runtime-client.js';
 import { generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun, renderGeneralReport } from './general-results.js';
-import { renderWebInfoDetail, renderWebInfoSection } from './web-info-view.js';
+import { createWebInfoLoader, renderWebInfoSection } from './web-info-view.js';
 import { createOperationsPages } from './operations-pages.js';
 import { createWorkspaceChat } from './workspace-chat.js';
 
@@ -635,7 +635,6 @@ function renderReports() {
 }
 // Polling re-renders the report every second; keep open web-info cards and their loaded details.
 let webInfoMarkup = '';
-const webInfoViews = new Map();
 function keepWebInfoSection(previous, markup) {
   const next = $('report-content').querySelector('.web-info-section');
   if (previous && next && markup === webInfoMarkup) next.replaceWith(previous);
@@ -644,19 +643,7 @@ function keepWebInfoSection(previous, markup) {
   });
   webInfoMarkup = markup;
 }
-async function loadWebInfo(card) {
-  const id = card.dataset.webInfoArtifact;
-  const body = card.querySelector('.web-info-detail');
-  if (!webInfoViews.has(id)) webInfoViews.set(id, runtime.api(`/api/artifacts/${id}`).then(view => renderWebInfoDetail(redactTelemetry(view))));
-  try { body.innerHTML = await webInfoViews.get(id); }
-  catch (error) {
-    webInfoViews.delete(id);
-    const message = error.status === 404 ? '저장된 상세 정보를 찾을 수 없습니다.'
-      : error.status === 409 ? '저장된 상세 정보가 무결성 또는 민감 정보 검사를 통과하지 못해 표시하지 않습니다.'
-        : '상세 정보를 불러오지 못했습니다. 연결을 확인한 뒤 카드를 다시 펼치세요.';
-    body.innerHTML = `<p class="web-info-note web-info-error" role="alert">${escape(message)}</p>`;
-  }
-}
+const loadWebInfoDetail = createWebInfoLoader(runtime.api, view => redactTelemetry(view));
 function renderNotifications() {
   $('notification-list').innerHTML = currentRun().events.slice(-3).reverse().map((event) => `<div class="notification-event">${escape(event.title)}<small>${escape(moduleById(event.module).name)} · ${escape(timeLabel(event.time))}</small></div>`).join('') || '<div class="notification-event">아직 이벤트가 없습니다.</div>';
 }
@@ -862,7 +849,9 @@ $('report-run-select').addEventListener('change', async event => {
 $('report-preview-close').addEventListener('click', () => { reportPreviewGeneration += 1; $('report-preview').hidden = true; $('report-preview-frame').srcdoc = ''; });
 // toggle does not bubble; capture it for the web-info cards.
 $('report-content').addEventListener('toggle', event => {
-  if (event.target.matches?.('details[data-web-info-artifact]') && event.target.open) void loadWebInfo(event.target);
+  const card = event.target;
+  if (!card.matches?.('details[data-web-info-artifact]') || !card.open) return;
+  void loadWebInfoDetail(card.dataset.webInfoArtifact).then(html => { card.querySelector('.web-info-detail').innerHTML = html; });
 }, true);
 $('report-content').addEventListener('click', async event => {
   const button = event.target.closest('[data-preview-finding]');
