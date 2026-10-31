@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { collectWebInfo, summarizeTargetInfo, evidenceFromTargetInfo, MAX_SUMMARY_BYTES,
-  EVIDENCE_SUMMARY_BYTES } from '../integrations/web-parser.mjs';
+import { collectWebInfo, summarizeTargetInfo, evidenceFromTargetInfo, webInfoView, MAX_SUMMARY_BYTES,
+  EVIDENCE_SUMMARY_BYTES, MAX_VIEW_BYTES } from '../integrations/web-parser.mjs';
+import { redact } from '../../contracts/index.mjs';
 
 function targetInfo(overrides = {}) {
   return {
@@ -164,6 +165,147 @@ test('masked values stay inside whole JSON items and are unchanged when the core
   assert.deepEqual(listIn(paths.summary, 'paths').items, [{ url: '/cb?token [redacted]', sources: ['link'], params: ['token'] }]);
   assert.deepEqual(listIn(surface.summary, 'headers').items, [{ name: 'Location', value: '/cb?token [redacted]' },
     { name: 'X-A', value: 'ok' }, { name: 'X-Debug-Set-Cookie' }]);
+});
+
+const many = (count, make) => Array.from({ length: count }, (_, index) => make(index));
+
+test('webInfoView is the UI view of one probe without page content, cookie values or secret header values', () => {
+  const base = targetInfo();
+  const info = targetInfo({
+    navigation: { ...base.navigation, securityDetails: { protocol: 'TLS 1.3', issuer: 'Lab CA',
+      subjectName: '127.0.0.1', validFrom: 1700000000, validTo: 1800000000 } },
+    html: '<html><head><title>Lab Portal</title><script>INLINE_MARKER()</script></head><body>HTML_MARKER</body></html>',
+    body: 'BODY_MARKER',
+    meta: [{ name: 'generator', content: 'META_MARKER' }],
+    headers: [...base.headers, { name: 'X-Api-Key', value: 'HEADER_SECRET' }, { name: 'Server', value: 'nginx' }],
+    technologies: [{ name: 'React', categories: ['JavaScript frameworks'], version: '18.2.0', confidence: 100,
+      evidence: [{ field: 'scriptSrc', match: 'react.production.min.js' },
+        { field: 'headers', key: 'x-powered-by', match: 'Next.js' },
+        { field: 'cookies', key: 'sid', match: 'secret123' }] },
+    { name: 'Nginx', categories: ['Web servers'], version: null, confidence: 50, evidence: [] }],
+    libraries: [{ name: 'React', version: '18.2.0', source: 'fingerprint', evidence: [] }],
+    structure: { ...base.structure, scripts: [{ inline: 'INLINE_MARKER()', type: null }],
+      iframes: [{ src: 'http://127.0.0.1/frame', sandbox: 'allow-scripts' }, { src: null, sandbox: null }],
+      frames: [{ src: 'http://127.0.0.1/legacy' }],
+      media: [{ tag: 'img', src: 'http://127.0.0.1/MEDIA_MARKER.png', srcset: [] }] },
+    resources: [...base.resources, { kind: 'script', method: 'GET', url: 'https://cdn.example/lib.js', status: 200 },
+      { kind: 'xhr', method: 'POST', url: 'http://127.0.0.1/api', status: 201 }],
+    paths: [...base.paths, { url: 'http://127.0.0.1/robots-hidden/*', sources: ['robots:disallow'], methods: [],
+      sameOrigin: true, params: [], wildcard: true }],
+    errors: [{ stage: 'fingerprint', message: 'timeout' }],
+  });
+  const view = webInfoView(info, { probeId: 'w-1', iteration: 2, sessionRole: 'owner' });
+  assert.deepEqual(Object.keys(view), ['schemaVersion', 'probeId', 'iteration', 'sessionRole', 'target', 'response',
+    'redirectChain', 'technologies', 'paths', 'forms', 'frames', 'headers', 'cookies', 'hosts', 'errors', 'truncated']);
+  assert.equal(view.schemaVersion, 'web-info-view/1');
+  assert.deepEqual([view.probeId, view.iteration, view.sessionRole], ['w-1', 2, 'owner']);
+  assert.deepEqual(view.target, info.target);
+  assert.deepEqual(view.response, { status: 200, contentType: 'text/html', loadTimingMs: 12, title: 'Lab Portal',
+    tls: { protocol: 'TLS 1.3', issuer: 'Lab CA', subjectName: '127.0.0.1', validFrom: 1700000000, validTo: 1800000000 } });
+  assert.deepEqual(view.redirectChain, [{ from: 'http://127.0.0.1/', to: 'http://127.0.0.1/app', status: 302, kind: 'http' }]);
+  assert.deepEqual(view.technologies, [{ name: 'React', version: '18.2.0', categories: ['JavaScript frameworks'],
+    confidence: 100, library: true, evidence: [{ field: 'scriptSrc', match: 'react.production.min.js' },
+      { field: 'headers', name: 'x-powered-by', match: 'Next.js' }, { field: 'cookies', name: 'sid', match: null }] },
+  { name: 'Nginx', version: null, categories: ['Web servers'], confidence: 50, library: false, evidence: [] }]);
+  assert.deepEqual(view.paths, { total: 2, items: [
+    { url: 'http://127.0.0.1/about', sources: ['link'], methods: [], sameOrigin: true, params: [] },
+    { url: 'http://127.0.0.1/robots-hidden/*', sources: ['robots:disallow'], methods: [], sameOrigin: true,
+      params: [], wildcard: true }] });
+  assert.deepEqual(view.forms, { total: 1, items: [{ action: 'http://127.0.0.1/login', method: 'POST',
+    fields: [{ name: 'user', type: 'text' }, { name: 'pass', type: 'password' }] }] });
+  assert.deepEqual(view.frames, [{ tag: 'iframe', src: 'http://127.0.0.1/frame', sandbox: 'allow-scripts' },
+    { tag: 'frame', src: 'http://127.0.0.1/legacy', sandbox: null }]);
+  assert.deepEqual(view.headers, [{ name: 'Content-Type', value: 'text/html' }, { name: 'Set-Cookie' },
+    { name: 'X-Api-Key' }, { name: 'Server', value: 'nginx' }]);
+  assert.deepEqual(view.cookies, [{ name: 'sid', domain: '127.0.0.1', path: '/', expires: null, httpOnly: true,
+    secure: false, sameSite: 'Lax' }]);
+  assert.deepEqual(view.hosts, [{ host: '127.0.0.1', sameOrigin: true, requests: 2, kinds: ['document', 'xhr'] },
+    { host: 'cdn.example', sameOrigin: false, requests: 1, kinds: ['script'] }]);
+  assert.deepEqual(view.errors, [{ stage: 'fingerprint', message: 'timeout' }]);
+  assert.deepEqual(view.truncated, { source: false, sections: [] });
+  const json = JSON.stringify(view);
+  for (const marker of ['INLINE_MARKER', 'HTML_MARKER', 'BODY_MARKER', 'META_MARKER', 'MEDIA_MARKER',
+    'secret123', 'HEADER_SECRET', '"key"', '"html"', '"body"', '"meta"']) assert.ok(!json.includes(marker), marker);
+  assert.deepEqual(redact(view), view);
+});
+
+test('webInfoView masks every string through the caller and stays unchanged by redact()', () => {
+  const base = targetInfo();
+  const info = targetInfo({
+    target: { ...base.target, requestedUrl: 'http://lab:pw@127.0.0.1/?key=abc' },
+    headers: [{ name: 'X-Echo', value: 'reflected SESSIONVALUE' }, { name: 'Location', value: '/cb?sig=abc' }],
+    paths: [{ url: 'http://127.0.0.1/api?signature=SIG123&page=1', sources: ['link'], methods: [], sameOrigin: true,
+      params: ['signature', 'page'] }],
+    errors: [{ stage: 'load', message: 'http://127.0.0.1/?SESSIONVALUE=1: timeout' }],
+  });
+  // The runtime passes its session masking composed with redact().
+  const safeText = value => redact(value.replaceAll('SESSIONVALUE', '[redacted]'));
+  const view = webInfoView(info, { safeText, safeHeaderValue: value => value.replace(/sig=\w+/u, 'sig=hidden') });
+  assert.equal(view.target.requestedUrl, 'http://127.0.0.1/?key=%5BREDACTED%5D');
+  assert.deepEqual(view.headers, [{ name: 'X-Echo', value: 'reflected [redacted]' },
+    { name: 'Location', value: '/cb?sig=hidden' }]);
+  assert.equal(view.paths.items[0].url, 'http://127.0.0.1/api?signature=%5BREDACTED%5D&page=1');
+  assert.deepEqual(view.paths.items[0].params, ['signature', 'page']);
+  assert.ok(!JSON.stringify(view).includes('SESSIONVALUE'));
+  assert.deepEqual(redact(view), view);
+  // A string that masking makes longer is cut before masking, so it never exceeds 2000 characters.
+  const long = webInfoView(targetInfo({ errors: [{ stage: 'load', message: 'a'.repeat(3000) }] }),
+    { safeText: value => value.replaceAll('a', 'aaa') });
+  assert.ok(long.errors[0].message.length <= 2000);
+  assert.match(long.errors[0].message, /^a+$/u);
+});
+
+test('webInfoView caps each list and names every cap it hit', () => {
+  const base = targetInfo();
+  const info = targetInfo({
+    navigation: { ...base.navigation, redirectChain: many(31, index => ({ from: 'http://127.0.0.1/r' + index,
+      to: 'http://127.0.0.1/r' + (index + 1), status: 302, kind: 'http' })) },
+    headers: many(101, index => ({ name: 'X-H' + index, value: 'v' })),
+    cookies: many(101, index => ({ name: 'c' + index, value: 'v', domain: '127.0.0.1', path: '/' })),
+    technologies: many(101, index => ({ name: 'T' + index, categories: [], version: null, confidence: 1,
+      evidence: many(11, () => ({ field: 'html', match: 'm' })) })),
+    structure: { ...base.structure, forms: many(101, index => ({ action: 'http://127.0.0.1/f' + index,
+      method: 'post', fields: many(index ? 1 : 51, field => ({ name: 'f' + field, type: 'text' })) })) },
+    resources: many(101, index => ({ kind: 'image', method: 'GET', url: 'http://h' + index + '.example/x', status: 200 })),
+    paths: many(501, index => ({ url: 'http://127.0.0.1/p' + index, sources: ['link'], methods: [], sameOrigin: true,
+      params: [] })),
+    errors: many(51, index => ({ stage: 'js', message: 'e' + index })),
+  });
+  const view = webInfoView(info);
+  assert.deepEqual([view.redirectChain.length, view.technologies.length, view.technologies[0].evidence.length,
+    view.paths.items.length, view.forms.items.length, view.forms.items[0].fields.length, view.headers.length,
+    view.cookies.length, view.hosts.length, view.errors.length], [30, 100, 10, 500, 100, 50, 100, 100, 100, 50]);
+  assert.deepEqual([view.paths.total, view.forms.total], [501, 101]);
+  assert.deepEqual(view.truncated, { source: false, sections: ['redirectChain', 'technologies',
+    'technologies.evidence', 'paths', 'forms', 'forms.fields', 'headers', 'cookies', 'hosts', 'errors'] });
+});
+
+test('webInfoView halves the widest list until a huge page fits 256 KiB', () => {
+  const long = 'x'.repeat(5000);
+  const base = targetInfo();
+  const info = targetInfo({
+    headers: many(150, index => ({ name: 'X-H' + index, value: long })),
+    technologies: many(150, index => ({ name: 'T' + index, categories: ['C'], version: null, confidence: 50,
+      evidence: many(20, () => ({ field: 'html', match: long })) })),
+    structure: { ...base.structure, frames: many(1000, index => ({ src: 'http://127.0.0.1/frame' + index + '/' + long })) },
+    paths: many(2000, index => ({ url: 'http://127.0.0.1/p' + index + '?' + long, sources: ['link'],
+      methods: ['GET'], sameOrigin: true, params: many(5, param => 'q' + param + long) })),
+    truncated: true,
+  });
+  const view = webInfoView(info);
+  const json = JSON.stringify(view);
+  assert.ok(Buffer.byteLength(json, 'utf8') <= MAX_VIEW_BYTES);
+  JSON.parse(json, (key, value) => {
+    if (typeof value === 'string') assert.ok(value.length <= 2000, key);
+    return value;
+  });
+  assert.equal(view.truncated.source, true);
+  assert.equal(view.paths.total, 2000);
+  assert.ok(view.paths.items.length < 500 && view.frames.length < 1000 && view.technologies.length < 100);
+  for (const section of ['technologies', 'technologies.evidence', 'paths', 'frames', 'headers']) {
+    assert.ok(view.truncated.sections.includes(section), section);
+  }
+  assert.deepEqual(redact(view), view);
 });
 
 test('collectWebInfo returns the raw TargetInfo and its summary, bounding timeoutMs at 15s', async () => {
