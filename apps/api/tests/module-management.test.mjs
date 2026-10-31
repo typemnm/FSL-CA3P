@@ -42,7 +42,7 @@ test('module management shows deployed configuration and bounded run logs withou
   await assert.rejects(modules.logs('attack', { limit: 101 }), { status: 400 });
 });
 
-test('web_info.collected logs carry a whitelisted collection summary; other events stay unchanged', async () => {
+test('web_info.collected logs carry a whitelisted, unaltered collection summary; other events stay unchanged', async () => {
   const artifactId = 'a'.repeat(64);
   const base = { module: 'web-parser', source: 'web-parser', stage: 'web_info.collected', type: 'info', title: '웹 정보 수집' };
   const modules = createModuleManagement({
@@ -66,11 +66,10 @@ test('web_info.collected logs carry a whitelisted collection summary; other even
     status: 200, title: '웹 정보 수집', createdAt: '2026-10-28T00:00:03Z', detail: 'GET /board → HTTP 200',
     asset: '/board?page=2', sessionRole: 'member', probeId: 'p-web-1', iteration: 2, ok: true, httpStatus: 200, artifactId,
     counts: { technologies: 3, paths: 34, forms: 1, errors: 0 }, truncated: true });
-  assert.doesNotMatch(JSON.stringify(logs), /raw<\/html>|secret-cookie|secret-body|abc\.def|user:pass|t1/);
-  assert.equal(bad.detail.length, 200);
-  assert.match(bad.detail, /^Bearer \[REDACTED\] line1 line2/);
-  assert.doesNotMatch(bad.detail, /[\u0000-\u001f]/u);
-  assert.match(bad.asset, /^https:\/\/app\.test\/x\?access_token=%5BREDACTED%5D&page=2$/);
+  // Only whitelisted fields travel; their values are not masked or rewritten, just length-capped.
+  assert.doesNotMatch(JSON.stringify(logs), /raw<\/html>|secret-cookie|secret-body/);
+  assert.equal(bad.detail, ('Bearer abc.def line1\nline2\u0007 ' + 'x'.repeat(300)).slice(0, 200));
+  assert.equal(bad.asset, 'https://user:pass@app.test/x?access_token=t1&page=2');
   assert.equal(bad.sessionRole, null);
   assert.equal(bad.probeId, null);
   assert.equal(bad.iteration, null);

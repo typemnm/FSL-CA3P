@@ -29,15 +29,14 @@ function pageItems(page) {
   return page?.runs ?? page?.items ?? [];
 }
 const SAFE_ID = /^[a-zA-Z0-9._:-]{1,128}$/;
-const cleanText = (value, max) => typeof value === 'string'
-  ? redact(value).replace(/[\u0000-\u001f\u007f]/gu, ' ').slice(0, max) : null;
-// Whitelisted web_info.collected fields so the module page can show what was collected.
+const cappedText = (value, max) => typeof value === 'string' ? value.slice(0, max) : null;
+// Whitelisted web_info.collected fields, values as collected (user decision: web-parser output is shown unaltered).
 function webInfoLog(event) {
   if (event.stage !== 'web_info.collected') return {};
   const counts = event.counts && typeof event.counts === 'object' ? event.counts : {};
   return {
-    detail: cleanText(event.detail, 200),
-    asset: cleanText(event.asset, 512),
+    detail: cappedText(event.detail, 200),
+    asset: cappedText(event.asset, 512),
     sessionRole: typeof event.sessionRole === 'string' && /^[a-zA-Z0-9._:-]{1,64}$/.test(event.sessionRole) ? event.sessionRole : null,
     probeId: typeof event.probeId === 'string' && SAFE_ID.test(event.probeId) ? event.probeId : null,
     iteration: Number.isSafeInteger(event.iteration) && event.iteration >= 0 ? event.iteration : null,
