@@ -291,17 +291,20 @@ test('web-parser result cards load each artifact once and survive polling re-ren
       webEvent(viewId), webEvent(missingId, { asset: '/gone' }),
       webEvent(null, { asset: '/down', ok: false, status: null, type: 'warning', detail: '웹 정보 수집 실패',
         counts: { technologies: 0, paths: 0, forms: 0, errors: 1 } })] };
-  const view = { schemaVersion: 'web-info-view/1', probeId: 'p-d', iteration: 1, sessionRole: 'member',
+  // Raw TargetInfo as web-parser collected it (secrets included, shown as is).
+  const view = { schemaVersion: 'web-parser-1',
     target: { requestedUrl: 'https://app.test/board?page=2', finalUrl: 'https://app.test/board?page=2', origin: 'https://app.test' },
-    response: { status: 200, contentType: 'text/html', loadTimingMs: 12, title: '<img src=x onerror=alert(1)>', tls: null },
-    redirectChain: [], frames: [], cookies: [], hosts: [], errors: [], truncated: { source: false, sections: [] },
-    headers: [{ name: 'Content-Type', value: 'text/html' }],
-    technologies: [{ name: 'jQuery', version: '3.6.0', categories: ['JavaScript libraries'], confidence: 100, library: true,
+    navigation: { status: 200, contentType: 'text/html', redirectChain: [], loadTimingMs: 12, securityDetails: null },
+    headers: [{ name: 'Content-Type', value: 'text/html' }, { name: 'Set-Cookie', value: 'sid=raw-cookie-value' }],
+    cookies: [{ name: 'sid', value: 'raw-cookie-value', domain: 'app.test', path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax' }],
+    meta: [], html: '<title><img src=x onerror=alert(1)></title><p>hello</p>', body: `${'x'.repeat(20000)}BODY-TAIL-MARKER`,
+    technologies: [{ name: 'jQuery', version: '3.6.0', categories: ['JavaScript libraries'], confidence: 100,
       evidence: [{ field: 'scriptSrc', match: 'jquery.min.js' }] }],
-    paths: { total: 2, items: [
+    libraries: [{ name: 'jQuery', version: '3.6.0', source: 'fingerprint', evidence: [] }],
+    structure: { forms: [], links: [] }, resources: [], errors: [], truncated: false,
+    paths: [
       { url: 'https://app.test/board/view', sources: ['link'], methods: ['GET'], sameOrigin: true, params: ['id'] },
-      { url: 'https://cdn.example.net/lib.js', sources: ['request:script'], methods: ['GET'], sameOrigin: false, params: [] }] },
-    forms: { total: 0, items: [] } };
+      { url: 'https://cdn.example.net/lib.js', sources: ['request:script'], methods: ['GET'], sameOrigin: false, params: [] }] };
   const fetches = [];
   const localChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
   const browser = await chromium.launch({ headless: true,
@@ -360,6 +363,15 @@ test('web-parser result cards load each artifact once and survive polling re-ren
   assert.equal(await card.getByText('https://cdn.example.net/lib.js').isVisible(), false);
   await card.locator('.web-info-external > summary').click();
   assert.equal(await card.getByText('https://cdn.example.net/lib.js').isVisible(), true);
+  assert.equal(await card.locator('.web-info-download').getAttribute('href'), `/api/artifacts/${viewId}`);
+  const cookieFold = card.locator('details.web-info-fold', { hasText: '쿠키' });
+  await cookieFold.locator('> summary').click();
+  assert.equal(await cookieFold.getByText('raw-cookie-value', { exact: true }).isVisible(), true);
+  const bodyFold = card.locator('details.web-info-fold', { hasText: '본문 원문 (body)' });
+  await bodyFold.locator('> summary').click();
+  assert.equal(await bodyFold.getByText('BODY-TAIL-MARKER').isVisible(), false);
+  await bodyFold.locator('.web-info-rest > summary').click();
+  assert.equal(await bodyFold.getByText('BODY-TAIL-MARKER').isVisible(), true);
   // Polling replaces the report every second; the open card, its nested toggle and its content stay.
   await page.waitForTimeout(1500);
   assert.equal(await card.evaluate(element => element.open), true);
@@ -373,7 +385,8 @@ test('web-parser result cards load each artifact once and survive polling re-ren
   const missing = page.locator(`details[data-web-info-artifact="${missingId}"]`);
   await missing.locator('summary').click();
   await missing.getByText('저장된 상세 정보를 찾을 수 없습니다.').waitFor();
-  assert.equal(await page.locator('#report-content script, .web-info-section img, .web-info-section a').count(), 0);
+  // Collected URLs stay text; the only link is the dashboard's own 원본 JSON download.
+  assert.equal(await page.locator('#report-content script, .web-info-section img, .web-info-section a:not(.web-info-download)').count(), 0);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
   assert.deepEqual(errors, []);
@@ -391,10 +404,10 @@ test('web-parser module page shows a readable collection log and expands a row i
       artifactId: undefined, detail: '웹 정보 수집 실패', counts: { technologies: 0, paths: 0, forms: 0, errors: 1 } }),
     { id: 'legacy-row', runId: 'run-legacy', module: 'xss-parser', stage: 'observe', status: 'completed',
       title: '<img src=x onerror=alert(1)>', createdAt: '2026-10-01T00:00:00Z' }];
-  const view = { schemaVersion: 'web-info-view/1', target: { requestedUrl: 'https://app.test/board?page=2' },
-    response: { status: 200, contentType: 'text/html', title: '게시판' },
-    technologies: [{ name: 'jQuery', version: '3.6.0', categories: ['JavaScript libraries'], confidence: 100, library: true, evidence: [] }],
-    paths: { total: 1, items: [{ url: 'https://app.test/board/view', sources: ['link'], methods: ['GET'], sameOrigin: true, params: ['id'] }] } };
+  const view = { schemaVersion: 'web-parser-1', target: { requestedUrl: 'https://app.test/board?page=2' },
+    navigation: { status: 200, contentType: 'text/html' }, html: '<title>게시판</title>',
+    technologies: [{ name: 'jQuery', version: '3.6.0', categories: ['JavaScript libraries'], confidence: 100, evidence: [] }],
+    paths: [{ url: 'https://app.test/board/view', sources: ['link'], methods: ['GET'], sameOrigin: true, params: ['id'] }] };
   const fetches = []; const moduleRequests = [];
   const localChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
   const browser = await chromium.launch({ headless: true,

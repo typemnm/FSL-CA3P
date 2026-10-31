@@ -65,6 +65,8 @@ const EVENT_CHANNELS = {
 };
 const SECRET_FIELD = /^(?:authorization|proxy-authorization|cookie|set-cookie|(?:x[_-])?api[_-]?key|deepseek[_-]?api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?(?:id|token)|password|secret)$/i;
 function redactTelemetry(value, key = '') {
+  // User decision: web-parser results are shown exactly as collected.
+  if (isObject(value) && value.stage === 'web_info.collected') return value;
   if (SECRET_FIELD.test(key)) return '[redacted]';
   if (Array.isArray(value)) return value.map((item) => redactTelemetry(item));
   if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactTelemetry(item, name)]));
@@ -643,7 +645,7 @@ function keepWebInfoSection(previous, markup) {
   });
   webInfoMarkup = markup;
 }
-const loadWebInfoDetail = createWebInfoLoader(runtime.api, view => redactTelemetry(view));
+const loadWebInfoDetail = createWebInfoLoader(runtime.api);
 function renderNotifications() {
   $('notification-list').innerHTML = currentRun().events.slice(-3).reverse().map((event) => `<div class="notification-event">${escape(event.title)}<small>${escape(moduleById(event.module).name)} · ${escape(timeLabel(event.time))}</small></div>`).join('') || '<div class="notification-event">아직 이벤트가 없습니다.</div>';
 }

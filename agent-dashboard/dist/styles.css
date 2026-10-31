@@ -526,3 +526,11 @@ button.ops-row:hover{background:#1c3324}
 @media(max-width:900px){.web-parser-log-content{padding:13px}.web-parser-log-body{padding:2px 10px 14px}.web-parser-log .web-info-asset{flex-basis:100%}}
 @media(max-width:390px){.web-parser-log-toolbar label:first-child{min-width:0;flex-basis:100%}}
 .web-info-section .local-chip,.web-parser-log .local-chip{white-space:nowrap}
+/* Raw TargetInfo: escaped text viewer (html, body, long values) and the 원본 JSON download. */
+.web-info-raw{margin:0;max-height:420px;overflow:auto;padding:10px 12px;border:1px solid #2a4332;border-radius:5px;background:#08110c;color:#c5dfce;font:12px/1.7 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.web-info-table td .web-info-raw,.web-info-list .web-info-raw,.web-info-evidence .web-info-raw{max-height:240px;margin:4px 0}
+.web-info-rest>summary{margin-top:6px}
+.web-info-head-top{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;margin-bottom:6px}
+.web-info-head-top .eyebrow{margin:0}
+.web-info-download{height:30px;font-size:13px}
+.web-info-subhead{margin:8px 0 6px;font-size:14px;font-weight:550;color:#c2dcca}

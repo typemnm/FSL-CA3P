@@ -1,7 +1,10 @@
-/** web-parser 수집 결과: `web_info.collected` run events → cards, `web-info-view/1` artifact → detail. Pure; no DOM. */
-const VIEW_SCHEMA = 'web-info-view/1';
+/** web-parser 수집 결과: `web_info.collected` run events → cards, the raw TargetInfo artifact → detail. Pure; no DOM.
+ * User decision: show the collected data as is (no masking); every string is still HTML-escaped. */
+const VIEW_SCHEMA = 'web-parser-1';
 const ARTIFACT_ID = /^[a-f0-9]{64}$/;
 const FIRST = 25;
+const TEXT_PREVIEW = 20000;
+const CELL_PREVIEW = 500;
 const SECURITY_HEADERS = ['Content-Security-Policy', 'Strict-Transport-Security', 'X-Frame-Options',
   'X-Content-Type-Options', 'Referrer-Policy'];
 
@@ -17,7 +20,6 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({
 const mono = value => `<span class="mono">${escape(value)}</span>`;
 const chip = (label, tone = '') => `<span class="ci-state${tone ? ` ${tone}` : ''}">${escape(label)}</span>`;
 const chips = values => list(values).map(text).filter(Boolean).map(value => chip(value)).join('') || '—';
-const yesNo = value => value === true ? '예' : value === false ? '아니오' : '—';
 const note = message => `<p class="web-info-note">${escape(message)}</p>`;
 const table = (head, rows) => `<div class="comparison-table-wrap"><table class="comparison-table web-info-table"><thead><tr>${
   head.map(cell => `<th scope="col">${cell}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
@@ -81,114 +83,175 @@ export function renderWebInfoSection(item) {
   return `<section class="panel web-info-section" aria-labelledby="web-info-title"><div class="panel-heading"><div><div class="eyebrow">WEB-PARSER / OBSERVED</div><h2 id="web-info-title">웹 정보 · web-parser 수집 결과</h2><span class="panel-subtitle">web_info 검사마다 수집한 응답 정보입니다. 관측 기록이며 판정을 포함하지 않습니다.</span></div><span class="local-chip">${events.length}건</span></div><div class="web-info-cards">${cards}</div></section>`;
 }
 
-function head(view) {
-  const target = object(view.target) ? view.target : {};
-  const response = object(view.response) ? view.response : {};
-  const tls = object(response.tls) ? response.tls : null;
-  const truncated = object(view.truncated) ? view.truncated : {};
-  const sections = list(truncated.sections).map(text).filter(Boolean);
-  const errors = objects(view.errors).length;
+/** Escaped raw text; the part after `limit` sits behind a native 전체 표시 disclosure, so nothing is dropped. */
+function rawText(value, limit) {
+  const raw = String(value);
+  let cut = Math.min(limit, raw.length);
+  const code = raw.charCodeAt(cut - 1);
+  if (cut < raw.length && code >= 0xd800 && code <= 0xdbff) cut -= 1; // keep a surrogate pair whole
+  return `<pre class="web-info-raw">${escape(raw.slice(0, cut))}</pre>` + (cut < raw.length
+    ? `<details class="web-info-more web-info-rest"><summary>전체 표시 (나머지 ${raw.length - cut}자)</summary><pre class="web-info-raw">${escape(raw.slice(cut))}</pre></details>` : '');
+}
+
+/** One collected value as escaped text: strings verbatim (long ones folded), everything else as JSON. */
+function cell(value) {
+  if (value === null || value === undefined) return '<span class="muted">—</span>';
+  if (value === '') return '<span class="muted">""</span>';
+  const raw = typeof value === 'string' ? value : JSON.stringify(value);
+  return raw.length > CELL_PREVIEW ? rawText(raw, CELL_PREVIEW) : mono(raw);
+}
+
+/** Every key of every item becomes a column (first-seen order), so no collected field is left out. */
+function objectTable(items) {
+  const rows = list(items).map(item => object(item) ? item : { value: item });
+  const keys = [...new Set(rows.flatMap(item => Object.keys(item)))];
+  return limited(rows.map(item => `<tr>${keys.map(key => `<td>${Object.hasOwn(item, key) ? cell(item[key]) : ''}</td>`).join('')}</tr>`),
+    part => table(keys.map(escape), part));
+}
+
+/** Like the adapter's extractTitle (first 50,000 chars), plus entity decoding.
+ * shortcut: decodes numeric and the common named entities only; extend the map if other names show up. */
+function titleOf(html) {
+  if (typeof html !== 'string') return null;
+  const match = html.slice(0, 50_000).match(/<title[^>]*>([\s\S]*?)<\/title>/iu);
+  const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+  const decoded = match?.[1].replace(/&(?:#(\d+)|#x([\da-f]+)|([a-z]+));/giu, (entity, dec, hex, name) => {
+    const point = dec ? Number(dec) : hex ? parseInt(hex, 16) : null;
+    if (point !== null) return point <= 0x10ffff ? String.fromCodePoint(point) : entity;
+    return named[name.toLowerCase()] ?? entity;
+  });
+  return decoded ? decoded.replace(/\s+/gu, ' ').trim().slice(0, 300) || null : null;
+}
+
+function head(info, artifactId) {
+  const target = object(info.target) ? info.target : {};
+  const navigation = object(info.navigation) ? info.navigation : {};
+  const tls = object(navigation.securityDetails) ? navigation.securityDetails : null;
+  const errors = list(info.errors).length;
   const requested = text(target.requestedUrl);
   const final = text(target.finalUrl);
-  const loadMs = typeof response.loadTimingMs === 'number' && response.loadTimingMs >= 0 ? `${Math.round(response.loadTimingMs)} ms` : '미기록';
   const facts = [
-    ['HTTP 상태', httpStatus(response.status) ?? '응답 없음'], ['응답 형식', text(response.contentType) || '미기록'],
-    ['문서 제목', text(response.title) || '제목 없음'], ['로드 시간', loadMs],
-    ['리다이렉트', `${objects(view.redirectChain).length}회`],
-    ['TLS', tls ? `${text(tls.issuer) || '발급자 미기록'} · 만료 ${date(tls.validTo)}` : 'TLS 정보 없음'],
+    ['HTTP 상태', navigation.status ?? '응답 없음'], ['응답 형식', navigation.contentType ?? '미기록'],
+    ['문서 제목', titleOf(info.html) ?? '제목 없음'],
+    ['로드 시간', typeof navigation.loadTimingMs === 'number' ? `${navigation.loadTimingMs} ms` : '미기록'],
+    ['리다이렉트', `${list(navigation.redirectChain).length}회`], ['출처', target.origin ?? '미기록'],
+    ['truncated', JSON.stringify(info.truncated ?? null)],
+    ...(tls ? Object.entries(tls).map(([key, value]) => [`TLS ${key}`, /^valid(?:From|To)$/u.test(key) && typeof value === 'number'
+      ? `${date(value)} (${value})` : typeof value === 'string' ? value : JSON.stringify(value)]) : [['TLS', '정보 없음']]),
   ];
   const badges = (errors ? chip(`수집 오류 ${errors}건`, 'ci-incomplete') : '')
-    + (truncated.source === true ? chip('원본 수집 상한으로 일부 생략', 'ci-incomplete') : '')
-    + (sections.length ? chip(`표시 상한으로 일부 생략: ${sections.join(', ')}`, 'ci-incomplete') : '');
-  return `<section class="web-info-head"><div class="eyebrow">WEB-PARSER / OBSERVED</div><p class="web-info-url">${
-    !final || final === requested ? mono(requested || 'URL 미기록') : `요청 ${mono(requested || 'URL 미기록')} → 최종 ${mono(final)}`
-  }</p><div class="ops-module-facts">${facts.map(([label, value]) => `<span><small>${label}</small><strong>${escape(value)}</strong></span>`).join('')}</div>${
+    + (info.truncated === true ? chip('수집 상한으로 일부 생략', 'ci-incomplete') : '');
+  return `<section class="web-info-head"><div class="web-info-head-top"><div class="eyebrow">WEB-PARSER / ${escape(info.schemaVersion)}</div>${
+    ARTIFACT_ID.test(text(artifactId)) ? `<a class="button secondary web-info-download" href="/api/artifacts/${artifactId}" download="web-info-${artifactId.slice(0, 12)}.json">원본 JSON 내려받기</a>` : ''
+  }</div><p class="web-info-url">${!final || final === requested ? mono(requested || 'URL 미기록') : `요청 ${mono(requested || 'URL 미기록')} → 최종 ${mono(final)}`
+  }</p><div class="ops-module-facts">${facts.map(([label, value]) => `<span><small>${escape(label)}</small><strong>${escape(value)}</strong></span>`).join('')}</div>${
     badges ? `<div class="web-info-badges">${badges}</div>` : ''}</section>`;
 }
 
-function technologies(view) {
-  const rows = objects(view.technologies).map(item => {
+function technologies(info) {
+  const technologies = objects(info.technologies);
+  const libraries = objects(info.libraries);
+  const libraryNames = new Set(libraries.map(item => text(item.name)));
+  const known = new Set(technologies.map(item => text(item.name)));
+  const rows = [...technologies, ...libraries.filter(item => !known.has(text(item.name)))].map(item => {
     const evidence = objects(item.evidence);
     return `<tr><td>${escape(text(item.name) || '이름 미기록')}</td><td class="mono">${escape(text(item.version) || '—')}</td><td>${
-      escape(list(item.categories).map(text).filter(Boolean).join(', ') || '—')}</td><td class="mono">${escape(count(item.confidence) ?? '—')}</td><td>${
-      item.library === true ? chip('라이브러리') : '—'}</td><td>${evidence.length ? `<details class="web-info-evidence"><summary>근거 ${evidence.length}건</summary><ul>${
-      evidence.map(entry => `<li>${mono(text(entry.field) || '—')}${text(entry.name) ? ` · ${mono(entry.name)}` : ''} · ${mono(text(entry.match) || '—')}</li>`).join('')
+      escape(list(item.categories).map(text).filter(Boolean).join(', ') || '—')}</td><td class="mono">${escape(item.confidence ?? '—')}</td><td>${
+      libraryNames.has(text(item.name)) ? chip('라이브러리') : '—'}</td><td>${evidence.length ? `<details class="web-info-evidence"><summary>근거 ${evidence.length}건</summary><ul>${
+      evidence.map(entry => `<li>${mono(text(entry.field) || '—')} · ${Object.hasOwn(entry, 'key') ? cell(entry.key) : '<span class="muted">key 없음</span>'} · ${cell(entry.match)}</li>`).join('')
     }</ul></details>` : '—'}</td></tr>`;
   });
   return block('기술', rows.length, rows.length
     ? limited(rows, part => table(['이름', '버전', '분류', '신뢰도', '라이브러리', '근거'], part)) : note('식별된 기술이 없습니다.'));
 }
 
-function paths(view) {
-  const section = object(view.paths) ? view.paths : {};
-  const items = objects(section.items);
-  const total = count(section.total) ?? items.length;
+function paths(info) {
+  const items = objects(info.paths);
   const same = items.filter(item => item.sameOrigin === true);
   const external = items.filter(item => item.sameOrigin !== true);
   const render = part => table(['URL', '발견 위치', '메서드', '파라미터', '비고'], part);
-  const row = item => `<tr><td class="mono">${escape(text(item.url) || '—')}</td><td>${chips(item.sources)}</td><td class="mono">${
+  const row = item => `<tr><td>${cell(item.url)}</td><td>${chips(item.sources)}</td><td class="mono">${
     escape(list(item.methods).map(text).filter(Boolean).join(' ') || '—')}</td><td class="mono">${
     escape(list(item.params).map(text).filter(Boolean).join(', ') || '—')}</td><td>${item.wildcard === true ? chip('패턴') : '—'}</td></tr>`;
-  return block('경로', total, note(`전체 ${total}개 중 ${items.length}개를 받았습니다. 같은 출처 ${same.length}개를 표시하고 외부 출처 ${external.length}개는 접어 둡니다.`)
+  return block('경로', items.length, note(`경로 ${items.length}개 중 같은 출처 ${same.length}개를 표시하고 외부 출처 ${external.length}개는 접어 둡니다.`)
     + (same.length ? limited(same.map(row), render) : note('같은 출처 경로가 없습니다.'))
     + (external.length ? `<details class="web-info-fold web-info-external"><summary>외부 출처 경로 ${mono(external.length)}</summary>${limited(external.map(row), render)}</details>` : ''));
 }
 
-function forms(view) {
-  const section = object(view.forms) ? view.forms : {};
-  const items = objects(section.items);
-  const total = count(section.total) ?? items.length;
-  const rows = items.map(form => {
-    const fields = objects(form.fields);
-    return `<li>${chip(text(form.method).toUpperCase() || 'GET')} ${mono(text(form.action) || '—')}${fields.length
-      ? table(['이름', '형식'], fields.map(field => `<tr><td class="mono">${escape(text(field.name) || '—')}</td><td class="mono">${escape(text(field.type) || '—')}</td></tr>`))
-      : note('입력 필드가 없습니다.')}</li>`;
-  });
-  return block('폼', total, (total > items.length ? note(`전체 ${total}개 중 ${items.length}개를 받았습니다.`) : '')
-    + (rows.length ? limited(rows, part => `<ul class="web-info-forms">${part.join('')}</ul>`) : note('수집된 폼이 없습니다.')));
+function forms(info) {
+  const items = objects(object(info.structure) ? info.structure.forms : null);
+  const rows = items.map(form => `<li>${chip(text(form.method) || 'method 없음')} ${cell(form.action)}${
+    Object.hasOwn(form, 'raw') ? ` · 원문 ${cell(form.raw)}` : ''} · selector ${cell(form.selector)}${
+    list(form.fields).length ? objectTable(form.fields) : note('입력 필드가 없습니다.')}</li>`);
+  return block('폼', rows.length, rows.length ? limited(rows, part => `<ul class="web-info-forms">${part.join('')}</ul>`) : note('수집된 폼이 없습니다.'));
 }
 
-function folds(view) {
-  const headers = objects(view.headers);
+function hostGroups(resources, origin) {
+  const groups = new Map();
+  for (const resource of resources) {
+    let host = '(URL 해석 불가)', sameOrigin = null;
+    try { const url = new URL(text(resource.url)); host = url.host; sameOrigin = url.origin === origin; } catch { /* keep the fallback group */ }
+    const group = groups.get(host) ?? { host, sameOrigin, requests: 0, kinds: new Set() };
+    group.requests += 1;
+    if (text(resource.kind)) group.kinds.add(resource.kind);
+    groups.set(host, group);
+  }
+  return table(['호스트', '같은 출처', '요청 수', '종류'], [...groups.values()].map(group => `<tr><td class="mono">${escape(group.host)}</td><td>${
+    group.sameOrigin === null ? '—' : group.sameOrigin ? '예' : '아니오'}</td><td class="mono">${group.requests}</td><td>${chips([...group.kinds])}</td></tr>`));
+}
+
+function folds(info) {
+  const navigation = object(info.navigation) ? info.navigation : {};
+  const structure = object(info.structure) ? info.structure : {};
+  const headers = objects(info.headers);
   const names = new Set(headers.map(header => text(header.name).toLowerCase()));
   const presence = `<p class="web-info-security">보안 관련 헤더 (유무만 표시) ${SECURITY_HEADERS.map(name => `<span>${mono(name)} ${
     names.has(name.toLowerCase()) ? chip('있음') : chip('없음', 'web-info-absent')}</span>`).join('')}</p>`;
-  const headerRows = headers.map(header => `<tr><td class="mono">${escape(text(header.name) || '—')}</td><td class="mono">${
-    typeof header.value === 'string' ? escape(header.value) : '<em class="muted">값 숨김</em>'}</td></tr>`);
-  const cookies = objects(view.cookies).map(cookie => `<tr><td class="mono">${escape(text(cookie.name) || '—')}</td><td class="mono">${
-    escape(text(cookie.domain) || '—')}</td><td class="mono">${escape(text(cookie.path) || '—')}</td><td class="mono">${
-    cookie.expires === -1 ? '세션' : escape(date(cookie.expires))}</td><td>${yesNo(cookie.httpOnly)}</td><td>${yesNo(cookie.secure)}</td><td>${
-    escape(text(cookie.sameSite) || '—')}</td></tr>`);
-  const hops = objects(view.redirectChain).map(hop => `<li>${chip(`${httpStatus(hop.status) ?? '—'} · ${text(hop.kind) || 'http'}`)} ${
-    mono(text(hop.from) || '—')} → ${mono(text(hop.to) || '—')}</li>`);
-  const hosts = objects(view.hosts).map(host => `<tr><td class="mono">${escape(text(host.host) || '—')}</td><td>${yesNo(host.sameOrigin)}</td><td class="mono">${
-    escape(count(host.requests) ?? '—')}</td><td>${chips(host.kinds)}</td></tr>`);
-  const frames = objects(view.frames).map(frame => `<li>${chip(text(frame.tag) || 'iframe')} ${mono(text(frame.src) || '—')} · sandbox ${
-    typeof frame.sandbox === 'string' ? mono(frame.sandbox || '""') : '없음'}</li>`);
-  const errors = objects(view.errors).map(error => `<li>${chip(text(error.stage) || 'unknown', 'ci-incomplete')} ${mono(text(error.message) || '—')}</li>`);
-  return fold('응답 헤더', headerRows.length, presence + limited(headerRows, part => table(['이름', '값'], part)), '기록된 응답 헤더가 없습니다.')
-    + fold('쿠키', cookies.length, limited(cookies, part => table(['이름', '도메인', '경로', '만료', 'HttpOnly', 'Secure', 'SameSite'], part))
-      + note('쿠키 값은 표시하지 않습니다.'), '기록된 쿠키가 없습니다.')
+  const hops = objects(navigation.redirectChain).map(hop => `<li>${chip(`${hop.status ?? '—'} · ${text(hop.kind) || 'kind 없음'}`)} ${
+    cell(hop.from)} → ${cell(hop.to)}${Array.isArray(hop.headers) ? `<details class="web-info-more"><summary>이 홉의 응답 헤더 ${mono(hop.headers.length)}</summary>${objectTable(hop.headers)}</details>`
+      : ' · <span class="muted">헤더 없음 (null)</span>'}</li>`);
+  const resources = objects(info.resources);
+  const target = object(info.target) ? info.target : {};
+  const textFold = (title, value, empty) => fold(`${title} · 문자 수`, typeof value === 'string' ? value.length : 0,
+    typeof value === 'string' ? rawText(value, TEXT_PREVIEW) : '', typeof value === 'string' ? '빈 문자열입니다.' : empty);
+  const known = new Set(['schemaVersion', 'target', 'navigation', 'headers', 'cookies', 'meta', 'html', 'body', 'technologies',
+    'libraries', 'structure', 'resources', 'paths', 'errors', 'truncated']);
+  const knownNavigation = new Set(['status', 'contentType', 'redirectChain', 'loadTimingMs', 'securityDetails']);
+  const knownTarget = new Set(['requestedUrl', 'finalUrl', 'origin']);
+  const other = Object.fromEntries([
+    ...Object.entries(info).filter(([key]) => !known.has(key)),
+    ...Object.entries(navigation).filter(([key]) => !knownNavigation.has(key)).map(([key, value]) => [`navigation.${key}`, value]),
+    ...Object.entries(target).filter(([key]) => !knownTarget.has(key)).map(([key, value]) => [`target.${key}`, value]),
+  ]);
+  return fold('응답 헤더', headers.length, presence + objectTable(headers), '기록된 응답 헤더가 없습니다.')
+    + fold('쿠키', list(info.cookies).length, objectTable(info.cookies), '기록된 쿠키가 없습니다.')
     + fold('리다이렉트 경로', hops.length, `<ol class="web-info-list">${hops.join('')}</ol>`, '리다이렉트 없이 응답을 받았습니다.')
-    + fold('호스트별 리소스', hosts.length, limited(hosts, part => table(['호스트', '같은 출처', '요청 수', '종류'], part)), '기록된 리소스 호스트가 없습니다.')
-    + fold('프레임', frames.length, `<ul class="web-info-list">${frames.join('')}</ul>`, '기록된 프레임이 없습니다.')
-    + fold('수집 오류', errors.length, `<ul class="web-info-list">${errors.join('')}</ul>`, '기록된 수집 오류가 없습니다.');
+    + fold('리소스', resources.length, `<h4 class="web-info-subhead">호스트별</h4>${hostGroups(resources, text(target.origin))}<h4 class="web-info-subhead">전체 요청</h4>${objectTable(resources)}`,
+      '기록된 리소스가 없습니다.')
+    + fold('meta', list(info.meta).length, objectTable(info.meta), '기록된 meta가 없습니다.')
+    + Object.entries(structure).filter(([key]) => key !== 'forms')
+      .map(([key, items]) => fold(`구조 · ${escape(key)}`, list(items).length, objectTable(items), `${key} 항목이 없습니다.`)).join('')
+    + textFold('HTML 원문', info.html, 'html이 없습니다 (null).')
+    + textFold('본문 원문 (body)', info.body, 'body가 없습니다 (null).')
+    + fold('수집 오류', list(info.errors).length, objectTable(info.errors), '기록된 수집 오류가 없습니다.')
+    + (Object.keys(other).length ? fold('기타 필드', Object.keys(other).length, rawText(JSON.stringify(other, null, 2), TEXT_PREVIEW), '') : '');
 }
 
-export function renderWebInfoDetail(view) {
-  if (!object(view) || view.schemaVersion !== VIEW_SCHEMA) {
-    const version = object(view) ? text(view.schemaVersion) : '';
+/** Detail of one raw TargetInfo (`web-parser-1`) exactly as collected; `artifactId` adds the 원본 JSON download. */
+export function renderWebInfoDetail(info, { artifactId } = {}) {
+  if (!object(info) || info.schemaVersion !== VIEW_SCHEMA) {
+    const version = object(info) ? text(info.schemaVersion) : '';
     return note(`지원하지 않는 웹 정보 형식입니다${version ? ` (${version})` : ''}. 대시보드 버전을 확인하세요.`);
   }
-  return head(view) + technologies(view) + paths(view) + forms(view) + folds(view);
+  return head(info, artifactId) + technologies(info) + paths(info) + forms(info) + folds(info);
 }
 
 /** Resolve an artifact id to detail markup: one request per id; failures are retried on the next open. */
-export function createWebInfoLoader(api, prepare = view => view) {
+export function createWebInfoLoader(api) {
   const views = new Map();
   return async id => {
     if (!ARTIFACT_ID.test(text(id))) return note('상세 정보 없음');
-    if (!views.has(id)) views.set(id, api(`/api/artifacts/${id}`).then(view => renderWebInfoDetail(prepare(view))));
+    if (!views.has(id)) views.set(id, api(`/api/artifacts/${id}`).then(info => renderWebInfoDetail(info, { artifactId: id })));
     try { return await views.get(id); }
     catch (error) {
       views.delete(id);

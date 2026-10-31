@@ -90,11 +90,11 @@ test('the artifact loader requests each id once and retries after a failure', as
   const loader = createWebInfoLoader(async path => {
     calls.push(path);
     if (fail) throw Object.assign(new Error('Artifact not found.'), { status: 404 });
-    return { schemaVersion: 'web-info-view/1', technologies: [{ name: 'jQuery' }] };
+    return { schemaVersion: 'web-parser-1', technologies: [{ name: 'jQuery' }] };
   });
   assert.match(await loader(ARTIFACT), /저장된 상세 정보를 찾을 수 없습니다/);
   fail = false;
-  assert.match(await loader(ARTIFACT), /jQuery/);
+  assert.match(await loader(ARTIFACT), new RegExp(`jQuery[\\s\\S]*href="/api/artifacts/${ARTIFACT}"|href="/api/artifacts/${ARTIFACT}"[\\s\\S]*jQuery`));
   assert.match(await loader(ARTIFACT), /jQuery/);
   assert.deepEqual(calls, [`/api/artifacts/${ARTIFACT}`, `/api/artifacts/${ARTIFACT}`]);
   assert.match(await loader('../runs'), /상세 정보 없음/);
