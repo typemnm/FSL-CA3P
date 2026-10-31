@@ -6,8 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../../packages/run-store/index.mjs';
 import { once } from 'node:events';
-import { digest, redact } from '../../../packages/contracts/index.mjs';
-import { webInfoView } from '../../../packages/adapters/integrations/web-parser.mjs';
+import { digest } from '../../../packages/contracts/index.mjs';
 import { createDashboardServer } from '../../api/server.mjs';
 import { runWorker } from '../worker.mjs';
 
@@ -367,28 +366,30 @@ test('general worker passes the verifier handoff only for a finding whose confir
   assert.equal(run.reportDocuments.status, 'ready');
 });
 
-test('general worker stores each web_info view as a web-info artifact that the API serves unchanged', async t => {
+test('general worker stores each raw web_info TargetInfo as a web-info artifact the API serves byte for byte', async t => {
   const { id, storePath, directory } = await setup();
   const origin = 'http://127.0.0.1:4101';
-  // Wappalyzer evidence keys, cookie lists and a URL query redact() would mask all appear in a real page.
-  const view = webInfoView({ schemaVersion: 'web-parser-1',
+  // Everything a page returns stays as collected: cookie values, Set-Cookie, Authorization, evidence keys, html.
+  const targetInfo = { schemaVersion: 'web-parser-1',
     target: { requestedUrl: origin + '/', finalUrl: origin + '/', origin },
     navigation: { status: 200, contentType: 'text/html', redirectChain: [], loadTimingMs: 4, securityDetails: null },
-    headers: [{ name: 'Server', value: 'nginx' }, { name: 'Set-Cookie', value: 'sid=PRIVATE_SID; HttpOnly' }],
-    cookies: [{ name: 'sid', value: 'PRIVATE_SID', domain: '127.0.0.1', path: '/', expires: -1,
+    headers: [{ name: 'Server', value: 'nginx' }, { name: 'Set-Cookie', value: 'sid=RAW_SID; HttpOnly' },
+      { name: 'Authorization', value: 'Bearer RAW_TOKEN' }],
+    cookies: [{ name: 'sid', value: 'RAW_SID', domain: '127.0.0.1', path: '/', expires: -1,
       httpOnly: true, secure: false, sameSite: 'Lax' }],
-    html: '<title>Board</title>', technologies: [{ name: 'Nginx', categories: ['Web servers'], version: null,
+    meta: [], html: '<title>Board</title><p>Bearer abc</p>', body: null,
+    technologies: [{ name: 'Nginx', categories: ['Web servers'], version: null,
       confidence: 100, evidence: [{ field: 'headers', key: 'server', match: 'nginx' }] }], libraries: [],
     structure: {}, resources: [{ kind: 'document', method: 'GET', url: origin + '/', status: 200 }],
     paths: [{ url: origin + '/cb?key=abc', sources: ['link'], methods: [], sameOrigin: true, params: ['key'] }],
-    errors: [], truncated: false }, { probeId: 'w-1', iteration: 1, safeText: value => redact(value) });
+    errors: [], truncated: false };
   let stored;
   const generalRuntimeFactory = options => {
     const listeners = new Set(); let state;
     return {
       subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
       async startLab() {
-        stored = await options.onWebInfo({ probeId: 'w-1', iteration: 1, sessionRole: null, view });
+        stored = await options.onWebInfo({ probeId: 'w-1', iteration: 1, sessionRole: null, targetInfo });
         state = { run: { id, mode: 'local-lab-general', assessmentMode: 'general', status: 'completed', events: [],
           report: { schemaVersion: 'general-assessment/1', status: 'completed', findings: [], evidence: [] },
           reviewItems: [] } };
@@ -405,11 +406,9 @@ test('general worker stores each web_info view as a web-info artifact that the A
   await waitFor(() => worker.store.getRun(id).status === 'completed');
   assert.match(stored.artifactId, /^[a-f0-9]{64}$/u);
   const artifact = worker.store.getArtifact(stored.artifactId);
-  assert.deepEqual([artifact.runId, artifact.kind, artifact.contentType, artifact.provenance, artifact.probeId],
-    [id, 'web-info', 'application/json', 'web-parser-observation', 'w-1']);
+  assert.deepEqual([artifact.runId, artifact.kind, artifact.filename, artifact.contentType, artifact.provenance,
+    artifact.probeId], [id, 'web-info', 'web-info-w-1.json', 'application/json', 'web-parser-observation', 'w-1']);
   const response = await fetch(`http://127.0.0.1:${server.address().port}/api/artifacts/${stored.artifactId}`);
   assert.equal(response.status, 200);
-  const text = await response.text();
-  assert.equal(text, JSON.stringify(view), 'the store kept the view byte for byte');
-  assert.doesNotMatch(text, /PRIVATE_SID/u);
+  assert.equal(await response.text(), JSON.stringify(targetInfo), 'stored and served exactly as collected');
 });

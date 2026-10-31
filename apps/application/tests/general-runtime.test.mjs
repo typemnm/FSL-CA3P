@@ -7,7 +7,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGeneralRuntime, judgeAttackRecord, recordForProbe } from '../general-runtime.mjs';
 import { readReportHandoff } from '../../../packages/verifier/report-handoff.mjs';
-import { redact } from '../../../packages/contracts/index.mjs';
 import plannerModule from '../../../agent/src/general-model-planner.js';
 import { readKnowledgeCatalog } from '../../../packages/adapters/integrations/knowledge-db.mjs';
 import { listTemplates } from '../../../attack-tool/templates.mjs';
@@ -750,16 +749,19 @@ function webInfoRuntime({ runId, onWebInfo, webParserCollect, probes }) {
 const webInfoEvents = run => run.events.filter(event => event.stage === 'web_info.collected')
   .map(({ id, time, simulated, targetContacted, ...event }) => event);
 
-test('web_info stores one view per probe through onWebInfo and announces it with a run event', async () => {
+test('web_info hands the raw TargetInfo to onWebInfo and announces it with a run event', async () => {
   const calls = [];
+  const collected = [];
   const artifactId = 'a'.repeat(64);
-  const runtime = webInfoRuntime({ runId: 'web-info-view',
+  const runtime = webInfoRuntime({ runId: 'web-info-raw',
     onWebInfo: async call => { calls.push(call); return { artifactId }; },
-    // The page reflects the fixed session value and links a URL whose query redact() would mask.
+    // The page reflects the fixed session value; the stored TargetInfo keeps it, the model evidence does not.
     webParserCollect: async (url, opts = {}) => {
       const info = fakeTargetInfo(url, [{ url: new URL(url).origin + '/cb?key=abc', sources: ['link'],
         methods: [], sameOrigin: true, params: ['key'] }]);
       info.headers.push({ name: 'X-Echo', value: 'echo ' + (opts.cookies?.[0]?.value ?? 'none') });
+      info.truncated = new URL(url).pathname === '/mypage';
+      collected.push(info);
       return { info, summary: {} };
     },
     probes: [['w-pub', '/'], ['w-role', '/mypage', 'owner']] });
@@ -767,11 +769,10 @@ test('web_info stores one view per probe through onWebInfo and announces it with
   runtime.startLab();
   const run = await done;
   assert.equal(run.status, 'completed', run.error);
-  assert.deepEqual(calls.map(call => [call.probeId, call.sessionRole, call.view.schemaVersion, call.view.probeId]),
-    [['w-pub', null, 'web-info-view/1', 'w-pub'], ['w-role', 'owner', 'web-info-view/1', 'w-role']]);
-  for (const { view } of calls) assert.deepEqual(redact(view), view);
-  assert.doesNotMatch(JSON.stringify(calls), /TOKEN1234567/u);
-  assert.equal(calls[1].view.headers.at(-1).value, 'echo [redacted]');
+  assert.deepEqual(calls.map(call => [call.probeId, call.sessionRole]), [['w-pub', null], ['w-role', 'owner']]);
+  calls.forEach((call, index) => assert.equal(call.targetInfo, collected[index], 'the collected object, unchanged'));
+  assert.equal(calls[1].targetInfo.headers.at(-1).value, 'echo partner1TOKEN1234567');
+  assert.doesNotMatch(JSON.stringify(run.report) + JSON.stringify(run.events), /TOKEN1234567/u);
   const iteration = calls[0].iteration;
   assert.equal(typeof iteration, 'number');
   assert.deepEqual(webInfoEvents(run), [
@@ -780,12 +781,12 @@ test('web_info stores one view per probe through onWebInfo and announces it with
       artifactId, counts: { technologies: 1, paths: 1, forms: 0, errors: 0 }, truncated: false },
     { stage: 'web_info.collected', module: 'web-parser', source: 'web-parser', type: 'info', title: '웹 정보 수집',
       detail: 'GET /mypage → HTTP 200', probeId: 'w-role', iteration, asset: '/mypage', sessionRole: 'owner',
-      ok: true, status: 200, artifactId, counts: { technologies: 1, paths: 1, forms: 0, errors: 0 }, truncated: false },
+      ok: true, status: 200, artifactId, counts: { technologies: 1, paths: 1, forms: 0, errors: 0 }, truncated: true },
   ]);
   await runtime.close();
 });
 
-test('web_info keeps the probe when the view hook is missing or throws, and reports a failed collection', async () => {
+test('web_info keeps the probe when the hook is missing or throws, and reports a failed collection', async () => {
   const collect = async url => {
     if (new URL(url).pathname === '/mypage') throw new Error('net::ERR_CONNECTION_REFUSED');
     return { info: fakeTargetInfo(url), summary: {} };

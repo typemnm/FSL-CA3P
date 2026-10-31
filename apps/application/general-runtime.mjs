@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { emptyRun, assertIdentifier, redact } from '../../packages/contracts/index.mjs';
+import { emptyRun, assertIdentifier } from '../../packages/contracts/index.mjs';
 import { verifyAttack } from '../../packages/verifier/index.mjs';
 import { writeReportHandoff } from '../../packages/verifier/report-handoff.mjs';
 import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../packages/contracts/general-loop-budget.mjs';
@@ -10,7 +10,7 @@ import { validateUniversityOrigin } from '../../packages/contracts/university-ta
 import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
-import { collectWebInfo, evidenceFromTargetInfo, webInfoView } from '../../packages/adapters/integrations/web-parser.mjs';
+import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
 import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse } from '../../packages/adapters/integrations/attack-tool.mjs';
 import { createAssessmentPlanner, createLocalJsonClient, isGeneralPlannerModel, LOCAL_PLANNER_MODEL_ID } from '../../packages/models/local-planner.mjs';
 
@@ -786,7 +786,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const bytes = items => items.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), 'utf8'), 0);
         const asset = url.pathname + url.search;
         const size = value => Array.isArray(value) ? value.length : 0;
-        // One event per probe lets the dashboard list web-parser results and fetch each stored view.
+        // One event per probe lets the dashboard list web-parser results and fetch each stored TargetInfo.
         const collected = fields => appendEvent({ stage: 'web_info.collected', module: 'web-parser',
           source: 'web-parser', title: '웹 정보 수집', probeId: probe.id, iteration: run.iterations, asset,
           sessionRole: sessionRole ?? null, status: observedStatus, ...fields });
@@ -812,22 +812,19 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             evidence = evidenceFromTargetInfo(info, { ...options, mode: 'minimal' });
           }
           webInfoBytes += bytes(evidence);
-          let view = null;
           let artifactId = null;
           try {
-            // The evidence masking plus redact(), so the stored artifact is exactly this view.
-            view = webInfoView(info, { probeId: probe.id, iteration: run.iterations, sessionRole: sessionRole ?? null,
-              safeText: value => redact(evidenceText(value)), safeHeaderValue });
+            // The raw TargetInfo as collected; only the model-facing evidence above is masked.
             const stored = await invokeHook(onWebInfo, { probeId: probe.id, iteration: run.iterations,
-              sessionRole: sessionRole ?? null, view });
+              sessionRole: sessionRole ?? null, targetInfo: info });
             if (typeof stored?.artifactId === 'string' && /^[a-f0-9]{64}$/u.test(stored.artifactId)) {
               artifactId = stored.artifactId;
             }
-          } catch { /* The stored view is optional; a failing hook must not fail the probe or the run. */ }
+          } catch { /* The stored TargetInfo is optional; a failing hook must not fail the probe or the run. */ }
           collected({ type: 'info', detail: 'GET ' + asset + ' → HTTP ' + (observedStatus ?? 'no response'),
             ok: true, artifactId, counts: { technologies: size(info.technologies), paths: size(info.paths),
               forms: size(info.structure?.forms), errors: size(info.errors) },
-            truncated: info.truncated === true || !!view?.truncated.sections.length });
+            truncated: info.truncated === true });
           return { kind: 'web_info', result: summary, evidence };
         } catch (error) {
           if (probeSignal?.aborted || error?.fatalProbe) throw error;

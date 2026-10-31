@@ -12,11 +12,11 @@ import { createAuthentication, hashAccount } from '../auth.mjs';
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const state = { instanceId: 'test-server', mode: 'core-fixture', run: { id: 'run-a', mode: 'core-fixture', status: 'idle', events: [] }, lab: {} };
-async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBytes } = {}) {
+async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBytes, artifactKind } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ca3p-api-auth-'));
   const bytes = Buffer.from(artifactBytes ?? '{"runId":"run-a","evidence":"fixture"}');
   const artifactPath = join(directory, 'evidence.json'); await writeFile(artifactPath, bytes);
-  const artifact = { id: sha256('artifact-id'), path: artifactPath, sha256: sha256(bytes), size: bytes.length };
+  const artifact = { id: sha256('artifact-id'), kind: artifactKind, path: artifactPath, sha256: sha256(bytes), size: bytes.length };
   const listeners = new Set(); const calls = { start: 0, startBodies: [], stop: 0, lab: [], experimentReset: [], historyClear: [], loopBudget: [] };
   let loopBudget = { maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 };
   const runtime = { getState: () => runtimeState, getRun: id => id === 'run-a' ? runtimeState.run : null,
@@ -205,6 +205,22 @@ test('legacy evidence with a valid hash but secret fields is withheld instead of
   const response = await api(base, `/api/artifacts/${artifact.id}`, { headers: viewer.headers });
   assert.equal(response.status, 409);
   assert.doesNotMatch(response.text, /private-legacy-key/);
+});
+
+test('a web-info artifact is the raw TargetInfo and is served byte for byte, other JSON evidence is still withheld', async t => {
+  const targetInfo = JSON.stringify({ schemaVersion: 'web-parser-1',
+    headers: [{ name: 'Set-Cookie', value: 'sid=RAW_SID; HttpOnly' }, { name: 'Authorization', value: 'Bearer RAW_TOKEN' }],
+    cookies: [{ name: 'sid', value: 'RAW_SID', domain: '127.0.0.1', path: '/' }],
+    technologies: [{ name: 'Nginx', evidence: [{ field: 'headers', key: 'server', match: 'nginx' }] }],
+    html: '<html><body><p>Bearer abc</p></body></html>', truncated: false });
+  for (const [kind, status] of [['web-info', 200], ['run-report', 409]]) {
+    const { base, artifact } = await fixture(t, { artifactBytes: targetInfo, artifactKind: kind });
+    const viewer = await login(base, 'viewer');
+    const response = await api(base, `/api/artifacts/${artifact.id}`, { headers: viewer.headers });
+    assert.equal(response.status, status, kind);
+    if (status === 200) assert.equal(response.text, targetInfo);
+    else assert.doesNotMatch(response.text, /RAW_SID|RAW_TOKEN/u);
+  }
 });
 
 test('logging out revokes an existing SSE subscriber before the next state is sent', async t => {
