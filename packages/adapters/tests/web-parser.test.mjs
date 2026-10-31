@@ -167,6 +167,15 @@ test('masked values stay inside whole JSON items and are unchanged when the core
     { name: 'X-A', value: 'ok' }, { name: 'X-Debug-Set-Cookie' }]);
 });
 
+test('page titles decode HTML entities once for the summary, the evidence and the view', () => {
+  const info = targetInfo({ html: '<html><head><title>Q&amp;A &lt;beta&gt; &quot;x&quot; &#39;y&#39;&nbsp;&#169;'
+    + ' &#x2603; &amp;lt; &#99999999;</title></head></html>' });
+  const title = 'Q&A <beta> "x" \'y\' © ☃ &lt; �';
+  assert.equal(summarizeTargetInfo(info).title, title);
+  assert.equal(webInfoView(info).response.title, title);
+  assert.match(evidenceFromTargetInfo(info, evidenceOptions)[0].summary, /; title "Q&A <beta> \\"x\\" 'y' © ☃ &lt; �";/u);
+});
+
 const many = (count, make) => Array.from({ length: count }, (_, index) => make(index));
 
 test('webInfoView is the UI view of one probe without page content, cookie values or secret header values', () => {

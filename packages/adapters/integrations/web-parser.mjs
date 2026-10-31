@@ -27,10 +27,17 @@ function section(list, cap, map = value => value) {
   return items.length < array.length ? { shown: items.length, total: array.length, items } : items;
 }
 
+const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', nbsp: ' ' };
+const codePoint = code => code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+  ? String.fromCodePoint(code) : '�';
+
 function extractTitle(html) {
   if (typeof html !== 'string') return null;
   const match = html.slice(0, 50_000).match(/<title[^>]*>([\s\S]*?)<\/title>/iu);
-  return match ? match[1].replace(/\s+/gu, ' ').trim().slice(0, 300) || null : null;
+  // outerHTML escapes title text; decode in one pass so `&amp;lt;` stays `&lt;`.
+  return match ? match[1].replace(/&(amp|lt|gt|quot|nbsp);|&#(\d+);|&#[xX]([0-9a-fA-F]+);/gu,
+    (_, name, decimal, hex) => name ? NAMED_ENTITIES[name] : codePoint(decimal ? Number(decimal) : parseInt(hex, 16)))
+    .replace(/\s+/gu, ' ').trim().slice(0, 300) || null : null;
 }
 
 function build(info, caps) {
