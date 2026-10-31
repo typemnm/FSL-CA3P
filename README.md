@@ -62,7 +62,7 @@ CASPER_DB_PYTHON="$PWD/.venv/bin/python" npm run verify
 
 병합 후 `develop`의 실제 커밋에 대해 같은 전체 검증을 다시 실행합니다. `publish-ci-summary`는 그 실행의 테스트 건수·통과/실패/건너뜀, 이전 통합 실행 이후 변경된 모듈 ID 및 세 CI job 결론만 공개 `ci-results` 브랜치에 기록합니다. 장치 서버는 시작할 때와 이후 5분마다 이 요약을 가져와 `.runtime/ci-results/index.json`에 보관합니다. 인증 후 **통합 테스트** 화면에서 `develop` 실행 이력과 모듈별 변화를 확인합니다. 공개 피드에는 입력값·취약점 증거·모듈 로그가 없으며, 상세 원인은 Actions artifact에서 확인합니다. 피드가 아직 없을 때는 Actions 단계별 결론만 표시되고 모듈별 수치는 `자료 없음`으로 표시됩니다. 이 CI 결과는 대시보드에서 직접 실행한 격리 실습 run의 finding·모델 결과와 별개입니다.
 
-PR 실행은 병합 전 후보 검증으로 Actions에서 확인합니다. 담당자의 리뷰와 저장소 보호 규칙에 따라 사람이 병합하며, 장치 updater는 PR을 승인하거나 병합하지 않습니다. `develop`/`main`의 성공한 push는 GHCR 이미지를 게시합니다. `develop` 게시에 성공하면 `ca3p-deploy` self-hosted runner에서 staging을 배포합니다. 저장소 변수 `CA3P_AUTO_DEPLOY=false`이면 게시까지만 수행합니다.
+PR 실행은 병합 전 후보 검증으로 Actions에서 확인합니다. 담당자의 리뷰와 저장소 보호 규칙에 따라 사람이 병합하며, 장치 updater는 PR을 승인하거나 병합하지 않습니다. `develop`/`main`의 성공한 push는 GHCR 이미지를 게시합니다. `develop` 게시에 성공하고 `ca3p-deploy` runner가 online이면 staging을 배포합니다. runner가 없거나 `CA3P_AUTO_DEPLOY=false`이면 게시까지만 수행하고 통합 CI는 성공합니다. 이 Mac의 장치 updater는 그 성공한 develop CI를 배포합니다.
 
 이 Mac에는 [장치 updater](docs/DEVICE_DEPLOYMENT.md#검증된-develop-자동-배포)를 설치할 수 있습니다. 설치하면 **120초마다 현재 `develop` HEAD와 정확히 같은 병합 후 push CI**의 전체 성공을 확인한 뒤 대시보드·활성 모듈과 대학 실습 이미지를 배포합니다. PR 브랜치·이전 SHA의 성공 결과는 배포 근거로 사용하지 않습니다. 검사가 진행 중이면 종료할 때까지 미루고, 후보별 Python 환경·복제 DB 이전·격리 smoke 검증을 통과한 후 서비스와 DB를 전환합니다. 계정·모델 키·HTTPS 프록시·저장 데이터는 유지하며, 전환 실패 시 백업과 이전 릴리스로 자동 복구합니다. 구성 예시는 [`docs/device-deploy.example.json`](docs/device-deploy.example.json)에 있습니다. CI 요약 수집만 사용하는 장치에는 자동 배포가 적용되지 않습니다.
 

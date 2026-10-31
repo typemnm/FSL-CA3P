@@ -72,7 +72,7 @@ docker compose -p ca3p logs -f dashboard
 1. Docker Engine과 Compose v2.24+를 갖춘 Linux runner에 `ca3p-deploy` label을 설정한다.
 2. GitHub staging/production environment의 허용 브랜치를 develop/main으로 제한한다. production에는 승인자를 등록한다.
 3. runner의 런타임 볼륨에 인증을 준비하고 GHCR 읽기 권한을 부여한다.
-4. develop 검증·게시가 성공하면 같은 커밋의 staging 배포 workflow를 호출한다. 저장소 변수 `CA3P_AUTO_DEPLOY=false`이면 게시까지만 수행한다. `workflow_dispatch`는 default branch의 workflow만 찾을 수 있어 develop 자동 배포에는 쓰지 않는다.
+4. develop 검증·게시가 성공하고 `ca3p-deploy` runner가 online이면 같은 커밋의 staging 배포 workflow를 호출한다. runner가 없거나 저장소 변수 `CA3P_AUTO_DEPLOY=false`이면 게시까지만 수행하고 통합 workflow는 성공으로 끝낸다. `workflow_dispatch`는 default branch의 workflow만 찾을 수 있어 develop 자동 배포에는 쓰지 않는다. Linux staging runner가 없어도 이 Mac의 장치 updater는 성공한 develop CI를 배포한다.
 
 배포 workflow는 PR/merge_group과 다른 ref를 runner에 배정하지 않는다. 이미지 입력은 현재 저장소의 GHCR 경로와 SHA-256 digest만 허용한다. 배포 runner를 PR 빌드에 재사용하지 않는다.
 
