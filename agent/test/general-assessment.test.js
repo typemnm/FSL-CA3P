@@ -162,7 +162,7 @@ test('template identity remaps category and merges duplicate template findings',
           { id: 'p-xss', hypothesisId: 'xss-1', tool: 'execute_attack_template',
             input: { templateId: 'search-sqli-template', payload: 'x' } },
           { id: 'p-sqli', hypothesisId: 'sqli-1', tool: 'execute_attack_template',
-            input: { templateId: 'search-sqli-template', payload: 'x' } },
+            input: { templateId: 'comment-sqli-template', payload: 'x' } },
         ],
       };
     } },
@@ -172,12 +172,14 @@ test('template identity remaps category and merges duplicate template findings',
     } },
     verifier: { async verify({ probe }) {
       return { status: 'confirmed', completed: true, evidenceIds: [`ev-${probe.id}`],
-        reason: 'template_compare_confirmed', identity };
+        reason: 'template_compare_confirmed',
+        identity: { ...identity, templateId: probe.input.templateId } };
     } },
   }));
   assert.equal(report.status, 'completed');
   assert.equal(report.findings.length, 1);
-  assert.equal(report.findings[0].id, 'finding:template:search-sqli-template');
+  assert.match(report.findings[0].id, /^finding:t-[0-9a-f]{16}$/u);
+  assert.equal(report.findings[0].id.length <= 72, true);
   assert.equal(report.findings[0].category, 'sql_injection');
   assert.equal(report.findings[0].asset, '/api/search');
   assert.equal(report.findings[0].templateId, 'search-sqli-template');

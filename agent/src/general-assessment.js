@@ -1,6 +1,6 @@
 'use strict';
 
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 
 const SCHEMA_VERSION = 'general-assessment/1';
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
@@ -231,11 +231,14 @@ function buildFindings(report, verdicts) {
       : latest.reason;
     const identity = latest?.identity;
     hypothesis.status = status;
+    const category = identity?.category ?? hypothesis.category;
+    const asset = identity?.asset ?? hypothesis.asset;
+    const digest = identity
+      ? createHash('sha256').update(`${category}\n${asset}`).digest('hex').slice(0, 16) : null;
     const draft = {
-      id: identity ? `finding:template:${identity.templateId}` : `finding:${hypothesis.id}`,
+      id: identity ? `finding:t-${digest}` : `finding:${hypothesis.id}`,
       hypothesisId: hypothesis.id, hypothesisIds: [hypothesis.id],
-      category: identity?.category ?? hypothesis.category,
-      asset: identity?.asset ?? hypothesis.asset, status, evidenceIds,
+      category, asset, status, evidenceIds,
       rationale: hypothesis.rationale,
       ...(identity?.templateId ? { templateId: identity.templateId } : {}),
       ...(identity?.cwe ? { cwe: identity.cwe } : {}),
@@ -245,9 +248,10 @@ function buildFindings(report, verdicts) {
       items.push(draft);
       continue;
     }
-    const existing = byTemplate.get(identity.templateId);
+    const mergeKey = `${category}\n${asset}`;
+    const existing = byTemplate.get(mergeKey);
     if (!existing) {
-      byTemplate.set(identity.templateId, draft);
+      byTemplate.set(mergeKey, draft);
       items.push(draft);
       continue;
     }

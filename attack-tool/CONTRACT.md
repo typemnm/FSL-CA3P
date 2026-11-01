@@ -16,7 +16,7 @@
 | `tools/call:execute_attack_template` | `{templateId,payload}`만 허용. 선택한 템플릿의 baseline/attack을 순서대로 가드레일에 요청 |
 | `tools/call:execute_probe` | `{probe,hypothesis}`만 허용. host가 등록한 authorize와 execute callback이 있어야 실행 가능 |
 
-실행 가능한 모드는 `resultCount`(GET `q`), `inheritedFilter`(GET `filters`), `ownershipComparison`(GET `:id`와 역할 세션), `containsFields`(무인증 GET 필드), `statusSequence`(무인증 POST 후 GET), `tagAcceptance`(관리자 POST 본문 표식)이다. lodash prototype canary와 Commons Text 저장값 관찰은 참고용이며 실행 요청은 거부한다. 지원하는 템플릿이 하나도 없으면 실행 도구를 노출하지 않는다. 가드레일은 서버 설정의 origin/path, GET/POST 형태, 1회 요청 예산을 검사한다. GET redirect는 따라가지 않으며 POST 302는 상태 비교에 쓴다. baseline·attack과 있는 경우 follow-up이 각각 예산을 소비한다. AI에 execute callback이나 정책 설치 기능을 제공하지 않는다.
+실행 가능한 모드는 `resultCount`(GET `q`, JSON 또는 HTML), `inheritedFilter`(GET `filters`), `ownershipComparison`(GET `:id` 또는 `id` 쿼리, 소유자 필드 비교), `containsFields`(무인증 GET 필드), `statusSequence`(POST 후 GET), `tagAcceptance`(관리자 POST 본문 표식), `textContains`(상태·본문 표식)이다. 템플릿은 취약점 종류와 비교 방법만 정하고, 경로는 관측된 표면에 바인딩한다. lodash prototype canary와 Commons Text 저장값 관찰은 참고용이며 실행 요청은 거부한다. 지원하는 템플릿이 하나도 없으면 실행 도구를 노출하지 않는다. 가드레일은 서버 설정의 origin/path, GET/POST 형태, 1회 요청 예산을 검사한다. GET redirect는 따라가지 않으며 POST 302는 상태 비교에 쓴다. baseline·attack과 있는 경우 follow-up이 각각 예산을 소비한다. AI에 execute callback이나 정책 설치 기능을 제공하지 않는다.
 
 템플릿 결과는 `{templateId,baseline,attack,followUp?,verification}`이다. `resultCount`의 `verification`은 `{status,baselineCount,attackCount}`다. 다른 모드는 상태·문자열·필드 비교로 `confirmed`/`not_reproduced`/`inconclusive`만 채운다. 템플릿 `trust:unverified`는 일반적인 취약점 보증을 의미하지 않는다.
 

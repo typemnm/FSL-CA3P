@@ -17,7 +17,7 @@ const scriptedVerdicts = (status = 'not_reproduced', seen = []) => async (record
   return { schemaVersion: 'verifier/1', attackId: record.id, status, reason: 'scripted ' + status, artifacts: [] };
 };
 function runtimeWith(options) {
-  return createGeneralRuntime({ verifyAttackImpl: scriptedVerdicts(), ...options });
+  return createGeneralRuntime({ verifyAttackImpl: scriptedVerdicts(), enableRequiredTemplates: false, ...options });
 }
 
 function terminal(runtime) {
@@ -340,7 +340,7 @@ test('wrong private service fails identity binding before the model or general p
   const run = await done;
   assert.equal(run.status, 'failed');
   assert.equal(run.error, 'FIXTURE_IDENTITY_MISMATCH');
-  assert.deepEqual(paths, ['/']);
+  assert.deepEqual(paths, ['/about']);
   assert.equal(modelUsed, false);
   await runtime.close();
 });
@@ -352,11 +352,11 @@ test('a timed-out secondary page is recorded as unavailable without ending the a
     runIdFactory: () => 'page-timeout',
     fetchImpl: async url => {
       const path = new URL(url).pathname;
-      if (path === '/about') throw new DOMException('The read timed out.', 'TimeoutError');
+      if (path === '/admissions') throw new DOMException('The read timed out.', 'TimeoutError');
       return response(path);
     },
     plannerFactory: () => ({ async propose(context) {
-      sawUnavailable = context.evidence.some(item => item.kind === 'unavailable' && item.asset === '/about');
+      sawUnavailable = context.evidence.some(item => item.kind === 'unavailable' && item.asset === '/admissions');
       return { done: true, hypotheses: [], probes: [] };
     } }),
   });
@@ -365,7 +365,7 @@ test('a timed-out secondary page is recorded as unavailable without ending the a
   const run = await done;
   assert.equal(run.status, 'completed');
   assert.equal(sawUnavailable, true);
-  assert.equal(run.report.inventory.pages.find(page => page.path === '/about').status, null);
+  assert.equal(run.report.inventory.pages.find(page => page.path === '/admissions').status, null);
   await runtime.close();
 });
 
@@ -1029,7 +1029,8 @@ test('general runtime routes vulnerability workers through two daemon ports and 
     fetchImpl: async url => response(new URL(url).pathname),
     plannerFactory: () => ({ async propose(context) {
       advertised = context.inventory.attackTool;
-      assert.deepEqual(advertised.templates, expectedTemplates);
+      const advertisedIds = advertised.templates.map(item => typeof item === 'string' ? item : item.templateId);
+      assert.deepEqual(advertisedIds.sort(), expectedTemplates.map(item => item.templateId).sort());
       assert.equal(new Set(advertised.endpoints).size, 2);
       if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
       const evidenceIds = [context.evidence[0].id];
@@ -1055,7 +1056,8 @@ test('general runtime routes vulnerability workers through two daemon ports and 
   assert.equal(new Set(run.report.attackTool.agentIds).size, 2);
   assert.deepEqual(run.report.attackTool.endpoints, advertised.endpoints);
   assert.deepEqual(run.report.attackTool.flow, ['agent', 'attack-tool', 'guardrail', 'executor']);
-  assert.deepEqual(run.report.attackTool.templateIds, expectedTemplates.map(template => template.templateId));
+  assert.deepEqual([...run.report.attackTool.templateIds].sort(),
+    expectedTemplates.map(template => template.templateId).sort());
   assert.doesNotMatch(JSON.stringify(run.report.attackTool), /Bearer|authorization|token|secret/i);
   for (const endpoint of advertised.endpoints) {
     await assert.rejects(fetch(endpoint, { signal: AbortSignal.timeout(1000) }));
@@ -1102,6 +1104,92 @@ test('general runtime executes a catalog SQLi template through GET baseline and 
   const evidence = run.report.evidence.find(item => item.id === probe.evidenceIds[0]);
   assert.equal(evidence.kind, 'template-exchange');
   assert.match(evidence.summary, /compare confirmed/u);
+  await runtime.close();
+});
+
+test('required pass binds observed surfaces and does not reject cross-site template classes', async () => {
+  const origin = 'http://127.0.0.1:53993';
+  const plannerIterations = [];
+  const runtime = runtimeWith({
+    fixtureId: 'vul-web2-daehan', targetOrigin: origin, enableRequiredTemplates: true,
+    modelId: 'deepseek-flash', runIdFactory: () => 'general-bound-templates',
+    unavailableInputs: ['casper-db'],
+    fetchImpl: async (url, init = {}) => {
+      const parsed = new URL(url);
+      const method = init.method || 'GET';
+      if (parsed.pathname === '/login' && method === 'POST') {
+        const body = String(init.body || '');
+        if (body.includes('nosuchuser') || body.includes('wrong-password')) {
+          return new Response('아이디 또는 비밀번호를 확인해 주세요.', { status: 401 });
+        }
+        const account = new URLSearchParams(body).get('username') || 'user';
+        return new Response('', { status: 302,
+          headers: { location: '/mypage', 'set-cookie': `sid=${account}TOKEN1234567; HttpOnly` } });
+      }
+      if (parsed.pathname === '/api/search') {
+        const filters = parsed.searchParams.get('filters') ?? '';
+        if (filters.includes('__proto__')) {
+          return new Response(JSON.stringify({ site: '대한대학교', results: [{ type: 'notice' }] }), {
+            status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (filters && filters !== '{}') {
+          return new Response('SyntaxError: JSON5', { status: 500, headers: { 'content-type': 'text/html' } });
+        }
+        const q = parsed.searchParams.get('q');
+        const results = q === "' OR '1'='1" ? [{ id: 1, title: 'hit' }] : [];
+        return new Response(JSON.stringify({ site: '대한대학교', results }), {
+          status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname.endsWith('/applications/1')) {
+        return new Response(JSON.stringify({ partner_user_id: 4 }), { status: 200,
+          headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname.endsWith('/applications/3')) {
+        return new Response(JSON.stringify({ partner_user_id: 5 }), { status: 200,
+          headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname === '/api/mypage/requests/1') {
+        return new Response(JSON.stringify({ user_id: 2 }), { status: 200,
+          headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname === '/api/mypage/requests/2') {
+        return new Response(JSON.stringify({ user_id: 3 }), { status: 200,
+          headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname === '/_diag/config') {
+        return new Response(JSON.stringify({ database: 'x', installedPackages: [], activeSessions: 1 }), {
+          status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname === '/admissions/partner') {
+        const html = parsed.searchParams.get('id') === '3' ? '이수빈 상세' : '윤하람 상세';
+        return new Response(`<html>${html}</html>`, { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+      if (parsed.pathname === '/admin/import' && method === 'POST') {
+        return new Response('', { status: 302, headers: { location: '/admin' } });
+      }
+      if (parsed.pathname === '/schedule') {
+        return new Response('<p>CA3P_IMPORT_CANARY</p>', { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+      if (parsed.pathname === '/admin/posts/1/delete' && method === 'POST') {
+        return new Response('', { status: 302, headers: { location: '/admin' } });
+      }
+      return response(parsed.pathname);
+    },
+    plannerFactory: () => ({ async propose(context) {
+      plannerIterations.push(context.iteration);
+      return { done: true, hypotheses: [], probes: [] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  assert.deepEqual(plannerIterations, [2]);
+  assert.equal(run.report.probes.some(item => item.reason === 'fixture_mismatch'), false);
+  assert.ok(run.report.coverage.requiredTemplates >= 5);
+  const sqli = run.report.findings.find(item => item.templateId === 'search-sqli-template');
+  assert.equal(sqli?.status, 'confirmed');
+  assert.equal(sqli?.category, 'sql_injection');
   await runtime.close();
 });
 
@@ -1231,7 +1319,7 @@ test('general runtime confirms JSON5, partner IDOR and unauthenticated delete fr
     assert.equal(run.report.probes.find(item => item.id === id).status, 'confirmed', id);
   }
   assert.equal(run.report.probes.find(item => item.id === 'p-staff').status, 'blocked');
-  assert.equal(run.report.probes.find(item => item.id === 'p-staff').reason, 'fixture_mismatch');
+  assert.equal(run.report.probes.find(item => item.id === 'p-staff').reason, 'path_out_of_scope');
   assert.equal(run.report.probes.find(item => item.id === 'p-lodash').status, 'blocked');
   assert.equal(run.report.probes.find(item => item.id === 'p-lodash').reason, 'unsupported_template');
   assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-json5').status, 'confirmed');

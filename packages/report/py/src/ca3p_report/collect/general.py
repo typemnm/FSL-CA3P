@@ -31,16 +31,22 @@ def select_finding(run: RunRecord, finding_id: str) -> dict:
     if len(selected) != 1 or selected[0].get("status") != "confirmed":
         raise CollectError("selected finding must be uniquely confirmed")
     finding = selected[0]
-    hypothesis_id = finding.get("hypothesisId")
-    if not isinstance(hypothesis_id, str) or finding_id != f"finding:{hypothesis_id}":
+    linked: list[str] = []
+    primary = finding.get("hypothesisId")
+    if isinstance(primary, str):
+        linked.append(primary)
+    extra = finding.get("hypothesisIds")
+    if isinstance(extra, list):
+        for item in extra:
+            if isinstance(item, str) and item not in linked:
+                linked.append(item)
+    if not linked:
         raise CollectError("selected finding has no hypothesis ID")
-    hypotheses = [item for item in _rows(report.get("hypotheses"), "hypotheses")
-                  if item.get("id") == hypothesis_id]
-    if len(hypotheses) != 1:
+    by_hypothesis = {item.get("id"): item for item in _rows(report.get("hypotheses"), "hypotheses")
+                     if isinstance(item.get("id"), str)}
+    if any(item not in by_hypothesis for item in linked):
         raise CollectError("selected finding hypothesis is missing or ambiguous")
-    if (finding.get("category") != hypotheses[0].get("category")
-        or finding.get("asset") != hypotheses[0].get("asset")):
-        raise CollectError("selected finding does not match its hypothesis")
+    hypothesis = by_hypothesis[linked[0]]
 
     evidence = _rows(report.get("evidence"), "evidence")
     by_id = {item.get("id"): item for item in evidence if isinstance(item.get("id"), str)}
@@ -55,14 +61,15 @@ def select_finding(run: RunRecord, finding_id: str) -> dict:
     verified_ids: list[str] = []
     confirmed_probes: list[dict] = []
     seen_probes: set[str] = set()
+    linked_set = set(linked)
     for event in run.events:
-        if (event.stage != "verify" or event.request.get("hypothesisId") != hypothesis_id
+        if (event.stage != "verify" or event.request.get("hypothesisId") not in linked_set
             or event.response.get("status") != "confirmed"):
             continue
         probe_id = event.request.get("probeId")
         probe = probes_by_id.get(probe_id)
         if (not isinstance(probe_id, str) or probe_id in seen_probes or not probe
-            or probe.get("hypothesisId") != hypothesis_id or probe.get("status") != "confirmed"):
+            or probe.get("hypothesisId") not in linked_set or probe.get("status") != "confirmed"):
             raise CollectError("confirmed verification has no matching probe")
         probe_refs = set(_ids(probe.get("evidenceIds"), "probe evidence IDs"))
         verdict_refs = _ids(event.response.get("evidenceIds"), "verification evidence IDs")
@@ -89,7 +96,7 @@ def select_finding(run: RunRecord, finding_id: str) -> dict:
         "runId": run.run_id,
         "sourceFindingId": finding_id,
         "finding": finding,
-        "hypothesis": hypotheses[0],
+        "hypothesis": hypothesis,
         "confirmedProbes": confirmed_probes,
         "verificationEvidenceIds": verified_ids,
         "verificationEvidence": [by_id[ref] for ref in verified_ids],

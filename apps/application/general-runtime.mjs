@@ -12,7 +12,8 @@ import generalPlanner from '../../agent/src/general-model-planner.js';
 import hitlApproval from '../../agent/src/hitl-approval.js';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
 import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
-import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse } from '../../packages/adapters/integrations/attack-tool.mjs';
+import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse, listTemplates } from '../../packages/adapters/integrations/attack-tool.mjs';
+import { buildRequiredTemplatePlan, librariesFromInventory } from './required-templates.mjs';
 import { createAssessmentPlanner, createLocalJsonClient, isGeneralPlannerModel, LOCAL_PLANNER_MODEL_ID } from '../../packages/models/local-planner.mjs';
 
 const { runGeneralAssessment } = generalCore;
@@ -41,7 +42,8 @@ const FIXTURES = Object.freeze({
     name: '대한대학교', siteKey: 'daehan', origin: 'http://127.0.0.1:4101',
     routes: ['/', '/about', '/admissions', '/colleges', '/academics', '/research',
       '/campus', '/facilities', '/notices', '/news', '/schedule', '/faq', '/login',
-      '/mypage', '/admin', '/api/search', '/_diag/config',
+      '/mypage', '/admin', '/api/search', '/_diag/config', '/admissions/partner',
+      '/admin/import', '/notices', '/news',
       '/api/admissions/partner/applications/1', '/api/admissions/partner/applications/3',
       '/api/mypage/requests/1', '/api/mypage/requests/2', '/admin/posts/1/delete'],
     files: {
@@ -59,6 +61,7 @@ const FIXTURES = Object.freeze({
     routes: ['/', '/about', '/admissions', '/colleges', '/academics', '/research',
       '/campus', '/facilities', '/notices', '/news', '/schedule', '/faq', '/login',
       '/mypage', '/admin', '/api/search', '/_diag/config', '/admin/schedule/preview',
+      '/staff/mobile', '/admin/import', '/notices', '/news',
       '/api/staff/mobile/cases/1', '/api/staff/mobile/cases/3',
       '/api/mypage/requests/1', '/api/mypage/requests/2', '/admin/posts/1/delete'],
     files: {
@@ -101,10 +104,10 @@ function utf8Prefix(value, maxBytes) {
   }
   return characters.join('');
 }
-function templateIdentity(template) {
+function templateIdentity(template, boundPath) {
   const templateId = template?.templateId;
   const category = template?.attackType?.name;
-  const asset = template?.target?.endpoint;
+  const asset = boundPath || template?.target?.endpoint;
   if (typeof templateId !== 'string' || typeof category !== 'string' || typeof asset !== 'string') return undefined;
   return {
     templateId, category, asset,
@@ -206,7 +209,7 @@ function safePath(value, origin) {
   let url;
   try { url = new URL(value, origin); } catch { return null; }
   if (url.origin !== origin || url.username || url.password || url.hash
-    || url.pathname.includes('..') || /%(?:2f|5c|00)/iu.test(value)) return null;
+    || url.pathname.includes('..') || /%(?:2f|5c|00)/iu.test(url.pathname)) return null;
   if ([...url.searchParams].length > 6
     || [...url.searchParams].some(([key, val]) => key.length > 40 || val.length > 100)) return null;
   return url;
@@ -388,7 +391,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   historyProvider, plannerFactory, boardFactory, cleanupRegistryPath, fetchImpl = fetch,
   catalogReader = readKnowledgeCatalogReadOnly, templateCatalog,
   webParserCollect = collectWebInfo, verificationRoot, verifyAttackImpl = verifyAttack, verifierModel,
-  limits = GENERAL_LOOP_BUDGET_DEFAULTS, approvalRequired = false, approvalTimeoutMs = 1_800_000 } = {}) {
+  limits = GENERAL_LOOP_BUDGET_DEFAULTS, enableRequiredTemplates = true,
+  approvalRequired = false, approvalTimeoutMs = 1_800_000 } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!isGeneralPlannerModel(modelId)) throw new TypeError('A registered planner model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
@@ -467,7 +471,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   async function verifyFixtureIdentity(allowedOrigin, currentSignal) {
     if (!config.siteKey) return;
     const checks = [
-      { id: 'identity-home', path: '/', expect: body => body.includes(config.name) },
+      { id: 'identity-home', path: '/about', expect: body => body.includes(config.name) },
       { id: 'identity-api', path: '/api/search?q=ca3p-identity',
         expect: body => {
           try { return JSON.parse(body)?.site === config.name; } catch { return false; }
@@ -733,7 +737,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         http_get: 'input {path,sessionRole?}: GET on a declared or observed pathname at the selected origin; optional sessionRole uses only a prepared fixed demo session; redirects are not followed',
         web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); once the cumulative web_info evidence budget of the run is spent, returns only a one-line overview (status, content type, list counts); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
         repository_read: 'input {file,offset?}: read only an allowlisted local source or reference excerpt',
-        execute_attack_template: 'input {templateId,payload}: run a catalog template baseline, attack, and optional follow-up through the origin policy. Executable modes: resultCount, inheritedFilter, ownershipComparison, containsFields, statusSequence, tagAcceptance. The template pins the session role. sessionRole in the probe input is ignored.',
+        execute_attack_template: 'input {templateId,payload,path?,baselinePath?,baselinePayload?,followUpPath?}: bind a vulnerability-class template to an observed pathname at this origin. Executable modes: resultCount, inheritedFilter, ownershipComparison, containsFields, statusSequence, tagAcceptance, textContains. Prefer inventory.remainingTemplateIds after the required catalog pass. sessionRole in the probe input is ignored when the template pins a role.',
       },
       limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; an AI verifier judges every executed probe as valid or invalid for its hypothesis and may open a read-only browser.',
         'GET and repository references do not independently confirm most weakness classes.',
@@ -751,6 +755,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     const localVerifier = verifierModel ?? (modelId === LOCAL_PLANNER_MODEL_ID && verifyAttackImpl === verifyAttack
       ? await createLocalJsonClient({ env, envFile }) : undefined);
     let observed = false;
+    let observedPages = [];
+    let requiredPass = null;
     let inventory;
     const probeHypotheses = new Map();
     // A template is rendered once when policy first authorizes it. Approval,
@@ -775,6 +781,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         templateExecution: 'Only the registered runtime policy can enable a matching template; this run exposes reference templates.',
       } };
       [...inventory.pages, ...inventory.authenticatedPages].forEach(extendPaths);
+      observedPages = [...inventory.pages, ...inventory.authenticatedPages];
       return { ...initial, inventory };
     } };
     const policy = { async authorize({ probe, hypothesis }) {
@@ -798,7 +805,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         reason: 'file_out_of_scope' };
       if (probe.tool === 'execute_attack_template') {
         const input = probe.input;
-        if (!record(input) || Object.keys(input).some(key => !['templateId', 'payload', 'sessionRole'].includes(key))
+        if (!record(input) || Object.keys(input).some(key => !['templateId', 'payload', 'sessionRole',
+          'path', 'baselinePath', 'followUpPath', 'baselinePayload'].includes(key))
           || typeof input.templateId !== 'string' || typeof input.payload !== 'string') {
           return { allowed: false, reason: 'invalid_execute_attack_template_input' };
         }
@@ -807,16 +815,17 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           return { allowed: false, reason: 'approved_template_changed' };
         }
         let rendered;
-        try { rendered = prior?.rendered ?? renderTemplate({ templateId: input.templateId,
-          payload: input.payload }, templateCatalog); }
-        catch (error) {
+        try {
+          rendered = prior?.rendered ?? renderTemplate({
+            templateId: input.templateId, payload: input.payload, path: input.path,
+            baselinePath: input.baselinePath, followUpPath: input.followUpPath,
+            baselinePayload: input.baselinePayload,
+          }, templateCatalog);
+        } catch (error) {
           return { allowed: false, reason: error?.code === 'UNSUPPORTED_TEMPLATE'
             ? 'unsupported_template' : 'invalid_template' };
         }
         const template = rendered.template;
-        if (Array.isArray(template.fixtures) && !template.fixtures.includes(fixtureId)) {
-          return { allowed: false, reason: 'fixture_mismatch' };
-        }
         const role = template.sessionRole ?? 'public';
         if (role !== 'public' && !sessionCookies.has(role)) {
           return { allowed: false, reason: 'session_unavailable' };
@@ -995,7 +1004,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           const attack = await templateRequest(rendered.packet, 'attack');
           const followUp = rendered.followUp ? await templateRequest(rendered.followUp, 'followUp') : undefined;
           const verification = verifyTemplate(baseline, attack, rendered.template, followUp);
-          const identity = templateIdentity(rendered.template);
+          const identity = templateIdentity(rendered.template, rendered.packet.path);
           const baselineView = projectTemplateResponse(baseline);
           const attackView = projectTemplateResponse(attack);
           return {
@@ -1061,9 +1070,60 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         env, envFile, signal });
     } };
     const wrappedPlanner = { async propose(context) {
+      if (enableRequiredTemplates && !requiredPass) {
+        const evidenceId = context.evidence?.[0]?.id;
+        const forms = observedPages.flatMap(page => page.forms ?? []);
+        requiredPass = evidenceId
+          ? buildRequiredTemplatePlan({
+            templates: listTemplates(), paths: [...allowedPaths], forms,
+            libraries: librariesFromInventory(inventory),
+            evidenceId, usedProbeIds: context.usedProbeIds ?? [],
+            remainingProbes: context.budget?.remainingProbes,
+          })
+          : { hypotheses: [], probes: [], requiredIds: [] };
+        if (inventory) {
+          inventory.requiredTemplateIds = requiredPass.requiredIds;
+          inventory.remainingTemplateIds = [...requiredPass.requiredIds];
+        }
+        const limit = Number.isSafeInteger(context.budget?.remainingProbes)
+          ? context.budget.remainingProbes : requiredPass.probes.length;
+        if (requiredPass.probes.length && context.iteration === 1 && limit > 0) {
+          return { done: false, hypotheses: requiredPass.hypotheses.slice(0, limit),
+            probes: requiredPass.probes.slice(0, limit) };
+        }
+      }
+      if (inventory && requiredPass) {
+        const used = new Set(context.usedProbeIds ?? []);
+        inventory.remainingTemplateIds = requiredPass.requiredIds.filter(id =>
+          ![...used].some(probeId => String(probeId).includes(id)));
+      }
       let plan;
-      try { plan = await planner.propose(context); }
-      catch (error) {
+      try {
+        const slimPage = page => {
+          const slim = { path: page.path, status: page.status };
+          if (page.title !== undefined) slim.title = page.title;
+          if (page.forms !== undefined) slim.forms = page.forms;
+          if (page.securityHeaderValues !== undefined) slim.securityHeaderValues = page.securityHeaderValues;
+          return slim;
+        };
+        const slimInventory = inventory ? {
+          ...inventory,
+          pages: (inventory.pages ?? []).map(slimPage),
+          authenticatedPages: (inventory.authenticatedPages ?? []).map(slimPage),
+          attackTool: inventory.attackTool ? {
+            transport: inventory.attackTool.transport,
+            flow: inventory.attackTool.flow,
+            templateExecution: inventory.attackTool.templateExecution,
+            ...(Array.isArray(inventory.attackTool.endpoints)
+              && inventory.attackTool.endpoints.every(item => typeof item === 'string')
+              ? { endpoints: inventory.attackTool.endpoints } : {}),
+            templates: (inventory.attackTool.templates ?? []).map(template => ({
+              templateId: typeof template === 'string' ? template : template.templateId,
+            })),
+          } : inventory.attackTool,
+        } : context.inventory;
+        plan = await planner.propose({ ...context, inventory: slimInventory ?? context.inventory });
+      } catch (error) {
         const attempts = planner instanceof generalPlanner.GeneralModelPlanner
           && Array.isArray(error?.modelAttempts) ? error.modelAttempts : [];
         for (const attempt of attempts) {
@@ -1155,6 +1215,15 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       templatePlans.clear();
     }
     report.runId = run.id;
+    const requiredIds = requiredPass?.requiredIds ?? [];
+    const used = new Set((report.probes ?? []).filter(item => item.tool === 'execute_attack_template').map(item => item.id));
+    report.coverage = {
+      ...report.coverage,
+      requiredTemplates: requiredIds.length,
+      requiredExecuted: requiredIds.filter(id => [...used].some(probeId => String(probeId).includes(id))).length,
+      requiredConfirmed: (report.findings ?? []).filter(item => requiredIds.includes(item.templateId)
+        && item.status === 'confirmed').length,
+    };
     report.modelCalls.push(...failedModelCalls);
     report.fixtureId = fixtureId;
     report.targetContacted = run.targetContacted;

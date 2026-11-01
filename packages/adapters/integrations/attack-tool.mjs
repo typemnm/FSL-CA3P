@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { createAttackTool } from '../../../attack-tool/server.mjs';
 import { createAttackToolClient } from '../../../attack-tool/client.mjs';
 export { renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse, listTemplates } from '../../../attack-tool/templates.mjs';
+export { bindTemplate, idGroups, rankTemplate } from '../../../attack-tool/bind-template.mjs';
 
 /** One run owns two ports; each vulnerability worker has its own authenticated principal. */
 export async function createAttackToolBridge({ authorize, execute, runId, targetOrigin, ports = [0, 0], templateCatalog } = {}) {

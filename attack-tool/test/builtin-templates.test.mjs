@@ -15,7 +15,12 @@ const requestedIds = ['search-sqli-template', 'access-control-idor-template',
   'diag-config-disclosure-template', 'snakeyaml-type-tag-template'];
 const executableIds = ['search-sqli-template', 'sqli-like-tautology', 'json5-inherited-filter-template',
   'access-control-idor-template', 'wonchang-staff-idor-template', 'student-request-idor-template',
-  'unauth-featured-post-delete-template', 'diag-config-disclosure-template', 'snakeyaml-type-tag-template'];
+  'unauth-featured-post-delete-template', 'diag-config-disclosure-template', 'snakeyaml-type-tag-template',
+  'json5-parse-error-template', 'login-no-lockout-template', 'admin-import-unsigned-template',
+  'query-idor-template', 'reflected-xss-query-template', 'wildcard-search-template',
+  'union-sqli-template', 'comment-sqli-template', 'ssti-query-template',
+  'unauthenticated-admin-get-template', 'unauthenticated-mypage-get-template',
+  'debug-path-template'];
 const referenceIds = ['lodash-prototype-canary-template', 'commons-text-interpolation-template'];
 
 test('builtins contain unique requested and dependency templates that pass the storage contract', () => {
@@ -25,6 +30,7 @@ test('builtins contain unique requested and dependency templates that pass the s
     assert.deepEqual(validateTemplate(template), template);
     assert.equal(template.trust, 'unverified');
     assert.equal(template.executor, 'guardrail');
+    assert.equal(template.fixtures, undefined);
   }
 });
 
@@ -55,7 +61,8 @@ test('session and custom-verifier templates remain references and cannot be sile
 
 test('the shared catalog exposes the added dependency templates through exact filters', () => {
   const catalog = createTemplateCatalog({ filePath: fileURLToPath(new URL('./absent-builtin-catalog.json', import.meta.url)) });
-  assert.deepEqual(catalog.list({ library: 'json5' }).map(item => item.templateId), ['json5-inherited-filter-template']);
+  assert.deepEqual(catalog.list({ library: 'json5' }).map(item => item.templateId).sort(),
+    ['json5-inherited-filter-template', 'json5-parse-error-template']);
   assert.deepEqual(catalog.list({ library: 'lodash' }).map(item => item.templateId), ['lodash-prototype-canary-template']);
   assert.deepEqual(catalog.list({ runtime: 'java' }).map(item => item.templateId).sort(),
     ['commons-text-interpolation-template', 'snakeyaml-type-tag-template', 'wonchang-staff-idor-template'].sort());

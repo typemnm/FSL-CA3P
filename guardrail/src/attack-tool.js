@@ -116,7 +116,7 @@ function createAttackToolGuardrail({ targetOrigin, maxRequests = 16,
       if (packet.method === 'POST' && packet.query !== undefined) reject('packet_out_of_scope', context);
       if (packet.query !== undefined) {
         const names = record(packet.query) ? Object.keys(packet.query) : [];
-        if (!record(packet.query) || names.length !== 1 || !['q', 'filters'].includes(names[0])
+        if (!record(packet.query) || names.length !== 1 || !['q', 'filters', 'id'].includes(names[0])
           || typeof packet.query[names[0]] !== 'string'
           || Buffer.byteLength(packet.query[names[0]], 'utf8') > MAX_QUERY_BYTES) {
           reject('packet_out_of_scope', context);
