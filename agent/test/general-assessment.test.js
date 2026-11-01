@@ -145,6 +145,48 @@ test('live metadata is bounded and omits observation summaries and secret query 
   assert.equal(report.evidence.length, 16);
 });
 
+test('template identity remaps category and merges duplicate template findings', async () => {
+  const identity = { templateId: 'search-sqli-template', category: 'sql_injection', asset: '/api/search', cwe: 'CWE-89' };
+  const { report } = await runGeneralAssessment(ports({
+    availableTools: ['execute_attack_template'],
+    planner: { async propose({ iteration }) {
+      if (iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return {
+        hypotheses: [
+          { id: 'xss-1', category: 'xss_vulnerable', asset: '/news',
+            rationale: 'Search form may accept script.', evidenceIds: ['observation-1'] },
+          { id: 'sqli-1', category: 'sql_injection', asset: '/api/search',
+            rationale: 'Query is concatenated.', evidenceIds: ['observation-1'] },
+        ],
+        probes: [
+          { id: 'p-xss', hypothesisId: 'xss-1', tool: 'execute_attack_template',
+            input: { templateId: 'search-sqli-template', payload: 'x' } },
+          { id: 'p-sqli', hypothesisId: 'sqli-1', tool: 'execute_attack_template',
+            input: { templateId: 'search-sqli-template', payload: 'x' } },
+        ],
+      };
+    } },
+    executor: { async execute({ probe }) {
+      return { evidence: [{ id: `ev-${probe.id}`, source: 'attack-tool', kind: 'template-exchange',
+        summary: 'compare confirmed', asset: '/api/search' }] };
+    } },
+    verifier: { async verify({ probe }) {
+      return { status: 'confirmed', completed: true, evidenceIds: [`ev-${probe.id}`],
+        reason: 'template_compare_confirmed', identity };
+    } },
+  }));
+  assert.equal(report.status, 'completed');
+  assert.equal(report.findings.length, 1);
+  assert.equal(report.findings[0].id, 'finding:template:search-sqli-template');
+  assert.equal(report.findings[0].category, 'sql_injection');
+  assert.equal(report.findings[0].asset, '/api/search');
+  assert.equal(report.findings[0].templateId, 'search-sqli-template');
+  assert.equal(report.findings[0].cwe, 'CWE-89');
+  assert.deepEqual([...report.findings[0].hypothesisIds].sort(), ['sqli-1', 'xss-1']);
+  assert.equal(report.findings.some(item => item.category === 'xss_vulnerable'), false);
+  assert.deepEqual(report.coverage, { totalHypotheses: 2, confirmed: 1, notReproduced: 0, inconclusive: 0, notTested: 0 });
+});
+
 test('same category and asset keep distinct hypothesis findings and evidence', async () => {
   const { report } = await runGeneralAssessment(ports({
     observer: { async observe({ iteration }) { return { inventory: {}, evidence: iteration === 1 ? [

@@ -56,8 +56,8 @@ function validateExpectations(baseline, attack) {
   }
 }
 
-export function loadIntruderPlan(catalogPath, vulnType = 'sql_injection', { databasePath, application } = {}) {
-  const source = loadAttackInfo({ catalogPath, vulnType, databasePath, application });
+export function loadIntruderPlan(catalogPath, vulnType = 'sql_injection', { databasePath, application, endpoint } = {}) {
+  const source = loadAttackInfo({ catalogPath, vulnType, databasePath, application, endpoint });
   const response = source?.definition;
   const fuzzable = (response?.payloads ?? []).filter(item =>
     item?.successCheck?.expect?.observe === 'httpResponse' && item.successCheck.expect.attack);
@@ -207,10 +207,10 @@ function statusMatches(status, expected) {
   return Number.isInteger(expected) ? status === expected : status >= 200 && status < 300;
 }
 
-export async function run({ origin, catalogPath, vulnType = 'sql_injection', databasePath, application,
+export async function run({ origin, catalogPath, vulnType = 'sql_injection', databasePath, application, endpoint,
   curlImpl = executeCurl, signal } = {}) {
   const allowedOrigin = exactLoopbackOrigin(origin ?? DEFAULT_ORIGIN);
-  const plan = loadIntruderPlan(catalogPath, vulnType, { databasePath, application });
+  const plan = loadIntruderPlan(catalogPath, vulnType, { databasePath, application, endpoint });
   const runId = `intruder-${vulnType}-${randomUUID()}`;
   const startedAt = new Date().toISOString();
   const request = createGuardedRequest({ origin: allowedOrigin, runId, plan, curlImpl });

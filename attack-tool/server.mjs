@@ -119,9 +119,15 @@ export async function createAttackTool({ host = '127.0.0.1', ports = [0, 0], pri
       const baseline = await principal.guardrail.execute(rendered.baseline, context);
       signal.throwIfAborted();
       const attack = await principal.guardrail.execute(rendered.packet, context);
-      const verification = verifyTemplate(baseline, attack, rendered.template);
+      let followUp;
+      if (rendered.followUp) {
+        signal.throwIfAborted();
+        followUp = await principal.guardrail.execute(rendered.followUp, context);
+      }
+      const verification = verifyTemplate(baseline, attack, rendered.template, followUp);
       return { templateId: rendered.template.templateId,
-        baseline: projectTemplateResponse(baseline), attack: projectTemplateResponse(attack), verification };
+        baseline: projectTemplateResponse(baseline), attack: projectTemplateResponse(attack),
+        ...(followUp ? { followUp: projectTemplateResponse(followUp) } : {}), verification };
     }
     if (params.name === 'execute_probe') {
       if (typeof principal.authorize !== 'function' || typeof principal.execute !== 'function') throw fault('CAPABILITY_UNAVAILABLE');

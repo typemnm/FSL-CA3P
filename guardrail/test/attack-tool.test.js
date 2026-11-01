@@ -162,3 +162,26 @@ test('invalid UTF-8 cannot expand the returned body beyond its evidence limit', 
   assert.ok(Buffer.byteLength(response.body) <= MAX_RESPONSE_BYTES);
   assert.equal(response.truncated, true);
 });
+
+test('POST form packets are allowed and 302 is evidence rather than a followed redirect', async () => {
+  const observed = [];
+  const guardrail = createAttackToolGuardrail({
+    targetOrigin: 'http://127.0.0.1:4101',
+    allowedPaths: ['/admin/posts/1/delete', '/admin/schedule/preview'],
+    fetchImpl: async (url, init) => {
+      observed.push({ url: String(url), method: init.method, redirect: init.redirect,
+        type: init.headers['content-type'], body: init.body });
+      return new Response('', { status: 302, headers: { location: '/admin' } });
+    },
+  });
+  const deleted = await guardrail.execute({ method: 'POST', path: '/admin/posts/1/delete' });
+  const preview = await guardrail.execute({ method: 'POST', path: '/admin/schedule/preview',
+    body: { payload: 'events: []' } });
+  assert.equal(deleted.status, 302);
+  assert.equal(preview.status, 302);
+  assert.equal(observed[0].redirect, 'manual');
+  assert.equal(observed[1].type, 'application/x-www-form-urlencoded');
+  assert.equal(observed[1].body, 'payload=events%3A+%5B%5D');
+  await assert.rejects(guardrail.execute({ method: 'POST', path: '/admin/posts/1/delete', query: { q: 'x' } }),
+    { code: 'GUARDRAIL_DENIED' });
+});

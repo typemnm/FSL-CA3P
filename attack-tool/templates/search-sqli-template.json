@@ -1,6 +1,8 @@
 {
   "templateId": "search-sqli-template",
   "title": "검색 SQL Injection 점검",
+  "sessionRole": "public",
+  "fixtures": ["vul-web2-daehan", "vul-web2-wonchang"],
   "attackType": { "name": "sql_injection", "cwe": "CWE-89" },
   "dependency": { "runtime": "node", "framework": "express", "library": "node:sqlite" },
   "target": { "method": "GET", "endpoint": "/api/search" },
