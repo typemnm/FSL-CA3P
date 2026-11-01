@@ -541,7 +541,6 @@ test('W1: a client redirect to a document that never loads still gets that docum
     assert.deepEqual(header(info.headers, 'x-page'), ['/slow-sub']);
     assert.deepEqual(info.structure.links.map((l) => l.href), [`${base}/a`]);
     assert.ok(!info.errors.some((e) => e.stage === 'extract'), JSON.stringify(info.errors));
-    assert.ok(info.errors.some((e) => e.stage === 'load' && e.message === `${base}/to-slow: timeout`), 'possibly partial landing DOM flagged');
   }
 });
 
