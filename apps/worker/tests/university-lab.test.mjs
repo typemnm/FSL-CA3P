@@ -10,6 +10,9 @@ async function waitFor(service, id) {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const run = service.getRun(id);
+    if (run.pendingApproval) {
+      await service.decideApproval(id, run.pendingApproval.id, 'approve', 'ci');
+    }
     if (['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)) return run;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
