@@ -66,8 +66,10 @@ test('real university worker pins reads, persists evidence, and reopens without 
     assert.equal(final.report.runId, final.id);
     assert.equal(final.report.finding.status, denyCross ? 'not_confirmed' : 'confirmed');
     assert.equal(final.report.evidence.length, 4);
-    assert.equal(final.step, 6);
-    assert.equal(final.events.length, 6);
+    assert.equal(final.events.filter(event => event.stage === 'approval.requested').length, 1);
+    assert.equal(final.events.filter(event => event.stage === 'approval.resolved').length, 1);
+    assert.equal(final.events.length, 8);
+    assert.equal(final.step, 8);
     assert.equal(final.targetContacted, true);
     assert.equal(final.modelCalls.length, 0);
     assert.equal(final.reportDocument.errorCode, 'IDOR_DOCUMENT_UNSUPPORTED');
