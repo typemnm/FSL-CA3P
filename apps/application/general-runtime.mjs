@@ -1099,10 +1099,12 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       }
       let plan;
       try {
+        const slimPage = page => ({ path: page.path, status: page.status, title: page.title,
+          forms: page.forms, securityHeaderValues: page.securityHeaderValues });
         const slimInventory = inventory ? {
           ...inventory,
-          pages: (inventory.pages ?? []).map(page => ({ path: page.path, status: page.status })),
-          authenticatedPages: (inventory.authenticatedPages ?? []).map(page => ({ path: page.path, status: page.status })),
+          pages: (inventory.pages ?? []).map(slimPage),
+          authenticatedPages: (inventory.authenticatedPages ?? []).map(slimPage),
           attackTool: inventory.attackTool ? {
             ...inventory.attackTool,
             templates: (inventory.attackTool.templates ?? []).map(template => ({
