@@ -203,12 +203,18 @@ test('Docker-wide binds require the fixed Daehan service origin and a separate a
     CA3P_DAEHAN_RESET_TOKEN: 'isolated-docker-reset-token-0123456789',
     CA3P_DAEHAN_RESET_BIND: '0.0.0.0', CA3P_DAEHAN_TARGET_BIND: '0.0.0.0',
   };
-  await assert.rejects(startDaehanResetSupervisor({ env: baseline }), /target origin must match/u);
+  await assert.rejects(startDaehanResetSupervisor({ env: {
+    ...baseline, CA3P_DAEHAN_TARGET_ORIGIN: 'http://other:52123',
+  } }), /target origin must match/u);
   await assert.rejects(startDaehanResetSupervisor({ env: {
     ...baseline, CA3P_DAEHAN_TARGET_ORIGIN: 'http://daehan:4101',
   } }), /target origin must match/u);
   await assert.rejects(startDaehanResetSupervisor({ env: {
     ...baseline, CA3P_DAEHAN_TARGET_ORIGIN: 'http://daehan:52123',
+    CA3P_DAEHAN_RESET_BACKUP_ROOT: join(tmpdir(), 'ca3p-daehan-reset-configuration', 'data', 'backups'),
+  } }), /backup root must be an absolute path outside/u);
+  await assert.rejects(startDaehanResetSupervisor({ env: {
+    ...baseline, CA3P_DAEHAN_TARGET_ORIGIN: 'http://127.0.0.1:52123',
     CA3P_DAEHAN_RESET_BACKUP_ROOT: join(tmpdir(), 'ca3p-daehan-reset-configuration', 'data', 'backups'),
   } }), /backup root must be an absolute path outside/u);
 });

@@ -1,3 +1,5 @@
+import { webInfoEvents } from './web-info-view.js';
+
 const GENERAL_SCHEMA = 'general-assessment/1';
 const STATUSES = new Set(['confirmed', 'not_reproduced', 'inconclusive', 'not_tested']);
 const STATUS_LABELS = {
@@ -218,6 +220,9 @@ export function renderGeneralOverview(item) {
 /** A verify event is a probe observation, not a persisted finding. */
 export function renderGeneralLiveResults(item) {
   const summary = generalSummary(item);
+  const webInfo = webInfoEvents(item).length;
+  const webInfoLine = webInfo ? '<p class="general-live-web-info">웹 정보 수집 <strong>' + webInfo
+    + '</strong>건 · 상세 내용은 보고서에서 확인합니다.</p>' : '';
   if (!summary) {
     const events = list(item?.events).filter(object);
     const progress = latestProgress(events);
@@ -257,6 +262,7 @@ export function renderGeneralLiveResults(item) {
         + (reason ? '<small>사유: ' + escape(reason) + '</small>' : '') + '</li>';
     }).join('');
     return '<div class="general-live-body"><p>최종 보고서 전의 검사 이벤트입니다. 취약점 확정 건수로 집계하지 않습니다.</p>'
+      + webInfoLine
       + progressCounts(progress, [
         ['가설', 'hypothesisCount'], ['실행 검사', 'probeCount'], ['수집 증거', 'evidenceCount'],
         ['확정 판정 검사', 'confirmedProbeCount'], ['정책 차단 검사', 'blockedProbeCount'],
@@ -284,7 +290,7 @@ export function renderGeneralLiveResults(item) {
       + (text(finding.reason) ? '<small>사유: ' + escape(finding.reason) + '</small>' : '')
       + (details ? '<ul class="general-live-evidence">' + details + '</ul>' : '') + '</li>';
   }).join('');
-  return '<div class="general-live-body"><div class="general-overview-counts">'
+  return '<div class="general-live-body">' + webInfoLine + '<div class="general-overview-counts">'
     + '<span>확정 <strong>' + summary.confirmed + '</strong></span>'
     + '<span>재현 안 됨 <strong>' + summary.notReproduced + '</strong></span>'
     + '<span>판정 불가 <strong>' + summary.inconclusive + '</strong></span>'
