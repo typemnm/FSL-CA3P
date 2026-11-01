@@ -213,7 +213,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
           const saveProgress = () => { documents.status = generalDocumentsStatus(items);
             store.saveState(lease, { ...finalState, status: 'running' }); notify(); };
           const ids = items.map(item => item.findingId);
-          const validIds = ids.every(id => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,71}$/u.test(id))
+          const validIds = ids.every(id => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(id))
             && new Set(ids).size === ids.length;
           if (!final.report) {
             documents.status = 'skipped'; documents.errorCode = 'NO_FINAL_REPORT';

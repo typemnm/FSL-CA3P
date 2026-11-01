@@ -13,7 +13,7 @@ import hitlApproval from '../../agent/src/hitl-approval.js';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
 import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
 import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse, listTemplates } from '../../packages/adapters/integrations/attack-tool.mjs';
-import { buildRequiredTemplatePlan } from './required-templates.mjs';
+import { buildRequiredTemplatePlan, librariesFromInventory } from './required-templates.mjs';
 import { createAssessmentPlanner, createLocalJsonClient, isGeneralPlannerModel, LOCAL_PLANNER_MODEL_ID } from '../../packages/models/local-planner.mjs';
 
 const { runGeneralAssessment } = generalCore;
@@ -209,7 +209,7 @@ function safePath(value, origin) {
   let url;
   try { url = new URL(value, origin); } catch { return null; }
   if (url.origin !== origin || url.username || url.password || url.hash
-    || url.pathname.includes('..') || /%(?:2f|5c|00)/iu.test(value)) return null;
+    || url.pathname.includes('..') || /%(?:2f|5c|00)/iu.test(url.pathname)) return null;
   if ([...url.searchParams].length > 6
     || [...url.searchParams].some(([key, val]) => key.length > 40 || val.length > 100)) return null;
   return url;
@@ -1075,8 +1075,10 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const forms = observedPages.flatMap(page => page.forms ?? []);
         requiredPass = evidenceId
           ? buildRequiredTemplatePlan({
-            templates: listTemplates(), paths: [...allowedPaths], forms, evidenceId,
-            usedProbeIds: context.usedProbeIds ?? [],
+            templates: listTemplates(), paths: [...allowedPaths], forms,
+            libraries: librariesFromInventory(inventory),
+            evidenceId, usedProbeIds: context.usedProbeIds ?? [],
+            remainingProbes: context.budget?.remainingProbes,
           })
           : { hypotheses: [], probes: [], requiredIds: [] };
         if (inventory) {
@@ -1096,8 +1098,20 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           ![...used].some(probeId => String(probeId).includes(id)));
       }
       let plan;
-      try { plan = await planner.propose(context); }
-      catch (error) {
+      try {
+        const slimInventory = inventory ? {
+          ...inventory,
+          pages: (inventory.pages ?? []).map(page => ({ path: page.path, status: page.status })),
+          authenticatedPages: (inventory.authenticatedPages ?? []).map(page => ({ path: page.path, status: page.status })),
+          attackTool: inventory.attackTool ? {
+            ...inventory.attackTool,
+            templates: (inventory.attackTool.templates ?? []).map(template => ({
+              templateId: template.templateId, attackType: template.attackType, target: template.target,
+            })),
+          } : inventory.attackTool,
+        } : context.inventory;
+        plan = await planner.propose({ ...context, inventory: slimInventory ?? context.inventory });
+      } catch (error) {
         const attempts = planner instanceof generalPlanner.GeneralModelPlanner
           && Array.isArray(error?.modelAttempts) ? error.modelAttempts : [];
         for (const attempt of attempts) {

@@ -47,7 +47,9 @@ test('SQLi and IDOR templates bind only to matching observed surfaces', () => {
   };
   assert.equal(bindTemplate(templates['access-control-idor-template'], wonchang).length, 0);
   assert.equal(bindTemplate(templates['wonchang-staff-idor-template'], wonchang).length, 1);
-  assert.equal(bindTemplate(templates['query-idor-template'], wonchang)[0].path, '/staff/mobile');
+  const htmlIdor = bindTemplate(templates['query-idor-template'], wonchang)[0];
+  assert.equal(htmlIdor.path, '/staff/mobile');
+  assert.equal(htmlIdor.baselinePath, '/staff/mobile');
 });
 
 test('required plan skips templates whose surfaces were not observed', () => {
@@ -62,4 +64,29 @@ test('required plan skips templates whose surfaces were not observed', () => {
   assert.equal(plan.requiredIds.includes('access-control-idor-template'), false);
   assert.equal(plan.requiredIds.includes('wonchang-staff-idor-template'), false);
   assert.ok(plan.hypotheses.every(item => item.evidenceIds[0] === 'page-1'));
+});
+
+test('required plan keeps one SQLi per path, skips JSON5 without json5, and reserves delete', () => {
+  const paths = [
+    '/api/search', '/notices', '/_diag/config', '/', '/login',
+    '/admin/posts/1/delete', '/schedule', '/admin/import',
+  ];
+  const forms = [{ path: '/notices', method: 'GET', fields: ['q'] }];
+  const withJson5 = buildRequiredTemplatePlan({
+    templates: listTemplates(), paths, forms, libraries: ['json5', 'express'], evidenceId: 'page-1',
+  });
+  const sqliSearch = withJson5.probes.filter(item => item.input.path === '/api/search'
+    && ['search-sqli-template', 'comment-sqli-template', 'union-sqli-template'].includes(item.input.templateId));
+  assert.equal(sqliSearch.length, 1);
+  assert.equal(sqliSearch[0].input.templateId, 'search-sqli-template');
+  assert.ok(withJson5.requiredIds.includes('json5-inherited-filter-template'));
+  const withoutJson5 = buildRequiredTemplatePlan({
+    templates: listTemplates(), paths, forms, libraries: ['sqlite-jdbc'], evidenceId: 'page-1',
+  });
+  assert.equal(withoutJson5.requiredIds.includes('json5-inherited-filter-template'), false);
+  const tight = buildRequiredTemplatePlan({
+    templates: listTemplates(), paths, forms, libraries: ['json5'], evidenceId: 'page-1', remainingProbes: 3,
+  });
+  assert.equal(tight.probes.length, 3);
+  assert.equal(tight.probes.at(-1).input.templateId, 'unauth-featured-post-delete-template');
 });

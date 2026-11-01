@@ -7,6 +7,18 @@ function querySlot(packet) {
   return value === '{{payload}}' ? name : null;
 }
 
+export function idsForPattern(templatePath, paths) {
+  if (!String(templatePath).includes(':id')) return [];
+  const escaped = String(templatePath).split(':id').map(part => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'));
+  const matchId = new RegExp('^' + escaped.join('([1-9][0-9]{0,8})') + '$', 'u');
+  const ids = [];
+  for (const path of paths) {
+    const matched = String(path).match(matchId);
+    if (matched) ids.push(matched[1]);
+  }
+  return [...new Set(ids)].sort((left, right) => Number(left) - Number(right));
+}
+
 export function idGroups(paths) {
   const groups = new Map();
   for (const path of paths) {
@@ -61,12 +73,12 @@ export function bindTemplate(template, { paths = [], forms = [] } = {}) {
   }
 
   if (mode === 'ownershipComparison' && packet.path.includes(':id')) {
-    for (const group of groups) {
-      if (group.pattern !== packet.path) continue;
+    const ids = idsForPattern(packet.path, paths);
+    if (ids.length >= 2) {
       bindings.push({
-        path: group.pattern,
-        payload: group.ids[1],
-        baselinePayload: group.ids[0],
+        path: packet.path,
+        payload: ids[1],
+        baselinePayload: ids[0],
       });
     }
   }
@@ -77,7 +89,7 @@ export function bindTemplate(template, { paths = [], forms = [] } = {}) {
       if (!allowed.has(path)) continue;
       const ids = relatedIds(path, groups);
       if (ids.length < 2) continue;
-      bindings.push({ path, payload: ids[1], baselinePayload: ids[0] });
+      bindings.push({ path, payload: ids[1], baselinePayload: ids[0], baselinePath: path });
     }
   }
 
@@ -89,11 +101,10 @@ export function bindTemplate(template, { paths = [], forms = [] } = {}) {
     const follow = template.verify.followUp?.path ?? '/';
     const baseline = template.verify.baseline?.path ?? '/';
     if (packet.path.includes(':id')) {
-      const pattern = packet.path;
-      const group = groups.find(item => item.pattern === pattern);
-      if (group && allowed.has(baseline) && allowed.has(follow)) {
+      const ids = idsForPattern(packet.path, paths);
+      if (ids.length && allowed.has(baseline) && allowed.has(follow)) {
         bindings.push({
-          path: pattern, payload: group.ids[0], followUpPath: follow, baselinePath: baseline,
+          path: packet.path, payload: ids[0], followUpPath: follow, baselinePath: baseline,
         });
       }
     } else if (allowed.has(packet.path) && allowed.has(baseline) && allowed.has(follow)) {

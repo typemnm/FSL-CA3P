@@ -149,11 +149,13 @@ export function renderTemplate(input, catalog = defaultTemplateCatalog) {
       packet: step('GET', path, { query: packet.query, payload }) };
   }
   if (mode === 'ownershipComparison') {
+    const idQuery = querySlot(packet) === 'id';
     const baselinePath = input.baselinePath
-      ?? template.verify.baseline.path
+      ?? (idQuery ? path : template.verify.baseline.path)
       ?? substituteId(path, input.baselinePayload ?? '1');
-    const baselineQuery = input.baselinePayload && querySlot(packet) === 'id'
-      ? { id: input.baselinePayload } : template.verify.baseline.query;
+    const baselineQuery = idQuery
+      ? { id: input.baselinePayload ?? template.verify.baseline.query?.id ?? '1' }
+      : template.verify.baseline.query;
     return { template: structuredClone(template),
       baseline: step('GET', baselinePath, { query: baselineQuery }),
       packet: step('GET', path, { query: packet.query, payload }) };
