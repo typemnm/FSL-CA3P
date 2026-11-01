@@ -741,6 +741,90 @@ test('web_info honors cancellation mid-run', async () => {
   await runtime.close();
 });
 
+function webInfoRuntime({ runId, onWebInfo, webParserCollect, probes }) {
+  return runtimeWith({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:4101',
+    modelId: 'deepseek-flash', runIdFactory: () => runId, fetchImpl: universityLoginFetch(),
+    ...(onWebInfo ? { onWebInfo } : {}), webParserCollect,
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-web', category: 'configuration',
+        asset: '/', rationale: 'Observe the selected origin.', evidenceIds: [context.evidence[0].id] }],
+      probes: probes.map(([id, path, sessionRole]) => ({ id, hypothesisId: 'h-web', tool: 'web_info',
+        input: { path, ...(sessionRole ? { sessionRole } : {}) } })) };
+    } }),
+  });
+}
+const webInfoEvents = run => run.events.filter(event => event.stage === 'web_info.collected')
+  .map(({ id, time, simulated, targetContacted, ...event }) => event);
+
+test('web_info hands the raw TargetInfo to onWebInfo and announces it with a run event', async () => {
+  const calls = [];
+  const collected = [];
+  const artifactId = 'a'.repeat(64);
+  const runtime = webInfoRuntime({ runId: 'web-info-raw',
+    onWebInfo: async call => { calls.push(call); return { artifactId }; },
+    // The page reflects the fixed session value; the stored TargetInfo keeps it, the model evidence does not.
+    webParserCollect: async (url, opts = {}) => {
+      const info = fakeTargetInfo(url, [{ url: new URL(url).origin + '/cb?key=abc', sources: ['link'],
+        methods: [], sameOrigin: true, params: ['key'] }]);
+      info.headers.push({ name: 'X-Echo', value: 'echo ' + (opts.cookies?.[0]?.value ?? 'none') });
+      info.truncated = new URL(url).pathname === '/mypage';
+      collected.push(info);
+      return { info, summary: {} };
+    },
+    probes: [['w-pub', '/'], ['w-role', '/mypage', 'owner']] });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  assert.deepEqual(calls.map(call => [call.probeId, call.sessionRole]), [['w-pub', null], ['w-role', 'owner']]);
+  calls.forEach((call, index) => assert.equal(call.targetInfo, collected[index], 'the collected object, unchanged'));
+  assert.equal(calls[1].targetInfo.headers.at(-1).value, 'echo partner1TOKEN1234567');
+  assert.doesNotMatch(JSON.stringify(run.report) + JSON.stringify(run.events), /TOKEN1234567/u);
+  const iteration = calls[0].iteration;
+  assert.equal(typeof iteration, 'number');
+  assert.deepEqual(webInfoEvents(run), [
+    { stage: 'web_info.collected', module: 'web-parser', source: 'web-parser', type: 'info', title: '웹 정보 수집',
+      detail: 'GET / → HTTP 200', probeId: 'w-pub', iteration, asset: '/', sessionRole: null, ok: true, status: 200,
+      artifactId, counts: { technologies: 1, paths: 1, forms: 0, errors: 0 }, truncated: false },
+    { stage: 'web_info.collected', module: 'web-parser', source: 'web-parser', type: 'info', title: '웹 정보 수집',
+      detail: 'GET /mypage → HTTP 200', probeId: 'w-role', iteration, asset: '/mypage', sessionRole: 'owner',
+      ok: true, status: 200, artifactId, counts: { technologies: 1, paths: 1, forms: 0, errors: 0 }, truncated: true },
+  ]);
+  await runtime.close();
+});
+
+test('web_info keeps the probe when the hook is missing or throws, and reports a failed collection', async () => {
+  const collect = async url => {
+    if (new URL(url).pathname === '/mypage') throw new Error('net::ERR_CONNECTION_REFUSED');
+    return { info: fakeTargetInfo(url), summary: {} };
+  };
+  for (const [index, onWebInfo] of [undefined, async () => { throw new Error('artifact store unavailable'); },
+    async () => ({ artifactId: 'not-an-artifact-id' })].entries()) {
+    const calls = [];
+    const runtime = webInfoRuntime({ runId: 'web-info-hook-' + index,
+      onWebInfo: onWebInfo && (async call => { calls.push(call.probeId); return onWebInfo(call); }),
+      webParserCollect: collect, probes: [['w-ok', '/'], ['w-fail', '/mypage']] });
+    const done = terminal(runtime);
+    runtime.startLab();
+    const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    assert.deepEqual(calls, onWebInfo ? ['w-ok'] : []);
+    const probe = id => run.report.probes.find(item => item.id === id);
+    assert.equal(probe('w-ok').status, 'not_reproduced');
+    assert.equal(run.report.evidence.find(item => item.id === probe('w-ok').evidenceIds[0]).kind, 'web-info');
+    assert.equal(run.report.evidence.find(item => item.id === probe('w-fail').evidenceIds[0]).kind, 'unavailable');
+    const [ok, failed] = webInfoEvents(run);
+    assert.deepEqual([ok.probeId, ok.ok, ok.type, ok.artifactId], ['w-ok', true, 'info', null]);
+    assert.deepEqual(failed, { stage: 'web_info.collected', module: 'web-parser', source: 'web-parser',
+      type: 'warning', title: '웹 정보 수집', detail: '웹 정보 수집 실패', probeId: 'w-fail', iteration: ok.iteration,
+      asset: '/mypage', sessionRole: null, ok: false, status: null, artifactId: null,
+      counts: { technologies: 0, paths: 0, forms: 0, errors: 0 }, truncated: false });
+    await runtime.close();
+  }
+});
+
 const SESSION_VALUE = 'SessionCookieValue12345';
 const TRACKER_VALUE = 'TrackerCookieValue67890';
 

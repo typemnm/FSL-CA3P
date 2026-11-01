@@ -384,7 +384,7 @@ export async function judgeAttackRecord(record, { evidenceId, outDir, sessions =
 /** Real assessment of registered local targets with bounded policy-controlled probes. */
 export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   runIdFactory = () => 'general-' + randomUUID(), env = process.env, envFile,
-  signal, onModelCall, beforeProbe, afterProbe, caseSnapshot, unavailableInputs = [],
+  signal, onModelCall, beforeProbe, afterProbe, onWebInfo, caseSnapshot, unavailableInputs = [],
   historyProvider, plannerFactory, boardFactory, cleanupRegistryPath, fetchImpl = fetch,
   catalogReader = readKnowledgeCatalogReadOnly, templateCatalog,
   webParserCollect = collectWebInfo, verificationRoot, verifyAttackImpl = verifyAttack, verifierModel,
@@ -398,7 +398,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   }
   if (templateCatalog !== undefined && (typeof templateCatalog?.get !== 'function'
     || typeof templateCatalog?.list !== 'function')) throw new TypeError('Invalid template catalog.');
-  for (const callback of [onModelCall, beforeProbe, afterProbe, historyProvider, plannerFactory, boardFactory]) {
+  for (const callback of [onModelCall, beforeProbe, afterProbe, onWebInfo, historyProvider, plannerFactory, boardFactory]) {
     if (callback !== undefined && typeof callback !== 'function') throw new TypeError('Invalid general runtime callback.');
   }
   if (typeof approvalRequired !== 'boolean' || !Number.isSafeInteger(approvalTimeoutMs)
@@ -880,6 +880,12 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const reservation = await invokeHook(beforeProbe, probeRecord);
         let observedStatus = null;
         const bytes = items => items.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), 'utf8'), 0);
+        const asset = url.pathname + url.search;
+        const size = value => Array.isArray(value) ? value.length : 0;
+        // One event per probe lets the dashboard list web-parser results and fetch each stored TargetInfo.
+        const collected = fields => appendEvent({ stage: 'web_info.collected', module: 'web-parser',
+          source: 'web-parser', title: '웹 정보 수집', probeId: probe.id, iteration: run.iterations, asset,
+          sessionRole: sessionRole ?? null, status: observedStatus, ...fields });
         try {
           const { info, summary } = await webParserCollect(url.href, {
             ...(cookiePair ? { cookies: cookiePair } : {}), signal: probeSignal });
@@ -895,16 +901,31 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           }
           const options = { idBase: evidenceId('probe', probe.id), sessionRole, remaining,
             source: 'web-parser/' + fixtureId + (sessionRole ? '/role:' + sessionRole : ''),
-            asset: url.pathname + url.search, safeText: evidenceText, safeHeaderValue };
+            asset, safeText: evidenceText, safeHeaderValue };
           let evidence = evidenceFromTargetInfo(info, options);
           // The planner resends all evidence each call; past the budget only a one-line overview fits.
           if (webInfoBytes + bytes(evidence) > WEB_INFO_EVIDENCE_BUDGET_BYTES) {
             evidence = evidenceFromTargetInfo(info, { ...options, mode: 'minimal' });
           }
           webInfoBytes += bytes(evidence);
+          let artifactId = null;
+          try {
+            // The raw TargetInfo as collected; only the model-facing evidence above is masked.
+            const stored = await invokeHook(onWebInfo, { probeId: probe.id, iteration: run.iterations,
+              sessionRole: sessionRole ?? null, targetInfo: info });
+            if (typeof stored?.artifactId === 'string' && /^[a-f0-9]{64}$/u.test(stored.artifactId)) {
+              artifactId = stored.artifactId;
+            }
+          } catch { /* The stored TargetInfo is optional; a failing hook must not fail the probe or the run. */ }
+          collected({ type: 'info', detail: 'GET ' + asset + ' → HTTP ' + (observedStatus ?? 'no response'),
+            ok: true, artifactId, counts: { technologies: size(info.technologies), paths: size(info.paths),
+              forms: size(info.structure?.forms), errors: size(info.errors) },
+            truncated: info.truncated === true });
           return { kind: 'web_info', result: summary, evidence };
         } catch (error) {
           if (probeSignal?.aborted || error?.fatalProbe) throw error;
+          collected({ type: 'warning', detail: '웹 정보 수집 실패', ok: false, artifactId: null,
+            counts: { technologies: 0, paths: 0, forms: 0, errors: 0 }, truncated: false });
           const evidence = [{ id: evidenceId('probe', probe.id), source: 'web-parser/' + fixtureId,
             kind: 'unavailable', asset: probe.input.path,
             summary: 'web_info browser observation failed or timed out; the hypothesis remains unverified.' }]

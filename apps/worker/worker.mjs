@@ -152,6 +152,13 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
             status: result?.status ?? 'completed', evidenceId: result?.evidenceId ?? null,
           });
         },
+        async onWebInfo({ probeId, targetInfo }) {
+          store.assertLease(lease);
+          // Binary keeps the TargetInfo exactly as collected; writeArtifact would run redact() on it.
+          return { artifactId: store.writeBinaryArtifact(lease.runId, 'web-info', Buffer.from(JSON.stringify(targetInfo)),
+            { filename: 'web-info-' + probeId + '.json', contentType: 'application/json',
+              provenance: 'web-parser-observation', probeId }).id };
+        },
       });
       let resolveTerminal;
       const terminal = new Promise(resolve => { resolveTerminal = resolve; });

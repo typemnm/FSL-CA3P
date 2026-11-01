@@ -16,7 +16,9 @@ const composeModel = () => ({ services: Object.fromEntries(services.map((service
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'ca3p-fixtures-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const config = { deployRoot: root, fixtures: { enabled: true, project: 'ca3p-universities', dockerPath: '/docker' } };
+  const config = { deployRoot: root, runtimeDir: join(root, 'runtime'),
+    fixtures: { enabled: true, project: 'ca3p-universities', dockerPath: '/docker' } };
+  await mkdir(config.runtimeDir, { mode: 0o700 });
   const calls = [], executions = [];
   const execute = async (command, args, options) => {
     assert.equal(command, '/docker'); calls.push(args); executions.push({ args, options });
@@ -41,6 +43,11 @@ test('fixture transaction builds SHA images first and preserves project volumes 
   const { root, config, calls, executions, execute } = await fixture(t);
   const state = await prepareFixtures(config, '/new/release', sha, { execute });
   assert.equal(state.images.daehan, `ca3p-daehan:${sha}`);
+  assert.equal(state.envFile, join(config.runtimeDir, 'experiment-reset.env'));
+  assert.deepEqual(state.composeFiles.map(path => path.split('/').at(-1)),
+    ['compose.yaml', 'compose.reset.yaml', 'compose.reset.host.yaml', `${sha}.json`]);
+  assert.ok(calls.some(args => args.includes('--env-file') && args.includes(state.envFile)));
+  assert.match(await readFile(state.envFile, 'utf8'), /CA3P_DAEHAN_RESET_TOKEN=/);
   assert.equal(state.copyImage, imageId); assert.equal(state.original.length, 2);
   assert.deepEqual(state.volumes.map(item => item.name), ['ca3p-universities_daehan-data', 'ca3p-universities_wonchang-data']);
   assert.ok(calls.some(args => args.slice(0, 2).join(' ') === 'image tag'));
@@ -111,6 +118,24 @@ test('default fixture executor keeps stdout JSON clean and saves private output 
   assert.equal(failureLogs.length, 1);
   assert.match(await readFile(join(state.logDirectory, failureLogs[0]), 'utf8'), /build output[\s\S]*diagnostic warning/);
   assert.equal((await stat(join(state.logDirectory, failureLogs[0]))).mode & 0o777, 0o600);
+});
+
+test('fixture compose may publish loopback reset management ports', async t => {
+  const { config, execute } = await fixture(t);
+  const withManagement = async (command, args, options) => {
+    if (args.includes('config')) {
+      const model = composeModel();
+      for (const [index, service] of services.entries()) {
+        model.services[service].ports.push({
+          host_ip: '127.0.0.1', published: String(54101 + index), target: 54101 + index,
+        });
+      }
+      return JSON.stringify(model);
+    }
+    return execute(command, args, options);
+  };
+  const state = await prepareFixtures(config, '/new/release', sha, { execute: withManagement });
+  assert.equal(state.enabled, true);
 });
 
 test('disabled fixture configuration is a no-op, and mismatched project or data volumes fail closed', async t => {

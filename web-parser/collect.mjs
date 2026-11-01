@@ -12,14 +12,14 @@ export const MAX_HTML_LENGTH = 5_000_000;
 export const MAX_BODY_LENGTH = 5_000_000;
 export const MAX_PATHS = 2000;
 export const MAX_COOKIES = 50;
-// Applied inside the page before anything crosses CDP, so a hostile page can't blow up the host process (CONTRACT §3).
+// Applied inside the page before anything crosses CDP, so a hostile page can't blow up the host process.
 export const MAX_TEXT_LENGTH = 10_000; // per string value in meta/structure/DOM probes
 export const MAX_SNAPSHOT_TEXT = 10_000_000; // all meta/structure strings of one document together
 // shortcut: JS global values are matcher input only (versions are short); raise if a pattern needs longer values.
 const MAX_JS_VALUE_LENGTH = 1000;
 const WAIT_UNTIL = new Set(['load', 'networkidle']);
 const MAX_TIMER_MS = 2 ** 31 - 1;
-// Budget split (CONTRACT §2): navigation gets 50%, core extraction ends by 70%, JS globals by 80%, DOM probes by 90%,
+// Budget split: navigation gets 50%, core extraction ends by 70%, JS globals by 80%, DOM probes by 90%,
 // the rest is for headers.
 const NAV_SHARE = 0.5;
 const EXTRACT_SHARE = 0.7;
@@ -61,7 +61,7 @@ function abortError(signal) {
   return Object.assign(new Error('This operation was aborted', { cause: signal.reason }), { name: 'AbortError' });
 }
 
-// The Agent picks the endpoints (CONTRACT §2): one collect() per URL, in order, each in its own browser session.
+// The Agent picks the endpoints: one collect() per URL, in order, each in its own browser session.
 export async function collectEach(targetURLs, opts) {
   if (!Array.isArray(targetURLs) || !targetURLs.length || !Array.from(targetURLs).every((u) => typeof u === 'string')) {
     throw new Error('targetURLs must be a non-empty array of URL strings');
@@ -80,7 +80,7 @@ export async function collectEach(targetURLs, opts) {
 }
 
 // Collector of exactly one endpoint (it never clicks, types or submits itself; page JS runs as in a normal visit):
-// everything is passed through as received (CONTRACT §6, no redaction).
+// everything is passed through as received (no redaction).
 export async function collect(url, opts) {
   const { timeoutMs, waitUntil, userAgent, ignoreHTTPSErrors, cookies, signal } = checkOptions(opts);
   if (signal?.aborted) throw abortError(signal);
@@ -113,12 +113,12 @@ export async function collect(url, opts) {
   };
   const fail = (stage, err) => info.errors.push({ stage, message: `${start.href}: ${err.message}` });
 
-  // Session isolation (CONTRACT §5): own Chromium process + throwaway profile per collect(), never a shared CDP endpoint.
+  // Session isolation: own Chromium process + throwaway profile per collect(), never a shared CDP endpoint.
   const profile = await mkdtemp(join(tmpdir(), PROFILE_PREFIX));
   let context;
   let closing; // Playwright's second close() returns before the first finishes: everyone awaits this one
   const close = () => (closing ??= context?.close().catch(() => {}));
-  // Abort (CONTRACT §2): closing the browser makes every pending browser call reject at once, so the running stage
+  // Abort: closing the browser makes every pending browser call reject at once, so the running stage
   // ends; the checks below turn that into an AbortError instead of a partial TargetInfo.
   signal?.addEventListener('abort', close);
   try {
@@ -181,7 +181,7 @@ export async function collect(url, opts) {
     }
     info.navigation.loadTimingMs = Date.now() - began;
     const gotoLoader = loaders.at(-1)?.loaderId; // the document goto waited for
-    // Policy (CONTRACT §3): reject only when no main-frame response (3xx included) arrived at all.
+    // Policy: reject only when no main-frame response (3xx included) arrived at all.
     if (!docs.length) throw gotoErr ?? new Error('no document response');
     const loadTimedOut = gotoErr instanceof pwErrors.TimeoutError;
     if (gotoErr) fail(loadTimedOut ? 'load' : 'navigate', gotoErr);
@@ -324,7 +324,7 @@ async function documentChain(docs) {
   return chain;
 }
 
-// The Agent's index of where this document leads (CONTRACT §3): one entry per http(s) URL without its fragment, from
+// The Agent's index of where this document leads: one entry per http(s) URL without its fragment, from
 // redirects, requests, structure and a robots.txt/sitemap body. Nothing is visited.
 function indexPaths(info) {
   const paths = new Map();
@@ -424,7 +424,7 @@ async function mainFrame(cdp) {
   return (await cdp.send('Page.getFrameTree')).frameTree.frame;
 }
 
-// Runs fn(...args) in the main frame: isolated world (page scripts can't monkey-patch the DOM APIs it uses, CONTRACT §3)
+// Runs fn(...args) in the main frame: isolated world (page scripts can't monkey-patch the DOM APIs it uses)
 // or main world. Resolves { loaderId, value }, or null when the document changed meanwhile.
 async function evaluateIn(cdp, fn, args, ms, isolated) {
   const frame = await mainFrame(cdp);
@@ -482,7 +482,7 @@ function withoutHash(href) {
 }
 
 // Runs inside the page (isolated world); must stay self-contained. Every string and list is capped here, before the
-// result crosses CDP, so the transfer is bounded whatever the page holds (CONTRACT §3).
+// result crosses CDP, so the transfer is bounded whatever the page holds.
 function extractPage({ maxHtml, maxItems, maxText, budget }) {
   // Read through prototype accessors: forms and document expose named properties the content can clobber.
   const get = (proto, key) => { const g = Object.getOwnPropertyDescriptor(proto, key).get; return (o) => g.call(o); };

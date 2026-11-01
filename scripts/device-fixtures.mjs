@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
+import { ensureExperimentResetTokens } from './experiment-reset-env.mjs';
 
 const execFileAsync = promisify(execFile);
 const SERVICES = ['daehan', 'wonchang'];
@@ -40,7 +41,11 @@ const command = async (state, args, options = {}) => {
   return text(await (options.execute ?? defaultExecute)(state.dockerPath, args,
     { timeoutMs: options.timeoutMs ?? 180_000, logFile, stdoutOnly: true }));
 };
-const compose = (state, files = [state.composePath, state.overridePath]) => ['compose', '-p', state.project, ...files.flatMap(path => ['-f', path])];
+const compose = (state, files = state.composeFiles ?? [state.composePath, state.overridePath]) => [
+  'compose',
+  ...(state.envFile ? ['--env-file', state.envFile] : []),
+  '-p', state.project, ...files.flatMap(path => ['-f', path]),
+];
 async function privateJson(path, value) { await writeFile(path, json(value), { mode: 0o600 }); await chmod(path, 0o600); }
 
 /** The same bounded implementation is tested outside Docker against temporary trees. */
@@ -130,20 +135,33 @@ function validateCompose(model, state) {
     const mount = model.services[service].volumes?.filter(item => item.target === '/app/data');
     if (mount?.length !== 1 || mount[0].type !== 'volume' || mount[0].source !== name) throw new Error('University data mount has changed.');
     const expectedPort = service === 'daehan' ? 4101 : 4102;
-    const ports = model.services[service].ports;
-    if (ports?.length !== 1 || ports[0].host_ip !== '127.0.0.1' || Number(ports[0].published) !== expectedPort
-      || ports[0].target !== expectedPort) throw new Error('University sites must retain their fixed loopback ports.');
+    const managementPort = service === 'daehan' ? 54101 : 54102;
+    const ports = model.services[service].ports ?? [];
+    const published = (host, target) => ports.some(item => item.host_ip === '127.0.0.1'
+      && Number(item.published) === host && item.target === target);
+    if (!published(expectedPort, expectedPort)) throw new Error('University sites must retain their fixed loopback ports.');
+    if (ports.length === 2 && !published(managementPort, managementPort)) {
+      throw new Error('University reset management ports must stay on loopback.');
+    }
+    if (ports.length !== 1 && ports.length !== 2) throw new Error('University sites must retain their fixed loopback ports.');
   }
 }
 
 export async function prepareFixtures(config, release, sha, options = {}) {
   if (!config.fixtures?.enabled) return { enabled: false };
   if (config.fixtures.project !== PROJECT || !isAbsolute(config.fixtures.dockerPath ?? '')
-    || !isAbsolute(config.deployRoot ?? '') || !isAbsolute(release ?? '') || !/^[a-f0-9]{40}$/.test(sha)) throw new Error('Invalid university fixture deployment configuration.');
+    || !isAbsolute(config.deployRoot ?? '') || !isAbsolute(config.runtimeDir ?? '')
+    || !isAbsolute(release ?? '') || !/^[a-f0-9]{40}$/.test(sha)) throw new Error('Invalid university fixture deployment configuration.');
   const directory = join(config.deployRoot, 'fixtures'); await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
+  const tokens = await ensureExperimentResetTokens(config.runtimeDir);
+  const composePath = join(release, 'vul-web2/compose.yaml');
+  const resetComposePath = join(release, 'vul-web2/compose.reset.yaml');
+  const hostResetComposePath = join(release, 'vul-web2/compose.reset.host.yaml');
+  const overridePath = join(directory, `${sha}.json`);
   const state = { enabled: true, dockerPath: config.fixtures.dockerPath, project: PROJECT,
     logDirectory: join(config.deployRoot, 'logs', sha, 'fixtures'),
-    composePath: join(release, 'vul-web2/compose.yaml'), overridePath: join(directory, `${sha}.json`),
+    envFile: tokens.path, composePath, resetComposePath, hostResetComposePath, overridePath,
+    composeFiles: [composePath, resetComposePath, hostResetComposePath, overridePath],
     rollbackComposePath: join(directory, `${sha}.previous-compose.json`), rollbackOverridePath: join(directory, `${sha}.previous-images.json`),
     images: Object.fromEntries(SERVICES.map(service => [service, `ca3p-${service}:${sha}`])), original: [], volumes: [] };
   await command(state, ['info', '--format', '{{json .ServerVersion}}'], options);

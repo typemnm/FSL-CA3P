@@ -3,6 +3,7 @@ import { renderIntakes, renderIntakeDetail } from './db-intakes.js';
 import { collectReviewItem, candidateValue } from './db-review.js';
 import { readProduct, renderAdvisories } from './db-advisories.js';
 import { renderDbHealth } from './db-health.js';
+import { createWebInfoLoader, renderWebParserLog, renderWebParserLogBody } from './web-info-view.js';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[char]);
@@ -47,7 +48,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     uploadConflict: null, uploading: false, reviewDirty: false, reviewSaving: false, reviewIndex: 0, reviewStep: 'review', intakeNotice: '' };
   const advisory = { records: [], total: 0, offset: 0, q: '', source: 'all', product: {},
     matches: null, result: null, busy: false, truncated: false };
-  const mod = { slug: '', id: '', summary: null, config: null, logs: [], models: [], loading: false, error: '', query: '',
+  const mod = { slug: '', id: '', summary: null, config: null, logs: [], logTotal: null, failedOnly: false, models: [], loading: false, error: '', query: '',
     loopBudget: null, budgetDraft: null, budgetError: '', budgetNotice: '', budgetSaving: false };
   let llmLogRefreshPending = false;
   const templates = { items: [], support: {}, revisions: {}, q: '', type: '', selected: null, detail: null,
@@ -59,7 +60,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     db.health = null; db.defaultsLoaded = false; db.uploadTarget = '';
     advisory.records = []; advisory.matches = null; advisory.result = null; advisory.product = {};
     dbRoot.textContent = '로그인 후 DB 자료를 불러옵니다.';
-    mod.slug = ''; mod.query = ''; mod.summary = null; mod.config = null; mod.logs = []; mod.models = [];
+    mod.slug = ''; mod.query = ''; mod.summary = null; mod.config = null; mod.logs = []; mod.logTotal = null; mod.failedOnly = false; mod.models = [];
     mod.loopBudget = null; mod.budgetDraft = null; mod.budgetError = ''; mod.budgetNotice = ''; mod.budgetSaving = false;
     moduleRoot.textContent = '로그인 후 모듈 자료를 불러옵니다.';
     llmLogPanel.hidden = true;
@@ -300,7 +301,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
 
   async function showModule(slug) {
     if (!moduleNames[slug]) return;
-    if (mod.slug !== slug) { mod.query = ''; mod.logs = []; mod.loopBudget = null; mod.budgetDraft = null; }
+    if (mod.slug !== slug) { mod.query = ''; mod.failedOnly = false; mod.logs = []; mod.logTotal = null; mod.loopBudget = null; mod.budgetDraft = null; }
     mod.budgetError = ''; mod.budgetNotice = '';
     mod.slug = slug; mod.loading = true; mod.error = ''; renderModule();
     try {
@@ -309,7 +310,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
       mod.summary = modules.find(item => moduleAliases[slug].includes(item.id)) || null;
       mod.id = mod.summary?.id || moduleAliases[slug][0];
       const [config, logs, models, budgetResult] = await Promise.all([
-        runtime.api(`/api/modules/${encodeURIComponent(mod.id)}/config`),
+        slug === 'web-parser' ? Promise.resolve(null) : runtime.api(`/api/modules/${encodeURIComponent(mod.id)}/config`),
         runtime.api(`/api/modules/${encodeURIComponent(mod.id)}/logs`),
         slug === 'llm' ? runtime.getModels() : Promise.resolve({ models: [] }),
         slug === 'llm' ? runtime.api('/api/modules/llm/loop-budget').then(value => ({ value }), error => ({ error }))
@@ -317,6 +318,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
       ]);
       mod.config = config;
       mod.logs = Array.isArray(logs.logs) ? logs.logs : [];
+      mod.logTotal = Number.isSafeInteger(logs.total) ? logs.total : null;
       mod.models = Array.isArray(models.models) ? models.models : [];
       if (slug === 'llm') {
         if (budgetResult?.error) { mod.loopBudget = null; mod.budgetError = budgetResult.error.message; }
@@ -343,6 +345,14 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
   }
 
   function renderModule() {
+    if (mod.slug === 'web-parser') {
+      // Operator decision: this page is only the collection log; errors and loading stay visible.
+      moduleRoot.innerHTML = `${mod.error ? `<p class="runtime-error" role="alert">${escape(mod.error)}</p>` : ''}${
+        mod.loading ? '<p role="status">수집 로그를 불러오는 중입니다.</p>' : ''}${!mod.loading || mod.logs.length
+        ? renderWebParserLog(mod.logs, { query: mod.query, failedOnly: mod.failedOnly, total: mod.logTotal }) : ''}`;
+      renderLlmCallLog();
+      return;
+    }
     const name = moduleNames[mod.slug] || 'Module';
     const config = mod.config || {};
     const logs = mod.logs.filter(item => !mod.query || json(item).toLowerCase().includes(mod.query.toLowerCase()));
@@ -738,6 +748,26 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     const filtered = mod.logs.filter(item => json(item).toLowerCase().includes(mod.query.toLowerCase()));
     list.innerHTML = filtered.length ? filtered.map(item => `<details class="ops-log"><summary><span>${escape(date(item.createdAt || item.time || item.timestamp))}</span><strong>${escape(item.level || item.type || item.stage || '이벤트')}</strong><span>${escape(item.message || item.title || item.detail || '')}</span></summary><pre>${escape(json(item))}</pre></details>`).join('') : '<div class="ops-empty">표시할 로그가 없습니다.</div>';
   });
+  // web-parser collection log: filter in place (keeps search focus and open rows), load details on first open.
+  function renderWebParserRows() {
+    const body = document.getElementById('web-parser-log-body');
+    if (!body) return;
+    const open = new Set([...body.querySelectorAll('details[data-log-id][open]')].map(row => row.dataset.logId));
+    body.innerHTML = renderWebParserLogBody(mod.logs, mod);
+    body.querySelectorAll('details[data-log-id]').forEach(row => { if (open.has(row.dataset.logId)) row.open = true; });
+  }
+  const loadWebInfoDetail = createWebInfoLoader(runtime.api);
+  moduleRoot.addEventListener('input', event => {
+    if (event.target.id === 'web-parser-log-search') { mod.query = event.target.value; renderWebParserRows(); }
+  });
+  moduleRoot.addEventListener('change', event => {
+    if (event.target.id === 'web-parser-failed-only') { mod.failedOnly = event.target.checked; renderWebParserRows(); }
+  });
+  moduleRoot.addEventListener('toggle', event => {
+    const row = event.target;
+    if (!row.matches?.('details[data-web-info-artifact]') || !row.open) return;
+    void loadWebInfoDetail(row.dataset.webInfoArtifact).then(html => { row.querySelector('.web-info-detail').innerHTML = html; });
+  }, true);
   llmLogPanel.addEventListener('input', event => {
     if (event.target.id !== 'llm-call-search') return;
     mod.query = event.target.value;

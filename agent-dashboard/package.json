@@ -8,7 +8,7 @@
     "start": "node server.mjs",
     "test": "node --test tests/*.test.mjs",
     "test:general-ui": "node --test tests/general-results.test.mjs tests/general-ui-browser.test.mjs",
-    "check": "node --check server.mjs && node --check local-server.mjs && node --check local-lab-gateway.mjs && node --check integrations/guardrail.mjs && node --check integrations/casper-db.mjs && node --check integrations/pentest-db.mjs && node --check dist/runtime-client.js && node --check dist/workspace-chat.js && node --check dist/app.js && node --check dist/general-results.js && node --check dist/telemetry-view.js && node --check dist/engine.js && node --check dist/starfield.js"
+    "check": "node --check server.mjs && node --check local-server.mjs && node --check local-lab-gateway.mjs && node --check integrations/guardrail.mjs && node --check integrations/casper-db.mjs && node --check integrations/pentest-db.mjs && node --check dist/runtime-client.js && node --check dist/workspace-chat.js && node --check dist/app.js && node --check dist/general-results.js && node --check dist/web-info-view.js && node --check dist/telemetry-view.js && node --check dist/engine.js && node --check dist/starfield.js"
   },
   "engines": {
     "node": ">=24 <25"
