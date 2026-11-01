@@ -99,7 +99,9 @@ class WonchangResetSupervisorTest(unittest.TestCase):
         config = reset.Config.from_environment(env)
         self.assertEqual(config.target_origin, "http://wonchang:4102")
         self.assertNotIn("CA3P_WONCHANG_RESET_TOKEN", config.child_env)
-        for key, value in (("CA3P_WONCHANG_TARGET_ORIGIN", "http://127.0.0.1:4102"),
+        loopback = reset.Config.from_environment({**env, "CA3P_WONCHANG_TARGET_ORIGIN": "http://127.0.0.1:4102"})
+        self.assertEqual(loopback.target_origin, "http://127.0.0.1:4102")
+        for key, value in (("CA3P_WONCHANG_TARGET_ORIGIN", "http://other:4102"),
                            ("CA3P_WONCHANG_RESET_BACKUP_ROOT", "/app/data"),
                            ("CA3P_WONCHANG_RESET_TOKEN", "short")):
             with self.subTest(key=key):

@@ -70,7 +70,8 @@ test('no-start stages controller and plists without restarting dashboard and kee
   for (const path of [old, scripts, agents]) await mkdir(path);
   await writeFile(join(old, 'start.mjs'), '');
   await writeFile(join(directory, 'npm-cli.js'), ''); await writeFile(join(directory, 'credential.json'), '{}');
-  for (const filename of ['device-deploy.mjs', 'device-deploy-verification.mjs', 'device-db.py', 'device-fixtures.mjs']) await writeFile(join(scripts, filename), filename);
+  for (const filename of ['device-deploy.mjs', 'device-deploy-verification.mjs', 'device-db.py',
+    'device-fixtures.mjs', 'experiment-reset-env.mjs']) await writeFile(join(scripts, filename), filename);
   const fixtureConfig = { ...config, deployRoot: join(directory, 'deployment'), runtimeDir: join(directory, 'runtime'),
     nodePath: process.execPath, pythonPath: '/usr/bin/python3', servicePlistPath: join(agents, 'dashboard.plist'),
     npmCli: join(directory, 'npm-cli.js'), credentialFile: join(directory, 'credential.json') };
