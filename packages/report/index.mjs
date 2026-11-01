@@ -129,7 +129,12 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     try { response = JSON.parse(result.stdout.trim()); }
     catch { throw failure('REPORT_INVALID_OUTPUT', '보고서 모듈의 응답이 올바르지 않습니다.'); }
     if (result.code !== 0 || response.ok !== true) {
-      throw failure(result.code === 8 ? 'REPORT_LLM_FAILED' : 'REPORT_GENERATION_FAILED', 'HWPX 보고서 생성에 실패했습니다.');
+      const source = response?.error?.code === 'SOURCE_INVALID'
+        && typeof response.error.message === 'string'
+        && /^[A-Za-z][A-Za-z0-9 .:_-]{0,199}$/u.test(response.error.message)
+        ? response.error.message : null;
+      throw failure(result.code === 8 ? 'REPORT_LLM_FAILED' : 'REPORT_GENERATION_FAILED',
+        source ?? 'HWPX 보고서 생성에 실패했습니다.');
     }
     const name = response.reportFilename;
     if (response.schemaVersion !== 'report-result-1.0' || response.runId !== run.id || response.stage !== 'reported'

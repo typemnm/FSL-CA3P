@@ -172,6 +172,31 @@ def test_historical_reference_in_verdict_is_not_labeled_current_probe_evidence(t
     assert "past note is not proof" not in (output / "report" / "report.md").read_text("utf-8")
 
 
+def test_template_finding_id_and_remapped_category_writes_document(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "runs.sqlite"
+    report = _report("run-general")
+    report["findings"][0] = {
+        "id": "finding:t-fa34bb39e407db7e", "hypothesisId": "h-c",
+        "hypothesisIds": ["h-c", "h-a"], "category": "sql_injection",
+        "asset": "/api/search", "status": "confirmed", "evidenceIds": ["ev-a"],
+        "templateId": "search-sqli-template",
+    }
+    report["probes"][0]["hypothesisId"] = "h-c"
+    _store(db, report, events=[_event("run-general", "h-c", "p-a", "ev-a")])
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    output = tmp_path / "template-finding"
+    assert _run(_trigger(db, output, "finding:t-fa34bb39e407db7e")) == EXIT_OK
+    result = _result(capsys)
+    assert result["findingId"] == "finding:t-fa34bb39e407db7e"
+    model = json.loads((output / "report" / "report-model.json").read_text("utf-8"))
+    assert model["sourceFindingId"] == "finding:t-fa34bb39e407db7e"
+    assert model["findings"][0]["common"]["findingId"] == "finding:t-fa34bb39e407db7e"
+    assert model["findings"][0]["common"]["title"] == "sql_injection · /api/search"
+    preview = (output / "report" / "report.md").read_text("utf-8")
+    assert "finding:t-fa34bb39e407db7e" in preview
+    assert "sql_injection" in preview
+
+
 def test_legacy_report_cannot_use_general_finding_selection(tmp_path, capsys):
     db = tmp_path / "runs.sqlite"
     _store(db, {"runId": "run-general", "status": "completed",

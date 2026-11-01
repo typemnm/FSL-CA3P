@@ -262,10 +262,15 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
                     message: 'HWPX 보고서 초안이 준비되었습니다. 내려받은 뒤 검토하세요.' };
                 } else document = { status: ['failed', 'unavailable', 'skipped'].includes(document?.status) ? document.status : 'failed',
                   message: document?.message, errorCode: document?.errorCode ?? 'REPORT_GENERATION_FAILED' };
-              } catch {
+              } catch (error) {
                 // A document failure must not change the inspection or other documents.
-                document = { status: 'failed', errorCode: 'REPORT_GENERATION_FAILED',
-                  message: 'HWPX 보고서 생성에 실패했습니다.' };
+                const message = typeof error?.message === 'string' && error.message.length <= 300
+                  && !/[\r\n]/u.test(error.message)
+                  ? error.message : 'HWPX 보고서 생성에 실패했습니다.';
+                document = { status: 'failed',
+                  errorCode: typeof error?.code === 'string' && /^REPORT_[A-Z_]+$/u.test(error.code)
+                    ? error.code : 'REPORT_GENERATION_FAILED',
+                  message };
               }
               Object.assign(item, document, { completedAt: new Date().toISOString() });
               saveProgress();
