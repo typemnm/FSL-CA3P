@@ -1,17 +1,27 @@
 {
   "templateId": "snakeyaml-type-tag-template",
   "title": "SnakeYAML Java 타입 태그 수용 점검",
-  "description": "원창대학교 snakeyaml@1.33의 YAML 생성자 설정을 확인하는 참고용 템플릿입니다. 관리자 세션에서 application/x-www-form-urlencoded의 payload 필드로 YAML을 보냅니다. 기준 입력은 events: [{title: CA3P_SNAKEYAML_BASELINE}]이며, 후보 입력은 부작용이 없는 java.util.ArrayList 타입 태그만 사용합니다. 미리보기 응답에 canary가 출력되고 파서 오류가 없는지 비교합니다. 타입 태그 수용은 CVE-2022-1471 관련 전제조건의 근거이며 임의 코드 실행을 입증하지 않습니다. 세션·POST·tagAcceptance 판정을 요구하므로 현재 자동 실행기는 지원하지 않습니다.",
+  "description": "원창대학교 관리자 세션에서 YAML 미리보기에 부작용 없는 java.util.ArrayList 타입 태그를 넣습니다. 미리보기 응답에 canary가 보이면 기본 Constructor가 타입 태그를 수용한 근거입니다. 임의 코드 실행은 입증하지 않습니다.",
+  "sessionRole": "admin",
+  "fixtures": ["vul-web2-wonchang"],
   "attackType": { "name": "unsafe_deserialization", "cwe": "CWE-502" },
   "dependency": { "runtime": "java", "framework": "spring-boot", "library": "snakeyaml" },
   "target": { "method": "POST", "endpoint": "/admin/schedule/preview" },
   "request": { "packet": { "method": "POST", "path": "/admin/schedule/preview", "body": { "payload": "{{payload}}" } } },
   "blanks": {
     "origin": { "required": true, "type": "url" },
-    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "관리자 세션에서 폼 payload 값으로 전송합니다. Java 타입 태그가 거절되는 경우도 결과로 기록합니다." }
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "관리자 세션에서 폼 payload 값으로 전송합니다." }
   },
   "payloads": ["!!java.util.ArrayList [CA3P_SNAKEYAML_CANARY]"],
-  "verify": { "mode": "tagAcceptance", "baseline": { "status": 200, "contains": "CA3P_SNAKEYAML_BASELINE" }, "attack": { "status": 200, "contains": "CA3P_SNAKEYAML_CANARY" } },
+  "verify": {
+    "mode": "tagAcceptance",
+    "baseline": {
+      "status": 200,
+      "body": { "payload": "events: [{title: CA3P_SNAKEYAML_BASELINE}]" },
+      "contains": "CA3P_SNAKEYAML_BASELINE"
+    },
+    "attack": { "status": 200, "contains": "CA3P_SNAKEYAML_CANARY" }
+  },
   "executor": "guardrail",
   "trust": "unverified"
 }

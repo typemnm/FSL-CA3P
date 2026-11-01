@@ -1,0 +1,23 @@
+{
+  "templateId": "diag-config-disclosure-template",
+  "title": "공개 진단 설정 노출",
+  "description": "인증 없는 GET /_diag/config 가 database, installedPackages, activeSessions 필드를 반환하는지 확인합니다.",
+  "sessionRole": "public",
+  "fixtures": ["vul-web2-daehan", "vul-web2-wonchang"],
+  "attackType": { "name": "info_disclosure", "cwe": "CWE-200" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "express" },
+  "target": { "method": "GET", "endpoint": "/_diag/config" },
+  "request": { "packet": { "method": "GET", "path": "/_diag/config" } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "경로 자체 점검이며 payload는 사용하지 않습니다." }
+  },
+  "payloads": ["/_diag/config"],
+  "verify": {
+    "mode": "containsFields",
+    "baseline": { "path": "/", "status": 200 },
+    "attack": { "status": 200, "fields": ["database", "installedPackages", "activeSessions"] }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

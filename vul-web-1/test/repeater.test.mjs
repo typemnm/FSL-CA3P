@@ -12,6 +12,11 @@ import { RepeaterDeniedError, createGuardedRequest, createRuleset, loadPlan, run
 
 const { GuardrailEvaluator } = guardrailPackage;
 const OWNERS = { 1: 'admin', 2: 'admin', 3: 'bob' };
+const UNAUTH_DELETE = {
+  vulnType: 'broken_access_control',
+  application: 'vul-web2',
+  endpoint: 'POST /admin/posts/:id/delete',
+};
 
 async function mockVulWeb1({ vulnerable = true } = {}) {
   const live = new Set([1, 2, 3]);
@@ -63,14 +68,14 @@ test('repeater confirms the IDOR case loaded from the catalog', async () => {
 
 test('a denied attack is not confirmed by a later server error', async () => {
   const statuses = [200, 403, 500];
-  const report = await run({ origin: 'http://127.0.0.1:54321', vulnType: 'broken_access_control',
+  const report = await run({ origin: 'http://127.0.0.1:54321', ...UNAUTH_DELETE,
     curlImpl: async () => ({ status: statuses.shift(), bodyJson: {} }) });
   assert.equal(report.finding.status, 'not_confirmed');
 });
 
 test('an unexpected attack error leaves the result inconclusive', async () => {
   const statuses = [200, 500, 500];
-  const report = await run({ origin: 'http://127.0.0.1:54321', vulnType: 'broken_access_control',
+  const report = await run({ origin: 'http://127.0.0.1:54321', ...UNAUTH_DELETE,
     curlImpl: async () => ({ status: statuses.shift(), bodyJson: {} }) });
   assert.equal(report.finding.status, 'inconclusive');
 });
@@ -177,10 +182,19 @@ async function mockVulWeb2Admin({ vulnerable = true } = {}) {
   return { origin: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((done, fail) => server.close(error => error ? fail(error) : done())) };
 }
 
+test('broken_access_control needs an endpoint when several catalog cases exist', () => {
+  assert.throws(() => loadPlan(undefined, 'broken_access_control'), /Ambiguous attack definition/);
+  const plan = loadPlan(undefined, 'broken_access_control', {
+    application: UNAUTH_DELETE.application, endpoint: UNAUTH_DELETE.endpoint });
+  assert.equal(plan.stages.tamper.method, 'POST');
+  assert.equal(plan.stages.tamper.path, '/admin/posts/1/delete');
+  assert.equal(plan.verifyStatus, 500);
+});
+
 test('repeater confirms the unauthorized-delete chain by the home page breaking (A01 + A10)', async () => {
   const target = await mockVulWeb2Admin();
   try {
-    const report = await run({ origin: target.origin, vulnType: 'broken_access_control' });
+    const report = await run({ origin: target.origin, ...UNAUTH_DELETE });
     assert.equal(report.finding.category, 'CWE-862');
     assert.equal(report.finding.status, 'confirmed');
     assert.deepEqual(report.evidence.map(item => [item.check, item.status]), [
@@ -192,7 +206,7 @@ test('repeater confirms the unauthorized-delete chain by the home page breaking 
 test('a server that blocks the unauthenticated delete keeps the home page up and is not confirmed', async () => {
   const target = await mockVulWeb2Admin({ vulnerable: false });
   try {
-    const report = await run({ origin: target.origin, vulnType: 'broken_access_control' });
+    const report = await run({ origin: target.origin, ...UNAUTH_DELETE });
     assert.equal(report.finding.status, 'not_confirmed');
     assert.equal(report.evidence[2].status, 200);
   } finally { await target.close(); }

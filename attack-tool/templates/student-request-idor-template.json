@@ -1,0 +1,23 @@
+{
+  "templateId": "student-request-idor-template",
+  "title": "학생 문의 상세 조회 IDOR",
+  "description": "student1 세션으로 student2의 문의 ID 2를 조회합니다. 로그인만 검사하고 소유자를 검사하지 않으면 200과 신청자 표시가 나옵니다.",
+  "sessionRole": "student",
+  "fixtures": ["vul-web2-daehan", "vul-web2-wonchang"],
+  "attackType": { "name": "broken_access_control", "cwe": "CWE-285" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "node:sqlite" },
+  "target": { "method": "GET", "endpoint": "/api/mypage/requests/:id" },
+  "request": { "packet": { "method": "GET", "path": "/api/mypage/requests/:id" } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "다른 학생의 문의 ID입니다. 기준 요청은 본인 문의 ID 1입니다." }
+  },
+  "payloads": ["2"],
+  "verify": {
+    "mode": "ownershipComparison",
+    "baseline": { "path": "/api/mypage/requests/1", "status": 200, "contains": "\"user_id\":2" },
+    "attack": { "status": 200, "contains": "\"user_id\":3" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}
