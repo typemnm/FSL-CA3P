@@ -1,0 +1,13 @@
+# Host dashboard overlay. Publish management ports on loopback and advertise
+# the 127.0.0.1 origins recorded by the Mac Mini LaunchAgent dashboard.
+services:
+  daehan:
+    environment:
+      CA3P_DAEHAN_TARGET_ORIGIN: http://127.0.0.1:4101
+    ports:
+      - "127.0.0.1:54101:54101"
+  wonchang:
+    environment:
+      CA3P_WONCHANG_TARGET_ORIGIN: http://127.0.0.1:4102
+    ports:
+      - "127.0.0.1:54102:54102"

@@ -66,7 +66,7 @@
 { "status": "clean", "fixtureId": "vul-web2-daehan", "targetOrigin": "http://127.0.0.1:4101", "scopes": ["database", "sessions", "process", "files"] }
 ```
 
-대학을 접촉한 이력이 있는데 훅이 없으면 초기화를 완료할 수 없다. dashboard 컨테이너에 Docker socket을 노출하거나 임의 서버에 삭제 요청을 보내는 우회는 하지 않는다. 일반 `vul-web2/compose.yaml`만으로 실행한 대학 사이트에는 관리 훅이 없으며, 운영 배포의 전체 복원 서비스는 해당 환경에 맞춰 별도로 준비해야 한다.
+대학을 접촉한 이력이 있는데 훅이 없으면 초기화를 완료할 수 없다. dashboard 컨테이너에 Docker socket을 노출하거나 임의 서버에 삭제 요청을 보내는 우회는 하지 않는다. 일반 `vul-web2/compose.yaml`만으로 실행한 대학 사이트에는 관리 훅이 없다. Mac Mini 호스트 대시보드(4175)는 `compose.reset.yaml`과 `compose.reset.host.yaml`로 supervisor를 올리고 `127.0.0.1:54101` / `54102`에서 훅을 받는다. 대상 원점은 대시보드가 기록하는 `http://127.0.0.1:4101` / `4102`와 같아야 한다.
 
 ### Docker 로컬 대학 실험
 

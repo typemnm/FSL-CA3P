@@ -47,7 +47,9 @@ function configFrom(env) {
   const dockerMode = managementBind === '0.0.0.0';
   const targetOrigin = env.CA3P_DAEHAN_TARGET_ORIGIN
     ?? `http://127.0.0.1:${targetPort}`;
-  if (targetOrigin !== (dockerMode ? `http://daehan:${targetPort}` : `http://127.0.0.1:${targetPort}`)) {
+  const allowedOrigins = [`http://127.0.0.1:${targetPort}`];
+  if (dockerMode) allowedOrigins.push(`http://daehan:${targetPort}`);
+  if (!allowedOrigins.includes(targetOrigin)) {
     throw new Error('Daehan target origin must match the selected bind mode.');
   }
   const configuredBackupRoot = env.CA3P_DAEHAN_RESET_BACKUP_ROOT

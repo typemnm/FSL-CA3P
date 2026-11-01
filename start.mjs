@@ -51,6 +51,13 @@ try {
     const nodeMajor = Number(process.versions.node.split('.')[0]);
     if (nodeMajor < 24) throw new Error('Node.js 24 or newer is required.');
     process.env.PORT = String(options.port);
+    const { dirname, join } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const { applyHostExperimentResetEnv } = await import('./scripts/experiment-reset-env.mjs');
+    const runtimeDir = process.env.CA3P_STORE_PATH
+      ? dirname(process.env.CA3P_STORE_PATH)
+      : join(fileURLToPath(new URL('.', import.meta.url)), '.runtime');
+    await applyHostExperimentResetEnv(process.env, runtimeDir);
     console.log('Starting CA3P local dashboard. Lab checks require an explicit action in the UI.');
     // Resolve relative to this script, independent of the current working directory.
     await import(new URL('./agent-dashboard/server.mjs', import.meta.url).href);
