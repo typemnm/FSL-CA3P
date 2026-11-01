@@ -53,6 +53,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
   let idleRun = emptyRun(); let child = null; let closing = false; let closed = false; let resetting = false;
   let lastRevision = ''; let closeTask; let resetTask; let restartTimer; let restartDelay = 200;
   const mutationTasks = new Set();
+  const approvalTasks = new Map();
   const owner = `worker-${randomUUID()}`;
   function listModels() { return registryModels({ envFile, env }); }
   function getState() {
@@ -76,6 +77,19 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     lastRevision = revision;
     for (const listener of listeners) { try { listener(state); } catch { /* Subscriber failure does not stop the queue. */ } }
   }
+  function settleApprovalTask(commandId, result) {
+    const task = approvalTasks.get(commandId);
+    if (!task) return;
+    approvalTasks.delete(commandId);
+    clearTimeout(task.timer);
+    if (result.ok === true) task.resolve(result);
+    else task.reject(fault(result.status === 409 ? 409 : 503,
+      result.error ?? 'Approval decision could not be applied.'));
+  }
+  function failApprovalTasks(message) {
+    for (const commandId of approvalTasks.keys()) settleApprovalTask(commandId,
+      { ok: false, status: 503, error: message });
+  }
   function ensureWorker() {
     if (child || closing || resetting || store.experimentState().status !== 'ready' || !autoStartWorker) return;
     child = fork(workerFile, ['--store', store.path, '--owner', owner], {
@@ -83,9 +97,16 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
         CA3P_WORKER_OPTIONS: JSON.stringify(workerOptions) },
       execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true,
     });
-    child.on('message', message => { if (message?.type === 'state') { restartDelay = 200; publish(); } });
+    child.on('message', message => {
+      if (message?.type === 'state') { restartDelay = 200; publish(); }
+      if (message?.type === 'approval-result' && typeof message.commandId === 'string') {
+        settleApprovalTask(message.commandId, message);
+        publish(true);
+      }
+    });
     child.on('error', () => { /* The exit path records interrupted jobs. */ });
     child.once('exit', () => {
+      failApprovalTasks('Worker exited before the approval decision was recorded.');
       child = null;
       store.interruptOwner(owner, closing ? 'Service closed before the run completed.' : 'Worker exited unexpectedly. Start a new isolated run.');
       publish(true);
@@ -212,6 +233,37 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (closing || closed) throw fault(503, 'Run service is closed.');
     store.requestCancel(id); selectedRunId = id;
     child?.send({ type: 'cancel', runId: id }); publish(true); return getState();
+  }
+  async function decideApproval(runId, approvalId, decision, actor) {
+    if (closing || closed || resetting) throw fault(503, 'Run service is unavailable.');
+    if (!['approve', 'reject'].includes(decision)
+      || typeof approvalId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(approvalId)
+      || typeof actor !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/u.test(actor)) {
+      throw fault(400, 'Invalid approval decision.');
+    }
+    const run = store.getRun(runId);
+    if (!run) throw fault(404, 'Run not found.');
+    if (run.status !== 'running' || run.pendingApproval?.id !== approvalId) {
+      throw fault(409, 'Approval request is no longer pending.');
+    }
+    const worker = child;
+    if (!worker?.connected) throw fault(503, 'Worker is unavailable.');
+    const commandId = randomUUID();
+    const result = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => settleApprovalTask(commandId,
+        { ok: false, status: 503, error: 'Timed out waiting for worker approval acknowledgment.' }), 10_000);
+      timer.unref();
+      approvalTasks.set(commandId, { resolve, reject, timer });
+      try {
+        worker.send({ type: 'approval-decision', commandId, runId, approvalId, decision, actor }, error => {
+          if (error) settleApprovalTask(commandId,
+            { ok: false, status: 503, error: 'Worker approval channel is unavailable.' });
+        });
+      } catch {
+        settleApprovalTask(commandId, { ok: false, status: 503, error: 'Worker approval channel is unavailable.' });
+      }
+    });
+    return { approval: result.approval, run: store.getRun(runId) };
   }
   function reset() {
     if (resetting || store.experimentState().status !== 'ready') throw fault(409, '실험 초기화를 완료한 뒤 화면을 초기화하세요.');
@@ -351,7 +403,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
   }
   return { getState, start, startLab: ({ modelId = 'rule-baseline', ...options } = {}) => start({ ...options,
     modelId, mode: modelId === 'rule-baseline' ? 'local-lab-rule' : 'local-lab-general' }),
-    stop, reset, resetExperiment, clearRunHistory, experimentResetPreview, withMutationLock, close, listModels, store, ready,
+    stop, decideApproval, reset, resetExperiment, clearRunHistory, experimentResetPreview, withMutationLock, close, listModels, store, ready,
     getGeneralLoopBudget: () => store.getGeneralLoopBudget(),
     setGeneralLoopBudget: limits => store.setGeneralLoopBudget(limits),
     importLegacyRuns: options => withMutationLock(() => importLegacyRuns(store, options)),

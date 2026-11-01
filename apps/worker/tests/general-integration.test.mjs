@@ -21,6 +21,13 @@ async function waitFor(check) {
   }
   assert.fail('general integration run did not finish');
 }
+async function approvePending(worker, service, runId) {
+  const pending = await waitFor(() => service.getRun(runId).pendingApproval);
+  assert.equal(pending.kind, 'general-probe');
+  const result = await worker.decideApproval({ runId, approvalId: pending.id,
+    decision: 'approve', actor: 'admin' });
+  assert.equal(result.decision, 'approved');
+}
 
 test('service, worker, and general runtime turn an AI-confirmed probe into a real HWPX without a report model API',
   { timeout: 60_000 }, async () => {
@@ -79,6 +86,7 @@ test('service, worker, and general runtime turn an AI-confirmed probe into a rea
     } });
     worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 20,
       env, generalPlannerFactory, generalFetchImpl, generalRuntimeFactory: scriptedRuntime('confirmed') });
+    await approvePending(worker, service, id);
     const final = await waitFor(() => { const run = service.getRun(id); return run.status === 'completed' && run; });
     assert.equal(final.assessmentMode, 'general');
     assert.equal(final.report.schemaVersion, 'general-assessment/1');
@@ -143,6 +151,7 @@ test('general worker starts the real isolated board and records a bounded read w
         modelMetadata: { provider: 'deepseek', requestedModel: 'deepseek-flash' } };
       } }),
       reportGenerator: () => assert.fail('unconfirmed findings must not invoke the HWPX generator') });
+    await approvePending(worker, service, id);
     const final = await waitFor(() => { const run = service.getRun(id); return run.status === 'completed' && run; });
     assert.match(final.target, /^http:\/\/127\.0\.0\.1:\d+$/);
     assert.equal(final.targetContacted, true);

@@ -9,12 +9,15 @@ import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../p
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
+import hitlApproval from '../../agent/src/hitl-approval.js';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
 import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
 import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse } from '../../packages/adapters/integrations/attack-tool.mjs';
 import { createAssessmentPlanner, createLocalJsonClient, isGeneralPlannerModel, LOCAL_PLANNER_MODEL_ID } from '../../packages/models/local-planner.mjs';
 
 const { runGeneralAssessment } = generalCore;
+const { createGeneralModelPlannerFromEnv } = generalPlanner;
+const { createApprovalController } = hitlApproval;
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 // Planner prompt cap 65,536 − 8,192 margin − 39,894 measured worst non-web_info context (daehan inventory 13,859,
 // initial evidence 3,833, 40 hypotheses 19,867, system/rest/probe IDs 2,335) − 24 one-line overviews × 441 = 6,866.
@@ -209,6 +212,57 @@ function safePath(value, origin) {
   return url;
 }
 
+const APPROVAL_SECRET_FIELD = /(?:password|passwd|api[_-]?key|secret|token|session|cookie|authorization|credential|private[_-]?key)/iu;
+function approvalFields(value) {
+  if (!value) return [];
+  const entries = value instanceof URLSearchParams ? [...value] : Object.entries(value);
+  return entries.slice(0, 6).map(([name, fieldValue]) => ({
+    name: utf8Prefix(safeText(name).replace(/[\u0000-\u001f\u007f]/gu, ' '), 48),
+    value: APPROVAL_SECRET_FIELD.test(name) ? '[redacted]'
+      : utf8Prefix(safeText(fieldValue).replace(/[\u0000-\u001f\u007f]/gu, ' '), 160),
+  }));
+}
+
+function approvalPlan(probe, origin, renderedTemplate) {
+  if (probe.tool === 'repository_read') return {
+    summary: { method: 'READ', path: utf8Prefix(safeText(probe.input.file), 512),
+      ...(probe.input.offset === undefined ? {} : { offset: probe.input.offset }), requestCount: 1 },
+  };
+  if (probe.tool === 'execute_attack_template') {
+    const rendered = renderedTemplate;
+    if (!rendered || rendered.template?.templateId !== probe.input.templateId) {
+      throw fault(409, 'The approved template plan is unavailable.');
+    }
+    const packets = [['baseline', rendered.baseline], ['attack', rendered.packet],
+      ['followUp', rendered.followUp]].filter(([, packet]) => !!packet);
+    const steps = packets.map(([phase, packet]) => {
+      const query = packet.query ? new URLSearchParams(packet.query).toString() : '';
+      const url = safePath(packet.path + (query ? '?' + query : ''), origin);
+      if (!url) throw fault(409, 'Approved template path is invalid.');
+      return { phase, method: packet.method, path: url.pathname,
+        ...(url.search ? { query: approvalFields(url.searchParams) } : {}),
+        ...(packet.body ? { body: approvalFields(packet.body),
+          bodySha256: createHash('sha256').update(new URLSearchParams(packet.body).toString()).digest('hex') } : {}) };
+    });
+    const attack = steps.find(step => step.phase === 'attack');
+    return {
+      summary: { method: attack.method, path: attack.path,
+        ...(attack.query ? { query: attack.query } : {}),
+        sessionRole: rendered.template.sessionRole ?? 'public',
+        templateId: rendered.template.templateId,
+        templateTitle: utf8Prefix(safeText(rendered.template.title ?? ''), 120),
+        templateDescription: utf8Prefix(safeText(rendered.template.description ?? ''), 240),
+        requestCount: steps.length, steps },
+      binding: { template: rendered.template, packets: packets.map(([phase, packet]) => ({ phase, packet })) },
+    };
+  }
+  const url = safePath(probe.input.path, origin);
+  if (!url) throw fault(409, 'Approved probe path is invalid.');
+  return { summary: { method: 'GET', path: url.pathname,
+    ...(url.search ? { query: approvalFields(url.searchParams) } : {}),
+    sessionRole: probe.input.sessionRole ?? 'public', requestCount: 1 } };
+}
+
 async function limitedBody(response) {
   if (!response.body) return '';
   const reader = response.body.getReader();
@@ -327,14 +381,14 @@ export async function judgeAttackRecord(record, { evidenceId, outDir, sessions =
   }
 }
 
-/** Real assessment of registered local targets; tool execution is read-oriented and bounded. */
+/** Real assessment of registered local targets with bounded policy-controlled probes. */
 export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   runIdFactory = () => 'general-' + randomUUID(), env = process.env, envFile,
   signal, onModelCall, beforeProbe, afterProbe, onWebInfo, caseSnapshot, unavailableInputs = [],
   historyProvider, plannerFactory, boardFactory, cleanupRegistryPath, fetchImpl = fetch,
-  catalogReader = readKnowledgeCatalogReadOnly,
+  catalogReader = readKnowledgeCatalogReadOnly, templateCatalog,
   webParserCollect = collectWebInfo, verificationRoot, verifyAttackImpl = verifyAttack, verifierModel,
-  limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
+  limits = GENERAL_LOOP_BUDGET_DEFAULTS, approvalRequired = false, approvalTimeoutMs = 1_800_000 } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!isGeneralPlannerModel(modelId)) throw new TypeError('A registered planner model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
@@ -342,8 +396,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     || typeof webParserCollect !== 'function' || typeof verifyAttackImpl !== 'function') {
     throw new TypeError('Invalid general runtime dependency.');
   }
+  if (templateCatalog !== undefined && (typeof templateCatalog?.get !== 'function'
+    || typeof templateCatalog?.list !== 'function')) throw new TypeError('Invalid template catalog.');
   for (const callback of [onModelCall, beforeProbe, afterProbe, onWebInfo, historyProvider, plannerFactory, boardFactory]) {
     if (callback !== undefined && typeof callback !== 'function') throw new TypeError('Invalid general runtime callback.');
+  }
+  if (typeof approvalRequired !== 'boolean' || !Number.isSafeInteger(approvalTimeoutMs)
+    || approvalTimeoutMs < 1 || approvalTimeoutMs > 1_800_000) {
+    throw new TypeError('Invalid general runtime approval options.');
   }
   limits = validateGeneralLoopBudget(limits);
   const config = FIXTURES[fixtureId];
@@ -353,12 +413,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   const initial = () => ({ ...emptyRun(), mode: 'local-lab-general', assessmentMode: 'general',
     testProfile: 'general', fixtureId, target: origin ?? 'http://127.0.0.1/',
     coreTargetOrigin: origin, simulated: false, targetContacted: false,
-    totalSteps: 1, iterations: 0, modelId, provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek' });
+    totalSteps: 1, iterations: 0, modelId,
+    provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek', pendingApproval: null });
   let run = initial();
   let controller = null;
   let task = null;
   let board = null;
   let closed = false;
+  let approvalController = null;
   // Session cookies stay only in this runtime process. Inventory and reports keep role labels.
   const sessionCookies = new Map();
 
@@ -691,6 +753,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     let observed = false;
     let inventory;
     const probeHypotheses = new Map();
+    // A template is rendered once when policy first authorizes it. Approval,
+    // the daemon policy recheck, and execution all use these exact packets.
+    const templatePlans = new Map();
     const failedModelCalls = [];
     let evidenceCount = 0;
     let webInfoBytes = 0;
@@ -737,8 +802,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           || typeof input.templateId !== 'string' || typeof input.payload !== 'string') {
           return { allowed: false, reason: 'invalid_execute_attack_template_input' };
         }
+        const prior = templatePlans.get(probe.id);
+        if (prior && prior.probeJson !== JSON.stringify(probe)) {
+          return { allowed: false, reason: 'approved_template_changed' };
+        }
         let rendered;
-        try { rendered = renderTemplate({ templateId: input.templateId, payload: input.payload }); }
+        try { rendered = prior?.rendered ?? renderTemplate({ templateId: input.templateId,
+          payload: input.payload }, templateCatalog); }
         catch (error) {
           return { allowed: false, reason: error?.code === 'UNSUPPORTED_TEMPLATE'
             ? 'unsupported_template' : 'invalid_template' };
@@ -758,6 +828,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           const url = safePath(item.path + (query ? '?' + query : ''), allowedOrigin);
           if (!url || !allowedPaths.has(url.pathname)) return { allowed: false, reason: 'path_out_of_scope' };
         }
+        if (!prior) templatePlans.set(probe.id, { probeJson: JSON.stringify(probe), rendered });
         return { allowed: true, reason: 'template_authorized' };
       }
       return { allowed: false, reason: 'tool_unavailable' };
@@ -882,7 +953,11 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         }
       }
       if (probe.tool === 'execute_attack_template') {
-        const rendered = renderTemplate({ templateId: probe.input.templateId, payload: probe.input.payload });
+        const plan = templatePlans.get(probe.id);
+        if (!plan || plan.probeJson !== JSON.stringify(probe)) {
+          throw fault(409, 'The authorized template plan changed before execution.');
+        }
+        const rendered = plan.rendered;
         const sessionRole = rendered.template.sessionRole ?? 'public';
         const cookie = sessionRole === 'public' ? null : sessionCookies.get(sessionRole);
         async function templateRequest(packet, label) {
@@ -1031,14 +1106,36 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       authorize: ({ probe }) => policy.authorize({ probe,
         hypothesis: probeHypotheses.get(probe.id) }),
       execute: input => executor.execute(input),
+      ...(templateCatalog ? { templateCatalog } : {}),
     });
     const toolExecutor = { execute: ({ probe, signal }) => attackTool.execute({ probe,
       hypothesis: probeHypotheses.get(probe.id), signal: signal ?? currentSignal }) };
+    const approval = approvalRequired ? { request: async ({ probe, hypothesis, signal: approvalSignal }) => {
+      const actionForApproval = () => {
+        const templatePlan = probe.tool === 'execute_attack_template' ? templatePlans.get(probe.id) : null;
+        if (templatePlan && templatePlan.probeJson !== JSON.stringify(probe)) {
+          throw fault(409, 'The authorized template plan changed before approval.');
+        }
+        const { summary: planSummary, binding } = approvalPlan(probe, allowedOrigin, templatePlan?.rendered);
+        const action = { runId: run.id, target: allowedOrigin, probe,
+          hypothesisId: hypothesis?.id, ...(binding ? { binding } : {}) };
+        return { summary: { tool: probe.tool, target: allowedOrigin,
+          hypothesis: utf8Prefix(safeText(hypothesis?.category ?? 'unknown'), 128), ...planSummary },
+        digest: createHash('sha256').update(JSON.stringify(action)).digest('hex') };
+      };
+      const { summary, digest: actionDigest } = actionForApproval();
+      const outcome = await approvalController.request({ kind: 'general-probe', probeId: probe.id,
+        summary, actionDigest, signal: approvalSignal });
+      if (outcome.decision === 'approved' && actionForApproval().digest !== actionDigest) {
+        throw fault(409, 'Approved probe changed before execution.');
+      }
+      return outcome;
+    } } : undefined;
     let report;
     try {
       ({ report } = await runGeneralAssessment({
         target: { fixtureId, origin: allowedOrigin }, observer, planner: wrappedPlanner,
-        policy, executor: toolExecutor, verifier, availableTools, limits, signal: currentSignal,
+        policy, executor: toolExecutor, verifier, approval, availableTools, limits, signal: currentSignal,
         onEvent: async event => {
           // The core reports its stored evidence count (initial observation included) before each probe.
           evidenceCount = event.progress?.evidenceCount ?? evidenceCount;
@@ -1055,6 +1152,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     } finally {
       await attackTool.close();
       probeHypotheses.clear();
+      templatePlans.clear();
     }
     report.runId = run.id;
     report.modelCalls.push(...failedModelCalls);
@@ -1104,6 +1202,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     } finally {
       run.elapsedMs = Date.now() - Date.parse(run.startedAt);
       run.totalSteps = Math.max(1, run.events.length);
+      run.pendingApproval = null;
       sessionCookies.clear();
       task = null;
       publish();
@@ -1117,6 +1216,20 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     controller = new AbortController();
     sessionCookies.clear();
     run = { ...initial(), id, coreRunId: id, status: 'preparing', startedAt: new Date().toISOString() };
+    approvalController = approvalRequired ? createApprovalController({ runId: id, timeoutMs: approvalTimeoutMs,
+      onPending(pending) {
+        run.pendingApproval = pending;
+        appendEvent({ stage: 'approval.requested', title: '공격 probe 승인 대기',
+          request: { approvalId: pending.id, kind: pending.kind, probeId: pending.probeId,
+            summary: pending.summary, actionDigest: pending.actionDigest }, response: { status: 'pending' } });
+      },
+      onResolved(outcome) {
+        run.pendingApproval = null;
+        appendEvent({ stage: 'approval.resolved', title: '공격 probe 승인 결정',
+          request: { approvalId: outcome.id }, response: { decision: outcome.decision,
+            ...(outcome.actor ? { actor: outcome.actor } : {}) } });
+      },
+    }) : null;
     task = Promise.resolve().then(runTask);
     publish();
     return getState();
@@ -1126,13 +1239,17 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     if (ACTIVE.has(run.status)) { run.status = 'stopping'; controller.abort(); publish(); }
     return getState();
   }
+  function decideApproval({ id, decision, actor } = {}) {
+    if (run.status !== 'running' || !approvalController) throw fault(409, 'No active approval request.');
+    return approvalController.decide({ id, decision, actor });
+  }
   async function close() {
     closed = true;
     if (ACTIVE.has(run.status)) stop(run.id);
     await task;
     try { await board?.close(); } finally { listeners.clear(); board = null; }
   }
-  return { getState, startLab, stop, close, subscribe(listener) {
+  return { getState, startLab, stop, decideApproval, close, subscribe(listener) {
     listeners.add(listener); return () => listeners.delete(listener);
   } };
 }

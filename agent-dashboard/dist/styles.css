@@ -448,6 +448,22 @@ button.ops-row:hover{background:#1c3324}
 .intake-save small { display: block; margin-top: 12px; }
 @media (max-width: 650px) { .intake-save { position: static; } .review-summary > div { grid-template-columns: 88px minmax(0, 1fr); } }
 
+.hitl-panel { margin: 15px 0; padding: 20px; border-color: #6e7849; background: #192017; }
+.hitl-heading { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
+.hitl-heading h2 { font-size: 19px; color: #f0e9c7; }
+.hitl-deadline { color: #d8c993; font: 13px var(--mono); white-space: nowrap; }
+.hitl-panel > p { margin: 13px 0; color: #d2ddcc; }
+.hitl-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; margin: 18px 0; }
+.hitl-summary > div { min-width: 0; padding: 10px 12px; border: 1px solid #394633; border-radius: 5px; background: #111b15; }
+.hitl-summary dt { color: #94a48b; font-size: 13px; }
+.hitl-summary dd { margin: 3px 0 0; overflow-wrap: anywhere; color: #f0f0e3; }
+.hitl-summary #hitl-steps { margin: 7px 0 0; padding-left: 19px; }
+.hitl-summary #hitl-steps li + li { margin-top: 8px; }
+.hitl-summary #hitl-steps-row { grid-column: 1 / -1; }
+.hitl-panel .hitl-note { color: #bdc8ae; font-size: 14px; }
+.hitl-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+.hitl-panel .runtime-error { color: #ffb3a6; }
+@media (max-width: 650px) { .hitl-heading { display: block; } .hitl-deadline { display: block; margin-top: 10px; } .hitl-summary { grid-template-columns: 1fr; } }
 /* web-parser 수집 결과: one collapsible card per web_info probe; tables scroll inside .comparison-table-wrap. */
 .web-info-section{margin-bottom:16px}
 .web-info-cards{padding:2px 19px 8px}

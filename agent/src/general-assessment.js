@@ -271,11 +271,12 @@ function buildFindings(report, verdicts) {
 function aborted(signal) { if (signal?.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' }); }
 
 /** General assessment core. All network and target actions enter through mandatory ports. */
-async function runGeneralAssessment({ target, observer, planner, policy, executor, verifier,
+async function runGeneralAssessment({ target, observer, planner, policy, approval, executor, verifier,
   availableTools, limits, signal, onEvent } = {}) {
   assertPort(observer, 'observe', 'observer');
   assertPort(planner, 'propose', 'planner');
   assertPort(policy, 'authorize', 'policy');
+  if (approval !== undefined) assertPort(approval, 'request', 'approval');
   assertPort(executor, 'execute', 'executor');
   assertPort(verifier, 'verify', 'verifier');
   if (onEvent !== undefined && typeof onEvent !== 'function') throw new TypeError('onEvent must be a function');
@@ -414,7 +415,33 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
         }
         await emit({ stage: 'policy', iteration, hypothesisId: probe.hypothesisId,
           probeId: probe.id, tool: probe.tool, status: 'allowed' });
-        const execution = await executor.execute({ probe, target: safeTarget, signal });
+        // A policy port may retain a reference to the normalized probe. Bind the
+        // approval to these exact bytes and execute a separate copy of them.
+        const authorizedProbeJson = approval ? JSON.stringify(probe) : null;
+        if (approval) {
+          const result = await approval.request({ probe: structuredClone(probe),
+            hypothesis: { id: hypothesis.id, category: hypothesis.category, asset: hypothesis.asset,
+              status: hypothesis.status }, target: structuredClone(safeTarget), iteration, signal });
+          aborted(signal);
+          if (JSON.stringify(probe) !== authorizedProbeJson) throw fault('APPROVAL_ACTION_CHANGED');
+          if (!record(result) || typeof result.id !== 'string' || !ID.test(result.id)
+            || !['approved', 'rejected', 'timed_out'].includes(result.decision)) {
+            throw fault('INVALID_APPROVAL_DECISION');
+          }
+          row.approval = { id: result.id, decision: result.decision };
+          if (result.decision !== 'approved') {
+            row.status = 'blocked';
+            row.reason = result.decision === 'timed_out' ? 'approval_timeout' : 'human_rejected';
+            report.partial = true;
+          }
+          await emit({ stage: 'approval', iteration, hypothesisId: probe.hypothesisId,
+            probeId: probe.id, tool: probe.tool, approvalId: result.id,
+            status: result.decision, ...(row.reason ? { reason: row.reason } : {}) });
+          if (result.decision !== 'approved') continue;
+          if (JSON.stringify(probe) !== authorizedProbeJson) throw fault('APPROVAL_ACTION_CHANGED');
+        }
+        const execution = await executor.execute({
+          probe: approval ? JSON.parse(authorizedProbeJson) : probe, target: safeTarget, signal });
         aborted(signal);
         if (!record(execution)) throw fault('INVALID_EXECUTION');
         jsonValue(execution, 'execution', 64 * 1024);

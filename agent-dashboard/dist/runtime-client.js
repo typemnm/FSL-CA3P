@@ -145,6 +145,10 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       receive(value); return value;
     },
     async stop(id) { const value = await request(`/api/runs/${encodeURIComponent(id)}/stop`, {}); receive(value); return value; },
+    decideApproval(runId, approvalId, decision) {
+      if (!['approve', 'reject'].includes(decision)) throw new TypeError('Unsupported approval decision.');
+      return request(`/api/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(approvalId)}`, { decision });
+    },
     async reset() { const value = await request('/api/reset', {}); receive(value); return value; },
     async resetExperiment() {
       // Ignore queued telemetry and in-flight polls from the previous experiment.

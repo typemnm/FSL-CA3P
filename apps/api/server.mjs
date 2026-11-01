@@ -306,6 +306,19 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
           };
           return json(res, 200, await (runtime.withMutationLock ? runtime.withMutationLock(performReview) : performReview()));
         }
+        const approval = /^\/api\/runs\/([a-zA-Z0-9_-]+)\/approvals\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.exec(pathname);
+        if (approval) {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
+          auth.requireUser(req, { mutate: true, admin: true });
+          const body = await readJson(req);
+          if (!body || typeof body !== 'object' || Array.isArray(body)
+            || Object.keys(body).length !== 1 || !['approve', 'reject'].includes(body.decision)) {
+            throw error(400, 'Provide an approval decision.');
+          }
+          if (typeof runtime.decideApproval !== 'function') throw error(503, 'Approval service is unavailable.');
+          return json(res, 200, await runtime.decideApproval(approval[1], approval[2],
+            body.decision, currentUser.user.name));
+        }
         const artifactMatch = /^\/api\/artifacts\/([a-f0-9]{64})$/.exec(pathname);
         if (artifactMatch && req.method === 'GET') {
           const artifact = runtime.store?.getArtifact(artifactMatch[1]);

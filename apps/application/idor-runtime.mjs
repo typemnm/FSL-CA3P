@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { emptyRun, assertIdentifier } from '../../packages/contracts/index.mjs';
+import { emptyRun, assertIdentifier, digest } from '../../packages/contracts/index.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import { probeSite } from '../../vul-web2/scripts/idor-probe.mjs';
+import hitlApproval from '../../agent/src/hitl-approval.js';
+
+const { createApprovalController } = hitlApproval;
 
 const PROFILE = 'known_record_idor_read';
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
@@ -29,19 +32,24 @@ function safeObservation(value) {
 
 /** One registered university fixture and one validated private origin per run. */
 export function createIdorRuntime({ fixtureId, targetOrigin, runIdFactory = () => `run-${randomUUID()}`,
-  probe = probeSite } = {}) {
+  probe = probeSite, approvalRequired = false, approvalTimeoutMs = 1_800_000 } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered vul-web2 fixture.');
   if (typeof runIdFactory !== 'function' || typeof probe !== 'function') throw new TypeError('Invalid IDOR runtime dependency.');
+  if (typeof approvalRequired !== 'boolean' || !Number.isSafeInteger(approvalTimeoutMs)
+    || approvalTimeoutMs < 1 || approvalTimeoutMs > 1_800_000) {
+    throw new TypeError('Invalid IDOR runtime approval options.');
+  }
   const fixture = { ...FIXTURES[fixtureId], origin: validateUniversityOrigin(targetOrigin ?? FIXTURES[fixtureId].origin) };
   const instanceId = randomUUID();
   const listeners = new Set();
   const initial = () => ({ ...emptyRun(), mode: 'local-lab-rule', fixtureId, testProfile: PROFILE,
     target: fixture.origin, coreTargetOrigin: fixture.origin, simulated: false,
-    targetContacted: false, totalSteps: 6, modelId: 'rule-baseline', provider: 'rules' });
+    targetContacted: false, totalSteps: 6, modelId: 'rule-baseline', provider: 'rules', pendingApproval: null });
   let run = initial();
   let task = null;
   let controller = null;
   let closed = false;
+  let approvalController = null;
 
   function getState() {
     if (ACTIVE.has(run.status)) run.elapsedMs = Date.now() - Date.parse(run.startedAt);
@@ -69,6 +77,33 @@ export function createIdorRuntime({ fixtureId, targetOrigin, runIdFactory = () =
       appendEvent({ module: 'agent', stage: 'idor.prepare', title: `${fixture.name} IDOR 검사 시작`,
         detail: '가상 계정과 알려진 조회번호 1·3으로 본인·교차 소유권·역할 제한을 비교합니다.',
         request: { fixtureId, testProfile: PROFILE }, response: { maximumReadRequests: 4, maximumMutations: 0 } });
+      if (approvalRequired) {
+        const actionDigest = digest({ runId: run.id, fixtureId, origin: fixture.origin,
+          testProfile: PROFILE, endpoint: fixture.endpoint, checks: CHECKS });
+        const outcome = await approvalController.request({ kind: 'rule-idor', actionDigest,
+          summary: { tool: PROFILE, method: 'GET', target: fixture.origin,
+            path: `${fixture.endpoint}/{1,3}`, hypothesis: 'CWE-639', requestCount: 4 },
+          signal: controller.signal });
+        controller.signal.throwIfAborted();
+        if (outcome.decision === 'approved' && digest({ runId: run.id, fixtureId,
+          origin: fixture.origin, testProfile: PROFILE, endpoint: fixture.endpoint, checks: CHECKS }) !== actionDigest) {
+          throw fault(409, 'Approved IDOR action changed before execution.');
+        }
+        if (outcome.decision !== 'approved') {
+          const reason = outcome.decision === 'timed_out' ? 'approval_timeout' : 'human_rejected';
+          run.report = { schemaVersion: '1.0', runId: run.id, status: 'completed', partial: true,
+            stopReason: reason, fixtureId, testProfile: PROFILE, startedAt: run.startedAt,
+            completedAt: new Date().toISOString(), target: { origin: fixture.origin },
+            simulated: false, targetContacted: false,
+            finding: { category: 'CWE-639', status: 'not_tested', severity: 'none' }, evidence: [] };
+          run.reviewItems = [];
+          appendEvent({ module: 'agent', stage: 'idor.skipped', title: 'IDOR 검사 미실행',
+            detail: reason === 'approval_timeout' ? '관리자 승인 대기 시간이 만료되었습니다.' : '관리자가 검사를 거절했습니다.',
+            type: 'warning', response: { reason, findingStatus: 'not_tested' } });
+          run.status = 'completed';
+          return;
+        }
+      }
       const seen = new Set();
       const result = await probe({ siteKey: fixture.siteKey, origin: fixture.origin,
         runId: run.id, signal: controller.signal, onContact() {
@@ -119,6 +154,7 @@ export function createIdorRuntime({ fixtureId, targetOrigin, runIdFactory = () =
     } finally {
       run.elapsedMs = Date.now() - Date.parse(run.startedAt);
       run.totalSteps = run.events.length;
+      run.pendingApproval = null;
       task = null;
       publish();
     }
@@ -132,6 +168,22 @@ export function createIdorRuntime({ fixtureId, targetOrigin, runIdFactory = () =
     const id = assertIdentifier(runIdFactory(), 'runId');
     controller = new AbortController();
     run = { ...initial(), id, coreRunId: id, status: 'preparing', startedAt: new Date().toISOString() };
+    approvalController = approvalRequired ? createApprovalController({ runId: id, timeoutMs: approvalTimeoutMs,
+      onPending(pending) {
+        run.pendingApproval = pending;
+        appendEvent({ module: 'agent', stage: 'approval.requested', title: 'IDOR 검사 승인 대기',
+          detail: '로그인 3회와 읽기 전용 GET 4회를 수행하기 전에 관리자 확인을 기다립니다.',
+          request: { approvalId: pending.id, summary: pending.summary,
+            actionDigest: pending.actionDigest }, response: { status: 'pending' } });
+      },
+      onResolved(outcome) {
+        run.pendingApproval = null;
+        appendEvent({ module: 'agent', stage: 'approval.resolved', title: 'IDOR 검사 승인 결정',
+          detail: outcome.decision === 'approved' ? '검사가 승인되었습니다.' : '검사를 실행하지 않습니다.',
+          request: { approvalId: outcome.id }, response: { decision: outcome.decision,
+            ...(outcome.actor ? { actor: outcome.actor } : {}) } });
+      },
+    }) : null;
     task = Promise.resolve().then(execute);
     publish();
     return getState();
@@ -143,13 +195,17 @@ export function createIdorRuntime({ fixtureId, targetOrigin, runIdFactory = () =
     }
     return getState();
   }
+  function decideApproval({ id, decision, actor } = {}) {
+    if (run.status !== 'running' || !approvalController) throw fault(409, 'No active approval request.');
+    return approvalController.decide({ id, decision, actor });
+  }
   async function close() {
     closed = true;
     if (ACTIVE.has(run.status)) stop(run.id);
     await task;
     listeners.clear();
   }
-  return { getState, startLab, stop, close, subscribe(listener) {
+  return { getState, startLab, stop, decideApproval, close, subscribe(listener) {
     listeners.add(listener); return () => listeners.delete(listener);
   } };
 }

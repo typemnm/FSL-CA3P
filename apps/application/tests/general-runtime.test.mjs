@@ -29,6 +29,15 @@ function terminal(runtime) {
     });
   });
 }
+function approvalPending(runtime) {
+  const pending = runtime.getState().run.pendingApproval;
+  if (pending) return Promise.resolve(pending);
+  return new Promise(resolve => {
+    const detach = runtime.subscribe(({ run }) => {
+      if (run.pendingApproval) { detach(); resolve(run.pendingApproval); }
+    });
+  });
+}
 
 function response(path) {
   if (path === '/api/search') return new Response(JSON.stringify({ site: '대한대학교', results: [] }), {
@@ -1229,6 +1238,181 @@ test('general runtime confirms JSON5, partner IDOR and unauthenticated delete fr
   assert.ok(calls.some(item => item.path === '/api/admissions/partner/applications/3' && item.cookie.includes('partner1')));
   assert.ok(calls.some(item => item.path === '/admin/posts/1/delete' && item.method === 'POST' && !item.cookie));
   await runtime.close();
+});
+
+test('general runtime waits before attack-tool execution and records a rejected probe', async t => {
+  const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:53990',
+    modelId: 'deepseek-flash', approvalRequired: true, runIdFactory: () => 'general-human-reject',
+    fetchImpl: async url => response(new URL(url).pathname),
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { hypotheses: [{ id: 'h-headers', category: 'configuration', asset: '/about',
+        rationale: 'Review response headers.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-headers', hypothesisId: 'h-headers', tool: 'http_get', input: { path: '/about' } }] };
+    } }),
+  });
+  t.after(() => runtime.close());
+  const done = terminal(runtime);
+  runtime.startLab();
+  const pending = await approvalPending(runtime);
+  assert.equal(pending.kind, 'general-probe');
+  assert.equal(pending.probeId, 'p-headers');
+  assert.equal(pending.summary.path, '/about');
+  assert.equal(pending.summary.hypothesis, 'configuration');
+  assert.match(pending.actionDigest, /^[a-f0-9]{64}$/u);
+  assert.deepEqual(runtime.getState().run.pendingApproval, pending);
+  runtime.decideApproval({ id: pending.id, decision: 'reject', actor: 'admin' });
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  assert.equal(run.pendingApproval, null);
+  assert.equal(run.report.probes[0].status, 'blocked');
+  assert.equal(run.report.probes[0].reason, 'human_rejected');
+  assert.equal(run.report.partial, true);
+  assert.deepEqual(run.report.attackTool.agentIds, []);
+  assert.ok(run.events.some(event => event.stage === 'approval.resolved'
+    && event.response.decision === 'rejected' && event.response.actor === 'admin'));
+});
+
+test('general runtime executes only after the matching human approval', async t => {
+  const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:53991',
+    modelId: 'deepseek-flash', approvalRequired: true, runIdFactory: () => 'general-human-approve',
+    fetchImpl: async url => response(new URL(url).pathname),
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { hypotheses: [{ id: 'h-headers', category: 'configuration', asset: '/about',
+        rationale: 'Review response headers.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-headers', hypothesisId: 'h-headers', tool: 'http_get', input: { path: '/about' } }] };
+    } }),
+  });
+  t.after(() => runtime.close());
+  const done = terminal(runtime);
+  runtime.startLab();
+  const pending = await approvalPending(runtime);
+  assert.throws(() => runtime.decideApproval({ id: 'other', decision: 'approve', actor: 'admin' }), { status: 409 });
+  runtime.decideApproval({ id: pending.id, decision: 'approve', actor: 'admin' });
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  assert.equal(run.report.probes[0].status, 'not_reproduced');
+  assert.equal(run.report.attackTool.agentIds.length, 1);
+  assert.throws(() => runtime.decideApproval({ id: pending.id, decision: 'approve', actor: 'admin' }), { status: 409 });
+});
+
+for (const decision of ['reject', 'approve']) {
+  test(`catalog POST template shows its complete request sequence before ${decision}`, async t => {
+    const calls = [];
+    let deleted = false;
+    const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan',
+      targetOrigin: decision === 'approve' ? 'http://127.0.0.1:53992' : 'http://127.0.0.1:53993',
+      modelId: 'deepseek-flash', approvalRequired: true,
+      runIdFactory: () => `template-human-${decision}`, unavailableInputs: ['casper-db'],
+      fetchImpl: async (url, init = {}) => {
+        const path = new URL(url).pathname;
+        const method = init.method ?? 'GET';
+        calls.push({ method, path });
+        if (path === '/admin/posts/1/delete' && method === 'POST') {
+          deleted = true;
+          return new Response('', { status: 302, headers: { location: '/admin' } });
+        }
+        if (path === '/') return new Response(deleted ? 'TypeError' : '<html><title>대한대학교</title></html>', {
+          status: deleted ? 500 : 200, headers: { 'content-type': 'text/html' } });
+        return response(path);
+      },
+      plannerFactory: () => ({ async propose(context) {
+        if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+        return { hypotheses: [{ id: 'h-delete', category: 'broken_access_control',
+          asset: '/admin/posts/1/delete', rationale: 'Public deletion may be accepted.',
+          evidenceIds: [context.evidence[0].id] }],
+        probes: [{ id: 'p-delete', hypothesisId: 'h-delete', tool: 'execute_attack_template',
+          input: { templateId: 'unauth-featured-post-delete-template', payload: '1' } }] };
+      } }),
+    });
+    t.after(() => runtime.close());
+    const done = terminal(runtime);
+    runtime.startLab();
+    const pending = await approvalPending(runtime);
+    assert.equal(pending.summary.method, 'POST');
+    assert.equal(pending.summary.path, '/admin/posts/1/delete');
+    assert.equal(pending.summary.sessionRole, 'public');
+    assert.equal(pending.summary.templateId, 'unauth-featured-post-delete-template');
+    assert.equal(pending.summary.requestCount, 3);
+    assert.deepEqual(pending.summary.steps.map(step => [step.phase, step.method, step.path]), [
+      ['baseline', 'GET', '/'], ['attack', 'POST', '/admin/posts/1/delete'], ['followUp', 'GET', '/']]);
+    assert.equal(calls.filter(call => call.method === 'POST' && call.path === '/admin/posts/1/delete').length, 0);
+    const beforeDecision = calls.length;
+    runtime.decideApproval({ id: pending.id, decision, actor: 'admin' });
+    const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    assert.equal(run.report.probes[0].status, decision === 'approve' ? 'confirmed' : 'blocked');
+    assert.deepEqual(calls.slice(beforeDecision), decision === 'approve'
+      ? [{ method: 'GET', path: '/' }, { method: 'POST', path: '/admin/posts/1/delete' },
+        { method: 'GET', path: '/' }] : []);
+    assert.equal(run.report.attackTool.agentIds.length, decision === 'approve' ? 1 : 0);
+  });
+}
+
+test('approved template packets stay fixed when the catalog changes before execution', async t => {
+  const original = listTemplates().find(item => item.templateId === 'unauth-featured-post-delete-template');
+  assert.ok(original);
+  const changedTemplate = structuredClone(original);
+  changedTemplate.verify.baseline.path = '/about';
+  changedTemplate.verify.followUp.path = '/about';
+  let currentTemplate = original;
+  let catalogReads = 0;
+  const templateCatalog = {
+    list: () => [structuredClone(currentTemplate)],
+    get: id => { catalogReads += 1;
+      return id === currentTemplate.templateId ? structuredClone(currentTemplate) : null; },
+  };
+  const calls = [];
+  let deleted = false;
+  const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan',
+    targetOrigin: 'http://127.0.0.1:53994', modelId: 'deepseek-flash',
+    approvalRequired: true, templateCatalog, unavailableInputs: ['casper-db'],
+    runIdFactory: () => 'template-catalog-snapshot',
+    fetchImpl: async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      const method = init.method ?? 'GET';
+      calls.push({ method, path });
+      if (path === '/admin/posts/1/delete' && method === 'POST') {
+        deleted = true;
+        return new Response('', { status: 302, headers: { location: '/admin' } });
+      }
+      if (path === '/') return new Response(deleted ? 'TypeError' : '<html><title>대한대학교</title></html>', {
+        status: deleted ? 500 : 200, headers: { 'content-type': 'text/html' } });
+      return response(path);
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { hypotheses: [{ id: 'h-delete', category: 'broken_access_control',
+        asset: '/admin/posts/1/delete', rationale: 'Public deletion may be accepted.',
+        evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-delete', hypothesisId: 'h-delete', tool: 'execute_attack_template',
+        input: { templateId: original.templateId, payload: '1' } }] };
+    } }),
+  });
+  t.after(() => runtime.close());
+  const done = terminal(runtime);
+  runtime.startLab();
+  const pending = await approvalPending(runtime);
+  assert.equal(pending.summary.steps[0].path, '/');
+  const readsAtApproval = catalogReads;
+  const beforeDecision = calls.length;
+  let changed = false;
+  runtime.subscribe(({ run }) => {
+    if (!changed && run.events.at(-1)?.stage === 'approval') {
+      currentTemplate = changedTemplate;
+      changed = true;
+    }
+  });
+  runtime.decideApproval({ id: pending.id, decision: 'approve', actor: 'admin' });
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  assert.equal(changed, true);
+  assert.equal(catalogReads, readsAtApproval);
+  assert.deepEqual(calls.slice(beforeDecision), [
+    { method: 'GET', path: '/' }, { method: 'POST', path: '/admin/posts/1/delete' },
+    { method: 'GET', path: '/' }]);
+  assert.equal(run.report.probes[0].status, 'confirmed');
 });
 
 const attackRecord = { schemaVersion: 'attack-record/1', id: 'p-any', kind: 'any',

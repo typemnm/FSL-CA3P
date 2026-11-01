@@ -16,6 +16,15 @@ function waitForTerminal(runtime) {
     });
   });
 }
+function waitForApproval(runtime) {
+  const pending = runtime.getState().run.pendingApproval;
+  if (pending) return Promise.resolve(pending);
+  return new Promise(resolve => {
+    const detach = runtime.subscribe(({ run }) => {
+      if (run.pendingApproval) { detach(); resolve(run.pendingApproval); }
+    });
+  });
+}
 
 test('registered university runs publish only bounded evidence and preserve non-confirmed outcomes', async t => {
   for (const [fixtureId, siteKey, origin] of [
@@ -129,4 +138,52 @@ test('stopping before startup does not contact the probe', async () => {
   const runtime = createIdorRuntime({ fixtureId: 'vul-web2-daehan', probe: async () => { calls += 1; } });
   const state = runtime.startLab(); runtime.stop(state.run.id); await runtime.close();
   assert.equal(calls, 0); assert.equal(runtime.getState().run.status, 'stopped');
+});
+
+test('rule IDOR approval is required before the whole probe and rejection records not tested', async t => {
+  let calls = 0;
+  const runtime = createIdorRuntime({ fixtureId: 'vul-web2-daehan', approvalRequired: true,
+    runIdFactory: () => 'idor-human-reject', probe: async () => { calls += 1; throw new Error('must not probe'); } });
+  t.after(() => runtime.close());
+  runtime.startLab();
+  const pending = await waitForApproval(runtime);
+  assert.equal(pending.kind, 'rule-idor');
+  assert.equal(pending.summary.requestCount, 4);
+  assert.equal(pending.summary.target, 'http://127.0.0.1:4101');
+  assert.equal(runtime.getState().run.targetContacted, false);
+  assert.throws(() => runtime.decideApproval({ id: 'wrong', decision: 'approve', actor: 'admin' }), { status: 409 });
+  runtime.decideApproval({ id: pending.id, decision: 'reject', actor: 'admin' });
+  const run = await waitForTerminal(runtime);
+  assert.equal(calls, 0);
+  assert.equal(run.status, 'completed');
+  assert.equal(run.pendingApproval, null);
+  assert.equal(run.targetContacted, false);
+  assert.equal(run.report.finding.status, 'not_tested');
+  assert.equal(run.report.stopReason, 'human_rejected');
+  assert.deepEqual(run.report.evidence, []);
+  assert.deepEqual(run.reviewItems, []);
+  assert.throws(() => runtime.decideApproval({ id: pending.id, decision: 'approve', actor: 'admin' }), { status: 409 });
+});
+
+test('rule IDOR approval permits the existing complete probe and timeout skips it', async t => {
+  let calls = 0;
+  const approved = createIdorRuntime({ fixtureId: 'vul-web2-daehan', approvalRequired: true,
+    probe: async () => { calls += 1; return { finding: { status: 'not_confirmed' }, evidence }; } });
+  t.after(() => approved.close());
+  approved.startLab();
+  const pending = await waitForApproval(approved);
+  approved.decideApproval({ id: pending.id, decision: 'approve', actor: 'admin' });
+  const completed = await waitForTerminal(approved);
+  assert.equal(calls, 1);
+  assert.equal(completed.report.evidence.length, 4);
+  assert.equal(completed.report.finding.status, 'not_confirmed');
+
+  const expired = createIdorRuntime({ fixtureId: 'vul-web2-daehan', approvalRequired: true,
+    approvalTimeoutMs: 10, probe: async () => { calls += 1; throw new Error('must not probe'); } });
+  t.after(() => expired.close());
+  expired.startLab();
+  const timedOut = await waitForTerminal(expired);
+  assert.equal(calls, 1);
+  assert.equal(timedOut.report.stopReason, 'approval_timeout');
+  assert.equal(timedOut.report.finding.status, 'not_tested');
 });
