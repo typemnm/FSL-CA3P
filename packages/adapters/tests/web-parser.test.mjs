@@ -38,7 +38,7 @@ test('summary carries observed fields as-is and stays within the byte budget', (
   assert.equal(summary.status, 200);
   assert.equal(summary.title, 'Lab Portal');
   assert.deepEqual(summary.redirectChain, [{ from: 'http://127.0.0.1/', to: 'http://127.0.0.1/app', status: 302, kind: 'http' }]);
-  // Values are not masked by the adapter; the core's redactSensitive owns that (CONTRACT §6).
+  // Values are not masked by the adapter; the core's redactSensitive owns that.
   assert.equal(summary.cookies[0].value, 'secret123');
   assert.deepEqual(summary.technologies, [{ name: 'React', version: '18.2.0',
     categories: ['JavaScript frameworks'], confidence: 100 }]);
@@ -164,6 +164,14 @@ test('masked values stay inside whole JSON items and are unchanged when the core
   assert.deepEqual(listIn(paths.summary, 'paths').items, [{ url: '/cb?token [redacted]', sources: ['link'], params: ['token'] }]);
   assert.deepEqual(listIn(surface.summary, 'headers').items, [{ name: 'Location', value: '/cb?token [redacted]' },
     { name: 'X-A', value: 'ok' }, { name: 'X-Debug-Set-Cookie' }]);
+});
+
+test('page titles decode HTML entities once for the summary and the evidence', () => {
+  const info = targetInfo({ html: '<html><head><title>Q&amp;A &lt;beta&gt; &quot;x&quot; &#39;y&#39;&nbsp;&#169;'
+    + ' &#x2603; &amp;lt; &#99999999;</title></head></html>' });
+  const title = 'Q&A <beta> "x" \'y\' © ☃ &lt; \ufffd';
+  assert.equal(summarizeTargetInfo(info).title, title);
+  assert.match(evidenceFromTargetInfo(info, evidenceOptions)[0].summary, /; title "Q&A <beta> \\"x\\" 'y' © ☃ &lt; \ufffd";/u);
 });
 
 test('collectWebInfo returns the raw TargetInfo and its summary, bounding timeoutMs at 15s', async () => {

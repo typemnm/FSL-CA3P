@@ -3,17 +3,17 @@
  * web-parser opens exactly one endpoint in an isolated browser and returns the web
  * information it observes (response, headers, cookies, page structure, loaded
  * resources, Wappalyzer analysis, discovered paths). It does not judge, attack, or
- * crawl; the next endpoint is the model's choice (CONTRACT §1).
+ * crawl; the next endpoint is the model's choice.
  *
  * The returned TargetInfo is an untrusted browser observation, not an API or
  * ownership assertion. Secret redaction is the core's job (redactSensitive), not
- * this module's, so the summary carries observed fields as-is (CONTRACT §6).
+ * this module's, so the summary carries observed fields as-is.
  */
 
 import { collect as collectDefault } from '../../../web-parser/collect.mjs';
 
 // Keep an abort that lands during Wappalyzer analysis bounded: the Worker match
-// finishes within timeoutMs before the call rejects (CONTRACT §2), so cap at 15s.
+// finishes within timeoutMs before collect() rejects, so cap at 15s.
 export const DEFAULT_TIMEOUT_MS = 15000;
 // Section count caps for the model summary; a truncated section carries { shown, total }.
 export const MAX_SUMMARY_BYTES = 40 * 1024;
@@ -27,10 +27,17 @@ function section(list, cap, map = value => value) {
   return items.length < array.length ? { shown: items.length, total: array.length, items } : items;
 }
 
+const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', nbsp: '\u00a0' };
+const codePoint = code => code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+  ? String.fromCodePoint(code) : '\ufffd';
+
 function extractTitle(html) {
   if (typeof html !== 'string') return null;
   const match = html.slice(0, 50_000).match(/<title[^>]*>([\s\S]*?)<\/title>/iu);
-  return match ? match[1].replace(/\s+/gu, ' ').trim().slice(0, 300) || null : null;
+  // outerHTML escapes title text; decode in one pass so `&amp;lt;` stays `&lt;`.
+  return match ? match[1].replace(/&(amp|lt|gt|quot|nbsp);|&#(\d+);|&#[xX]([0-9a-fA-F]+);/gu,
+    (_, name, decimal, hex) => name ? NAMED_ENTITIES[name] : codePoint(decimal ? Number(decimal) : parseInt(hex, 16)))
+    .replace(/\s+/gu, ' ').trim().slice(0, 300) || null : null;
 }
 
 function build(info, caps) {
@@ -56,7 +63,7 @@ function build(info, caps) {
     links: section(structure.links, caps.links, link => link.href),
     resources: section(info.resources, caps.resources, resource => ({ kind: resource.kind,
       method: resource.method, url: resource.url, status: resource.status })),
-    // robots/sitemap results surface here too: paths[].sources carries robots:* and sitemap* (CONTRACT §3).
+    // robots/sitemap results surface here too: paths[].sources carries robots:* and sitemap*.
     paths: section(info.paths, caps.paths, path => ({ url: path.url, sources: path.sources,
       methods: path.methods, sameOrigin: path.sameOrigin, params: path.params,
       ...(path.wildcard ? { wildcard: true } : {}) })),
@@ -68,7 +75,7 @@ function build(info, caps) {
 /**
  * Compact TargetInfo for the model. Fields are taken as-is (no masking); only the
  * item counts are capped, and a capped section keeps { shown, total } so the model
- * sees that it was truncated rather than silently losing entries (CONTRACT §3).
+ * sees that it was truncated rather than silently losing entries.
  */
 export function summarizeTargetInfo(info, { maxBytes = MAX_SUMMARY_BYTES } = {}) {
   const caps = { ...CAPS };

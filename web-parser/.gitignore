@@ -2,3 +2,5 @@
 .omc/
 # Fingerprint dataset: downloaded at install time by scripts/fetch-dataset.mjs, never committed.
 data/webappanalyzer/
+# Development notes for the module owner; kept locally, not published.
+CONTRACT.md

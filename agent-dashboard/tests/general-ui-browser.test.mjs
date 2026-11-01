@@ -278,3 +278,222 @@ test('confirmed general findings have separate HWPX downloads and partial failur
   assert.match(await page.locator('#report-document-status').textContent(), /확정된 취약점 없음/);
   assert.equal(await page.locator('.report-document-download').count(), 0);
 });
+
+test('web-parser result cards load each artifact once and survive polling re-renders', async t => {
+  const viewId = 'd'.repeat(64); const missingId = 'e'.repeat(64);
+  const webEvent = (artifactId, overrides = {}) => ({ stage: 'web_info.collected', module: 'web-parser', source: 'web-parser',
+    type: 'info', title: '웹 정보 수집', detail: 'GET /board → HTTP 200', probeId: `p-${artifactId?.[0] ?? 'x'}`, iteration: 1,
+    asset: '/board?page=2', sessionRole: 'member', ok: true, status: 200, artifactId,
+    counts: { technologies: 1, paths: 2, forms: 0, errors: 0 }, truncated: false, time: '2026-10-26T00:00:01Z', ...overrides });
+  const webRun = { ...structuredClone(run), id: 'web-info-run', status: 'completed', report: structuredClone(report),
+    reportDocument: { status: 'skipped', errorCode: 'GENERAL_DOCUMENT_UNSUPPORTED' },
+    events: [{ stage: 'inventory.collect', title: 'Inventory', module: 'agent', time: '2026-10-26T00:00:00Z' },
+      webEvent(viewId), webEvent(missingId, { asset: '/gone' }),
+      webEvent(null, { asset: '/down', ok: false, status: null, type: 'warning', detail: '웹 정보 수집 실패',
+        counts: { technologies: 0, paths: 0, forms: 0, errors: 1 } })] };
+  // Raw TargetInfo as web-parser collected it (secrets included, shown as is).
+  const view = { schemaVersion: 'web-parser-1',
+    target: { requestedUrl: 'https://app.test/board?page=2', finalUrl: 'https://app.test/board?page=2', origin: 'https://app.test' },
+    navigation: { status: 200, contentType: 'text/html', redirectChain: [], loadTimingMs: 12, securityDetails: null },
+    headers: [{ name: 'Content-Type', value: 'text/html' }, { name: 'Set-Cookie', value: 'sid=raw-cookie-value' }],
+    cookies: [{ name: 'sid', value: 'raw-cookie-value', domain: 'app.test', path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax' }],
+    meta: [], html: '<title><img src=x onerror=alert(1)></title><p>hello</p>', body: `${'x'.repeat(20000)}BODY-TAIL-MARKER`,
+    technologies: [{ name: 'jQuery', version: '3.6.0', categories: ['JavaScript libraries'], confidence: 100,
+      evidence: [{ field: 'scriptSrc', match: 'jquery.min.js' }] }],
+    libraries: [{ name: 'jQuery', version: '3.6.0', source: 'fingerprint', evidence: [] }],
+    structure: { forms: [], links: [] }, resources: [], errors: [], truncated: false,
+    paths: [
+      { url: 'https://app.test/board/view', sources: ['link'], methods: ['GET'], sameOrigin: true, params: ['id'] },
+      { url: 'https://cdn.example.net/lib.js', sources: ['request:script'], methods: ['GET'], sameOrigin: false, params: [] }] };
+  const fetches = [];
+  const localChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  const browser = await chromium.launch({ headless: true,
+    ...(process.platform === 'win32' && !existsSync(chromium.executablePath()) && existsSync(localChrome)
+      ? { executablePath: localChrome } : {}) });
+  t.after(async () => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => { window.EventSource = undefined; });
+  await page.route('**/*', async route => {
+    const file = new URL(route.request().url()).pathname.split('/').pop() || 'index.html';
+    if (!/^[a-z-]+\.(?:html|js|css|svg)$/.test(file)) return route.fulfill({ status: 404, body: '' });
+    const bytes = await readFile(new URL(`../dist/${file}`, import.meta.url));
+    return route.fulfill({ contentType: ({ html: 'text/html', js: 'text/javascript', css: 'text/css', svg: 'image/svg+xml' })[file.split('.').pop()], body: bytes });
+  });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    const json = (value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
+    if (path.startsWith('/api/artifacts/')) {
+      fetches.push(path);
+      return path.endsWith(viewId) ? json(view) : json({ error: 'Artifact not found.' }, 404);
+    }
+    if (path === '/api/auth/session') return json({ authenticated: true, authRequired: false, user: { role: 'operator', name: 'Test' } });
+    if (path === '/api/state') return json({ instanceId: 'web-info-test', mode: webRun.mode, run: webRun,
+      lab: { available: true, generalSupported: true, generalAvailable: true } });
+    if (path === '/api/runs') return json({ runs: [webRun], total: 1 });
+    if (path === `/api/runs/${webRun.id}`) return json({ run: webRun });
+    if (path === '/api/models') return json({ models: [] });
+    if (path === '/api/platform') return json({ source: {}, modules: [] });
+    if (path === '/api/ci-results') return json({ runs: [] });
+    return json({});
+  });
+  await page.goto('http://ca3p.invalid/#dashboard');
+  await page.locator('[data-view=reports]').click();
+  const section = page.locator('#report-content .web-info-section');
+  await section.waitFor();
+  assert.equal(await page.locator('.web-info-card').count(), 3);
+  assert.equal(await page.locator('details[data-web-info-artifact]').count(), 2);
+  assert.match(await section.textContent(), /상세 정보 없음/);
+  assert.deepEqual(fetches, []);
+  // Placed after the findings and before the raw JSON section.
+  assert.equal(await page.evaluate(() => {
+    const web = document.querySelector('#report-content .web-info-section');
+    const finding = document.querySelector('#report-content .general-finding');
+    const raw = [...document.querySelectorAll('#report-content .core-report')].at(-1);
+    return !!(finding.compareDocumentPosition(web) & Node.DOCUMENT_POSITION_FOLLOWING)
+      && !!(web.compareDocumentPosition(raw) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }), true);
+
+  const card = page.locator(`details[data-web-info-artifact="${viewId}"]`);
+  await card.locator('summary').click();
+  await card.locator('.web-info-table').first().waitFor();
+  assert.match(await card.locator('.web-info-block').first().textContent(), /jQuery[\s\S]*3\.6\.0/);
+  assert.equal(await card.getByText('https://app.test/board/view').isVisible(), true);
+  assert.equal(await card.getByText('https://cdn.example.net/lib.js').isVisible(), false);
+  await card.locator('.web-info-external > summary').click();
+  assert.equal(await card.getByText('https://cdn.example.net/lib.js').isVisible(), true);
+  assert.equal(await card.locator('.web-info-download').getAttribute('href'), `/api/artifacts/${viewId}`);
+  const cookieFold = card.locator('details.web-info-fold', { hasText: '쿠키' });
+  await cookieFold.locator('> summary').click();
+  assert.equal(await cookieFold.getByText('raw-cookie-value', { exact: true }).isVisible(), true);
+  const bodyFold = card.locator('details.web-info-fold', { hasText: '본문 원문 (body)' });
+  await bodyFold.locator('> summary').click();
+  assert.equal(await bodyFold.getByText('BODY-TAIL-MARKER').isVisible(), false);
+  await bodyFold.locator('.web-info-rest > summary').click();
+  assert.equal(await bodyFold.getByText('BODY-TAIL-MARKER').isVisible(), true);
+  // Polling replaces the report every second; the open card, its nested toggle and its content stay.
+  await page.waitForTimeout(1500);
+  assert.equal(await card.evaluate(element => element.open), true);
+  assert.equal(await card.locator('.web-info-external').evaluate(element => element.open), true);
+  assert.equal(await card.getByText('https://cdn.example.net/lib.js').isVisible(), true);
+  await card.locator('summary').first().click();
+  await card.locator('summary').first().click();
+  await card.locator('.web-info-table').first().waitFor();
+  assert.deepEqual(fetches, [`/api/artifacts/${viewId}`]);
+
+  const missing = page.locator(`details[data-web-info-artifact="${missingId}"]`);
+  await missing.locator('summary').click();
+  await missing.getByText('저장된 상세 정보를 찾을 수 없습니다.').waitFor();
+  // Collected URLs stay text; the only link is the dashboard's own 원본 JSON download.
+  assert.equal(await page.locator('#report-content script, .web-info-section img, .web-info-section a:not(.web-info-download)').count(), 0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  assert.deepEqual(errors, []);
+});
+
+test('web-parser module page shows a readable collection log and expands a row into the detail', async t => {
+  const artifactId = 'f'.repeat(64);
+  const runId = 'general-11111111-2222-3333-4444-aaaaaaaaaaaa';
+  const collected = (id, overrides = {}) => ({ id, runId, sequence: 1, module: 'web-parser', stage: 'web_info.collected',
+    status: 200, title: '웹 정보 수집', createdAt: '2026-11-01T06:01:05Z', detail: 'GET /board → HTTP 200', asset: '/board?page=2',
+    sessionRole: 'member', probeId: `p-${id}`, iteration: 1, ok: true, httpStatus: 200, artifactId,
+    counts: { technologies: 1, paths: 1, forms: 0, errors: 0 }, truncated: false, ...overrides });
+  const logs = [collected('ok-row'),
+    collected('fail-row', { createdAt: '2026-11-01T06:02:05Z', asset: '/down', ok: false, httpStatus: null, status: null,
+      artifactId: undefined, detail: '웹 정보 수집 실패', counts: { technologies: 0, paths: 0, forms: 0, errors: 1 } }),
+    { id: 'legacy-row', runId: 'run-legacy', module: 'xss-parser', stage: 'observe', status: 'completed',
+      title: '<img src=x onerror=alert(1)>', createdAt: '2026-10-01T00:00:00Z' }];
+  const view = { schemaVersion: 'web-parser-1', target: { requestedUrl: 'https://app.test/board?page=2' },
+    navigation: { status: 200, contentType: 'text/html' }, html: '<title>게시판</title>',
+    technologies: [{ name: 'jQuery', version: '3.6.0', categories: ['JavaScript libraries'], confidence: 100, evidence: [] }],
+    paths: [{ url: 'https://app.test/board/view', sources: ['link'], methods: ['GET'], sameOrigin: true, params: ['id'] }] };
+  const fetches = []; const moduleRequests = [];
+  const localChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  const browser = await chromium.launch({ headless: true,
+    ...(process.platform === 'win32' && !existsSync(chromium.executablePath()) && existsSync(localChrome)
+      ? { executablePath: localChrome } : {}) });
+  t.after(async () => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => { window.EventSource = undefined; });
+  await page.route('**/*', async route => {
+    const file = new URL(route.request().url()).pathname.split('/').pop() || 'index.html';
+    if (!/^[a-z-]+\.(?:html|js|css|svg)$/.test(file)) return route.fulfill({ status: 404, body: '' });
+    const bytes = await readFile(new URL(`../dist/${file}`, import.meta.url));
+    return route.fulfill({ contentType: ({ html: 'text/html', js: 'text/javascript', css: 'text/css', svg: 'image/svg+xml' })[file.split('.').pop()], body: bytes });
+  });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    const json = value => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
+    if (/^\/api\/modules\/[a-z-]+\/(?:config|logs)$/.test(path)) moduleRequests.push(path);
+    if (path.startsWith('/api/artifacts/')) { fetches.push(path); return json(view); }
+    if (path === '/api/auth/session') return json({ authenticated: true, authRequired: false, user: { role: 'operator', name: 'Test' } });
+    if (path === '/api/state') return json({ instanceId: 'module-log-test', mode: run.mode, run,
+      lab: { available: true, generalSupported: true, generalAvailable: true } });
+    if (path === '/api/modules') return json({ modules: [{ id: 'attack', name: 'Attack Tool', status: 'active' },
+      { id: 'web-parser', name: 'Web Parser', status: 'active' }] });
+    if (path === '/api/modules/web-parser/config') return json({ config: { integrationId: 'web-parser', path: 'web-parser' },
+      revision: 'digest', editable: false });
+    if (path === '/api/modules/web-parser/logs') return json({ logs, total: 250, truncated: false });
+    if (path === '/api/runs') return json({ runs: [], total: 0 });
+    return json({});
+  });
+  await page.goto('http://ca3p.invalid/#modules/web-parser');
+  const panel = page.locator('.web-parser-log');
+  await panel.waitFor();
+  // Startup loads the module twice (navigation, then session); let both finish before interacting.
+  await page.waitForLoadState('networkidle');
+  assert.match(await panel.locator('.web-parser-log-strip').textContent(), /수집 횟수2성공 \/ 실패1 \/ 1수집 페이지2포함된 실행1/);
+  assert.match(await panel.textContent(), /최근 3건만 표시합니다 \(전체 로그 250건\)/);
+  assert.equal(await page.locator('#module-detail-content .ops-log-list').count(), 0);
+  // Operator decision: no MODULE OPERATIONS block or config JSON; 새로고침 lives in the log panel heading.
+  assert.doesNotMatch(await page.locator('#module-detail-content').textContent(), /MODULE OPERATIONS|현재 유효 설정|모듈 ID|소스 경로|integrationId/);
+  assert.equal(await page.locator('#module-detail-content .ops-panel, #module-detail-content pre').count(), 0);
+  assert.ok(moduleRequests.length > 0 && moduleRequests.every(path => path === '/api/modules/web-parser/logs'));
+  const loadsBefore = moduleRequests.length;
+  assert.equal(await page.locator('#module-detail-content [data-action="refresh-module"]').count(), 1);
+  assert.equal(await panel.locator('.panel-heading [data-action="refresh-module"]').count(), 1);
+  const rows = panel.locator('.web-parser-log-row');
+  assert.deepEqual(await rows.evaluateAll(items => items.map(item => item.dataset.logId)), ['fail-row', 'ok-row']);
+  assert.deepEqual(fetches, []);
+
+  const row = panel.locator('[data-log-id="ok-row"]');
+  await row.locator('summary').click();
+  await row.locator('.web-info-table').first().waitFor();
+  assert.match(await row.locator('.web-info-detail').textContent(), /jQuery[\s\S]*3\.6\.0[\s\S]*https:\/\/app\.test\/board\/view/);
+  // Filtering keeps the open row open and does not refetch it.
+  await page.locator('#web-parser-log-search').fill('board');
+  assert.deepEqual(await rows.evaluateAll(items => items.map(item => item.dataset.logId)), ['ok-row']);
+  assert.equal(await panel.locator('[data-log-id="ok-row"]').evaluate(element => element.open), true);
+  await panel.locator('[data-log-id="ok-row"] .web-info-table').first().waitFor();
+  assert.equal(await page.locator('#web-parser-log-search').evaluate(element => element === document.activeElement), true);
+  await page.locator('#web-parser-log-search').fill('');
+  await page.locator('#web-parser-failed-only').check();
+  assert.deepEqual(await rows.evaluateAll(items => items.map(item => item.dataset.logId)), ['fail-row']);
+  await panel.locator('[data-log-id="fail-row"] summary').click();
+  assert.match(await panel.locator('[data-log-id="fail-row"]').textContent(), /상세 정보 없음/);
+  assert.deepEqual(fetches, [`/api/artifacts/${artifactId}`]);
+
+  await panel.locator('.web-parser-other-logs > summary').click();
+  assert.match(await panel.locator('.web-parser-other-logs').textContent(), /<img src=x onerror=alert\(1\)>/);
+  assert.equal(await page.locator('#module-detail-content img, #module-detail-content script').count(), 0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+
+  const reload = page.waitForResponse(response => new URL(response.url()).pathname === '/api/modules/web-parser/logs');
+  await panel.locator('[data-action="refresh-module"]').click();
+  await reload;
+  await page.locator('.web-parser-log [data-action="refresh-module"]').waitFor();
+  assert.equal(moduleRequests.length, loadsBefore + 1);
+  assert.ok(moduleRequests.every(path => path === '/api/modules/web-parser/logs'));
+  // Other module pages keep their operations block.
+  await page.evaluate(() => { location.hash = 'modules/attack'; });
+  await page.locator('#module-detail-content .ops-panel', { hasText: 'MODULE OPERATIONS' }).waitFor();
+  assert.match(await page.locator('#module-detail-content').textContent(), /현재 유효 설정[\s\S]*모듈 로그/);
+  assert.equal(await page.locator('#module-detail-content .web-parser-log').count(), 0);
+  assert.equal(await page.locator('#module-detail-content .ops-panel-head [data-action="refresh-module"]').count(), 1);
+  assert.ok(moduleRequests.includes('/api/modules/attack/config'));
+  assert.deepEqual(errors, []);
+});

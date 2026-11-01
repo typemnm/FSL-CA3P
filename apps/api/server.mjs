@@ -315,9 +315,12 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
           if (createHash('sha256').update(data).digest('hex') !== artifact.sha256) throw error(409, 'Artifact integrity check failed.');
           // Stored evidence is immutable. Refuse legacy files that would require
           // redaction instead of silently changing their verified SHA-256 bytes.
+          // A web-info artifact is the raw web-parser TargetInfo and is shown as collected.
           let parsed;
           try { parsed = JSON.parse(data.toString('utf8')); } catch { throw error(409, 'Artifact is not valid JSON.'); }
-          if (JSON.stringify(redact(parsed)) !== JSON.stringify(parsed)) throw error(409, 'Artifact contains sensitive fields.');
+          if (artifact.kind !== 'web-info' && JSON.stringify(redact(parsed)) !== JSON.stringify(parsed)) {
+            throw error(409, 'Artifact contains sensitive fields.');
+          }
           res.writeHead(200, { ...headers, 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${artifact.id}.json"` });
           return res.end(data);
         }

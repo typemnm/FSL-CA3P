@@ -5,7 +5,9 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository } from '../../../packages/run-store/index.mjs';
+import { once } from 'node:events';
 import { digest } from '../../../packages/contracts/index.mjs';
+import { createDashboardServer } from '../../api/server.mjs';
 import { runWorker } from '../worker.mjs';
 
 async function waitFor(check, timeoutMs = 5000) {
@@ -362,4 +364,51 @@ test('general worker passes the verifier handoff only for a finding whose confir
   assert.equal(reportArgs[0].verificationDir, join(verificationRoot, 'p1'));
   assert.equal('verificationDir' in reportArgs[1], false);
   assert.equal(run.reportDocuments.status, 'ready');
+});
+
+test('general worker stores each raw web_info TargetInfo as a web-info artifact the API serves byte for byte', async t => {
+  const { id, storePath, directory } = await setup();
+  const origin = 'http://127.0.0.1:4101';
+  // Everything a page returns stays as collected: cookie values, Set-Cookie, Authorization, evidence keys, html.
+  const targetInfo = { schemaVersion: 'web-parser-1',
+    target: { requestedUrl: origin + '/', finalUrl: origin + '/', origin },
+    navigation: { status: 200, contentType: 'text/html', redirectChain: [], loadTimingMs: 4, securityDetails: null },
+    headers: [{ name: 'Server', value: 'nginx' }, { name: 'Set-Cookie', value: 'sid=RAW_SID; HttpOnly' },
+      { name: 'Authorization', value: 'Bearer RAW_TOKEN' }],
+    cookies: [{ name: 'sid', value: 'RAW_SID', domain: '127.0.0.1', path: '/', expires: -1,
+      httpOnly: true, secure: false, sameSite: 'Lax' }],
+    meta: [], html: '<title>Board</title><p>Bearer abc</p>', body: null,
+    technologies: [{ name: 'Nginx', categories: ['Web servers'], version: null,
+      confidence: 100, evidence: [{ field: 'headers', key: 'server', match: 'nginx' }] }], libraries: [],
+    structure: {}, resources: [{ kind: 'document', method: 'GET', url: origin + '/', status: 200 }],
+    paths: [{ url: origin + '/cb?key=abc', sources: ['link'], methods: [], sameOrigin: true, params: ['key'] }],
+    errors: [], truncated: false };
+  let stored;
+  const generalRuntimeFactory = options => {
+    const listeners = new Set(); let state;
+    return {
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      async startLab() {
+        stored = await options.onWebInfo({ probeId: 'w-1', iteration: 1, sessionRole: null, targetInfo });
+        state = { run: { id, mode: 'local-lab-general', assessmentMode: 'general', status: 'completed', events: [],
+          report: { schemaVersion: 'general-assessment/1', status: 'completed', findings: [], evidence: [] },
+          reviewItems: [] } };
+        for (const listener of listeners) listener(structuredClone(state));
+      },
+      getState() { return structuredClone(state); }, stop() {}, async close() {},
+    };
+  };
+  const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10, env: {}, generalRuntimeFactory });
+  const server = createDashboardServer({ runtime: { store: { getArtifact: artifactId => worker.store.getArtifact(artifactId) },
+    getState: () => ({}), subscribe: () => () => {}, async close() {} }, platformProvider: async () => ({}) });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(async () => { await server.shutdown(); await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+  await waitFor(() => worker.store.getRun(id).status === 'completed');
+  assert.match(stored.artifactId, /^[a-f0-9]{64}$/u);
+  const artifact = worker.store.getArtifact(stored.artifactId);
+  assert.deepEqual([artifact.runId, artifact.kind, artifact.filename, artifact.contentType, artifact.provenance,
+    artifact.probeId], [id, 'web-info', 'web-info-w-1.json', 'application/json', 'web-parser-observation', 'w-1']);
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/artifacts/${stored.artifactId}`);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), JSON.stringify(targetInfo), 'stored and served exactly as collected');
 });
