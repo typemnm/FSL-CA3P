@@ -17,7 +17,10 @@ const executableIds = ['search-sqli-template', 'sqli-like-tautology', 'json5-inh
   'access-control-idor-template', 'wonchang-staff-idor-template', 'student-request-idor-template',
   'unauth-featured-post-delete-template', 'diag-config-disclosure-template', 'snakeyaml-type-tag-template',
   'json5-parse-error-template', 'login-no-lockout-template', 'admin-import-unsigned-template',
-  'query-idor-template'];
+  'query-idor-template', 'reflected-xss-query-template', 'wildcard-search-template',
+  'union-sqli-template', 'comment-sqli-template', 'ssti-query-template',
+  'unauthenticated-admin-get-template', 'unauthenticated-mypage-get-template',
+  'debug-path-template'];
 const referenceIds = ['lodash-prototype-canary-template', 'commons-text-interpolation-template'];
 
 test('builtins contain unique requested and dependency templates that pass the storage contract', () => {

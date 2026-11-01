@@ -1,5 +1,4 @@
-import { listTemplates, templateExecutionSupport } from '../../attack-tool/templates.mjs';
-import { bindTemplate, rankTemplate } from '../../attack-tool/bind-template.mjs';
+import { listTemplates, templateExecutionSupport, bindTemplate, rankTemplate } from '../../packages/adapters/integrations/attack-tool.mjs';
 
 function slug(value) {
   return String(value).replace(/[^A-Za-z0-9]+/gu, '-').replace(/^-|-$/gu, '').slice(0, 40);

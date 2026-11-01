@@ -52,7 +52,12 @@ export function bindTemplate(template, { paths = [], forms = [] } = {}) {
         }
       }
     }
-    for (const path of candidates) bindings.push({ path, payload: template.payloads[0] });
+    let bound = 0;
+    for (const path of candidates) {
+      bindings.push({ path, payload: template.payloads[0] });
+      bound += 1;
+      if (bound >= 2) break;
+    }
   }
 
   if (mode === 'ownershipComparison' && packet.path.includes(':id')) {

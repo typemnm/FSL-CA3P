@@ -1,0 +1,21 @@
+{
+  "templateId": "reflected-xss-query-template",
+  "title": "검색 질의 반사 XSS",
+  "sessionRole": "public",
+  "attackType": { "name": "xss_reflected", "cwe": "CWE-79" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "nunjucks" },
+  "target": { "method": "GET", "endpoint": "/api/search" },
+  "request": { "packet": { "method": "GET", "path": "/api/search", "query": { "q": "{{payload}}" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["<script>ca3p-xss</script>"],
+  "verify": {
+    "mode": "textContains",
+    "baseline": { "status": 200, "query": { "q": "zzqnomatch" } },
+    "attack": { "status": 200, "contains": "<script>ca3p-xss</script>" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}
