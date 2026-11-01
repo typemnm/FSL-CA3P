@@ -37,8 +37,8 @@ function normalizeRequest(request) {
   return { method: request.method, path, query };
 }
 
-export function loadPlan(catalogPath, vulnType = 'idor', { databasePath, application } = {}) {
-  const source = loadAttackInfo({ catalogPath, vulnType, databasePath, application });
+export function loadPlan(catalogPath, vulnType = 'idor', { databasePath, application, endpoint } = {}) {
+  const source = loadAttackInfo({ catalogPath, vulnType, databasePath, application, endpoint });
   const response = source?.definition;
   const payload = response?.payloads?.find(item => item?.successCheck?.expect?.observe === 'httpResponse'
     && Number.isInteger(item.successCheck.expect.baseline?.status)
@@ -185,10 +185,10 @@ function findingStatus(plan, evidence) {
   return verify?.removed === true ? 'confirmed' : 'inconclusive';
 }
 
-export async function run({ origin, catalogPath, vulnType = 'idor', databasePath, application,
+export async function run({ origin, catalogPath, vulnType = 'idor', databasePath, application, endpoint,
   curlImpl = executeCurl, signal } = {}) {
   const allowedOrigin = exactLoopbackOrigin(origin ?? DEFAULT_ORIGIN);
-  const plan = loadPlan(catalogPath, vulnType, { databasePath, application });
+  const plan = loadPlan(catalogPath, vulnType, { databasePath, application, endpoint });
   const runId = `repeater-${vulnType}-${randomUUID()}`;
   const startedAt = new Date().toISOString();
   const request = createGuardedRequest({ origin: allowedOrigin, runId, plan, curlImpl });

@@ -5,6 +5,7 @@ const { randomUUID } = require('node:crypto');
 const SCHEMA_VERSION = 'general-assessment/1';
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 const VERDICTS = new Set(['confirmed', 'not_reproduced', 'inconclusive']);
+const VERDICT_RANK = Object.freeze({ confirmed: 3, not_reproduced: 2, inconclusive: 1, not_tested: 0 });
 const REJECTED_PROBE_REASONS = new Set(['unknown_hypothesis_id', 'unavailable_tool',
   'unsafe_probe_input', 'invalid_probe_schema', 'proposal_limit']);
 const SENSITIVE_KEY = /^(?:(?:x[-_])?(?:api[-_]?key|auth[-_]?(?:key|token)|access[-_]?token|refresh[-_]?token|csrf[-_]?token|client[-_]?secret)|authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|password|passwd|secret|token|session(?:[-_]?id)?|credentials?|private[-_]?key)$/iu;
@@ -197,23 +198,70 @@ function modelMetadata(value, iteration) {
   return metadata;
 }
 
+function normalizeIdentity(value) {
+  if (value === undefined) return undefined;
+  if (!record(value)) throw fault('INVALID_VERDICT');
+  const identity = {
+    templateId: identifier(value.templateId, 'identity_template'),
+    category: boundedString(value.category, 'identity_category', 120),
+    asset: boundedString(value.asset, 'identity_asset', 200),
+  };
+  if (value.cwe !== undefined) identity.cwe = boundedString(value.cwe, 'identity_cwe', 40);
+  return identity;
+}
+
+function pickVerdict(rows) {
+  if (!rows.length) return null;
+  const withIdentity = rows.filter(row => row.identity?.templateId);
+  if (!withIdentity.length) return rows.at(-1);
+  return withIdentity.reduce((best, row) => (VERDICT_RANK[row.status] ?? 0) >= (VERDICT_RANK[best.status] ?? 0)
+    ? row : best);
+}
+
 function buildFindings(report, verdicts) {
-  report.findings = report.hypotheses.map(hypothesis => {
+  const items = [];
+  const byTemplate = new Map();
+  for (const hypothesis of report.hypotheses) {
     const rows = verdicts.get(hypothesis.id) ?? [];
-    // The verifier judges everything known so far for the hypothesis, so its latest verdict is the finding.
-    const latest = rows.at(-1);
+    const latest = pickVerdict(rows);
     const status = latest?.status ?? 'not_tested';
     const evidenceIds = [...new Set([...hypothesis.evidenceIds, ...rows.flatMap(row => row.evidenceIds)])];
     const reason = status === 'not_tested'
       ? (report.probes.find(probe => probe.hypothesisId === hypothesis.id)?.reason ?? 'no_probe')
       : latest.reason;
+    const identity = latest?.identity;
     hypothesis.status = status;
-    return { id: `finding:${hypothesis.id}`, hypothesisId: hypothesis.id,
-      category: hypothesis.category, asset: hypothesis.asset, status, evidenceIds,
-      rationale: hypothesis.rationale, ...(reason ? { reason } : {}) };
-  });
+    const draft = {
+      id: identity ? `finding:template:${identity.templateId}` : `finding:${hypothesis.id}`,
+      hypothesisId: hypothesis.id, hypothesisIds: [hypothesis.id],
+      category: identity?.category ?? hypothesis.category,
+      asset: identity?.asset ?? hypothesis.asset, status, evidenceIds,
+      rationale: hypothesis.rationale,
+      ...(identity?.templateId ? { templateId: identity.templateId } : {}),
+      ...(identity?.cwe ? { cwe: identity.cwe } : {}),
+      ...(reason ? { reason } : {}),
+    };
+    if (!identity) {
+      items.push(draft);
+      continue;
+    }
+    const existing = byTemplate.get(identity.templateId);
+    if (!existing) {
+      byTemplate.set(identity.templateId, draft);
+      items.push(draft);
+      continue;
+    }
+    existing.hypothesisIds.push(hypothesis.id);
+    existing.evidenceIds = [...new Set([...existing.evidenceIds, ...evidenceIds])];
+    if ((VERDICT_RANK[status] ?? 0) > (VERDICT_RANK[existing.status] ?? 0)) {
+      existing.status = status;
+      existing.reason = reason;
+      existing.hypothesisId = hypothesis.id;
+    }
+  }
+  report.findings = items;
   const statuses = report.findings.map(item => item.status);
-  report.coverage = { totalHypotheses: statuses.length,
+  report.coverage = { totalHypotheses: report.hypotheses.length,
     confirmed: statuses.filter(value => value === 'confirmed').length,
     notReproduced: statuses.filter(value => value === 'not_reproduced').length,
     inconclusive: statuses.filter(value => value === 'inconclusive').length,
@@ -400,6 +448,8 @@ async function runGeneralAssessment({ target, observer, planner, policy, executo
         row.status = result.status;
         const verdict = { status: result.status, evidenceIds: refs };
         if (result.reason !== undefined) verdict.reason = boundedString(result.reason, 'verdict_reason', 512);
+        const identity = normalizeIdentity(result.identity);
+        if (identity) verdict.identity = identity;
         verdicts.set(probe.hypothesisId, [...(verdicts.get(probe.hypothesisId) ?? []), verdict]);
         await emit({ stage: 'verify', iteration, hypothesisId: probe.hypothesisId,
           probeId: probe.id, tool: probe.tool, status: result.status,

@@ -61,6 +61,44 @@ for (const safe of [false, true]) test('real SQL template packets pass guardrail
   assert.equal(guardrail.metrics().requestCount, 2);
 });
 
+test('JSON5 filters and unauthenticated delete follow-up compare through the guardrail', async t => {
+  let deleted = false;
+  const target = createServer((request, response) => {
+    const url = new URL(request.url, 'http://fixture');
+    if (request.method === 'POST' && url.pathname === '/admin/posts/1/delete') {
+      deleted = true;
+      response.writeHead(302, { location: '/admin' }).end();
+      return;
+    }
+    if (url.pathname === '/') {
+      response.writeHead(deleted ? 500 : 200, { 'content-type': 'text/html' });
+      response.end(deleted ? 'TypeError' : '<html></html>');
+      return;
+    }
+    const filters = url.searchParams.get('filters') ?? '';
+    const results = filters.includes('__proto__') ? [{ type: 'notice' }] : [{ type: 'news' }, { type: 'notice' }];
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ results }));
+  });
+  target.listen(0, '127.0.0.1');
+  await once(target, 'listening');
+  t.after(() => new Promise(resolve => target.close(resolve)));
+  const targetOrigin = 'http://127.0.0.1:' + target.address().port;
+  const json5 = guardrailPackage.createAttackToolGuardrail({ targetOrigin, allowedPaths: ['/api/search'] });
+  const del = guardrailPackage.createAttackToolGuardrail({
+    targetOrigin, allowedPaths: ['/', '/admin/posts/1/delete'] });
+  const json5Client = addClient(await setup(t), { agentId: 'json5-agent', runId: 'json5-run', guardrail: json5 });
+  const deleteClient = addClient(await setup(t), { agentId: 'delete-agent', runId: 'delete-run', guardrail: del });
+  const inherited = await json5Client.call('execute_attack_template', {
+    templateId: 'json5-inherited-filter-template', payload: '{__proto__:{type:"notice",limit:1}}' });
+  assert.equal(inherited.verification.status, 'confirmed');
+  const sequence = await deleteClient.call('execute_attack_template', {
+    templateId: 'unauth-featured-post-delete-template', payload: '1' });
+  assert.equal(sequence.verification.status, 'confirmed');
+  assert.equal(sequence.followUp.status, 500);
+  assert.equal(del.metrics().requestCount, 3);
+});
+
 test('denied capability never reaches executor; AI cannot replace target or run authority', async t => {
   let calls = 0;
   const daemon = await setup(t);

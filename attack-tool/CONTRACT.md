@@ -16,9 +16,9 @@
 | `tools/call:execute_attack_template` | `{templateId,payload}`만 허용. 선택한 템플릿의 baseline/attack을 순서대로 가드레일에 요청 |
 | `tools/call:execute_probe` | `{probe,hypothesis}`만 허용. host가 등록한 authorize와 execute callback이 있어야 실행 가능 |
 
-현재 지원하는 패킷은 `{method:"GET",path:template.request.packet.path,query:{q:payload}}`다. baseline은 같은 경로에 `template.verify.baseline.q`를 전송한다. `executor:guardrail`, GET, `q` 하나의 query 입력, `verify.mode:resultCount`를 지원하며 다른 형태는 참고용이다. 참고용 템플릿도 목록에 포함하지만 실행 요청은 거부한다. 지원하는 템플릿이 하나도 없으면 실행 도구를 노출하지 않는다. 가드레일은 서버 설정의 origin/path, 입력 형태, 1회 요청 예산을 검사한다. HTTP redirect를 따라가지 않으며 request timeout과 취소 신호를 연결한다. baseline과 attack은 각각 예산 1개를 소비한다. AI에 execute callback이나 정책 설치 기능을 제공하지 않는다.
+실행 가능한 모드는 `resultCount`(GET `q`), `inheritedFilter`(GET `filters`), `ownershipComparison`(GET `:id`와 역할 세션), `containsFields`(무인증 GET 필드), `statusSequence`(무인증 POST 후 GET), `tagAcceptance`(관리자 POST 본문 표식)이다. lodash prototype canary와 Commons Text 저장값 관찰은 참고용이며 실행 요청은 거부한다. 지원하는 템플릿이 하나도 없으면 실행 도구를 노출하지 않는다. 가드레일은 서버 설정의 origin/path, GET/POST 형태, 1회 요청 예산을 검사한다. GET redirect는 따라가지 않으며 POST 302는 상태 비교에 쓴다. baseline·attack과 있는 경우 follow-up이 각각 예산을 소비한다. AI에 execute callback이나 정책 설치 기능을 제공하지 않는다.
 
-템플릿 결과는 `{templateId,baseline,attack,verification}`이다. `verification`은 `{status,baselineCount,attackCount}`로, HTTP 200이고 잘리지 않은 JSON 배열 또는 `{results:[]}`에서만 count를 읽는다. baseline이 `verify.baseline.expect`와 같고 attack이 `verify.attack.expectMin` 이상이면 `confirmed`, 유효한 baseline에서 attack이 최소 개수 미만이면 `not_reproduced`, 나머지는 `inconclusive`다. 템플릿 `trust:unverified`는 일반적인 취약점 보증을 의미하지 않는다.
+템플릿 결과는 `{templateId,baseline,attack,followUp?,verification}`이다. `resultCount`의 `verification`은 `{status,baselineCount,attackCount}`다. 다른 모드는 상태·문자열·필드 비교로 `confirmed`/`not_reproduced`/`inconclusive`만 채운다. 템플릿 `trust:unverified`는 일반적인 취약점 보증을 의미하지 않는다.
 
 daemon은 시작할 때 전체 카탈로그를 복사한다. 목록·실행 schema·렌더링·검증은 같은 복사본을 사용하며 실행 중 Workspace 수정·삭제가 적용되지 않는다. application bridge도 이 복사본의 템플릿을 평가 자료로 사용한다. 다음 daemon 또는 평가부터 최신 카탈로그를 읽는다. Workspace 관리 API의 인증·revision·일괄 등록 계약은 [README](README.md#workspace-템플릿-관리)에 있다.
 

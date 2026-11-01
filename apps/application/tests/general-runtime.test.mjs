@@ -1003,12 +1003,147 @@ test('general runtime executes a catalog SQLi template through GET baseline and 
   const run = await done;
   assert.equal(run.status, 'completed', run.error);
   const probe = run.report.probes.find(item => item.id === 'p-sqli');
-  assert.equal(probe.status, 'not_reproduced');
+  assert.equal(probe.status, 'confirmed');
   assert.ok(queries.includes('zzqnomatch'));
   assert.ok(queries.includes("' OR '1'='1"));
   const evidence = run.report.evidence.find(item => item.id === probe.evidenceIds[0]);
   assert.equal(evidence.kind, 'template-exchange');
   assert.match(evidence.summary, /compare confirmed/u);
+  await runtime.close();
+});
+
+test('SQLi template success is recorded as sql_injection even when the planner labeled the hypothesis XSS', async () => {
+  const origin = 'http://127.0.0.1:53991';
+  const runtime = runtimeWith({
+    fixtureId: 'vul-web2-daehan', targetOrigin: origin,
+    modelId: 'deepseek-flash', runIdFactory: () => 'general-template-identity',
+    unavailableInputs: ['casper-db'],
+    fetchImpl: async url => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/api/search') {
+        const results = parsed.searchParams.get('q') === "' OR '1'='1" ? [{ id: 1, title: 'hit' }] : [];
+        return new Response(JSON.stringify({ site: '대한대학교', results }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }
+      return response(parsed.pathname);
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      const id = context.evidence[0].id;
+      return { done: false, hypotheses: [
+        { id: 'h-xss', category: 'xss_vulnerable', asset: '/news',
+          rationale: 'News search may accept script.', evidenceIds: [id] },
+        { id: 'h-sqli', category: 'sql_injection', asset: '/api/search',
+          rationale: 'Search query is interpolated.', evidenceIds: [id] },
+      ], probes: [
+        { id: 'p-xss', hypothesisId: 'h-xss', tool: 'execute_attack_template',
+          input: { templateId: 'search-sqli-template', payload: "' OR '1'='1" } },
+        { id: 'p-sqli', hypothesisId: 'h-sqli', tool: 'execute_attack_template',
+          input: { templateId: 'search-sqli-template', payload: "' OR '1'='1" } },
+      ] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  const findings = run.report.findings.filter(item => item.status === 'confirmed');
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].templateId, 'search-sqli-template');
+  assert.equal(findings[0].category, 'sql_injection');
+  assert.equal(findings[0].asset, '/api/search');
+  assert.equal(findings[0].cwe, 'CWE-89');
+  assert.equal(run.report.findings.some(item => item.category === 'xss_vulnerable'), false);
+  await runtime.close();
+});
+
+test('general runtime confirms JSON5, partner IDOR and unauthenticated delete from catalog templates', async () => {
+  const origin = 'http://127.0.0.1:53987';
+  const calls = [];
+  const runtime = runtimeWith({
+    fixtureId: 'vul-web2-daehan', targetOrigin: origin,
+    modelId: 'deepseek-flash', runIdFactory: () => 'general-template-report-items',
+    unavailableInputs: ['casper-db'],
+    fetchImpl: async (url, init = {}) => {
+      const parsed = new URL(url);
+      calls.push({ method: init.method || 'GET', path: parsed.pathname, query: parsed.search, cookie: init.headers?.cookie || '' });
+      if (parsed.pathname === '/login' && init.method === 'POST') {
+        const account = new URLSearchParams(init.body).get('username');
+        return new Response('', { status: 302,
+          headers: { location: '/mypage', 'set-cookie': `sid=${account}TOKEN1234567; HttpOnly` } });
+      }
+      if (parsed.pathname === '/api/search') {
+        const filters = parsed.searchParams.get('filters');
+        if (filters && filters.includes('__proto__')) {
+          return new Response(JSON.stringify({ site: '대한대학교', results: [{ type: 'notice' }] }), {
+            status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        const results = parsed.searchParams.get('q') === "' OR '1'='1" ? [{ id: 1 }] : [{ type: 'news' }, { type: 'notice' }];
+        return new Response(JSON.stringify({ site: '대한대학교', results }), {
+          status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname === '/api/admissions/partner/applications/1') {
+        return new Response(JSON.stringify({ id: 1, partner_user_id: 4 }), { status: 200 });
+      }
+      if (parsed.pathname === '/api/admissions/partner/applications/3') {
+        return new Response(JSON.stringify({ id: 3, partner_user_id: 5 }), { status: 200 });
+      }
+      if (parsed.pathname === '/_diag/config') {
+        return new Response(JSON.stringify({ database: 'daehan.sqlite', installedPackages: ['json5'], activeSessions: 1 }),
+          { status: 200 });
+      }
+      if (parsed.pathname === '/admin/posts/1/delete' && init.method === 'POST') {
+        return new Response('', { status: 302, headers: { location: '/admin' } });
+      }
+      if (parsed.pathname === '/') {
+        const deleted = calls.some(item => item.path === '/admin/posts/1/delete' && item.method === 'POST');
+        return new Response(deleted ? 'TypeError' : '<html><title>대한대학교</title></html>', {
+          status: deleted ? 500 : 200, headers: { 'content-type': 'text/html' } });
+      }
+      return response(parsed.pathname);
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      const id = context.evidence[0].id;
+      return { done: false, hypotheses: [
+        { id: 'h-json5', category: 'prototype_pollution', asset: '/api/search', rationale: 'JSON5 filters.', evidenceIds: [id] },
+        { id: 'h-idor', category: 'broken_access_control', asset: '/api/admissions/partner/applications/:id',
+          rationale: 'Partner object auth.', evidenceIds: [id] },
+        { id: 'h-delete', category: 'broken_access_control', asset: '/admin/posts/:id/delete',
+          rationale: 'Unauthenticated delete.', evidenceIds: [id] },
+        { id: 'h-diag', category: 'info_disclosure', asset: '/_diag/config', rationale: 'Public diagnostics.', evidenceIds: [id] },
+      ], probes: [
+        { id: 'p-json5', hypothesisId: 'h-json5', tool: 'execute_attack_template',
+          input: { templateId: 'json5-inherited-filter-template', payload: '{__proto__:{type:"notice",limit:1}}' } },
+        { id: 'p-idor', hypothesisId: 'h-idor', tool: 'execute_attack_template',
+          input: { templateId: 'access-control-idor-template', payload: '3' } },
+        { id: 'p-delete', hypothesisId: 'h-delete', tool: 'execute_attack_template',
+          input: { templateId: 'unauth-featured-post-delete-template', payload: '1' } },
+        { id: 'p-diag', hypothesisId: 'h-diag', tool: 'execute_attack_template',
+          input: { templateId: 'diag-config-disclosure-template', payload: '/_diag/config' } },
+        { id: 'p-staff', hypothesisId: 'h-idor', tool: 'execute_attack_template',
+          input: { templateId: 'wonchang-staff-idor-template', payload: '3' } },
+        { id: 'p-lodash', hypothesisId: 'h-json5', tool: 'execute_attack_template',
+          input: { templateId: 'lodash-prototype-canary-template',
+            payload: '{"path":"__proto__.ca3pTemplateProbe","value":"ca3p-lodash-canary"}' } },
+      ] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  for (const id of ['p-json5', 'p-idor', 'p-delete', 'p-diag']) {
+    assert.equal(run.report.probes.find(item => item.id === id).status, 'confirmed', id);
+  }
+  assert.equal(run.report.probes.find(item => item.id === 'p-staff').status, 'blocked');
+  assert.equal(run.report.probes.find(item => item.id === 'p-staff').reason, 'fixture_mismatch');
+  assert.equal(run.report.probes.find(item => item.id === 'p-lodash').status, 'blocked');
+  assert.equal(run.report.probes.find(item => item.id === 'p-lodash').reason, 'unsupported_template');
+  assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-json5').status, 'confirmed');
+  assert.ok(calls.some(item => item.path === '/api/admissions/partner/applications/3' && item.cookie.includes('partner1')));
+  assert.ok(calls.some(item => item.path === '/admin/posts/1/delete' && item.method === 'POST' && !item.cookie));
   await runtime.close();
 });
 

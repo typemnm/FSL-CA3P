@@ -38,7 +38,9 @@ const FIXTURES = Object.freeze({
     name: '대한대학교', siteKey: 'daehan', origin: 'http://127.0.0.1:4101',
     routes: ['/', '/about', '/admissions', '/colleges', '/academics', '/research',
       '/campus', '/facilities', '/notices', '/news', '/schedule', '/faq', '/login',
-      '/mypage', '/admin', '/api/search', '/api/admissions/partner/applications/1'],
+      '/mypage', '/admin', '/api/search', '/_diag/config',
+      '/api/admissions/partner/applications/1', '/api/admissions/partner/applications/3',
+      '/api/mypage/requests/1', '/api/mypage/requests/2', '/admin/posts/1/delete'],
     files: {
       'vul-web2/README.md': '../../vul-web2/README.md',
       'vul-web2/package.json': '../../vul-web2/package.json',
@@ -53,7 +55,9 @@ const FIXTURES = Object.freeze({
     name: '원창대학교', siteKey: 'wonchang', origin: 'http://127.0.0.1:4102',
     routes: ['/', '/about', '/admissions', '/colleges', '/academics', '/research',
       '/campus', '/facilities', '/notices', '/news', '/schedule', '/faq', '/login',
-      '/mypage', '/admin', '/api/search', '/api/staff/mobile/cases/1'],
+      '/mypage', '/admin', '/api/search', '/_diag/config', '/admin/schedule/preview',
+      '/api/staff/mobile/cases/1', '/api/staff/mobile/cases/3',
+      '/api/mypage/requests/1', '/api/mypage/requests/2', '/admin/posts/1/delete'],
     files: {
       'vul-web2/README.md': '../../vul-web2/README.md',
       'vul-web2/wonchang/pom.xml': '../../vul-web2/wonchang/pom.xml',
@@ -93,6 +97,16 @@ function utf8Prefix(value, maxBytes) {
     bytes += size;
   }
   return characters.join('');
+}
+function templateIdentity(template) {
+  const templateId = template?.templateId;
+  const category = template?.attackType?.name;
+  const asset = template?.target?.endpoint;
+  if (typeof templateId !== 'string' || typeof category !== 'string' || typeof asset !== 'string') return undefined;
+  return {
+    templateId, category, asset,
+    ...(typeof template.attackType?.cwe === 'string' ? { cwe: template.attackType.cwe } : {}),
+  };
 }
 const evidenceId = (prefix, value) => prefix + '-' + createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
 const eventIdentifier = value => typeof value === 'string'
@@ -568,7 +582,11 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         entries.push({ source: CATALOG_SOURCE, status: 'available',
           kind: 'draft-advisory', catalogVersion: catalog.schemaVersion,
           sha256: catalog.provenance.sha256, currentRunVerified: false,
-          entries: catalog.patterns.filter(item => item?.definition?.target?.application === fixtureId)
+          entries: catalog.patterns.filter(item => {
+            const application = item?.definition?.target?.application;
+            return application === fixtureId || application === config.siteKey
+              || (application === 'vul-web2' && Boolean(config.siteKey));
+          })
             .slice(0, 20).map(item => ({
               patternId: safeText(item.pattern_id ?? '').slice(0, 100),
               revision: Number.isSafeInteger(item.revision) ? item.revision : null,
@@ -653,7 +671,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         http_get: 'input {path,sessionRole?}: GET on a declared or observed pathname at the selected origin; optional sessionRole uses only a prepared fixed demo session; redirects are not followed',
         web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); once the cumulative web_info evidence budget of the run is spent, returns only a one-line overview (status, content type, list counts); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
         repository_read: 'input {file,offset?}: read only an allowlisted local source or reference excerpt',
-        execute_attack_template: 'input {templateId,payload,sessionRole?}: run a catalog GET template baseline and attack through the same origin policy, then compare result counts; only templates advertised as executable are allowed',
+        execute_attack_template: 'input {templateId,payload}: run a catalog template baseline, attack, and optional follow-up through the origin policy. Executable modes: resultCount, inheritedFilter, ownershipComparison, containsFields, statusSequence, tagAcceptance. The template pins the session role. sessionRole in the probe input is ignored.',
       },
       limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; an AI verifier judges every executed probe as valid or invalid for its hypothesis and may open a read-only browser.',
         'GET and repository references do not independently confirm most weakness classes.',
@@ -716,9 +734,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       if (probe.tool === 'execute_attack_template') {
         const input = probe.input;
         if (!record(input) || Object.keys(input).some(key => !['templateId', 'payload', 'sessionRole'].includes(key))
-          || typeof input.templateId !== 'string' || typeof input.payload !== 'string'
-          || input.sessionRole !== undefined && (typeof input.sessionRole !== 'string'
-            || !sessionCookies.has(input.sessionRole))) {
+          || typeof input.templateId !== 'string' || typeof input.payload !== 'string') {
           return { allowed: false, reason: 'invalid_execute_attack_template_input' };
         }
         let rendered;
@@ -727,13 +743,22 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           return { allowed: false, reason: error?.code === 'UNSUPPORTED_TEMPLATE'
             ? 'unsupported_template' : 'invalid_template' };
         }
-        const query = new URLSearchParams(rendered.packet.query).toString();
-        const url = safePath(rendered.packet.path + (query ? '?' + query : ''), allowedOrigin);
-        const baselineQuery = new URLSearchParams(rendered.baseline.query).toString();
-        const baselineUrl = safePath(rendered.baseline.path + (baselineQuery ? '?' + baselineQuery : ''), allowedOrigin);
-        return { allowed: Boolean(url && baselineUrl && allowedPaths.has(url.pathname)
-          && allowedPaths.has(baselineUrl.pathname) && templateExecutionSupport(rendered.template).supported),
-          reason: 'path_out_of_scope' };
+        const template = rendered.template;
+        if (Array.isArray(template.fixtures) && !template.fixtures.includes(fixtureId)) {
+          return { allowed: false, reason: 'fixture_mismatch' };
+        }
+        const role = template.sessionRole ?? 'public';
+        if (role !== 'public' && !sessionCookies.has(role)) {
+          return { allowed: false, reason: 'session_unavailable' };
+        }
+        const steps = [rendered.baseline, rendered.packet, rendered.followUp].filter(Boolean);
+        for (const item of steps) {
+          if (!['GET', 'POST'].includes(item.method)) return { allowed: false, reason: 'method_out_of_scope' };
+          const query = item.query ? new URLSearchParams(item.query).toString() : '';
+          const url = safePath(item.path + (query ? '?' + query : ''), allowedOrigin);
+          if (!url || !allowedPaths.has(url.pathname)) return { allowed: false, reason: 'path_out_of_scope' };
+        }
+        return { allowed: true, reason: 'template_authorized' };
       }
       return { allowed: false, reason: 'tool_unavailable' };
     } };
@@ -837,61 +862,72 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       }
       if (probe.tool === 'execute_attack_template') {
         const rendered = renderTemplate({ templateId: probe.input.templateId, payload: probe.input.payload });
-        const sessionRole = probe.input.sessionRole;
-        const cookie = sessionRole === undefined ? null : sessionCookies.get(sessionRole);
-        const headers = cookie ? { cookie } : undefined;
-        async function templateGet(packet, label) {
-          const query = new URLSearchParams(packet.query).toString();
+        const sessionRole = rendered.template.sessionRole ?? 'public';
+        const cookie = sessionRole === 'public' ? null : sessionCookies.get(sessionRole);
+        async function templateRequest(packet, label) {
+          const query = packet.query ? new URLSearchParams(packet.query).toString() : '';
           const url = safePath(packet.path + (query ? '?' + query : ''), allowedOrigin);
           const timeout = AbortSignal.timeout(5000);
           const combined = probeSignal ? AbortSignal.any([probeSignal, timeout]) : timeout;
-          const record = { id: probe.id + '-' + label, probeId: probe.id, iteration: run.iterations,
-            tool: probe.tool, session: sessionRole ?? 'public', method: 'GET', url: url.href };
-          const reservation = await invokeHook(beforeProbe, record);
+          const headers = {
+            ...(cookie ? { cookie } : {}),
+            ...(packet.method === 'POST' ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
+          };
+          const probeRecord = { id: probe.id + '-' + label, probeId: probe.id, iteration: run.iterations,
+            tool: probe.tool, session: sessionRole, method: packet.method, url: url.href };
+          const reservation = await invokeHook(beforeProbe, probeRecord);
           let response;
           try {
-            response = await fetchImpl(url, { method: 'GET', redirect: 'manual',
-              ...(headers ? { headers } : {}), signal: combined });
+            response = await fetchImpl(url, { method: packet.method, redirect: 'manual',
+              ...(Object.keys(headers).length ? { headers } : {}),
+              ...(packet.body ? { body: new URLSearchParams(packet.body).toString() } : {}),
+              signal: combined });
             run.targetContacted = true;
             const body = await limitedBody(response);
             let json;
             try { json = JSON.parse(body); } catch { json = undefined; }
-            return { url: url.href, status: response.status,
+            return { url: url.href, method: packet.method, status: response.status,
               headers: { 'content-type': response.headers.get('content-type') ?? '' },
               json, body, truncated: Buffer.byteLength(body, 'utf8') >= MAX_BODY_BYTES };
           } finally {
-            await invokeHook(afterProbe, record, { status: response?.status ?? null,
+            await invokeHook(afterProbe, probeRecord, { status: response?.status ?? null,
               evidenceId: evidenceId('probe', probe.id) }, reservation);
           }
         }
         try {
-          const baseline = await templateGet(rendered.baseline, 'baseline');
-          const attack = await templateGet(rendered.packet, 'attack');
-          const verification = verifyTemplate(baseline, attack, rendered.template);
+          const baseline = await templateRequest(rendered.baseline, 'baseline');
+          const attack = await templateRequest(rendered.packet, 'attack');
+          const followUp = rendered.followUp ? await templateRequest(rendered.followUp, 'followUp') : undefined;
+          const verification = verifyTemplate(baseline, attack, rendered.template, followUp);
+          const identity = templateIdentity(rendered.template);
           const baselineView = projectTemplateResponse(baseline);
           const attackView = projectTemplateResponse(attack);
           return {
             kind: 'execute_attack_template',
-            result: { status: attack.status, verification: verification.status },
+            result: { status: attack.status, verification: verification.status, ...(identity ? { identity } : {}) },
             attackRecord: {
               schemaVersion: 'attack-record/1', id: probe.id, kind: rendered.template.attackType?.name ?? 'template',
               target: { origin: allowedOrigin },
               info: { tool: 'execute_attack_template', templateId: rendered.template.templateId,
-                payload: probe.input.payload, verification: verification.status,
-                ...(sessionRole ? { session: sessionRole } : {}) },
-              request: { method: 'GET', url: attack.url, headers: {}, body: null },
+                payload: probe.input.payload, verification: verification.status, session: sessionRole },
+              request: { method: attack.method, url: attack.url, headers: {}, body: null },
               response: { status: attack.status, bodyText: attackView.bodyExcerpt,
                 truncated: attackView.truncated || attackView.excerptTruncated },
-              control: { request: { method: 'GET', url: baseline.url, headers: {}, body: null },
+              control: { request: { method: baseline.method, url: baseline.url, headers: {}, body: null },
                 response: { status: baseline.status, bodyText: baselineView.bodyExcerpt,
                   truncated: baselineView.truncated || baselineView.excerptTruncated } },
+              ...(followUp ? { followUp: { request: { method: followUp.method, url: followUp.url, headers: {}, body: null },
+                response: { status: followUp.status, bodyText: projectTemplateResponse(followUp).bodyExcerpt } } } : {}),
             },
             evidence: [{ id: evidenceId('probe', probe.id),
-              source: 'attack-tool/' + fixtureId + (sessionRole ? '/role:' + sessionRole : ''),
+              source: 'attack-tool/' + fixtureId + (sessionRole === 'public' ? '' : '/role:' + sessionRole),
               kind: 'template-exchange', asset: rendered.packet.path,
               summary: utf8Prefix(safeText('template ' + rendered.template.templateId
-                + ' baseline HTTP ' + baseline.status + ' count=' + (verification.baselineCount ?? 'none')
-                + '; attack HTTP ' + attack.status + ' count=' + (verification.attackCount ?? 'none')
+                + ' baseline HTTP ' + baseline.status
+                + (verification.baselineCount === undefined ? '' : ' count=' + (verification.baselineCount ?? 'none'))
+                + '; attack HTTP ' + attack.status
+                + (verification.attackCount === undefined ? '' : ' count=' + (verification.attackCount ?? 'none'))
+                + (followUp ? '; followUp HTTP ' + followUp.status : '')
                 + '; compare ' + verification.status), 1200) }],
           };
         } catch (error) {
@@ -908,13 +944,21 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     const judgedEvidence = new Map();
     const verifier = { async verify({ hypothesis, probe, execution, evidence, signal }) {
       const id = execution.evidence[0].id;
+      const templateStatus = execution.result?.verification;
+      if (probe.tool === 'execute_attack_template'
+        && ['confirmed', 'not_reproduced', 'inconclusive'].includes(templateStatus)) {
+        const identity = execution.result?.identity;
+        const verdict = templateStatus === 'inconclusive'
+          ? { status: 'inconclusive', evidenceIds: [id], reason: 'template_compare_inconclusive' }
+          : { status: templateStatus, completed: true, evidenceIds: [id], reason: 'template_compare_' + templateStatus };
+        return identity ? { ...verdict, identity } : verdict;
+      }
       const own = new Set(execution.evidence.map(item => item.id));
       const earlier = judgedEvidence.get(hypothesis.id) ?? [];
       const cited = evidence.filter(item => hypothesis.evidenceIds.includes(item.id) && !own.has(item.id));
       judgedEvidence.set(hypothesis.id, [...earlier, ...execution.evidence]);
       const sessions = Object.fromEntries([...sessionCookies].map(([role, cookie]) => [role,
         [{ name: cookie.slice(0, cookie.indexOf('=')), value: cookie.slice(cookie.indexOf('=') + 1) }]]));
-      // Every executed result goes to the AI verifier, which decides valid or invalid for the hypothesis.
       return judgeAttackRecord(recordForProbe({ probe, hypothesis, execution, origin: allowedOrigin,
         relatedEvidence: [...cited, ...earlier] }), { evidenceId: id, sessions, verify: verifyAttackImpl,
         outDir: verificationRoot ? join(verificationRoot, probe.id) : undefined, model: localVerifier,
