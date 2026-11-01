@@ -72,8 +72,11 @@ class Config:
         if not port_text.isdecimal() or not 1 <= int(port_text) <= 65535 or int(port_text) == 4102:
             raise ValueError("Invalid Wonchang management port")
         target_origin = env.get("CA3P_WONCHANG_TARGET_ORIGIN", "")
-        if target_origin != "http://wonchang:4102":
-            raise ValueError("Docker Wonchang reset must target http://wonchang:4102")
+        allowed_origins = {"http://wonchang:4102"}
+        if management_bind == "0.0.0.0":
+            allowed_origins.add("http://127.0.0.1:4102")
+        if target_origin not in allowed_origins:
+            raise ValueError("Docker Wonchang reset must target the Compose service or loopback origin")
         if env.get("SERVER_PORT", "4102") != "4102" or env.get("SERVER_ADDRESS") != "0.0.0.0":
             raise ValueError("Docker Wonchang must listen on 0.0.0.0:4102")
         database_path = Path(env.get("WONCHANG_DB_PATH", "/app/data/wonchang.sqlite"))

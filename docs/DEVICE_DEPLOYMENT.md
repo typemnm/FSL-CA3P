@@ -138,6 +138,14 @@ docker compose -f vul-web2/compose.yaml ps
 
 대시보드 배포가 완료된 뒤 관리자 계정으로 대학 실습을 실행한다. 현재처럼 대시보드를 Mac에서 직접 실행하면 대한대 주소는 `127.0.0.1:4101`, 원창대 주소는 `127.0.0.1:4102`다. 사이트 포트를 외부 공개하거나 Nginx Proxy Manager에 추가할 필요는 없다. 조회 전용 계정은 실행 이력과 JSON 결과를 볼 수 있지만 실행을 시작하지 못한다.
 
+대학 실습 후 대시보드 **실험 초기화**가 대한대·원창 DB와 세션까지 되돌리려면 관리 훅이 필요하다. 이 장치의 자동 배포는 `compose.reset.yaml`과 `compose.reset.host.yaml`로 supervisor를 올리고, 루프백 `127.0.0.1:54101` / `54102`만 공개한다. 토큰은 Git에서 제외된 `.runtime/experiment-reset.env`에 만들고 대시보드가 시작 시 `CA3P_EXPERIMENT_RESET_TARGETS`로 읽는다. **controller(`device-fixtures.mjs`) 변경이 들어 있는 릴리스는 설치기를 다시 실행해야** 대학 컨테이너가 supervisor로 바뀐다.
+
+```sh
+"$CA3P_NODE" scripts/install-device-deploy.mjs --config "$CA3P_DEPLOY_CONFIG" --no-start
+```
+
+설치 후 updater가 다음 확인에서 대학 이미지를 전환한다. 전환이 끝나면 `curl -fsS http://127.0.0.1:54101/health`와 `54102/health`가 200이어야 한다. 그다음 대시보드에서 실험 초기화를 다시 시도한다. 관리 포트는 호스트 루프백 전용이며 Nginx Proxy Manager에 넣지 않는다.
+
 대시보드를 Docker로 전환하면 `docker-compose.yml`(또는 `docker-compose.deploy.yml`)과 `docker-compose.vul-web2.yml`을 함께 적용한다. 대학 Compose의 전용 네트워크가 이미 존재해야 하며 입력 주소는 `daehan:4101`, `wonchang:4102`다. 컨테이너의 `127.0.0.1`은 Mac 호스트를 가리키지 않는다.
 
 대학 실습은 가상 계정 로그인 후 알려진 레코드 네 건을 읽는 IDOR 검증이며 모델 API·HWPX를 호출하지 않는다. 실행 이력의 대학명·입력 원점·증거·판정과 JSON 내보내기로 확인한다. 임의 CERT 탐색이나 vul-web2의 다른 취약점 검사는 포함하지 않는다.
