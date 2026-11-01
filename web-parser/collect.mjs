@@ -395,19 +395,22 @@ async function extractSettled(page, cdp, { waitUntil, deadline, guard, gotoLoade
       if (!/destroyed|Cannot find context|navigat/i.test(err.message)) throw err;
     }
     // A client redirect landing may report readyState complete while the HTML body is still arriving.
-    // Wait for that response to finish once, then read again.
     const landing = Boolean(read && read.loaderId !== gotoLoader && read.loaderId !== waitedFor);
-    if (landing) {
-      waitedFor = read.loaderId;
-      const lastNav = docs.filter((r) => r.request().isNavigationRequest() && !r.request().redirectedTo()).at(-1);
-      if (lastNav) await bounded(lastNav.finished(), remaining() / 2).catch(() => {});
-      await page.waitForLoadState(waitUntil, { timeout: remaining() / 2 }).catch(() => {
-        if (read) onLoadTimeout();
-      });
-      continue;
+    const unloaded = landing && read.value.readyState !== 'complete';
+    if (read && !unloaded) {
+      if (landing) {
+        waitedFor = read.loaderId;
+        const lastNav = docs.filter((r) => r.request().isNavigationRequest() && !r.request().redirectedTo()).at(-1);
+        if (lastNav) await bounded(lastNav.finished(), remaining() / 2).catch(() => {});
+        try {
+          const again = await guard('extract', evaluateIn(cdp, extractPage, [limits], remaining(), true), remaining());
+          if (again && again.loaderId === read.loaderId) read = again;
+        } catch (err) {
+          if (!/destroyed|Cannot find context|navigat/i.test(err.message)) throw err;
+        }
+      }
+      return { ...read.value, loaderId: read.loaderId };
     }
-    const unloaded = read && read.loaderId !== gotoLoader && read.value.readyState !== 'complete';
-    if (read && !unloaded) return { ...read.value, loaderId: read.loaderId };
     if (read) waitedFor = read.loaderId;
     // Half the time left, so the next attempt still reads what committed even if the new document never loads.
     await page.waitForLoadState(waitUntil, { timeout: remaining() / 2 }).catch(() => {
