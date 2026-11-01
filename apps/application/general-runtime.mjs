@@ -471,7 +471,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   async function verifyFixtureIdentity(allowedOrigin, currentSignal) {
     if (!config.siteKey) return;
     const checks = [
-      { id: 'identity-home', path: '/', expect: body => body.includes(config.name) },
+      { id: 'identity-home', path: '/about', expect: body => body.includes(config.name) },
       { id: 'identity-api', path: '/api/search?q=ca3p-identity',
         expect: body => {
           try { return JSON.parse(body)?.site === config.name; } catch { return false; }
@@ -1099,16 +1099,26 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       }
       let plan;
       try {
-        const slimPage = page => ({ path: page.path, status: page.status, title: page.title,
-          forms: page.forms, securityHeaderValues: page.securityHeaderValues });
+        const slimPage = page => {
+          const slim = { path: page.path, status: page.status };
+          if (page.title !== undefined) slim.title = page.title;
+          if (page.forms !== undefined) slim.forms = page.forms;
+          if (page.securityHeaderValues !== undefined) slim.securityHeaderValues = page.securityHeaderValues;
+          return slim;
+        };
         const slimInventory = inventory ? {
           ...inventory,
           pages: (inventory.pages ?? []).map(slimPage),
           authenticatedPages: (inventory.authenticatedPages ?? []).map(slimPage),
           attackTool: inventory.attackTool ? {
-            ...inventory.attackTool,
+            transport: inventory.attackTool.transport,
+            flow: inventory.attackTool.flow,
+            templateExecution: inventory.attackTool.templateExecution,
+            ...(Array.isArray(inventory.attackTool.endpoints)
+              && inventory.attackTool.endpoints.every(item => typeof item === 'string')
+              ? { endpoints: inventory.attackTool.endpoints } : {}),
             templates: (inventory.attackTool.templates ?? []).map(template => ({
-              templateId: template.templateId, attackType: template.attackType, target: template.target,
+              templateId: typeof template === 'string' ? template : template.templateId,
             })),
           } : inventory.attackTool,
         } : context.inventory;

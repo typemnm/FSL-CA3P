@@ -221,6 +221,10 @@ function ownerSignature(response) {
 export function verifyTemplate(baseline, attack, template, followUp) {
   const mode = template?.verify?.mode;
   if (mode === 'resultCount') {
+    if (baseline?.truncated || attack?.truncated) {
+      return { status: 'inconclusive', baselineCount: resultRows(baseline)?.length ?? null,
+        attackCount: resultRows(attack)?.length ?? null };
+    }
     const baselineCount = resultRows(baseline)?.length ?? null;
     const attackCount = resultRows(attack)?.length ?? null;
     const expectedBaseline = template?.verify?.baseline?.expect ?? 0;

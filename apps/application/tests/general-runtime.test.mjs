@@ -340,7 +340,7 @@ test('wrong private service fails identity binding before the model or general p
   const run = await done;
   assert.equal(run.status, 'failed');
   assert.equal(run.error, 'FIXTURE_IDENTITY_MISMATCH');
-  assert.deepEqual(paths, ['/']);
+  assert.deepEqual(paths, ['/about']);
   assert.equal(modelUsed, false);
   await runtime.close();
 });
@@ -352,11 +352,11 @@ test('a timed-out secondary page is recorded as unavailable without ending the a
     runIdFactory: () => 'page-timeout',
     fetchImpl: async url => {
       const path = new URL(url).pathname;
-      if (path === '/about') throw new DOMException('The read timed out.', 'TimeoutError');
+      if (path === '/admissions') throw new DOMException('The read timed out.', 'TimeoutError');
       return response(path);
     },
     plannerFactory: () => ({ async propose(context) {
-      sawUnavailable = context.evidence.some(item => item.kind === 'unavailable' && item.asset === '/about');
+      sawUnavailable = context.evidence.some(item => item.kind === 'unavailable' && item.asset === '/admissions');
       return { done: true, hypotheses: [], probes: [] };
     } }),
   });
@@ -365,7 +365,7 @@ test('a timed-out secondary page is recorded as unavailable without ending the a
   const run = await done;
   assert.equal(run.status, 'completed');
   assert.equal(sawUnavailable, true);
-  assert.equal(run.report.inventory.pages.find(page => page.path === '/about').status, null);
+  assert.equal(run.report.inventory.pages.find(page => page.path === '/admissions').status, null);
   await runtime.close();
 });
 
@@ -1029,8 +1029,8 @@ test('general runtime routes vulnerability workers through two daemon ports and 
     fetchImpl: async url => response(new URL(url).pathname),
     plannerFactory: () => ({ async propose(context) {
       advertised = context.inventory.attackTool;
-      assert.deepEqual(advertised.templates.map(item => item.templateId).sort(),
-        expectedTemplates.map(item => item.templateId).sort());
+      const advertisedIds = advertised.templates.map(item => typeof item === 'string' ? item : item.templateId);
+      assert.deepEqual(advertisedIds.sort(), expectedTemplates.map(item => item.templateId).sort());
       assert.equal(new Set(advertised.endpoints).size, 2);
       if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
       const evidenceIds = [context.evidence[0].id];

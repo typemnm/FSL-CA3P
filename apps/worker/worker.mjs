@@ -13,6 +13,8 @@ import { join } from 'node:path';
 import { generateReportDocument } from '../../packages/report/index.mjs';
 
 const GENERAL_DOCUMENTS_SCHEMA_VERSION = 'general-report-documents/1';
+const publicDocumentMessage = value => (typeof value === 'string'
+  && /^[a-z][a-z0-9 .:-]{0,199}$/u.test(value) ? value : 'HWPX 보고서 생성에 실패했습니다.');
 
 function generalDocumentsStatus(items) {
   if (!items.length || items.every(item => item.status === 'skipped')) return 'skipped';
@@ -261,16 +263,14 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
                     ...previews, filename: document.filename,
                     message: 'HWPX 보고서 초안이 준비되었습니다. 내려받은 뒤 검토하세요.' };
                 } else document = { status: ['failed', 'unavailable', 'skipped'].includes(document?.status) ? document.status : 'failed',
-                  message: document?.message, errorCode: document?.errorCode ?? 'REPORT_GENERATION_FAILED' };
+                  message: publicDocumentMessage(document?.message),
+                  errorCode: document?.errorCode ?? 'REPORT_GENERATION_FAILED' };
               } catch (error) {
                 // A document failure must not change the inspection or other documents.
-                const message = typeof error?.message === 'string' && error.message.length <= 300
-                  && !/[\r\n]/u.test(error.message)
-                  ? error.message : 'HWPX 보고서 생성에 실패했습니다.';
                 document = { status: 'failed',
                   errorCode: typeof error?.code === 'string' && /^REPORT_[A-Z_]+$/u.test(error.code)
                     ? error.code : 'REPORT_GENERATION_FAILED',
-                  message };
+                  message: publicDocumentMessage(error?.message) };
               }
               Object.assign(item, document, { completedAt: new Date().toISOString() });
               saveProgress();

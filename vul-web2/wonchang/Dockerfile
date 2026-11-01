@@ -32,5 +32,5 @@ ENV SERVER_PORT=4102 WONCHANG_DB_PATH=/app/data/wonchang.sqlite \
     JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=/tmp -Dorg.sqlite.lib.path=/app/native -Djava.library.path=/app/native"
 EXPOSE 4102
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl --fail --silent --show-error http://127.0.0.1:4102/ >/dev/null || exit 1
+  CMD curl --fail --silent --show-error http://127.0.0.1:4102/about >/dev/null || exit 1
 ENTRYPOINT ["java", "-jar", "/app/wonchang.jar"]

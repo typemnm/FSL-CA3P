@@ -131,7 +131,7 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     if (result.code !== 0 || response.ok !== true) {
       const source = response?.error?.code === 'SOURCE_INVALID'
         && typeof response.error.message === 'string'
-        && /^[A-Za-z][A-Za-z0-9 .:_-]{0,199}$/u.test(response.error.message)
+        && /^[a-z][a-z0-9 .:-]{0,199}$/u.test(response.error.message)
         ? response.error.message : null;
       throw failure(result.code === 8 ? 'REPORT_LLM_FAILED' : 'REPORT_GENERATION_FAILED',
         source ?? 'HWPX 보고서 생성에 실패했습니다.');
