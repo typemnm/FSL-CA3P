@@ -191,7 +191,8 @@ export async function collect(url, opts) {
     if (!gotoErr || loadTimedOut) {
       try {
         snap = await bounded(extractSettled(page, cdp, {
-          waitUntil, deadline: began + timeoutMs * EXTRACT_SHARE, guard, gotoLoader, onLoadTimeout: () => fail('load', new Error('timeout')),
+          waitUntil, deadline: began + timeoutMs * EXTRACT_SHARE, guard, gotoLoader, docs,
+          onLoadTimeout: () => fail('load', new Error('timeout')),
         }), left(EXTRACT_SHARE));
       } catch (err) {
         fail('extract', err);
@@ -382,7 +383,7 @@ function indexPaths(info) {
 }
 
 // Extracts from the committed document, re-extracting while a client-side redirect replaces it.
-async function extractSettled(page, cdp, { waitUntil, deadline, guard, gotoLoader, onLoadTimeout }) {
+async function extractSettled(page, cdp, { waitUntil, deadline, guard, gotoLoader, onLoadTimeout, docs = [] }) {
   const limits = { maxHtml: MAX_HTML_LENGTH, maxItems: MAX_STRUCTURE_ITEMS, maxText: MAX_TEXT_LENGTH, budget: MAX_SNAPSHOT_TEXT };
   const remaining = () => Math.max(1, deadline - Date.now());
   let waitedFor = null;
@@ -393,9 +394,19 @@ async function extractSettled(page, cdp, { waitUntil, deadline, guard, gotoLoade
     } catch (err) {
       if (!/destroyed|Cannot find context|navigat/i.test(err.message)) throw err;
     }
-    // A client redirect's landing document may be read mid-parse (body still arriving): wait for it once, as goto
-    // does for the first document, then read again.
-    const unloaded = read && read.loaderId !== gotoLoader && read.loaderId !== waitedFor && read.value.readyState !== 'complete';
+    // A client redirect landing may report readyState complete while the HTML body is still arriving.
+    // Wait for that response to finish once, then read again.
+    const landing = Boolean(read && read.loaderId !== gotoLoader && read.loaderId !== waitedFor);
+    if (landing) {
+      waitedFor = read.loaderId;
+      const lastNav = docs.filter((r) => r.request().isNavigationRequest() && !r.request().redirectedTo()).at(-1);
+      if (lastNav) await bounded(lastNav.finished(), remaining() / 2).catch(() => {});
+      await page.waitForLoadState(waitUntil, { timeout: remaining() / 2 }).catch(() => {
+        if (read) onLoadTimeout();
+      });
+      continue;
+    }
+    const unloaded = read && read.loaderId !== gotoLoader && read.value.readyState !== 'complete';
     if (read && !unloaded) return { ...read.value, loaderId: read.loaderId };
     if (read) waitedFor = read.loaderId;
     // Half the time left, so the next attempt still reads what committed even if the new document never loads.
