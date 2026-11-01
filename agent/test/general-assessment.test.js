@@ -177,7 +177,7 @@ test('template identity remaps category and merges duplicate template findings',
   }));
   assert.equal(report.status, 'completed');
   assert.equal(report.findings.length, 1);
-  assert.equal(report.findings[0].id, 'finding:template:search-sqli-template');
+  assert.equal(report.findings[0].id, 'finding:template:search-sqli-template:api-search');
   assert.equal(report.findings[0].category, 'sql_injection');
   assert.equal(report.findings[0].asset, '/api/search');
   assert.equal(report.findings[0].templateId, 'search-sqli-template');

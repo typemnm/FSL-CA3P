@@ -1,22 +1,51 @@
 {
   "templateId": "access-control-idor-template",
-  "title": "대한대학교 협력기관 상세 조회 IDOR",
+  "title": "협력기관 상세 조회 IDOR",
   "description": "partner 역할 세션으로 본인 접수 ID 1과 다른 담당자 접수 ID 3을 조회합니다. 응답의 partner_user_id가 4에서 5로 바뀌면 객체 인가 부재입니다. 200만으로 확정하지 않습니다.",
   "sessionRole": "owner",
-  "fixtures": ["vul-web2-daehan"],
-  "attackType": { "name": "broken_access_control", "cwe": "CWE-285" },
-  "dependency": { "runtime": "node", "framework": "express", "library": "node:sqlite" },
-  "target": { "method": "GET", "endpoint": "/api/admissions/partner/applications/:id" },
-  "request": { "packet": { "method": "GET", "path": "/api/admissions/partner/applications/:id" } },
-  "blanks": {
-    "origin": { "required": true, "type": "url" },
-    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "다른 담당자의 접수 ID입니다. 기준 요청은 ID 1입니다." }
+  "attackType": {
+    "name": "broken_access_control",
+    "cwe": "CWE-285"
   },
-  "payloads": ["3"],
+  "dependency": {
+    "runtime": "node",
+    "framework": "express",
+    "library": "node:sqlite"
+  },
+  "target": {
+    "method": "GET",
+    "endpoint": "/api/admissions/partner/applications/:id"
+  },
+  "request": {
+    "packet": {
+      "method": "GET",
+      "path": "/api/admissions/partner/applications/:id"
+    }
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url"
+    },
+    "payload": {
+      "required": true,
+      "type": "string",
+      "pickFrom": "payloads",
+      "desc": "다른 담당자의 접수 ID입니다. 기준 요청은 ID 1입니다."
+    }
+  },
+  "payloads": [
+    "3"
+  ],
   "verify": {
     "mode": "ownershipComparison",
-    "baseline": { "path": "/api/admissions/partner/applications/1", "status": 200, "contains": "\"partner_user_id\":4" },
-    "attack": { "status": 200, "contains": "\"partner_user_id\":5" }
+    "baseline": {
+      "path": "/api/admissions/partner/applications/1",
+      "status": 200
+    },
+    "attack": {
+      "status": 200
+    }
   },
   "executor": "guardrail",
   "trust": "unverified"

@@ -2,18 +2,53 @@
   "templateId": "lodash-prototype-canary-template",
   "title": "lodash 프로토타입 오염 canary 점검",
   "sessionRole": "admin",
-  "fixtures": ["vul-web2-daehan"],
-  "description": "대한대학교 lodash@4.17.15의 CVE-2020-8203 경로입니다. 관리자 POST /admin/settings 가 path를 lodash.set에 전달합니다. 오염 여부는 같은 Node 프로세스의 Object.prototype 관찰이 필요해서 HTTP 비교만으로는 확정하지 않습니다. 현재 자동 실행기는 지원하지 않습니다.",
-  "attackType": { "name": "prototype_pollution", "cwe": "CWE-1321" },
-  "dependency": { "runtime": "node", "framework": "express", "library": "lodash" },
-  "target": { "method": "POST", "endpoint": "/admin/settings" },
-  "request": { "packet": { "method": "POST", "path": "/admin/settings", "body": { "payload": "{{payload}}" } } },
-  "blanks": {
-    "origin": { "required": true, "type": "url" },
-    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "격리 인스턴스의 관리자 세션에서만 폼 payload 필드로 전송합니다. 확인 후 프로토타입 canary를 삭제합니다." }
+  "description": "lodash@4.17.15의 CVE-2020-8203 경로입니다. 관리자 POST /admin/settings 가 path를 lodash.set에 전달합니다. 오염 여부는 같은 Node 프로세스의 Object.prototype 관찰이 필요해서 HTTP 비교만으로는 확정하지 않습니다. 현재 자동 실행기는 지원하지 않습니다.",
+  "attackType": {
+    "name": "prototype_pollution",
+    "cwe": "CWE-1321"
   },
-  "payloads": ["{\"path\":\"__proto__.ca3pTemplateProbe\",\"value\":\"ca3p-lodash-canary\"}"],
-  "verify": { "mode": "prototypeCanary", "baseline": { "status": 302 }, "attack": { "status": 302 } },
+  "dependency": {
+    "runtime": "node",
+    "framework": "express",
+    "library": "lodash"
+  },
+  "target": {
+    "method": "POST",
+    "endpoint": "/admin/settings"
+  },
+  "request": {
+    "packet": {
+      "method": "POST",
+      "path": "/admin/settings",
+      "body": {
+        "payload": "{{payload}}"
+      }
+    }
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url"
+    },
+    "payload": {
+      "required": true,
+      "type": "string",
+      "pickFrom": "payloads",
+      "desc": "격리 인스턴스의 관리자 세션에서만 폼 payload 필드로 전송합니다. 확인 후 프로토타입 canary를 삭제합니다."
+    }
+  },
+  "payloads": [
+    "{\"path\":\"__proto__.ca3pTemplateProbe\",\"value\":\"ca3p-lodash-canary\"}"
+  ],
+  "verify": {
+    "mode": "prototypeCanary",
+    "baseline": {
+      "status": 302
+    },
+    "attack": {
+      "status": 302
+    }
+  },
   "executor": "guardrail",
   "trust": "unverified"
 }

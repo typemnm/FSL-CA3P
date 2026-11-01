@@ -1,0 +1,21 @@
+{
+  "templateId": "query-idor-template",
+  "title": "질의 ID 상세 조회 IDOR",
+  "sessionRole": "owner",
+  "attackType": { "name": "broken_access_control", "cwe": "CWE-285" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "node:sqlite" },
+  "target": { "method": "GET", "endpoint": "/admissions/partner" },
+  "request": { "packet": { "method": "GET", "path": "/admissions/partner", "query": { "id": "{{payload}}" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["3"],
+  "verify": {
+    "mode": "ownershipComparison",
+    "baseline": { "path": "/admissions/partner", "query": { "id": "1" }, "status": 200 },
+    "attack": { "status": 200 }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

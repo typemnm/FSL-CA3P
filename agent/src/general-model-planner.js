@@ -18,6 +18,7 @@ Use the supplied inventory, evidence IDs, prior hypotheses, usedProbeIds, remain
 For this response, do not exceed proposalLimits.maxHypotheses new hypotheses or proposalLimits.maxProbes probes. Use JSON booleans and arrays, not strings or null, for done, hypotheses, and probes.
 The hypotheses field lists only NEW hypotheses. You may refer to an existing hypothesis ID in a probe, but do not redeclare it. Every probe ID must be unique across this run; never reuse an ID from usedProbeIds.
 Only suggest tools listed in availableTools. Do not invent evidence IDs, credentials, shell commands, headers, or targets outside the observed inventory. Do not claim a vulnerability is confirmed; an independent verifier decides that from later evidence.
+Bind execute_attack_template probes to observed pathnames from inventory. Prefer inventory.remainingTemplateIds. Do not select a template because of a site name. Do not repeat IDs in usedProbeIds.
 Return JSON only, with exactly these top-level keys: done (boolean), hypotheses (array), probes (array).
 Each hypothesis must have exactly: id (string), category (string), asset (string), rationale (string), evidenceIds (array of existing evidence IDs).
 Each probe must have exactly: id (string), hypothesisId (string), tool (available tool ID), input (JSON object containing no credentials or shell commands).

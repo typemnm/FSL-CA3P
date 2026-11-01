@@ -1,26 +1,58 @@
 {
   "templateId": "snakeyaml-type-tag-template",
   "title": "SnakeYAML Java 타입 태그 수용 점검",
-  "description": "원창대학교 관리자 세션에서 YAML 미리보기에 부작용 없는 java.util.ArrayList 타입 태그를 넣습니다. 미리보기 응답에 canary가 보이면 기본 Constructor가 타입 태그를 수용한 근거입니다. 임의 코드 실행은 입증하지 않습니다.",
+  "description": "관리자 세션에서 YAML 미리보기에 부작용 없는 java.util.ArrayList 타입 태그를 넣습니다. 미리보기 응답에 canary가 보이면 기본 Constructor가 타입 태그를 수용한 근거입니다. 임의 코드 실행은 입증하지 않습니다.",
   "sessionRole": "admin",
-  "fixtures": ["vul-web2-wonchang"],
-  "attackType": { "name": "unsafe_deserialization", "cwe": "CWE-502" },
-  "dependency": { "runtime": "java", "framework": "spring-boot", "library": "snakeyaml" },
-  "target": { "method": "POST", "endpoint": "/admin/schedule/preview" },
-  "request": { "packet": { "method": "POST", "path": "/admin/schedule/preview", "body": { "payload": "{{payload}}" } } },
-  "blanks": {
-    "origin": { "required": true, "type": "url" },
-    "payload": { "required": true, "type": "string", "pickFrom": "payloads", "desc": "관리자 세션에서 폼 payload 값으로 전송합니다." }
+  "attackType": {
+    "name": "unsafe_deserialization",
+    "cwe": "CWE-502"
   },
-  "payloads": ["!!java.util.ArrayList [CA3P_SNAKEYAML_CANARY]"],
+  "dependency": {
+    "runtime": "java",
+    "framework": "spring-boot",
+    "library": "snakeyaml"
+  },
+  "target": {
+    "method": "POST",
+    "endpoint": "/admin/schedule/preview"
+  },
+  "request": {
+    "packet": {
+      "method": "POST",
+      "path": "/admin/schedule/preview",
+      "body": {
+        "payload": "{{payload}}"
+      }
+    }
+  },
+  "blanks": {
+    "origin": {
+      "required": true,
+      "type": "url"
+    },
+    "payload": {
+      "required": true,
+      "type": "string",
+      "pickFrom": "payloads",
+      "desc": "관리자 세션에서 폼 payload 값으로 전송합니다."
+    }
+  },
+  "payloads": [
+    "!!java.util.ArrayList [CA3P_SNAKEYAML_CANARY]"
+  ],
   "verify": {
     "mode": "tagAcceptance",
     "baseline": {
       "status": 200,
-      "body": { "payload": "events: [{title: CA3P_SNAKEYAML_BASELINE}]" },
+      "body": {
+        "payload": "events: [{title: CA3P_SNAKEYAML_BASELINE}]"
+      },
       "contains": "CA3P_SNAKEYAML_BASELINE"
     },
-    "attack": { "status": 200, "contains": "CA3P_SNAKEYAML_CANARY" }
+    "attack": {
+      "status": 200,
+      "contains": "CA3P_SNAKEYAML_CANARY"
+    }
   },
   "executor": "guardrail",
   "trust": "unverified"

@@ -231,8 +231,9 @@ function buildFindings(report, verdicts) {
       : latest.reason;
     const identity = latest?.identity;
     hypothesis.status = status;
+    const assetKey = String(identity?.asset ?? hypothesis.asset).replace(/[^A-Za-z0-9]+/gu, '-').replace(/^-|-$/gu, '').slice(0, 80);
     const draft = {
-      id: identity ? `finding:template:${identity.templateId}` : `finding:${hypothesis.id}`,
+      id: identity ? `finding:template:${identity.templateId}:${assetKey}` : `finding:${hypothesis.id}`,
       hypothesisId: hypothesis.id, hypothesisIds: [hypothesis.id],
       category: identity?.category ?? hypothesis.category,
       asset: identity?.asset ?? hypothesis.asset, status, evidenceIds,
@@ -245,9 +246,10 @@ function buildFindings(report, verdicts) {
       items.push(draft);
       continue;
     }
-    const existing = byTemplate.get(identity.templateId);
+    const mergeKey = identity.templateId + '\n' + identity.asset;
+    const existing = byTemplate.get(mergeKey);
     if (!existing) {
-      byTemplate.set(identity.templateId, draft);
+      byTemplate.set(mergeKey, draft);
       items.push(draft);
       continue;
     }
