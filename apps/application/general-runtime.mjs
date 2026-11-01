@@ -98,6 +98,16 @@ function utf8Prefix(value, maxBytes) {
   }
   return characters.join('');
 }
+function templateIdentity(template) {
+  const templateId = template?.templateId;
+  const category = template?.attackType?.name;
+  const asset = template?.target?.endpoint;
+  if (typeof templateId !== 'string' || typeof category !== 'string' || typeof asset !== 'string') return undefined;
+  return {
+    templateId, category, asset,
+    ...(typeof template.attackType?.cwe === 'string' ? { cwe: template.attackType.cwe } : {}),
+  };
+}
 const evidenceId = (prefix, value) => prefix + '-' + createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
 const eventIdentifier = value => typeof value === 'string'
   && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value) ? value : undefined;
@@ -889,11 +899,12 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           const attack = await templateRequest(rendered.packet, 'attack');
           const followUp = rendered.followUp ? await templateRequest(rendered.followUp, 'followUp') : undefined;
           const verification = verifyTemplate(baseline, attack, rendered.template, followUp);
+          const identity = templateIdentity(rendered.template);
           const baselineView = projectTemplateResponse(baseline);
           const attackView = projectTemplateResponse(attack);
           return {
             kind: 'execute_attack_template',
-            result: { status: attack.status, verification: verification.status },
+            result: { status: attack.status, verification: verification.status, ...(identity ? { identity } : {}) },
             attackRecord: {
               schemaVersion: 'attack-record/1', id: probe.id, kind: rendered.template.attackType?.name ?? 'template',
               target: { origin: allowedOrigin },
@@ -936,9 +947,11 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       const templateStatus = execution.result?.verification;
       if (probe.tool === 'execute_attack_template'
         && ['confirmed', 'not_reproduced', 'inconclusive'].includes(templateStatus)) {
-        return templateStatus === 'inconclusive'
+        const identity = execution.result?.identity;
+        const verdict = templateStatus === 'inconclusive'
           ? { status: 'inconclusive', evidenceIds: [id], reason: 'template_compare_inconclusive' }
           : { status: templateStatus, completed: true, evidenceIds: [id], reason: 'template_compare_' + templateStatus };
+        return identity ? { ...verdict, identity } : verdict;
       }
       const own = new Set(execution.evidence.map(item => item.id));
       const earlier = judgedEvidence.get(hypothesis.id) ?? [];

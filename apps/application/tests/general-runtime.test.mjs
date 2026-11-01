@@ -1012,6 +1012,52 @@ test('general runtime executes a catalog SQLi template through GET baseline and 
   await runtime.close();
 });
 
+test('SQLi template success is recorded as sql_injection even when the planner labeled the hypothesis XSS', async () => {
+  const origin = 'http://127.0.0.1:53991';
+  const runtime = runtimeWith({
+    fixtureId: 'vul-web2-daehan', targetOrigin: origin,
+    modelId: 'deepseek-flash', runIdFactory: () => 'general-template-identity',
+    unavailableInputs: ['casper-db'],
+    fetchImpl: async url => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/api/search') {
+        const results = parsed.searchParams.get('q') === "' OR '1'='1" ? [{ id: 1, title: 'hit' }] : [];
+        return new Response(JSON.stringify({ site: '대한대학교', results }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }
+      return response(parsed.pathname);
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      const id = context.evidence[0].id;
+      return { done: false, hypotheses: [
+        { id: 'h-xss', category: 'xss_vulnerable', asset: '/news',
+          rationale: 'News search may accept script.', evidenceIds: [id] },
+        { id: 'h-sqli', category: 'sql_injection', asset: '/api/search',
+          rationale: 'Search query is interpolated.', evidenceIds: [id] },
+      ], probes: [
+        { id: 'p-xss', hypothesisId: 'h-xss', tool: 'execute_attack_template',
+          input: { templateId: 'search-sqli-template', payload: "' OR '1'='1" } },
+        { id: 'p-sqli', hypothesisId: 'h-sqli', tool: 'execute_attack_template',
+          input: { templateId: 'search-sqli-template', payload: "' OR '1'='1" } },
+      ] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  const findings = run.report.findings.filter(item => item.status === 'confirmed');
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].templateId, 'search-sqli-template');
+  assert.equal(findings[0].category, 'sql_injection');
+  assert.equal(findings[0].asset, '/api/search');
+  assert.equal(findings[0].cwe, 'CWE-89');
+  assert.equal(run.report.findings.some(item => item.category === 'xss_vulnerable'), false);
+  await runtime.close();
+});
+
 test('general runtime confirms JSON5, partner IDOR and unauthenticated delete from catalog templates', async () => {
   const origin = 'http://127.0.0.1:53987';
   const calls = [];
