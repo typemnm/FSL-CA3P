@@ -58,6 +58,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
   generalPlannerFactory, generalFetchImpl, generalBoardFactory } = {}) {
   const store = createRunRepository({ path: storePath });
   let stopping = false; let runtime = null; let activeLease = null; let activeController = null; let busy = false; let timer; let shutdownTask;
+  let persistenceError = null;
   const notify = () => { if (process.connected) process.send({ type: 'state' }); };
   const cancel = runId => { if (activeLease?.runId === runId) {
     activeController?.abort();
@@ -102,7 +103,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         || lease.options.fixtureId !== null)) {
         throw Object.assign(new Error('External assessment requires its general profile and a registered model.'), { code: 'INVALID_EXTERNAL_RUN' });
       }
-      let persistenceError = null;
+      persistenceError = null;
       const historyProvider = () => store.listRuns({ limit: 50 }).items
         .filter(item => item.id !== lease.runId && (externalRun
           ? item.mode === 'external-general' && item.manifest?.target?.origin === lease.options.scope.origin
@@ -120,6 +121,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       runtime = (externalRun ? externalRuntimeFactory : generalLab ? generalRuntimeFactory
         : idorRuntimeFactory)({ fixtureId: lease.options.fixtureId,
         targetOrigin: lease.options.target,
+        approvalRequired: !externalRun,
         ...(externalRun ? { targetUrl: lease.options.target, scope: lease.options.scope,
           ...(externalRequestImpl ? { requestImpl: externalRequestImpl } : {}) } : {}),
         caseSnapshot: lease.options.caseSnapshot,
@@ -314,9 +316,42 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       if (!stopping) timer = setTimeout(tick, pollMs);
     }
   }
+  async function decideApproval({ runId, approvalId, decision, actor } = {}) {
+    if (!activeLease || activeLease.runId !== runId || !runtime
+      || !['approve', 'reject'].includes(decision)
+      || typeof approvalId !== 'string' || typeof actor !== 'string') {
+      throw Object.assign(new Error('Approval request is no longer pending.'), { status: 409 });
+    }
+    store.assertLease(activeLease);
+    const before = store.getRun(runId);
+    if (before?.status !== 'running' || before.pendingApproval?.id !== approvalId
+      || typeof runtime.decideApproval !== 'function') {
+      throw Object.assign(new Error('Approval request is no longer pending.'), { status: 409 });
+    }
+    const result = await runtime.decideApproval({ id: approvalId, decision, actor });
+    if (persistenceError) {
+      throw Object.assign(new Error('Approval decision could not be recorded.'), { status: 503 });
+    }
+    const after = store.getRun(runId);
+    if (!after || after.pendingApproval?.id === approvalId) {
+      throw Object.assign(new Error('Approval decision was not persisted.'), { status: 503 });
+    }
+    notify();
+    return result ?? { id: approvalId, decision: decision === 'approve' ? 'approved' : 'rejected', actor };
+  }
   const onMessage = message => {
     if (message?.type === 'cancel') cancel(message.runId);
     if (message?.type === 'wake' && !busy) { clearTimeout(timer); void tick(); }
+    if (message?.type === 'approval-decision' && typeof message.commandId === 'string') {
+      void decideApproval(message).then(approval => {
+        if (process.connected) process.send({ type: 'approval-result', commandId: message.commandId,
+          ok: true, approval });
+      }, failure => {
+        if (process.connected) process.send({ type: 'approval-result', commandId: message.commandId,
+          ok: false, status: failure?.status === 409 ? 409 : 503,
+          error: failure?.status === 409 ? 'Approval request is no longer pending.' : 'Approval decision could not be recorded.' });
+      });
+    }
     if (message?.type === 'shutdown') void shutdown();
   };
   function shutdown() {
@@ -332,7 +367,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
   }
   process.on('message', onMessage);
   void tick();
-  return { shutdown, store, owner };
+  return { shutdown, decideApproval, store, owner };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

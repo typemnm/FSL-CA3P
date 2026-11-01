@@ -138,3 +138,30 @@ test('incomplete or rejected experiment reset does not accept a cleared state', 
   await assert.rejects(client.resetExperiment(), /Active worker/);
   assert.ok(states.every(value => value.run.id === 'run-a'));
 });
+
+test('approval decisions use the authenticated CSRF request and leave state updates to the server', async t => {
+  const calls = []; const states = [];
+  const client = createRuntimeClient({ hostname: 'remote.example', pollIntervalMs: 1000,
+    onState: value => states.push(value), onConnection() {}, onError: assert.fail,
+    fetchImpl: async (path, options) => {
+      calls.push({ path, options });
+      if (path === '/api/auth/session') return response(session);
+      if (path.startsWith('/api/runs/')) return response({ id: 'approval-a', decision: 'approved' });
+      return response(envelope);
+    },
+  });
+  t.after(() => client.close());
+  await client.connect();
+  await pause(10);
+  const before = states.length;
+  const result = await client.decideApproval('run /?', 'approval /?', 'approve');
+  assert.deepEqual(result, { id: 'approval-a', decision: 'approved' });
+  const call = calls.find(value => value.path.startsWith('/api/runs/'));
+  assert.equal(call.path, '/api/runs/run%20%2F%3F/approvals/approval%20%2F%3F');
+  assert.equal(call.options.method, 'POST');
+  assert.equal(call.options.headers['X-CSRF-Token'], 'csrf-a');
+  assert.equal(call.options.credentials, 'same-origin');
+  assert.deepEqual(JSON.parse(call.options.body), { decision: 'approve' });
+  assert.equal(states.length, before, 'a decision response must not replace the server state');
+  assert.throws(() => client.decideApproval('run-a', 'approval-a', 'allow'), /Unsupported approval decision/);
+});

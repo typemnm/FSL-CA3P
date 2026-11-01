@@ -143,6 +143,9 @@ const reviewDrafts = new Map();
 const pendingReviews = new Set();
 let historyReviewSignature = '';
 let controlPending = false;
+let approvalSubmissionId = null;
+let approvalSentId = null;
+let approvalActionError = '';
 let inspectedRun = null;
 let legacyDetail = null;
 let selectedModule = 'parser';
@@ -204,6 +207,7 @@ function isExternalObservation(item) { return isExternalRun(item)
     || item.modelId === 'rule-baseline'); }
 function isAiLab(item) { return item?.mode === 'local-lab-deepseek' || isGeneralAssessment(item) && !isExternalObservation(item); }
 function canOperate() { return authSession && (!authSession.authRequired || authSession.authenticated) && authSession.user?.role !== 'viewer'; }
+function canApprove() { return canOperate() && authSession.user?.role === 'admin'; }
 function selectedFixture() { return $('fixture-select').value || 'vul-web-1'; }
 function selectedIdorFixture() { return IDOR_FIXTURES[selectedFixture()]; }
 function selectedModel() { return models.find(item => item.id === $('model-select').value); }
@@ -283,6 +287,7 @@ function acceptState(envelope) {
       (next.step < run.step || (next.step === run.step && rank[next.status] < rank[run.status]))) return;
   const previousStatus = run.status;
   const previousId = run.id;
+  const previousApprovalId = run.pendingApproval?.id;
   if (!sameInstance && instanceId !== null) notify('로컬 런타임이 다시 시작되었습니다. 서버의 현재 상태를 표시합니다.');
   instanceId = envelope.instanceId;
   labReadiness = isObject(envelope.lab) && typeof envelope.lab.available === 'boolean'
@@ -292,6 +297,9 @@ function acceptState(envelope) {
       targetOrigins: isObject(envelope.lab.targetOrigins) ? envelope.lab.targetOrigins : {} }
     : { available: false };
   run = structuredClone(next);
+  if (run.pendingApproval?.id !== previousApprovalId) {
+    approvalSubmissionId = null; approvalSentId = null; approvalActionError = '';
+  }
   if (resetViews) renderAllExperimentViews();
   saveRun();
   if (next.id !== previousId || next.status !== previousStatus) void refreshHistory();
@@ -309,7 +317,7 @@ function acceptState(envelope) {
 }
 const runtime = createRuntimeClient({
   onState: acceptState,
-  onConnection(state, transport) { connection = state; connectionTransport = transport || connectionTransport; renderStats(); },
+  onConnection(state, transport) { connection = state; connectionTransport = transport || connectionTransport; renderStats(); renderApproval(); },
   onError: showRuntimeError,
   onSession: acceptSession,
   onAuthRequired: requireLogin,
@@ -355,6 +363,71 @@ function navigate(view) {
 }
 function historyReplace(view) { window.history.replaceState(null, '', `#${viewToRoute[view] || 'workspace/attack'}`); }
 
+function liveApproval() {
+  const approval = run.pendingApproval;
+  return run.status === 'running' && isObject(approval)
+    && typeof approval.id === 'string' && ['general-probe', 'rule-idor'].includes(approval.kind)
+    ? approval : null;
+}
+function approvalDisplayTarget(value) {
+  try {
+    const url = new URL(String(value));
+    return ['http:', 'https:'].includes(url.protocol) ? url.origin : '대상 정보 확인 불가';
+  } catch { return '대상 정보 확인 불가'; }
+}
+function approvalFieldsText(value) {
+  if (!Array.isArray(value)) return '';
+  return value.slice(0, 6).filter(isObject).map(field =>
+    `${String(field.name ?? '').slice(0, 48)}=${JSON.stringify(String(field.value ?? '').slice(0, 160))}`).join(', ');
+}
+function renderApproval() {
+  const approval = liveApproval();
+  const panel = $('hitl-panel');
+  panel.hidden = !approval;
+  if (!approval) return;
+  const summary = isObject(approval.summary) ? approval.summary : {};
+  const rule = approval.kind === 'rule-idor';
+  const target = approvalDisplayTarget(summary.target);
+  const path = typeof summary.path === 'string' ? summary.path.split(/[?#]/u, 1)[0].slice(0, 300) : '경로 정보 없음';
+  const query = approvalFieldsText(summary.query);
+  const steps = Array.isArray(summary.steps) ? summary.steps.slice(0, 3).filter(isObject) : [];
+  const expiresAt = Date.parse(approval.expiresAt);
+  $('hitl-title').textContent = rule ? 'IDOR 검사 전체 승인 대기' : 'Agent probe 실행 승인 대기';
+  $('hitl-description').textContent = `${run.id} 실행에서 ${rule ? '등록된 IDOR 검사 전체' : `${approval.probeId || '다음 probe'}`}의 실행을 기다리고 있습니다.`;
+  $('hitl-deadline').textContent = Number.isFinite(expiresAt) ? `응답 기한 ${dateLabel(approval.expiresAt)}` : '응답 기한 확인 중';
+  $('hitl-target').textContent = target;
+  $('hitl-action').textContent = `${summary.method || 'GET'} · ${summary.tool || '도구 정보 없음'}${summary.sessionRole ? ` · 역할 ${String(summary.sessionRole).slice(0, 64)}` : ''}${Number.isInteger(summary.requestCount) ? ` · 요청 ${summary.requestCount}회` : ''}`;
+  $('hitl-path').textContent = path + (query ? ` ? ${query}` : '')
+    + (Number.isInteger(summary.offset) ? ` · offset ${summary.offset}` : '');
+  $('hitl-hypothesis').textContent = typeof summary.hypothesis === 'string' ? summary.hypothesis : '가설 정보 없음';
+  $('hitl-template-row').hidden = typeof summary.templateId !== 'string';
+  $('hitl-template').textContent = typeof summary.templateId === 'string'
+    ? `${summary.templateId}${summary.templateTitle ? ` · ${summary.templateTitle}` : ''}${summary.templateDescription ? ` · ${summary.templateDescription}` : ''}` : '';
+  $('hitl-steps-row').hidden = steps.length === 0;
+  $('hitl-steps').replaceChildren(...steps.map(step => {
+    const item = document.createElement('li');
+    const phase = { baseline: '기준', attack: '검사', followUp: '사후 확인' }[step.phase] || '요청';
+    const stepQuery = approvalFieldsText(step.query);
+    const stepBody = approvalFieldsText(step.body);
+    item.textContent = `${phase}: ${String(step.method ?? '').slice(0, 12)} ${String(step.path ?? '').slice(0, 300)}`
+      + (stepQuery ? ` ? ${stepQuery}` : '')
+      + (stepBody ? ` · 본문 ${stepBody}` : '')
+      + (typeof step.bodySha256 === 'string' ? ` · 본문 SHA-256 ${step.bodySha256.slice(0, 64)}` : '');
+    return item;
+  }));
+  $('hitl-note').textContent = approvalSentId === approval.id ? '결정 전달 후 서버의 실행 상태를 확인하고 있습니다.'
+    : canApprove() ? rule ? '한 번의 승인으로 데모 로그인 3회와 고정 GET 4회가 실행됩니다. 거절하거나 기한이 지나면 검사를 미점검으로 기록합니다.'
+      : steps.length ? `승인하면 표시된 ${steps.length}개 요청이 이 probe의 작업으로 실행됩니다. 거절하거나 기한이 지나면 건너뜁니다.`
+        : '승인하면 이 probe만 실행됩니다. 거절하거나 기한이 지나면 이 probe를 건너뜁니다.'
+      : '관리자 계정으로 로그인해야 승인하거나 거절할 수 있습니다.';
+  $('hitl-error').textContent = approvalActionError;
+  $('hitl-error').hidden = !approvalActionError;
+  const disabled = !canApprove() || connection !== 'connected' || approvalSubmissionId === approval.id
+    || approvalSentId === approval.id || target === '대상 정보 확인 불가' || !Number.isFinite(expiresAt);
+  $('hitl-approve').disabled = disabled;
+  $('hitl-reject').disabled = disabled;
+}
+
 function renderStats() {
   const item = currentRun();
   const general = isGeneralAssessment(item);
@@ -374,16 +447,17 @@ function renderStats() {
   $('history-banner').hidden = !inspectedRun || !['dashboard', 'sessions', 'compare', 'reports'].includes(activeView);
   $('execution-label').textContent = activeView === 'chat' ? 'WORKSPACE / AI CHAT' : !item.id ? 'WORKSPACE / READY' : isExternalObservation(item) ? 'EXTERNAL / READ ONLY' : general ? 'GENERAL / EVIDENCE' : isIdorLab(item) ? 'REAL LAB / IDOR' : lab ? isAiLab(item) ? 'REAL LAB / DEEPSEEK' : 'REAL LAB / RULE' : 'SIMULATED / FIXTURE';
   $('dashboard-mode').textContent = !item.id ? '점검 대기 · 자산에서 대상을 선택하세요' : isExternalObservation(item) ? '외부 URL · 공개 페이지 읽기 관찰' : general ? '범용 점검 결과 · 지원된 관측 범위' : isIdorLab(item) ? modeLabel(item) : lab ? `실제 코어 / 격리 게시판 + ${isAiLab(item) ? 'DeepSeek' : '규칙 엔진'}` : '실제 코어 / 외부 모듈 fixture';
-  $('progress-label').textContent = !item.id ? '점검 대기' : general
+  $('progress-label').textContent = !inspectedRun && liveApproval() ? '관리자 승인 대기 · 검사 실행 전' : !item.id ? '점검 대기' : general
     ? generalCounts ? `가설 ${generalCounts.totalHypotheses}건 · ${statusNames[item.status] || item.status}`
       : `결과 대기 · ${statusNames[item.status] || item.status}`
-    : item.status === 'completed' ? '모든 이벤트 수신 완료' : `수신한 코어 이벤트 · ${statusNames[item.status]}`;
+    : isIdorLab(item) && item.report?.finding?.status === 'not_tested' ? 'IDOR 검사 미실행 · 미점검'
+      : item.status === 'completed' ? '모든 이벤트 수신 완료' : `수신한 코어 이벤트 · ${statusNames[item.status]}`;
   $('progress-number').textContent = general
     ? generalCounts ? `${item.events.length} events · 검사 ${generalCounts.probes}건`
       : `${item.events.length} events · 기록된 검사 ID ${generalObservedProbeCount(item)}개`
     : `${item.events.length} events`;
-  $('core-state').textContent = inspectedRun ? 'SAVED SESSION' : !connected ? connection === 'connecting' ? 'CONNECTING' : 'CONNECTION LOST' : {queued:'QUEUED',preparing:'LAB PREPARING',running:'CORE RUNNING',stopping:'CORE STOPPING',stopped:'CORE STOPPED',cancelled:'CANCELLED',interrupted:'INTERRUPTED',completed:'CORE COMPLETE',failed:'CORE FAILED',idle:'READY TO START'}[item.status];
-  $('live-label').innerHTML = `<span class="tiny-dot ${connected && running ? 'green' : 'gray'}"></span>${inspectedRun ? 'SAVED' : !connected ? 'OFFLINE' : running ? 'LIVE' : 'IDLE'}`;
+  $('core-state').textContent = inspectedRun ? 'SAVED SESSION' : !connected ? connection === 'connecting' ? 'CONNECTING' : 'CONNECTION LOST' : liveApproval() ? 'AWAITING APPROVAL' : {queued:'QUEUED',preparing:'LAB PREPARING',running:'CORE RUNNING',stopping:'CORE STOPPING',stopped:'CORE STOPPED',cancelled:'CANCELLED',interrupted:'INTERRUPTED',completed:'CORE COMPLETE',failed:'CORE FAILED',idle:'READY TO START'}[item.status];
+  $('live-label').innerHTML = `<span class="tiny-dot ${connected && running ? 'green' : 'gray'}"></span>${inspectedRun ? 'SAVED' : !connected ? 'OFFLINE' : liveApproval() ? 'WAITING' : running ? 'LIVE' : 'IDLE'}`;
   $('connection-status').textContent = connectionLabel;
   $('connection-dot').className = `tiny-dot ${connected ? 'green' : 'gray'}`;
   $('connection-notice').hidden = connected;
@@ -614,13 +688,23 @@ function renderReports() {
     return;
   }
   const lab = isLab(item);
-  const note = isIdorLab(item)
+  const idorSkipped = isIdorLab(item) && item.report?.finding?.status === 'not_tested';
+  const skipReason = item.report?.stopReason === 'approval_timeout' || item.report?.reason === 'approval_timeout'
+    ? '30분 승인 기한이 지나' : '관리자가 실행을 거절해';
+  const note = idorSkipped ? `${skipReason} IDOR 검사를 실행하지 않았습니다. HTTP 증거와 취약점 판정은 없습니다.` : isIdorLab(item)
     ? `${escape(idorFixture(item)?.name || 'vul-web2')}의 등록된 실습 원점(${escape(item.target || '준비 중')})에서 알려진 가상 레코드의 IDOR를 검사합니다. 본인·다른 담당자·학생 세션의 조회 결과를 대조합니다. ${item.targetContacted ? '실습 사이트의 HTTP 응답을 수신했습니다.' : '아직 실습 사이트의 HTTP 응답을 수신하지 못했습니다.'} 정해진 검증 범위의 결과이며, 사이트 전체의 취약점 탐지나 자율 CERT 조사 결과를 뜻하지 않습니다. AI 모델과 브라우저를 사용하지 않습니다.`
     : isXssLab(item)
     ? `서버가 생성한 격리된 로컬 게시판(${escape(item.target || '준비 중')})에서 XSS 가설 한 건을 검사합니다. ${item.targetContacted ? '실습 사이트에 HTTP 요청을 보냈습니다.' : '아직 실습 사이트로 보낸 HTTP 요청은 없습니다.'} ${isAiLab(item) ? 'DeepSeek가 선택한' : '규칙 엔진이 만든'} 구조화된 curl 요청은 정책 검사를 거쳐 전송하며, finding은 동일 시험 게시글의 브라우저 실행 증거로 판정합니다. 입력 URL은 사용하지 않습니다.`
     : lab ? `서버가 생성한 격리된 로컬 게시판(${escape(item.target || '준비 중')})에서 삭제 권한 가설 한 건을 검사했습니다. 입력 URL은 사용하지 않았습니다.`
     : 'RunOnce와 RuleReasoningEngine의 실제 코어 실행 결과입니다. 외부 모듈의 응답은 scripted fixture이며, 입력 URL은 표시용 메타데이터입니다. 실제 대상에 접속하거나 취약점을 확인하지 않았습니다.';
   $('report-content').innerHTML = `<section class="panel report-top"><div><div class="eyebrow">${lab ? 'ISOLATED LOCAL LAB REPORT' : 'CORE FIXTURE REPORT'}</div><h2>${isIdorLab(item) ? `${escape(idorFixture(item)?.name || 'vul-web2')} IDOR 실행 결과` : lab ? '로컬 실습 게시판 실행 결과' : '코어 실행 결과와 fixture 검토 항목'}</h2><p>${escape(item.target || '실행 전')}</p><small>${escape(statusNames[item.status])} · ${item.events.length}개 수신 이벤트 · ${escape(formatElapsed(item.elapsedMs))}</small></div><div class="report-count"><strong>${String(item.reviewItems.length).padStart(2,'0')}</strong><span>${lab ? '로컬 실습 검토 항목' : 'fixture 검토 항목'}</span></div></section><div class="report-items">${item.reviewItems.length ? item.reviewItems.map((review) => `<article class="panel report-item"><span class="review-tag"><span class="tiny-dot"></span>${lab ? review.vulnerabilityConfirmed ? 'LOCAL LAB · CONFIRMED' : 'LOCAL LAB · REVIEW' : 'FIXTURE · UNCONFIRMED'}</span><h2>${escape(review.title)}</h2><p>${escape(review.description)}</p><div class="evidence-box"><strong>${lab ? 'LOCAL LAB' : 'FIXTURE'} EVIDENCE / ${escape(review.evidenceId)}</strong>${escape(review.evidence)}</div></article>`).join('') : `<section class="panel empty-state"><span data-icon="file"></span><h3>최종 ${lab ? '실습' : 'fixture'} 결과 대기</h3><p>코어 실행 완료 후 검토 항목이 표시됩니다.</p></section>`}</div><div class="report-note">${note}</div>${item.report ? `<section class="panel core-report"><h2>${icon('file')}${isIdorLab(item) ? 'IDOR 최종 리포트' : 'RunOnce 최종 리포트'}</h2><p>${isIdorLab(item) ? '정해진 조회 권한 검증 결과' : '코어가 반환한 결과'} · 내부 실행 ID ${escape(item.coreRunId || '—')} · 코어 origin ${escape(item.coreTargetOrigin || (lab ? '—' : 'http://127.0.0.1:3000'))}</p><pre tabindex="0" aria-label="${isIdorLab(item) ? 'IDOR' : 'RunOnce'} 최종 리포트 JSON">${highlightJSON(item.report)}</pre></section>` : ''}`;
+  if (idorSkipped) {
+    const empty = $('report-content').querySelector('.report-items .empty-state');
+    if (empty) {
+      empty.querySelector('h3').textContent = '미점검 · 검사 미실행';
+      empty.querySelector('p').textContent = `${skipReason} 대상에 접촉하지 않았습니다. 취약점 여부를 판정할 증거가 없습니다.`;
+    }
+  }
   $('report-content').insertAdjacentHTML('afterbegin', reportDocumentMarkup(item));
   hydrateIcons($('report-content'));
   if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
@@ -632,6 +716,7 @@ function renderNotifications() {
 function render() {
   $('history-count').textContent = history.length;
   renderStats();
+  renderApproval();
   if (activeView === 'dashboard') { renderInspector(); renderHistoryChecks(); }
   if (activeView === 'sessions') renderSessions();
   if (activeView === 'modules') renderModules();
@@ -773,6 +858,30 @@ $('stop-button').addEventListener('click', async () => {
   if (inspectedRun || !['queued','preparing','running'].includes(run.status)) return;
   await submitControl(() => runtime.stop(run.id));
 });
+async function submitApproval(decision) {
+  const approval = liveApproval();
+  if (!approval || !canApprove() || connection !== 'connected'
+    || approvalSubmissionId === approval.id || approvalSentId === approval.id) return;
+  const runId = run.id;
+  approvalSubmissionId = approval.id;
+  approvalActionError = '';
+  renderApproval();
+  try {
+    await runtime.decideApproval(runId, approval.id, decision);
+    approvalSentId = approval.id;
+    notify(decision === 'approve' ? '승인 결정을 전달했습니다. 실행 상태를 확인합니다.' : '이번 검사를 건너뛰도록 전달했습니다.');
+  } catch (error) {
+    approvalActionError = error.message;
+    if (error.status === 409) approvalSentId = approval.id;
+  } finally {
+    approvalSubmissionId = null;
+    renderApproval();
+  }
+  try { acceptState(await runtime.api('/api/state')); }
+  catch { /* The existing SSE or polling connection will refresh the authoritative state. */ }
+}
+$('hitl-approve').addEventListener('click', () => void submitApproval('approve'));
+$('hitl-reject').addEventListener('click', () => void submitApproval('reject'));
 $('new-session-button').addEventListener('click', async () => {
   if (['queued','preparing','running','stopping'].includes(run.status)) return;
   await submitControl(async () => {
@@ -915,6 +1024,7 @@ function requireLogin() {
   authSession = { ...authSession, authenticated: false, authRequired: true, user: null };
   history = []; centralHistoryLoaded = false; inspectedRun = null; legacyDetail = null; comparison = null; platform = null; ciResults = null; ciError = ''; models = [];
   reviewDrafts.clear(); pendingReviews.clear(); historyReviewSignature = '';
+  approvalSubmissionId = null; approvalSentId = null; approvalActionError = '';
   run = { id: '', target: '', status: 'idle', startedAt: null, elapsedMs: 0, step: 0, totalSteps: 0, iterations: 0, events: [], snapshots: {}, reviewItems: [], mode: 'core-fixture', simulated: true, targetContacted: false };
   $('user-name').textContent = '로그인 필요'; $('user-role').textContent = '인증된 세션으로 접근';
   $('logout-button').hidden = true;

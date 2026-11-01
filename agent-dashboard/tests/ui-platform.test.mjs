@@ -33,7 +33,7 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const browser = await chromium.launch({ headless: true,
     executablePath: process.env.CA3P_PLAYWRIGHT_EXECUTABLE || undefined });
-  const page = await browser.newPage(); const errors = []; const mutations = []; const reviews = []; const resets = [];
+  const page = await browser.newPage(); const errors = []; const mutations = []; const reviews = []; const resets = []; const approvals = [];
   page.on('pageerror', error => errors.push(error.message));
   let authenticated = false; let state = reportOptions.state ?? idle; let detailCalls = 0; let resetError = reportOptions.resetError; let serverEpoch = 0;
   const stateEnvelope = () => {
@@ -108,6 +108,12 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
       const item = runs.find(row => row.id === review[1]); item.historyWrite.checks[0].review_status = 'reviewed'; item.historyWrite.checks[0].review_note = request.postDataJSON().note;
       return json({ reviewed: true });
     }
+    const approval = /^\/api\/runs\/([^/]+)\/approvals\/([^/]+)$/.exec(path);
+    if (approval && request.method() === 'POST') {
+      approvals.push({ runId: approval[1], approvalId: approval[2], body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] });
+      state = { ...state, pendingApproval: null };
+      return json({ id: approval[2], decision: request.postDataJSON().decision === 'approve' ? 'approved' : 'rejected' });
+    }
     if (path.startsWith('/api/runs/')) { detailCalls += 1; return json({ run: runs.find(item => item.id === path.split('/').pop()) }); }
     return json({});
   });
@@ -124,7 +130,7 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   await page.waitForFunction(() => document.querySelector('#connection-status').textContent.includes('연결됨'));
   await page.locator('[data-view=assets]').click();
   await page.locator('#view-assets').waitFor({ state: 'visible' });
-  return { page, mutations, reviews, resets, errors, detailCalls: () => detailCalls,
+  return { page, mutations, reviews, resets, approvals, errors, detailCalls: () => detailCalls,
     setResetError(value) { resetError = value; },
     advanceExperiment() { state = idle; runs.splice(0); serverEpoch += 1; },
     setReportDocument(value) { runs[0].reportDocument = value; } };
@@ -218,6 +224,84 @@ test('an active run keeps model selection disabled', async t => {
     { models: resetModels, state: { ...snapshot('active', 'local-lab-rule'), status: 'running' } });
   assert.equal(await page.locator('#model-select').isDisabled(), true);
   assert.equal(resets.length, 0);
+  assert.deepEqual(errors, []);
+});
+
+test('admin sees a bounded pending probe and decides once through the server', async t => {
+  const approval = { id: 'approval-a', kind: 'general-probe', probeId: 'probe-a',
+    summary: { tool: 'http_get', method: 'GET', target: 'http://127.0.0.1:4101',
+      path: '/records/3?token=hidden', query: [{ name: 'q', value: "' OR '1'='1" }],
+      hypothesis: '<img src=x onerror=alert(1)>' },
+    requestedAt: '2026-10-31T10:00:00.000Z', expiresAt: '2030-10-31T10:30:00.000Z', actionDigest: 'a'.repeat(64) };
+  const state = { ...snapshot('approval-run', 'local-lab-general'), status: 'running',
+    assessmentMode: 'general', pendingApproval: approval };
+  const { page, approvals, errors } = await setup(t, 'admin', null, { state });
+  await page.locator('[data-view=dashboard]').click();
+  await page.locator('#hitl-panel').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#progress-label').textContent(), /관리자 승인 대기/);
+  assert.equal(await page.locator('#hitl-target').textContent(), 'http://127.0.0.1:4101');
+  assert.match(await page.locator('#hitl-path').textContent(), /\/records\/3 \? q=/u);
+  assert.doesNotMatch(await page.locator('#hitl-path').textContent(), /token=hidden/u);
+  assert.equal(await page.locator('#hitl-panel img').count(), 0);
+  assert.equal(await page.locator('#hitl-approve').isEnabled(), true);
+  assert.equal(await page.locator('#stop-button').isEnabled(), true);
+  await page.locator('#hitl-approve').click();
+  await page.locator('#hitl-panel').waitFor({ state: 'hidden' });
+  assert.deepEqual(approvals, [{ runId: 'approval-run', approvalId: 'approval-a', body: { decision: 'approve' }, csrf: 'csrf-live' }]);
+  assert.deepEqual(errors, []);
+});
+
+test('template approval shows every request, role and POST before a decision', async t => {
+  const state = { ...snapshot('approval-template', 'local-lab-general'), status: 'running',
+    assessmentMode: 'general', pendingApproval: { id: 'approval-template-a', kind: 'general-probe',
+      probeId: 'probe-delete', summary: { tool: 'execute_attack_template', method: 'POST',
+        target: 'http://127.0.0.1:4101', path: '/admin/posts/1/delete', sessionRole: 'public',
+        requestCount: 3, hypothesis: 'broken_access_control',
+        templateId: 'unauth-featured-post-delete-template', templateTitle: '비로그인 대표 공지 삭제',
+        steps: [{ phase: 'baseline', method: 'GET', path: '/' },
+          { phase: 'attack', method: 'POST', path: '/admin/posts/1/delete' },
+          { phase: 'followUp', method: 'GET', path: '/' }] },
+      requestedAt: '2026-10-31T10:00:00.000Z', expiresAt: '2030-10-31T10:30:00.000Z',
+      actionDigest: 'b'.repeat(64) } };
+  const { page, approvals, errors } = await setup(t, 'admin', null, { state });
+  await page.locator('[data-view=dashboard]').click();
+  await page.locator('#hitl-panel').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#hitl-action').textContent(), /POST.*역할 public.*요청 3회/u);
+  assert.match(await page.locator('#hitl-template').textContent(), /unauth-featured-post-delete-template/u);
+  assert.deepEqual(await page.locator('#hitl-steps li').allTextContents(), [
+    '기준: GET /', '검사: POST /admin/posts/1/delete', '사후 확인: GET /']);
+  assert.deepEqual(approvals, []);
+  assert.deepEqual(errors, []);
+});
+
+test('operator can inspect an approval request but cannot decide it', async t => {
+  const state = { ...snapshot('approval-run', 'local-lab-rule'), status: 'running',
+    pendingApproval: { id: 'approval-rule', kind: 'rule-idor', summary: {
+      tool: 'known_record_idor_read', method: 'GET', target: 'http://127.0.0.1:4101',
+      path: '/api/records/{1,3}', hypothesis: 'CWE-639', requestCount: 4 },
+    requestedAt: '2026-10-31T10:00:00.000Z', expiresAt: '2030-10-31T10:30:00.000Z' } };
+  const { page, approvals, errors } = await setup(t, 'operator', null, { state });
+  await page.locator('[data-view=dashboard]').click();
+  await page.locator('#hitl-panel').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#hitl-note').textContent(), /관리자 계정/);
+  assert.equal(await page.locator('#hitl-approve').isDisabled(), true);
+  assert.equal(await page.locator('#hitl-reject').isDisabled(), true);
+  assert.equal(await page.locator('#stop-button').isEnabled(), true);
+  assert.deepEqual(approvals, []);
+  assert.deepEqual(errors, []);
+});
+
+test('completed IDOR approval rejection is displayed as untested, without a vulnerability claim', async t => {
+  const state = { ...snapshot('idor-skipped', 'local-lab-rule'), fixtureId: 'vul-web2-daehan',
+    testProfile: 'known_record_idor_read', target: 'http://127.0.0.1:4101',
+    targetContacted: false, reviewItems: [], report: { status: 'completed', stopReason: 'human_rejected',
+      finding: { category: 'CWE-639', status: 'not_tested' }, evidence: [] } };
+  const { page, errors } = await setup(t, 'viewer', null, { state });
+  await page.locator('[data-view=dashboard]').click();
+  assert.match(await page.locator('#progress-label').textContent(), /미점검/);
+  await page.locator('[data-view=reports]').click();
+  assert.match(await page.locator('#report-content').textContent(), /미점검 · 검사 미실행/);
+  assert.match(await page.locator('#report-content').textContent(), /취약점 판정은 없습니다/);
   assert.deepEqual(errors, []);
 });
 
@@ -596,9 +680,15 @@ test('dashboard reads and compares two actual persisted worker runs through the 
   const finish = async () => {
     const state = await service.startLab({ fixtureId: 'vul-web2-daehan', target: `http://127.0.0.1:${university.address().port}` });
     const end = Date.now() + 15000;
+    let approvedId = null;
     while (Date.now() < end) {
       const run = service.getRun(state.run.id);
       if (['completed', 'failed', 'interrupted'].includes(run.status)) { assert.equal(run.status, 'completed', run.error); return run; }
+      if (run.pendingApproval?.id && run.pendingApproval.id !== approvedId) {
+        approvedId = run.pendingApproval.id;
+        const result = await service.decideApproval(run.id, approvedId, 'approve', 'admin');
+        assert.equal(result.approval.decision, 'approved');
+      }
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     assert.fail('Actual lab worker did not complete');

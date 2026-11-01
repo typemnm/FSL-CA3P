@@ -21,7 +21,7 @@ test('agent source no longer imports or implements Web Explorer and ActionPolicy
     .filter(entry => entry.isFile()).map(entry => entry.name).sort();
   assert.deepEqual(files, [
     'deepseek-client.js', 'deepseek-config.js',
-    'general-assessment.js', 'general-model-planner.js',
+    'general-assessment.js', 'general-model-planner.js', 'hitl-approval.js',
     'index.js', 'model-definitions.js',
     'protocol.js', 'xss-canary.js',
   ]);

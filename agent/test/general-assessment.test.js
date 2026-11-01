@@ -219,15 +219,18 @@ test('same category and asset keep distinct hypothesis findings and evidence', a
 
 test('mandatory policy blocks execution and leaves the hypothesis not tested', async () => {
   let calls = 0;
+  let approvalCalls = 0;
   let policyHypothesis;
   const events = [];
   const { report } = await runGeneralAssessment(ports({
     policy: { async authorize({ hypothesis }) { policyHypothesis = hypothesis;
       hypothesis.asset = '/tampered'; return { allowed: false, reason: 'unsafe' }; } },
+    approval: { async request() { approvalCalls += 1; return { id: 'unused', decision: 'approved' }; } },
     executor: { async execute() { calls += 1; return { evidence: [] }; } },
     onEvent: event => events.push(event),
   }));
   assert.equal(calls, 0);
+  assert.equal(approvalCalls, 0);
   assert.equal(policyHypothesis.category, 'access-control');
   assert.equal(policyHypothesis.id, 'access-1');
   assert.equal(report.status, 'completed');
@@ -239,6 +242,79 @@ test('mandatory policy blocks execution and leaves the hypothesis not tested', a
     { hypothesisCount: 1, probeCount: 1, evidenceCount: 1, confirmedProbeCount: 0,
       notReproducedProbeCount: 0, inconclusiveProbeCount: 0,
       blockedProbeCount: 1, remainingProbeBudget: 3 });
+});
+
+test('human approval runs after policy and before the executor', async () => {
+  const calls = [];
+  const { report } = await runGeneralAssessment(ports({
+    policy: { async authorize() { calls.push('policy'); return { allowed: true }; } },
+    approval: { async request({ probe, hypothesis, target: approvalTarget, iteration }) {
+      calls.push('approval');
+      assert.equal(probe.id, 'read-other-record');
+      assert.equal(hypothesis.id, 'access-1');
+      assert.deepEqual(approvalTarget, target);
+      assert.equal(iteration, 1);
+      probe.input.path = '/tampered';
+      return { id: 'approval-1', decision: 'approved' };
+    } },
+    executor: { async execute({ probe }) { calls.push('execute');
+      assert.equal(probe.input.path, '/records/1');
+      return { evidence: [{ id: 'probe-1',
+      source: 'http-read', kind: 'http', summary: 'Approved response.' }] }; } },
+  }));
+  assert.deepEqual(calls, ['policy', 'approval', 'execute']);
+  assert.deepEqual(report.probes[0].approval, { id: 'approval-1', decision: 'approved' });
+  assert.equal(report.findings[0].status, 'confirmed');
+});
+
+test('rejected and timed out approvals skip execution without retrying the probe', async () => {
+  for (const decision of ['rejected', 'timed_out']) {
+    let executions = 0;
+    const events = [];
+    const { report } = await runGeneralAssessment(ports({
+      approval: { async request() { return { id: 'approval-1', decision }; } },
+      executor: { async execute() { executions += 1; return { evidence: [] }; } },
+      onEvent: event => events.push(event),
+    }));
+    assert.equal(executions, 0);
+    assert.equal(report.status, 'completed');
+    assert.equal(report.partial, true);
+    assert.equal(report.budget.usedProbes, 1);
+    assert.equal(report.probes[0].status, 'blocked');
+    assert.equal(report.probes[0].reason,
+      decision === 'rejected' ? 'human_rejected' : 'approval_timeout');
+    assert.equal(report.findings[0].status, 'not_tested');
+    assert.equal(events.find(event => event.stage === 'approval').status, decision);
+    assert.equal(events.find(event => event.stage === 'approval').progress.blockedProbeCount, 1);
+  }
+});
+
+test('invalid approval decision fails closed', async () => {
+  let executions = 0;
+  const { report } = await runGeneralAssessment(ports({
+    approval: { async request() { return { id: 'approval-1', decision: 'unexpected' }; } },
+    executor: { async execute() { executions += 1; return { evidence: [] }; } },
+  }));
+  assert.equal(executions, 0);
+  assert.equal(report.status, 'failed');
+  assert.equal(report.error.code, 'INVALID_APPROVAL_DECISION');
+});
+
+test('a retained policy reference cannot change a probe while approval is pending', async () => {
+  let retainedProbe;
+  let executions = 0;
+  const { report } = await runGeneralAssessment(ports({
+    policy: { async authorize({ probe }) { retainedProbe = probe; return { allowed: true }; } },
+    approval: { async request() {
+      await Promise.resolve();
+      retainedProbe.input.path = '/different-record';
+      return { id: 'approval-1', decision: 'approved' };
+    } },
+    executor: { async execute() { executions += 1; return { evidence: [] }; } },
+  }));
+  assert.equal(executions, 0);
+  assert.equal(report.status, 'failed');
+  assert.equal(report.error.code, 'APPROVAL_ACTION_CHANGED');
 });
 
 test('a probe without evidence emits an inconclusive verification event', async () => {

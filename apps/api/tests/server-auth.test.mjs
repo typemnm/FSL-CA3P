@@ -17,13 +17,17 @@ async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBy
   const bytes = Buffer.from(artifactBytes ?? '{"runId":"run-a","evidence":"fixture"}');
   const artifactPath = join(directory, 'evidence.json'); await writeFile(artifactPath, bytes);
   const artifact = { id: sha256('artifact-id'), path: artifactPath, sha256: sha256(bytes), size: bytes.length };
-  const listeners = new Set(); const calls = { start: 0, startBodies: [], stop: 0, lab: [], experimentReset: [], historyClear: [], loopBudget: [] };
+  const listeners = new Set(); const calls = { start: 0, startBodies: [], stop: 0, lab: [], experimentReset: [], historyClear: [], loopBudget: [], approvals: [] };
   let loopBudget = { maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 };
   const runtime = { getState: () => runtimeState, getRun: id => id === 'run-a' ? runtimeState.run : null,
     listRuns: () => [state.run], listModels: () => [], start: async body => { calls.start += 1; calls.startBodies.push(body); return state; },
     getGeneralLoopBudget: () => loopBudget,
     setGeneralLoopBudget: limits => { loopBudget = limits; calls.loopBudget.push(limits); return limits; },
     startLab: async body => { calls.lab.push(body); return state; }, stop: async () => { calls.stop += 1; return state; }, reset: () => state,
+    decideApproval: async (...args) => { calls.approvals.push(args); return {
+      approval: { id: args[1], decision: args[2] === 'approve' ? 'approved' : 'rejected', actor: args[3] },
+      run: runtimeState.run,
+    }; },
     experimentResetPreview: () => ({ status: 'ready', runCount: 1, canReset: true }),
     resetExperiment: async body => { calls.experimentReset.push(body); return { ...state, experimentReset: { status: 'completed', epoch: 1 } }; },
     clearRunHistory: async body => { calls.historyClear.push(body); return { ...state, historyClear: { status: 'completed', epoch: 1 } }; },
@@ -53,6 +57,29 @@ async function login(base, username, headers = {}) {
   assert.equal(result.status, 200);
   return { result, headers: { ...headers, Cookie: result.headers['set-cookie'][0].split(';')[0], 'X-CSRF-Token': result.body.csrfToken } };
 }
+
+test('pre-execution approval decisions require an admin session and CSRF token', async t => {
+  const { base, calls } = await fixture(t);
+  const route = '/api/runs/run-a/approvals/approval-1';
+  assert.equal((await api(base, route, { method: 'POST', body: { decision: 'approve' } })).status, 401);
+  const viewer = await login(base, 'viewer');
+  assert.equal((await api(base, route, { method: 'POST', headers: viewer.headers,
+    body: { decision: 'approve' } })).status, 403);
+  const operator = await login(base, 'operator');
+  assert.equal((await api(base, route, { method: 'POST', headers: operator.headers,
+    body: { decision: 'approve' } })).status, 403);
+  const admin = await login(base, 'admin');
+  assert.equal((await api(base, route, { method: 'POST', headers: { Cookie: admin.headers.Cookie },
+    body: { decision: 'approve' } })).status, 403);
+  assert.equal((await api(base, route, { method: 'POST', headers: admin.headers,
+    body: { decision: 'allow' } })).status, 400);
+  assert.equal((await api(base, route, { method: 'GET', headers: admin.headers })).status, 405);
+  const decided = await api(base, route, { method: 'POST', headers: admin.headers,
+    body: { decision: 'reject' } });
+  assert.equal(decided.status, 200);
+  assert.equal(decided.body.approval.decision, 'rejected');
+  assert.deepEqual(calls.approvals, [['run-a', 'approval-1', 'reject', 'admin']]);
+});
 
 test('session API, viewer access, operator mutations and logout enforce authentication and CSRF', async t => {
   const { base, calls } = await fixture(t);

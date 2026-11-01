@@ -4,8 +4,8 @@
   "private": true,
   "description": "외부 모듈과 JSON 계약으로만 통신하는 펜테스팅 에이전트 코어 MVP",
   "scripts": {
-    "test": "node --test test/protocol.test.js test/deepseek-adapter.test.js test/deepseek-config.test.js test/general-assessment.test.js test/general-model-planner.test.js test/general-pipeline.test.js",
-    "test:general": "node --test test/general-assessment.test.js test/general-model-planner.test.js test/general-pipeline.test.js"
+    "test": "node --test test/protocol.test.js test/deepseek-adapter.test.js test/deepseek-config.test.js test/general-assessment.test.js test/general-model-planner.test.js test/general-pipeline.test.js test/hitl-approval.test.js",
+    "test:general": "node --test test/general-assessment.test.js test/general-model-planner.test.js test/general-pipeline.test.js test/hitl-approval.test.js"
   },
   "engines": {
     "node": ">=24 <25"

@@ -31,9 +31,22 @@ async function waitFor(service, id, terminal = ['completed', 'failed', 'interrup
   }
   throw new Error('Worker did not finish the run.');
 }
+async function waitForApproval(service, id) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const state = service.getRun(id);
+    if (state.pendingApproval) return state.pendingApproval;
+    if (['completed', 'failed', 'interrupted', 'cancelled'].includes(state.status)) {
+      throw new Error(`Run ended before approval: ${state.status} ${state.error ?? ''}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error('Worker did not publish an approval request.');
+}
 // Credential-free private-origin stand-in for the fixed daehan IDOR read (no model, no case DB).
-async function universityTarget(t) {
+async function universityTarget(t, onRequest = () => {}) {
   const server = createServer(async (req, res) => {
+    onRequest(req);
     if (req.method === 'POST' && req.url === '/login') {
       let body = ''; for await (const chunk of req) body += chunk;
       res.writeHead(302, { location: '/mypage', 'set-cookie': `sid=${new URLSearchParams(body).get('username')}; HttpOnly; Path=/` });
@@ -53,14 +66,33 @@ test('a separate worker executes queued lab runs and history survives API restar
   const { service, reopen } = setup(t);
   const started = await service.startLab({ fixtureId: 'vul-web2-daehan', target: await universityTarget(t) });
   assert.equal(started.run.status, 'queued');
+  const approval = await waitForApproval(service, started.run.id);
+  assert.equal(approval.kind, 'rule-idor');
+  assert.equal((await service.decideApproval(started.run.id, approval.id, 'approve', 'admin')).approval.decision, 'approved');
   const final = await waitFor(service, started.run.id);
   assert.equal(final.status, 'completed', final.error);
   assert.equal(final.id, final.coreRunId); assert.equal(final.id, final.report.runId);
-  assert.equal(final.events.length, 6); assert.equal(final.events.at(-1).sequence, 6);
+  assert.ok(final.events.length >= 8); assert.equal(final.events.at(-1).sequence, final.events.length);
   assert.ok(final.manifest.modules['apps/worker'].contentDigest); assert.ok(final.artifacts.some(item => item.kind === 'run-report'));
   await service.close();
   const restarted = reopen();
   assert.equal(restarted.getState().run.id, final.id); assert.equal(restarted.getRun(final.id).status, 'completed');
+});
+test('rejecting a rule IDOR approval skips every target request and invalidates late decisions', async t => {
+  const { service } = setup(t);
+  let requests = 0;
+  const started = await service.startLab({ fixtureId: 'vul-web2-daehan',
+    target: await universityTarget(t, () => { requests += 1; }) });
+  const approval = await waitForApproval(service, started.run.id);
+  const response = await service.decideApproval(started.run.id, approval.id, 'reject', 'admin');
+  assert.equal(response.approval.decision, 'rejected');
+  const final = await waitFor(service, started.run.id);
+  assert.equal(final.status, 'completed', final.error);
+  assert.equal(final.report.finding.status, 'not_tested');
+  assert.deepEqual(final.report.evidence, []);
+  assert.equal(final.targetContacted, false);
+  assert.equal(requests, 0);
+  await assert.rejects(service.decideApproval(started.run.id, approval.id, 'approve', 'admin'), { status: 409 });
 });
 test('queued cancellation never reaches a worker; arbitrary lab targets are rejected', async t => {
   const { service } = setup(t, { autoStartWorker: false });
