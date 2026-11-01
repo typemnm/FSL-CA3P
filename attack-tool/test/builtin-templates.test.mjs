@@ -15,7 +15,9 @@ const requestedIds = ['search-sqli-template', 'access-control-idor-template',
   'diag-config-disclosure-template', 'snakeyaml-type-tag-template'];
 const executableIds = ['search-sqli-template', 'sqli-like-tautology', 'json5-inherited-filter-template',
   'access-control-idor-template', 'wonchang-staff-idor-template', 'student-request-idor-template',
-  'unauth-featured-post-delete-template', 'diag-config-disclosure-template', 'snakeyaml-type-tag-template'];
+  'unauth-featured-post-delete-template', 'diag-config-disclosure-template', 'snakeyaml-type-tag-template',
+  'notices-sqli-template', 'news-sqli-template', 'partner-html-idor-template', 'staff-html-idor-template',
+  'admin-import-unsigned-template', 'json5-parse-error-template', 'login-no-lockout-template'];
 const referenceIds = ['lodash-prototype-canary-template', 'commons-text-interpolation-template'];
 
 test('builtins contain unique requested and dependency templates that pass the storage contract', () => {
@@ -55,10 +57,12 @@ test('session and custom-verifier templates remain references and cannot be sile
 
 test('the shared catalog exposes the added dependency templates through exact filters', () => {
   const catalog = createTemplateCatalog({ filePath: fileURLToPath(new URL('./absent-builtin-catalog.json', import.meta.url)) });
-  assert.deepEqual(catalog.list({ library: 'json5' }).map(item => item.templateId), ['json5-inherited-filter-template']);
+  assert.deepEqual(catalog.list({ library: 'json5' }).map(item => item.templateId).sort(),
+    ['json5-inherited-filter-template', 'json5-parse-error-template']);
   assert.deepEqual(catalog.list({ library: 'lodash' }).map(item => item.templateId), ['lodash-prototype-canary-template']);
   assert.deepEqual(catalog.list({ runtime: 'java' }).map(item => item.templateId).sort(),
-    ['commons-text-interpolation-template', 'snakeyaml-type-tag-template', 'wonchang-staff-idor-template'].sort());
+    ['commons-text-interpolation-template', 'snakeyaml-type-tag-template',
+      'staff-html-idor-template', 'wonchang-staff-idor-template'].sort());
 });
 
 test('HTTP-observable catalog templates execute and lodash/commons-text stay references', () => {
@@ -149,3 +153,35 @@ test('SnakeYAML tag acceptance confirms baseline and canary markers without trea
   assert.equal(verifyTemplate({ status: 200, body: 'CA3P_SNAKEYAML_BASELINE' },
     { status: 200, body: 'plain text' }, template).status, 'not_reproduced');
 });
+
+test('HTML notices SQLi and JSON5 parse errors compare body markers', () => {
+  const catalog = { get: id => byId.get(id) };
+  const notices = byId.get('notices-sqli-template');
+  const rendered = renderTemplate({ templateId: notices.templateId, payload: notices.payloads[0] }, catalog);
+  assert.deepEqual(rendered.baseline, { method: 'GET', path: '/notices', query: { q: 'zzqnomatch' } });
+  assert.equal(verifyTemplate({ status: 200, body: '<h1>공지</h1>' },
+    { status: 200, body: '<li>중간시험 안내</li>' }, notices).status, 'confirmed');
+  const parseError = byId.get('json5-parse-error-template');
+  assert.equal(verifyTemplate({ status: 200, body: '{}' },
+    { status: 500, body: 'SyntaxError: invalid JSON5' }, parseError).status, 'confirmed');
+});
+
+test('unsigned import confirms follow-up schedule marker', () => {
+  const template = byId.get('admin-import-unsigned-template');
+  const catalog = { get: id => byId.get(id) };
+  const rendered = renderTemplate({ templateId: template.templateId, payload: template.payloads[0] }, catalog);
+  assert.equal(rendered.packet.method, 'POST');
+  assert.equal(rendered.followUp.path, '/schedule');
+  assert.equal(verifyTemplate({ status: 200 }, { status: 302 }, template, {
+    status: 200, body: '<p>CA3P_IMPORT_CANARY</p>' }).status, 'confirmed');
+});
+
+test('HTML partner IDOR uses an id query slot', () => {
+  const template = byId.get('partner-html-idor-template');
+  const catalog = { get: id => byId.get(id) };
+  const rendered = renderTemplate({ templateId: template.templateId, payload: '3' }, catalog);
+  assert.deepEqual(rendered.baseline, { method: 'GET', path: '/admissions/partner', query: { id: '1' } });
+  assert.deepEqual(rendered.packet, { method: 'GET', path: '/admissions/partner', query: { id: '3' } });
+  assert.equal(verifyTemplate({ status: 200, body: '윤하람' }, { status: 200, body: '이수빈' }, template).status, 'confirmed');
+});
+

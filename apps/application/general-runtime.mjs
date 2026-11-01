@@ -11,7 +11,8 @@ import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
 import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integrations/knowledge-db.mjs';
 import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
-import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse } from '../../packages/adapters/integrations/attack-tool.mjs';
+import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse, listTemplates } from '../../packages/adapters/integrations/attack-tool.mjs';
+import { buildRequiredTemplatePlan } from './required-templates.mjs';
 import { createAssessmentPlanner, createLocalJsonClient, isGeneralPlannerModel, LOCAL_PLANNER_MODEL_ID } from '../../packages/models/local-planner.mjs';
 
 const { runGeneralAssessment } = generalCore;
@@ -38,7 +39,8 @@ const FIXTURES = Object.freeze({
     name: '대한대학교', siteKey: 'daehan', origin: 'http://127.0.0.1:4101',
     routes: ['/', '/about', '/admissions', '/colleges', '/academics', '/research',
       '/campus', '/facilities', '/notices', '/news', '/schedule', '/faq', '/login',
-      '/mypage', '/admin', '/api/search', '/_diag/config',
+      '/mypage', '/admin', '/api/search', '/_diag/config', '/admissions/partner',
+      '/admin/import', '/schedule', '/notices', '/news',
       '/api/admissions/partner/applications/1', '/api/admissions/partner/applications/3',
       '/api/mypage/requests/1', '/api/mypage/requests/2', '/admin/posts/1/delete'],
     files: {
@@ -56,6 +58,7 @@ const FIXTURES = Object.freeze({
     routes: ['/', '/about', '/admissions', '/colleges', '/academics', '/research',
       '/campus', '/facilities', '/notices', '/news', '/schedule', '/faq', '/login',
       '/mypage', '/admin', '/api/search', '/_diag/config', '/admin/schedule/preview',
+      '/staff/mobile', '/admin/import', '/schedule', '/notices', '/news',
       '/api/staff/mobile/cases/1', '/api/staff/mobile/cases/3',
       '/api/mypage/requests/1', '/api/mypage/requests/2', '/admin/posts/1/delete'],
     files: {
@@ -334,7 +337,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   historyProvider, plannerFactory, boardFactory, cleanupRegistryPath, fetchImpl = fetch,
   catalogReader = readKnowledgeCatalogReadOnly,
   webParserCollect = collectWebInfo, verificationRoot, verifyAttackImpl = verifyAttack, verifierModel,
-  limits = GENERAL_LOOP_BUDGET_DEFAULTS } = {}) {
+  limits = GENERAL_LOOP_BUDGET_DEFAULTS, enableRequiredTemplates = true } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!isGeneralPlannerModel(modelId)) throw new TypeError('A registered planner model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
@@ -671,7 +674,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         http_get: 'input {path,sessionRole?}: GET on a declared or observed pathname at the selected origin; optional sessionRole uses only a prepared fixed demo session; redirects are not followed',
         web_info: 'input {path,sessionRole?}: open one declared or observed pathname at the selected origin in an isolated browser; returns up to 3 evidence items: overview (status, content type, final URL, title, redirects, technology analysis, list counts), discovered paths (same-origin first; robots/sitemap entries show in sources; same-origin paths become allowed for later probes), and page surface (forms with field names/types, frames, response headers, cookie names/attributes); once the cumulative web_info evidence budget of the run is spent, returns only a one-line overview (status, content type, list counts); response bodies and cookie values are never returned; optional sessionRole uses only a prepared fixed demo session',
         repository_read: 'input {file,offset?}: read only an allowlisted local source or reference excerpt',
-        execute_attack_template: 'input {templateId,payload}: run a catalog template baseline, attack, and optional follow-up through the origin policy. Executable modes: resultCount, inheritedFilter, ownershipComparison, containsFields, statusSequence, tagAcceptance. The template pins the session role. sessionRole in the probe input is ignored.',
+        execute_attack_template: 'input {templateId,payload}: run a catalog template baseline, attack, and optional follow-up through the origin policy. Executable modes: resultCount, inheritedFilter, ownershipComparison, containsFields, statusSequence, tagAcceptance, textContains. The template pins the session role. sessionRole in the probe input is ignored. Prefer inventory.remainingTemplateIds after the required catalog pass.',
       },
       limitations: ['web_info opens a page in an isolated browser to observe web information, but it does not confirm whether any weakness executes; an AI verifier judges every executed probe as valid or invalid for its hypothesis and may open a read-only browser.',
         'GET and repository references do not independently confirm most weakness classes.',
@@ -690,6 +693,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       ? await createLocalJsonClient({ env, envFile }) : undefined);
     let observed = false;
     let inventory;
+    let requiredPass = null;
     const probeHypotheses = new Map();
     const failedModelCalls = [];
     let evidenceCount = 0;
@@ -965,6 +969,27 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         env, envFile, signal });
     } };
     const wrappedPlanner = { async propose(context) {
+      if (enableRequiredTemplates && !requiredPass) {
+        const evidenceId = context.evidence?.[0]?.id;
+        requiredPass = evidenceId
+          ? buildRequiredTemplatePlan({ fixtureId, templates: listTemplates(), evidenceId,
+            usedProbeIds: context.usedProbeIds ?? [] })
+          : { hypotheses: [], probes: [], requiredIds: [] };
+        if (inventory) {
+          inventory.requiredTemplateIds = requiredPass.requiredIds;
+          inventory.remainingTemplateIds = [...requiredPass.requiredIds];
+        }
+        const limit = Number.isSafeInteger(context.budget?.remainingProbes)
+          ? context.budget.remainingProbes : requiredPass.probes.length;
+        if (requiredPass.probes.length && context.iteration === 1 && limit > 0) {
+          return { done: false, hypotheses: requiredPass.hypotheses.slice(0, limit),
+            probes: requiredPass.probes.slice(0, limit) };
+        }
+      }
+      if (inventory && requiredPass) {
+        const used = new Set(context.usedProbeIds ?? []);
+        inventory.remainingTemplateIds = requiredPass.requiredIds.filter(id => !used.has(`reqp-${id}`));
+      }
       let plan;
       try { plan = await planner.propose(context); }
       catch (error) {
@@ -1036,6 +1061,15 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       probeHypotheses.clear();
     }
     report.runId = run.id;
+    const requiredIds = requiredPass?.requiredIds ?? [];
+    const used = new Set((report.probes ?? []).filter(item => item.tool === 'execute_attack_template').map(item => item.id));
+    report.coverage = {
+      ...report.coverage,
+      requiredTemplates: requiredIds.length,
+      requiredExecuted: requiredIds.filter(id => used.has(`reqp-${id}`)).length,
+      requiredConfirmed: (report.findings ?? []).filter(item => requiredIds.includes(item.templateId)
+        && item.status === 'confirmed').length,
+    };
     report.modelCalls.push(...failedModelCalls);
     report.fixtureId = fixtureId;
     report.targetContacted = run.targetContacted;

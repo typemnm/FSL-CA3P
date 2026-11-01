@@ -1,0 +1,22 @@
+{
+  "templateId": "partner-html-idor-template",
+  "title": "협력기관 HTML 상세 IDOR",
+  "sessionRole": "owner",
+  "fixtures": ["vul-web2-daehan"],
+  "attackType": { "name": "broken_access_control", "cwe": "CWE-285" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "node:sqlite" },
+  "target": { "method": "GET", "endpoint": "/admissions/partner" },
+  "request": { "packet": { "method": "GET", "path": "/admissions/partner", "query": { "id": "{{payload}}" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["3"],
+  "verify": {
+    "mode": "ownershipComparison",
+    "baseline": { "path": "/admissions/partner", "query": { "id": "1" }, "status": 200, "contains": "윤하람" },
+    "attack": { "status": 200, "contains": "이수빈" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

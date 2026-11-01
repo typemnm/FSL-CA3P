@@ -9,6 +9,7 @@ import { createGeneralRuntime } from '../../application/general-runtime.mjs';
 
 // The AI verifier is scripted so these runs never reach a real model.
 const scriptedRuntime = status => options => createGeneralRuntime({ ...options,
+  enableRequiredTemplates: false,
   verifyAttackImpl: async record => ({ schemaVersion: 'verifier/1', attackId: record.id, status,
     reason: 'scripted ' + status, artifacts: [] }) });
 

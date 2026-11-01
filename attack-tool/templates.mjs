@@ -1,7 +1,7 @@
 import { defaultTemplateCatalog } from './template-catalog.mjs';
 export const TEMPLATE_EXCERPT_BYTES = 4096;
 const EXECUTABLE_MODES = new Set(['resultCount', 'inheritedFilter', 'ownershipComparison',
-  'containsFields', 'statusSequence', 'tagAcceptance']);
+  'containsFields', 'statusSequence', 'tagAcceptance', 'textContains']);
 const ID_PAYLOAD = /^[1-9][0-9]{0,8}$/u;
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fault = (code, message) => Object.assign(new Error(message), { code });
@@ -54,13 +54,14 @@ export function templateExecutionSupport(template) {
     return { supported: true, reason: 'GET filters inheritance comparison.' };
   }
   if (mode === 'ownershipComparison') {
-    if (packet.method !== 'GET' || packet.body !== undefined || !packet.path.includes(':id')
+    const idQuery = querySlot(packet) === 'id';
+    if (packet.method !== 'GET' || packet.body !== undefined || (!packet.path.includes(':id') && !idQuery)
       || typeof template.verify.baseline?.path !== 'string'
       || template.verify.baseline.status !== 200 || template.verify.attack?.status !== 200
       || typeof template.verify.baseline.contains !== 'string'
       || typeof template.verify.attack.contains !== 'string'
       || template.verify.baseline.contains === template.verify.attack.contains) {
-      return { supported: false, reason: 'ownershipComparison needs a :id path and distinct owner markers.' };
+      return { supported: false, reason: 'ownershipComparison needs a :id path or id query and distinct owner markers.' };
     }
     return { supported: true, reason: 'Role-bound GET ownership comparison.' };
   }
@@ -73,7 +74,7 @@ export function templateExecutionSupport(template) {
     return { supported: true, reason: 'Unauthenticated GET field disclosure comparison.' };
   }
   if (mode === 'statusSequence') {
-    if (packet.method !== 'POST' || !packet.path.includes(':id')
+    if (packet.method !== 'POST'
       || template.verify.baseline?.method !== 'GET' || typeof template.verify.baseline.path !== 'string'
       || template.verify.followUp?.method !== 'GET' || typeof template.verify.followUp.path !== 'string'
       || !Number.isInteger(template.verify.baseline.status)
@@ -92,6 +93,15 @@ export function templateExecutionSupport(template) {
       return { supported: false, reason: 'tagAcceptance needs POST payload baseline/attack body markers.' };
     }
     return { supported: true, reason: 'Admin POST YAML tag-acceptance comparison.' };
+  }
+  if (mode === 'textContains') {
+    if (!['GET', 'POST'].includes(packet.method)
+      || !Number.isInteger(template.verify.baseline?.status)
+      || !Number.isInteger(template.verify.attack?.status)
+      || typeof template.verify.attack.contains !== 'string') {
+      return { supported: false, reason: 'textContains needs baseline/attack statuses and an attack marker.' };
+    }
+    return { supported: true, reason: 'Baseline/attack body marker comparison.' };
   }
   return { supported: false, reason: 'Unsupported packet and verifier; execution still requires the target guardrail policy.' };
 }
@@ -139,8 +149,8 @@ export function renderTemplate(input, catalog = defaultTemplateCatalog) {
   }
   if (mode === 'ownershipComparison') {
     return { template: structuredClone(template),
-      baseline: step('GET', template.verify.baseline.path),
-      packet: step('GET', packet.path, { payload }) };
+      baseline: step('GET', template.verify.baseline.path, { query: template.verify.baseline.query }),
+      packet: step('GET', packet.path, { query: packet.query, payload }) };
   }
   if (mode === 'containsFields') {
     const control = template.verify.baseline.path ?? packet.path;
@@ -153,6 +163,13 @@ export function renderTemplate(input, catalog = defaultTemplateCatalog) {
       baseline: step(template.verify.baseline.method, template.verify.baseline.path),
       packet: step(packet.method, packet.path, { body: packet.body, payload }),
       followUp: step(template.verify.followUp.method, template.verify.followUp.path) };
+  }
+  if (mode === 'textContains') {
+    const baseline = template.verify.baseline;
+    return { template: structuredClone(template),
+      baseline: step(baseline.method ?? 'GET', baseline.path ?? packet.path,
+        { query: baseline.query, body: baseline.body }),
+      packet: step(packet.method, packet.path, { query: packet.query, body: packet.body, payload }) };
   }
   return { template: structuredClone(template),
     baseline: step('POST', packet.path, { body: template.verify.baseline.body }),
@@ -226,9 +243,22 @@ export function verifyTemplate(baseline, attack, template, followUp) {
     if (!followUp) return { status: 'inconclusive' };
     const baseOk = hasStatus(baseline, template.verify.baseline.status);
     const attackOk = hasStatus(attack, template.verify.attack.status);
-    const followOk = hasStatus(followUp, template.verify.followUp.status);
+    let followOk = hasStatus(followUp, template.verify.followUp.status);
     if (!baseOk) return { status: 'inconclusive' };
+    if (typeof template.verify.followUp.contains === 'string') {
+      followOk = followOk && hasText(followUp, template.verify.followUp.contains);
+    }
     return { status: attackOk && followOk ? 'confirmed' : 'not_reproduced' };
+  }
+  if (mode === 'textContains') {
+    if (baseline?.truncated || attack?.truncated) return { status: 'inconclusive' };
+    if (!hasStatus(baseline, template.verify.baseline.status)) return { status: 'inconclusive' };
+    if (!hasStatus(attack, template.verify.attack.status)) return { status: 'not_reproduced' };
+    if (typeof template.verify.baseline.contains === 'string'
+      && !hasText(baseline, template.verify.baseline.contains)) {
+      return { status: 'not_reproduced' };
+    }
+    return { status: hasText(attack, template.verify.attack.contains) ? 'confirmed' : 'not_reproduced' };
   }
   if (mode === 'tagAcceptance') {
     if (baseline?.truncated || attack?.truncated) return { status: 'inconclusive' };

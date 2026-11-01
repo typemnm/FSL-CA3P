@@ -1,0 +1,23 @@
+{
+  "templateId": "admin-import-unsigned-template",
+  "title": "무서명 학사일정 JSON 가져오기",
+  "sessionRole": "admin",
+  "fixtures": ["vul-web2-daehan", "vul-web2-wonchang"],
+  "attackType": { "name": "data_integrity_failure", "cwe": "CWE-345" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "node:sqlite" },
+  "target": { "method": "POST", "endpoint": "/admin/import" },
+  "request": { "packet": { "method": "POST", "path": "/admin/import", "body": { "payload": "{{payload}}" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["{\"events\":[{\"title\":\"CA3P_IMPORT_CANARY\",\"date\":\"2026-01-01\",\"location\":\"lab\"}]}"],
+  "verify": {
+    "mode": "statusSequence",
+    "baseline": { "method": "GET", "path": "/schedule", "status": 200 },
+    "attack": { "status": 302 },
+    "followUp": { "method": "GET", "path": "/schedule", "status": 200, "contains": "CA3P_IMPORT_CANARY" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

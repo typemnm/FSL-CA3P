@@ -1,0 +1,22 @@
+{
+  "templateId": "login-no-lockout-template",
+  "title": "로그인 실패 잠금 부재 canary",
+  "sessionRole": "public",
+  "fixtures": ["vul-web2-daehan", "vul-web2-wonchang"],
+  "attackType": { "name": "authentication_failures", "cwe": "CWE-307" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "cookie-parser" },
+  "target": { "method": "POST", "endpoint": "/login" },
+  "request": { "packet": { "method": "POST", "path": "/login", "body": { "username": "{{payload}}", "password": "wrong-password" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["nosuchuser"],
+  "verify": {
+    "mode": "textContains",
+    "baseline": { "method": "GET", "path": "/login", "status": 200 },
+    "attack": { "status": 401, "contains": "아이디 또는 비밀번호" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

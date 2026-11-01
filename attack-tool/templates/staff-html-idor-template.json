@@ -1,0 +1,22 @@
+{
+  "templateId": "staff-html-idor-template",
+  "title": "교직원 HTML 상세 IDOR",
+  "sessionRole": "owner",
+  "fixtures": ["vul-web2-wonchang"],
+  "attackType": { "name": "broken_access_control", "cwe": "CWE-285" },
+  "dependency": { "runtime": "java", "framework": "spring", "library": "sqlite-jdbc" },
+  "target": { "method": "GET", "endpoint": "/staff/mobile" },
+  "request": { "packet": { "method": "GET", "path": "/staff/mobile", "query": { "id": "{{payload}}" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["3"],
+  "verify": {
+    "mode": "ownershipComparison",
+    "baseline": { "path": "/staff/mobile", "query": { "id": "1" }, "status": 200, "contains": "한서우" },
+    "attack": { "status": 200, "contains": "오다인" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}
