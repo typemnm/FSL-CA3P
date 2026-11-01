@@ -138,6 +138,34 @@ test('fixture compose may publish loopback reset management ports', async t => {
   assert.equal(state.enabled, true);
 });
 
+test('host reset overlay compose JSON keeps site and management loopback ports', async t => {
+  const { config, execute } = await fixture(t);
+  const productionCompose = async (command, args, options) => {
+    if (args.includes('config')) {
+      return JSON.stringify({
+        services: Object.fromEntries(services.map((service, i) => [service, {
+          volumes: [
+            { type: 'volume', source: `${service}-data`, target: '/app/data', volume: {} },
+            { type: 'volume', source: `${service}-reset-backups`, target: '/app/.reset-backups', volume: {} },
+          ],
+          ports: [
+            { mode: 'ingress', host_ip: '127.0.0.1', published: String(4101 + i), target: String(4101 + i), protocol: 'tcp' },
+            { mode: 'ingress', host_ip: '127.0.0.1', published: String(54101 + i), target: String(54101 + i), protocol: 'tcp' },
+          ],
+        }])),
+        volumes: Object.fromEntries(services.flatMap(service => [
+          [`${service}-data`, { name: `ca3p-universities_${service}-data` }],
+          [`${service}-reset-backups`, { name: `ca3p-universities_${service}-reset-backups` }],
+        ])),
+      });
+    }
+    return execute(command, args, options);
+  };
+  const state = await prepareFixtures(config, '/new/release', sha, { execute: productionCompose });
+  assert.equal(state.enabled, true);
+  assert.ok(state.composeFiles.some(path => path.endsWith('compose.reset.host.yaml')));
+});
+
 test('disabled fixture configuration is a no-op, and mismatched project or data volumes fail closed', async t => {
   assert.deepEqual(await prepareFixtures({}, '/new', sha), { enabled: false });
   await stopFixtures({ enabled: false }); await activateFixtures({ enabled: false }); await rollbackFixtures({ enabled: false });

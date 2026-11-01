@@ -8,8 +8,9 @@ import {
 } from '../experiment-reset-env.mjs';
 
 test('token file is created once and reused for host dashboard reset targets', async t => {
-  const runtimeDir = await mkdtemp(join(tmpdir(), 'ca3p-reset-env-'));
-  t.after(() => rm(runtimeDir, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), 'ca3p-reset-env-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const runtimeDir = join(root, 'runtime');
   const first = await ensureExperimentResetTokens(runtimeDir);
   const second = await ensureExperimentResetTokens(runtimeDir);
   assert.equal(first.daehan, second.daehan);

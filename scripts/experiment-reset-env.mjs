@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const TOKEN = /^[A-Za-z0-9._~+/-]{32,512}$/u;
@@ -40,6 +40,8 @@ function tokenOrNew(value) {
 }
 
 export async function ensureExperimentResetTokens(runtimeDir) {
+  await mkdir(runtimeDir, { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
   const path = resetEnvPath(runtimeDir);
   let existing = {};
   try { existing = parseResetEnv(await readFile(path, 'utf8')); }

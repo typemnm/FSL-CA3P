@@ -138,7 +138,7 @@ function validateCompose(model, state) {
     const managementPort = service === 'daehan' ? 54101 : 54102;
     const ports = model.services[service].ports ?? [];
     const published = (host, target) => ports.some(item => item.host_ip === '127.0.0.1'
-      && Number(item.published) === host && item.target === target);
+      && Number(item.published) === host && Number(item.target) === target);
     if (!published(expectedPort, expectedPort)) throw new Error('University sites must retain their fixed loopback ports.');
     if (ports.length === 2 && !published(managementPort, managementPort)) {
       throw new Error('University reset management ports must stay on loopback.');
