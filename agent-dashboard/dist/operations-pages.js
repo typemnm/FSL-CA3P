@@ -4,6 +4,7 @@ import { collectReviewItem, candidateValue } from './db-review.js';
 import { readProduct, renderAdvisories } from './db-advisories.js';
 import { renderDbHealth } from './db-health.js';
 import { createWebInfoLoader, renderWebParserLog, renderWebParserLogBody } from './web-info-view.js';
+import { createLlmSettings } from './llm-settings-view.js';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[char]);
@@ -51,6 +52,14 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
   const mod = { slug: '', id: '', summary: null, config: null, logs: [], logTotal: null, failedOnly: false, models: [], loading: false, error: '', query: '',
     loopBudget: null, budgetDraft: null, budgetError: '', budgetNotice: '', budgetSaving: false };
   let llmLogRefreshPending = false;
+  const llmSettings = createLlmSettings({ root: moduleRoot, runtime, canEdit, notify, async onChanged() {
+    // Model selectors elsewhere in the workspace reload from the same registry.
+    globalThis.dispatchEvent?.(new CustomEvent('ca3p:models-changed'));
+    try {
+      const payload = await runtime.getModels();
+      if (mod.slug === 'llm') { mod.models = Array.isArray(payload.models) ? payload.models : []; renderModule(); }
+    } catch { /* The next page load reads the registry again. */ }
+  } });
   const templates = { items: [], support: {}, revisions: {}, q: '', type: '', selected: null, detail: null,
     loading: false, detailLoading: false, busy: false, error: '', notice: '', editor: null,
     draft: '', confirmDelete: false, generation: 0, request: 0 };
@@ -64,6 +73,7 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
     mod.loopBudget = null; mod.budgetDraft = null; mod.budgetError = ''; mod.budgetNotice = ''; mod.budgetSaving = false;
     moduleRoot.textContent = '로그인 후 모듈 자료를 불러옵니다.';
     llmLogPanel.hidden = true;
+    llmSettings.reset();
     templates.generation += 1; templates.request += 1;
     Object.assign(templates, { items: [], support: {}, revisions: {}, selected: null, detail: null,
       loading: false, detailLoading: false, busy: false, error: '', notice: '', editor: null,
@@ -360,6 +370,10 @@ export function createOperationsPages({ runtime, canEdit, notify }) {
       <div class="ops-module-facts"><span><small>소스 경로</small><strong>${escape(config.config?.path || mod.summary?.path || '—')}</strong></span><span><small>버전 / revision</small><strong>${escape(config.revision || mod.summary?.revision || mod.summary?.version || '—')}</strong></span><span><small>설정 적용</small><strong>${config.editable ? '서버 관리' : '배포 설정 · 읽기 전용'}</strong></span></div>
       ${mod.slug === 'db' ? renderDbHealth(config, canEdit()) : ''}<div class="${mod.slug === 'llm' ? 'ops-llm-config' : 'ops-two-column'}"><section class="ops-subpanel"><h3>현재 유효 설정</h3><p>설정은 실행 환경과 배포 계약을 따릅니다. 변경 가능한 필드가 제공되지 않으면 이 화면에서 저장하지 않습니다.</p><pre>${escape(json(config.config || {}))}</pre>${mod.slug === 'llm' ? `<h3>등록 모델</h3><div class="ops-list">${mod.models.map(item => `<div class="ops-row"><span><strong>${escape(item.name || item.id)}</strong><small>${escape(item.provider || '')}</small></span><span class="state-chip">${item.available ? '사용 가능' : '사용 불가'}</span></div>`).join('') || '<p>등록 모델 없음</p>'}</div>` : ''}</section>${mod.slug === 'llm' ? '' : `<section class="ops-subpanel"><div class="ops-panel-head"><h3>모듈 로그</h3><label>검색<input id="module-log-search" type="search" value="${escape(mod.query)}" placeholder="실행 ID, 단계, 메시지"></label></div><div class="ops-log-list">${logs.length ? logs.map(item => `<details class="ops-log"><summary><span>${escape(date(item.createdAt || item.time || item.timestamp))}</span><strong>${escape(item.level || item.type || item.stage || '이벤트')}</strong><span>${escape(item.detail || item.message || item.title || '')}</span></summary><pre>${escape(json(item))}</pre></details>`).join('') : '<div class="ops-empty">표시할 로그가 없습니다.</div>'}</div></section>`}</div></section>`;
     moduleRoot.insertAdjacentHTML('beforeend', renderLlmBudget());
+    if (mod.slug === 'llm') {
+      moduleRoot.insertAdjacentHTML('beforeend', '<div id="llm-settings-root" class="llm-settings-root"></div>');
+      llmSettings.mount(document.getElementById('llm-settings-root'));
+    }
     if (mod.slug === 'attack') moduleRoot.insertAdjacentHTML('afterbegin', '<section class="panel ops-panel template-catalog-heading"><div class="ops-panel-head"><div><h2>공격 템플릿</h2><p>Workspace의 템플릿 화면에서 JSON 템플릿을 조회·추가·수정·삭제합니다.</p></div><a class="button secondary" href="#workspace/templates">템플릿 관리</a></div></section>');
     renderLlmCallLog();
   }

@@ -2,6 +2,7 @@ import { createDashboardServer } from './local-server.mjs';
 import { createAuthentication } from '../apps/api/auth.mjs';
 import { createRunService } from '../apps/application/run-service.mjs';
 import { createCiResultsService } from '../apps/application/ci-results.mjs';
+import { getPlatform } from '../apps/api/platform.mjs';
 
 const port = Number(process.env.PORT || 4173);
 const host = process.env.DASHBOARD_HOST || '127.0.0.1';
@@ -10,6 +11,8 @@ const auth = createAuthentication();
 const runtime = createRunService();
 const ciResults = createCiResultsService();
 const server = createDashboardServer({ runtime, auth, publicOrigins, ciResults });
+// Compute repository/module state once in the background so the first page load does not wait for it.
+void getPlatform.warm();
 server.listen(port, host, () => {
   console.log(`CA3P Integration Platform\nListening on ${host}:${port}\nLocal: http://127.0.0.1:${port}\nAuthentication: credentials in .runtime/access.txt\nModes: fixture; isolated rule baseline; registered DeepSeek models`);
 });

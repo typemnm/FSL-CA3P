@@ -14,7 +14,7 @@ import { readKnowledgeCatalogReadOnly } from '../../packages/adapters/integratio
 import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/integrations/web-parser.mjs';
 import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse, listTemplates } from '../../packages/adapters/integrations/attack-tool.mjs';
 import { buildRequiredTemplatePlan, librariesFromInventory } from './required-templates.mjs';
-import { createAssessmentPlanner, createLocalJsonClient, isGeneralPlannerModel, LOCAL_PLANNER_MODEL_ID } from '../../packages/models/local-planner.mjs';
+import { createAssessmentPlanner, createModelJsonClient, isGeneralPlannerModel, plannerProvider, usesJsonClient } from '../../packages/models/local-planner.mjs';
 
 const { runGeneralAssessment } = generalCore;
 const { createGeneralModelPlannerFromEnv } = generalPlanner;
@@ -418,7 +418,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     testProfile: 'general', fixtureId, target: origin ?? 'http://127.0.0.1/',
     coreTargetOrigin: origin, simulated: false, targetContacted: false,
     totalSteps: 1, iterations: 0, modelId,
-    provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek', pendingApproval: null });
+    provider: plannerProvider(modelId), pendingApproval: null });
   let run = initial();
   let controller = null;
   let task = null;
@@ -432,7 +432,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     if (ACTIVE.has(run.status)) run.elapsedMs = Date.now() - Date.parse(run.startedAt);
     return structuredClone({ run, mode: run.mode, instanceId,
       lab: { available: true, generalSupported: true, generalAvailable: true, model: modelId,
-        provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek' } });
+        provider: plannerProvider(modelId) } });
   }
   function publish() {
     const state = getState();
@@ -486,8 +486,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       let response;
       try {
         const timeout = AbortSignal.timeout(5000);
-        response = await fetchImpl(url, { method: 'GET', redirect: 'manual',
-          signal: currentSignal ? AbortSignal.any([currentSignal, timeout]) : timeout });
+        try {
+          response = await fetchImpl(url, { method: 'GET', redirect: 'manual',
+            signal: currentSignal ? AbortSignal.any([currentSignal, timeout]) : timeout });
+        } catch (error) {
+          if (currentSignal?.aborted) throw error;
+          // A stopped lab site is an environment problem, not a runtime fault.
+          throw Object.assign(new Error('The registered university fixture is not reachable.'), { code: 'FIXTURE_UNREACHABLE' });
+        }
         run.targetContacted = true;
         const body = await limitedBody(response);
         if (response.status !== 200 || !check.expect(body)) {
@@ -752,8 +758,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       ? await plannerFactory({ modelId, env, envFile, signal: currentSignal })
       : await createAssessmentPlanner({ modelId, env, envFile });
     if (!planner || typeof planner.propose !== 'function') throw new TypeError('General planner is unavailable.');
-    const localVerifier = verifierModel ?? (modelId === LOCAL_PLANNER_MODEL_ID && verifyAttackImpl === verifyAttack
-      ? await createLocalJsonClient({ env, envFile }) : undefined);
+    const localVerifier = verifierModel ?? (usesJsonClient(modelId) && verifyAttackImpl === verifyAttack
+      ? await createModelJsonClient({ modelId, env, envFile }) : undefined);
     let observed = false;
     let observedPages = [];
     let requiredPass = null;
@@ -1131,7 +1137,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           await onModelCall?.(attempt);
         }
         if (attempts.length && error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR') throw error;
-        const failed = { provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek',
+        const failed = { provider: plannerProvider(modelId),
           requestedModel: modelId, status: 'failed', iteration: context.iteration };
         if (planner instanceof generalPlanner.GeneralModelPlanner
           && error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR'

@@ -83,7 +83,7 @@ export const LOCAL_MAX_OUTPUT_TOKENS = 2048;
 const LOCAL_CONTEXT_MARGIN = 512;
 export const LOCAL_DISCOVERY_TIMEOUT_MS = 1200;
 export const LOCAL_COMPLETION_TIMEOUT_MS = 120000;
-const LOCAL_DEFAULTS = Object.freeze([
+export const LOCAL_DEFAULTS = Object.freeze([
   { label: 'ollama', endpoint: 'http://127.0.0.1:11434', protocol: 'ollama' },
   { label: 'lm-studio', endpoint: 'http://127.0.0.1:1234/v1', protocol: 'openai' },
   { label: 'llama-cpp', endpoint: 'http://127.0.0.1:18080/v1', protocol: 'openai' },

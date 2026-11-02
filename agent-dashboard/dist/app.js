@@ -5,6 +5,7 @@ import { generalObservedProbeCount, generalReport, generalSummary, isGeneralAsse
 import { createWebInfoLoader, renderWebInfoSection } from './web-info-view.js';
 import { createOperationsPages } from './operations-pages.js';
 import { createWorkspaceChat } from './workspace-chat.js';
+import { createFlowView } from './flow-view.js';
 
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -266,6 +267,23 @@ function showRuntimeError(message) {
   $('runtime-error').textContent = message;
   $('runtime-error').hidden = !message;
 }
+// Known failure codes stored in run.error, explained for the operator. Unknown values are shown as recorded.
+const RUN_FAILURE_MESSAGES = {
+  FIXTURE_UNREACHABLE: '실습 대상 사이트에 연결할 수 없습니다. vul-web2 대학 실습은 Docker Compose로 먼저 사이트를 띄우고, 입력한 IP·포트를 확인하세요.',
+  FIXTURE_IDENTITY_MISMATCH: '입력한 주소의 사이트가 선택한 실습 대학과 일치하지 않습니다. 실습 대상과 포트를 확인하세요.',
+  LLM_PROVIDER_AUTH_FAILED: '등록한 AI API 공급자가 API 키를 거부했습니다. LLM 모듈에서 키·종류·Base URL을 확인하고 연결 테스트를 해 보세요.',
+  LLM_PROVIDER_REJECTED: 'AI API 공급자가 요청을 거부했습니다. LLM 모듈에서 모델 이름이 그 공급자에 실제로 있는지 확인하세요.',
+  LLM_PROVIDER_UNAVAILABLE: 'AI API 공급자에 연결할 수 없거나 공급자 설정이 삭제되었습니다. LLM 모듈 설정을 확인하세요.',
+  LLM_PROVIDER_TIMEOUT: 'AI API 공급자의 응답 시간이 초과되었습니다.',
+  LLM_PROVIDER_RATE_LIMITED: 'AI API 공급자가 요청 한도를 초과했다고 응답했습니다. 잠시 후 다시 실행하세요.',
+  LLM_PROVIDER_OUTPUT_INVALID: 'AI API 공급자가 JSON 형식의 응답을 돌려주지 않았습니다. JSON 응답을 지원하는 모델인지 확인하세요.',
+  LLM_PROVIDER_OUTPUT_TRUNCATED: '모델이 최대 출력 토큰을 추론에 모두 써서 답변이 비었습니다. LLM 모듈에서 공급자의 최대 출력 토큰을 늘리세요.',
+  LOCAL_PLANNER_UNAVAILABLE: '로컬 LLM에 연결할 수 없습니다. LLM 모듈에서 로컬 LLM을 다시 탐지하세요.',
+};
+function runFailureMessage(item) {
+  const code = typeof item.error === 'string' ? item.error.trim() : '';
+  return RUN_FAILURE_MESSAGES[code] ? `${RUN_FAILURE_MESSAGES[code]} (${code})` : code || '코어 실행에 실패했습니다.';
+}
 function acceptState(envelope) {
   let resetViews = false;
   const next = normalizeGeneralRun(redactTelemetry(envelope.run));
@@ -308,7 +326,7 @@ function acceptState(envelope) {
   if (next.id !== previousId || next.status !== previousStatus) void refreshHistory();
   if (selectedEventId && !currentRun().events.some((event) => event.id === selectedEventId)) selectedEventId = null;
   showRuntimeError(browserResetError || (experimentStatus === 'failed' ? '이전 실험 초기화가 완료되지 않았습니다. 모델 변경 확인 창에서 초기화를 다시 시도하세요.'
-    : run.status === 'failed' ? run.error || '코어 실행에 실패했습니다.' : ''));
+    : run.status === 'failed' ? runFailureMessage(run) : ''));
   render();
   if (!pendingModelChange && models.length) acceptedModelId = $('model-select').value;
   if (resetViews) void loadWorkspace();
@@ -327,6 +345,57 @@ const runtime = createRuntimeClient({
 });
 const operations = createOperationsPages({ runtime, canEdit: () => authSession?.user?.role === 'admin', notify });
 const workspaceChat = createWorkspaceChat({ api: runtime.api, canEdit: canOperate, notify, getRuns: () => history });
+const flowView = createFlowView({
+  root: $('flow-root'),
+  iconPath: name => iconPaths[name] || iconPaths.box,
+  onSelectEvent: openFlowEvent,
+  onOpenArtifact: openFlowArtifact,
+  artifactHref(artifact, runId) {
+    if (!runId || !/^[a-f0-9]{64}$/u.test(artifact.artifactId || '')) return null;
+    if (artifact.kind === 'hwpx-report') return artifact.findingId
+      ? runtime.findingReportDownloadUrl(runId, artifact.artifactId) : runtime.reportDownloadUrl(runId);
+    return artifact.kind === 'web-info' ? `/api/artifacts/${artifact.artifactId}` : null;
+  },
+  onNewArtifact(activity) { if (activeView !== 'dashboard') notify(`새 산출물 · ${activity.artifact.label} — 공격 화면의 활동 요약에서 열 수 있습니다.`); },
+});
+/** Trace inspector entry for an activity that came from one stored event. */
+function openFlowEvent(eventId) {
+  const item = currentRun();
+  const event = item.events.find(entry => entry.id === eventId);
+  if (!event) return;
+  chooseModule(isGeneralAssessment(item) ? 'agent' : event.module || 'agent', event.id);
+  $('inspector-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+/** Moves to the report area that holds an artifact and flashes it. */
+let artifactFocus = null;
+const ARTIFACT_FLASH_MS = 2600;
+function locateArtifact(artifact) {
+  const content = $('report-content');
+  const id = globalThis.CSS?.escape ? CSS.escape : value => value;
+  if (artifact.kind === 'web-info') return content.querySelector(`[data-web-info-artifact="${id(artifact.artifactId)}"]`);
+  if (artifact.kind === 'run-report') return content.querySelector('[data-report-anchor="run-report"]');
+  return (artifact.findingId && content.querySelector(`[data-report-finding="${id(artifact.findingId)}"]`))
+    || content.querySelector('.report-document');
+}
+// The report view is rebuilt on every state update; keep the highlight on the rebuilt element.
+function applyArtifactFocus() {
+  if (!artifactFocus || activeView !== 'reports') return null;
+  const elapsed = Date.now() - artifactFocus.at;
+  if (elapsed > ARTIFACT_FLASH_MS) { artifactFocus = null; return null; }
+  const target = locateArtifact(artifactFocus.artifact) ?? $('report-content').firstElementChild;
+  if (target && !target.classList.contains('artifact-flash')) {
+    target.style.animationDelay = `-${elapsed}ms`;
+    target.classList.add('artifact-flash');
+  }
+  return target;
+}
+function openFlowArtifact(artifact) {
+  artifactFocus = { artifact, at: Date.now() };
+  navigate('reports');
+  const target = applyArtifactFocus();
+  if (target?.tagName === 'DETAILS') target.open = true;
+  if (target) requestAnimationFrame(() => (locateArtifact(artifact) ?? target).scrollIntoView({ behavior: 'smooth', block: 'center' }));
+}
 function persistSettings() { try { localStorage.setItem(SETTINGS, JSON.stringify(settings)); } catch { notify('설정을 브라우저에 저장할 수 없습니다.'); } }
 function updateStars() {
   if (settings.motion && !stars) stars = initStarfield($('starfield'));
@@ -476,7 +545,7 @@ function renderStats() {
   $('external-preflight-button').disabled = !canOperate() || !connected || active || externalPreflightPending;
   $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange
     || !externalPreflight?.ready || !model?.available
-    || !(model.provider === 'deepseek' || (model.provider === 'local' && model.supportedModes?.includes('external-general')))
+    || !(model.provider === 'deepseek' || model.provider === 'custom' || (model.provider === 'local' && model.supportedModes?.includes('external-general')))
     || !model.supportedModes?.includes('external-general')
     || !labReadiness.externalSupported || !labReadiness.externalAvailable;
   $('external-model-select').value = $('model-select').value;
@@ -630,7 +699,7 @@ function generalReportDocumentsMarkup(item) {
     const button = ready
       ? `<span class="report-document-actions"><button type="button" class="button secondary" data-preview-finding="${escape(findingId)}">본문 읽기</button><a class="button primary report-document-download" href="${escape(runtime.findingReportDownloadUrl(item.id, document.artifactId))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-label="${escape(findingId)} HWPX 다운로드">${icon('download')}HWPX 다운로드</a></span>`
       : '<button class="button secondary report-document-download" disabled>HWPX 다운로드</button>';
-    return `<li class="report-document-item"><div><strong>${escape(title)}</strong><small>finding ID: ${escape(findingId || '—')} · ${escape(itemLabels[itemStatus] || itemStatus || '대기')}</small>${document?.message ? `<small>${escape(document.message)}</small>` : ''}</div>${button}</li>`;
+    return `<li class="report-document-item" data-report-finding="${escape(findingId)}"><div><strong>${escape(title)}</strong><small>finding ID: ${escape(findingId || '—')} · ${escape(itemLabels[itemStatus] || itemStatus || '대기')}</small>${document?.message ? `<small>${escape(document.message)}</small>` : ''}</div>${button}</li>`;
   }).join('');
   return `<section class="panel report-document report-documents" aria-labelledby="report-document-title"><div><h2 id="report-document-title">확정 finding별 HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(statusLabels[status] || '보고서 상태 확인 중')}</p><small>${escape(description)}</small>${documents.message ? `<p class="report-document-message">${escape(documents.message)}</p>` : ''}<small class="report-cost-note">저장된 현재 검증 결과와 근거를 사용합니다.</small></div>${rows ? `<ul class="report-document-list">${rows}</ul>` : ''}</section>`;
 }
@@ -689,7 +758,7 @@ function renderReports() {
     }
     const previousWebInfo = $('report-content').querySelector('.web-info-section');
     const webInfo = renderWebInfoSection(item);
-    $('report-content').innerHTML = `${reportDocumentMarkup(item)}${renderGeneralReport(item)}${webInfo}${jsonSection('범용 점검 결과 원문', generalReport(item))}`;
+    $('report-content').innerHTML = `${reportDocumentMarkup(item)}${renderGeneralReport(item)}${webInfo}${jsonSection('범용 점검 결과 원문', generalReport(item), 'run-report')}`;
     keepWebInfoSection(previousWebInfo, webInfo);
     if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
     if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
@@ -740,11 +809,12 @@ function render() {
   if (activeView === 'dashboard') { renderInspector(); renderHistoryChecks(); }
   if (activeView === 'sessions') renderSessions();
   if (activeView === 'modules') renderModules();
-  if (activeView === 'reports') { renderReportPicker(); renderReports(); }
+  if (activeView === 'reports') { renderReportPicker(); renderReports(); applyArtifactFocus(); }
   if (activeView === 'compare') renderComparison();
   if (activeView === 'ci') renderCiResults();
   if (activeView === 'platform') renderPlatform();
   if (!$('notification-popover').hidden) renderNotifications();
+  flowView.update(currentRun(), { visible: activeView === 'dashboard', live: !inspectedRun });
   updateStars();
 }
 
@@ -815,7 +885,7 @@ $('external-run-button').addEventListener('click', async () => {
   if (['queued','preparing','running','stopping'].includes(run.status)) return;
   const model = selectedModel();
   if (!model?.available || !model.supportedModes?.includes('external-general')
-    || !(model.provider === 'deepseek' || (model.provider === 'local' && model.supportedModes.includes('external-general')))
+    || !(model.provider === 'deepseek' || model.provider === 'custom' || (model.provider === 'local' && model.supportedModes.includes('external-general')))
     || !labReadiness.externalSupported || !labReadiness.externalAvailable
     || pendingModelChange || browserResetError || ['failed', 'resetting'].includes(experimentStatus)) return;
   await submitControl(async () => {
@@ -834,7 +904,7 @@ $('lab-run-button').addEventListener('click', async () => {
   const model = selectedModel();
   if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available
     || !labReadiness.generalSupported || !labReadiness.generalAvailable
-    || !(model.provider === 'deepseek' || (model.provider === 'local' && model.supportedModes?.includes('local-lab-general')))) return;
+    || !(model.provider === 'deepseek' || model.provider === 'custom' || (model.provider === 'local' && model.supportedModes?.includes('local-lab-general')))) return;
   let target;
   if (selectedIdorFixture()) {
     try {
@@ -1023,8 +1093,8 @@ function runModelName(item) {
 function runRevision(item) {
   return String(item.manifest?.source?.commitSha || item.manifest?.source?.commit || item.manifest?.source?.sha || item.manifest?.commitSha || item.manifest?.gitSha || item.source?.commit || '미기록');
 }
-function jsonSection(title, value) {
-  return `<section class="panel core-report"><h2>${escape(title)}</h2><pre tabindex="0" aria-label="${escape(title)}">${highlightJSON(redactTelemetry(value))}</pre></section>`;
+function jsonSection(title, value, anchor = '') {
+  return `<section class="panel core-report"${anchor ? ` data-report-anchor="${escape(anchor)}"` : ''}><h2>${escape(title)}</h2><pre tabindex="0" aria-label="${escape(title)}">${highlightJSON(redactTelemetry(value))}</pre></section>`;
 }
 function historyCheckMarkup(item) {
   const historyWrite = item.historyWrite;
@@ -1082,25 +1152,28 @@ function acceptSession(value) {
   if (activeView === 'templates') void operations.showTemplates();
   if (activeView.startsWith('module-')) void operations.showModule(activeView.slice('module-'.length));
 }
+/** Reloads the planner model selectors from the server registry. */
+async function refreshModels(generation = workspaceGeneration) {
+  const payload = await runtime.getModels();
+  if (generation !== workspaceGeneration) return;
+  const previous = $('model-select').value;
+  models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string'
+    && ((item.supportedModes ?? []).includes('local-lab-general') || item.mode === 'local-lab-general')
+    && (item.provider === 'deepseek' || item.provider === 'local' || item.provider === 'custom')
+    && item.id !== 'rule-baseline') : [];
+  const options = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
+  const externalModels = models.filter(item => item.supportedModes?.includes('external-general'));
+  const externalOptions = externalModels.length ? externalModels.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">외부 점검 모델 없음</option>';
+  $('model-select').innerHTML = options;
+  $('external-model-select').innerHTML = externalOptions;
+  $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
+  renderStats();
+  acceptedModelId = $('model-select').value;
+}
+globalThis.addEventListener('ca3p:models-changed', () => { void refreshModels().catch(error => showRuntimeError(error.message)); });
 async function loadWorkspace() {
   const generation = workspaceGeneration;
-  await Promise.allSettled([refreshHistory(), refreshCiResults(), (async () => {
-    const payload = await runtime.getModels();
-    if (generation !== workspaceGeneration) return;
-    const previous = $('model-select').value;
-    models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string'
-      && ((item.supportedModes ?? []).includes('local-lab-general') || item.mode === 'local-lab-general')
-      && (item.provider === 'deepseek' || item.provider === 'local')
-      && item.id !== 'rule-baseline') : [];
-    const options = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
-    const externalModels = models.filter(item => item.supportedModes?.includes('external-general'));
-    const externalOptions = externalModels.length ? externalModels.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">외부 점검 모델 없음</option>';
-    $('model-select').innerHTML = options;
-    $('external-model-select').innerHTML = externalOptions;
-    $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
-    renderStats();
-    acceptedModelId = $('model-select').value;
-  })().catch(error => showRuntimeError(error.message)), (async () => {
+  await Promise.allSettled([refreshHistory(), refreshCiResults(), refreshModels(generation).catch(error => showRuntimeError(error.message)), (async () => {
     const payload = await runtime.getPlatform();
     if (generation !== workspaceGeneration) return;
     platform = redactTelemetry(payload); platformError = ''; if (activeView === 'platform') renderPlatform();
