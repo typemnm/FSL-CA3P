@@ -8,8 +8,10 @@ import { executeReportProcess, generateReportDocument } from '../index.mjs';
 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const env = { DEEPSEEK_API_KEY: 'report-test-fake-key' };
-const run = { id: 'report-run-test', mode: 'local-lab-rule', simulated: false,
-  report: { runId: 'report-run-test', status: 'completed' } };
+const run = { id: 'report-run-test', mode: 'local-lab-rule', modelId: 'rule-baseline', simulated: false,
+  report: { runId: 'report-run-test', status: 'completed', finding: { category: 'CWE-639', status: 'confirmed' } } };
+const legacyModel = runId => ({ run: { runId, status: 'completed' }, sourceFindingId: 'finding', sourceEvidenceIds: [],
+  findings: [{ common: { findingId: 'finding', status: 'confirmed' } }] });
 const hwpx = Buffer.from('PK\x03\x04synthetic document');
 const preview = Buffer.from('# 검사 결과\n\n| 항목 | 값 |\n| --- | --- |\n| 상태 | 완료 |\n');
 const htmlPreview = Buffer.from('<!doctype html><html><body><table><tr><td>완료</td></tr></table></body></html>');
@@ -20,22 +22,22 @@ async function setup(t) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   return { directory, storePath: join(directory, 'runs.sqlite') };
 }
-function successfulExecution(change = value => value, modelRunId) {
+function successfulExecution(change = value => value, modelRunId, modelName = 'deepseek-flash') {
   return async ({ input, args, env: childEnv }) => {
     assert.deepEqual(args, ['-m', 'ca3p_report', 'run', '--trigger', '-']);
     assert.equal(childEnv.DEEPSEEK_API_KEY, env.DEEPSEEK_API_KEY);
-    assert.equal(childEnv.DEEPSEEK_MODEL, 'deepseek-flash');
+    assert.equal(childEnv.DEEPSEEK_MODEL, modelName);
     const trigger = JSON.parse(input);
     assert.equal(trigger.sources.run.kind, 'run-store');
     const directory = join(trigger.output.dir, 'report');
     await mkdir(directory);
-    const model = Buffer.from(JSON.stringify({ run: { runId: modelRunId ?? trigger.runId } }));
+    const model = Buffer.from(JSON.stringify(legacyModel(modelRunId ?? trigger.runId)));
     await writeFile(join(directory, '검사결과.hwpx'), hwpx);
     await writeFile(join(directory, 'report-model.json'), model);
     await writeFile(join(directory, 'report.md'), preview);
     await writeFile(join(directory, 'report.html'), htmlPreview);
     return { code: 0, stdout: JSON.stringify(change({ schemaVersion: 'report-result-1.0', ok: true,
-      stage: 'reported', runId: trigger.runId, reportFilename: '검사결과.hwpx', files: [
+      stage: 'reported', runId: trigger.runId, findingId: 'finding', reportFilename: '검사결과.hwpx', files: [
         { name: '검사결과.hwpx', sha256: sha(hwpx), size: hwpx.length },
         { name: 'report-model.json', sha256: sha(model), size: model.length },
         { name: 'report.md', sha256: sha(preview), size: preview.length },
@@ -85,20 +87,58 @@ test('provider errors and raw output never enter public failure messages', async
   assert.doesNotMatch(JSON.stringify(result), /SECRET|private|report-test-fake-key/);
 });
 
-test('general report selects one confirmed finding without a model key and rejects mismatched output', async t => {
+test('the report uses the run model, falls back for rule-only runs and refuses other models', async t => {
   const options = await setup(t);
-  const generalRun = { id: 'general-report-run', mode: 'local-lab-general', simulated: false,
+  for (const [modelId, used] of [['deepseek-v4-pro', 'deepseek-v4-pro'], ['deepseek-flash', 'deepseek-flash'],
+    ['rule-baseline', 'deepseek-flash'], [undefined, 'deepseek-flash']]) {
+    const result = await generateReportDocument({ ...options, run: { ...run, modelId }, env, envFile: null,
+      execute: successfulExecution(undefined, undefined, used) });
+    assert.equal(result.status, 'ready', String(modelId));
+  }
+  const local = await generateReportDocument({ ...options, run: { ...run, modelId: 'local-llm' }, env, envFile: null,
+    execute: () => assert.fail('a local-model run must not be sent to DeepSeek') });
+  assert.equal(local.errorCode, 'REPORT_NOT_CONFIGURED');
+});
+
+test('legacy output must keep the source finding identity', async t => {
+  const options = await setup(t);
+  for (const change of [
+    value => ({ ...value, sourceFindingId: 'another' }),
+    value => ({ ...value, findings: [{ common: { findingId: 'finding', status: 'not_confirmed' } }] }),
+    value => ({ ...value, sourceEvidenceIds: ['invented'] }),
+  ]) {
+    const execute = async args => {
+      const trigger = JSON.parse(args.input);
+      const directory = join(trigger.output.dir, 'report');
+      await mkdir(directory);
+      const model = Buffer.from(JSON.stringify(change(legacyModel(trigger.runId))));
+      await writeFile(join(directory, 'r.hwpx'), hwpx);
+      await writeFile(join(directory, 'report-model.json'), model);
+      return { code: 0, stdout: JSON.stringify({ schemaVersion: 'report-result-1.0', ok: true, stage: 'reported',
+        runId: trigger.runId, findingId: 'finding', reportFilename: 'r.hwpx', files: [
+          { name: 'r.hwpx', sha256: sha(hwpx), size: hwpx.length },
+          { name: 'report-model.json', sha256: sha(model), size: model.length }] }) };
+    };
+    const rejected = await generateReportDocument({ ...options, run, env, envFile: null, execute });
+    assert.equal(rejected.errorCode, 'REPORT_INVALID_OUTPUT');
+  }
+});
+
+test('general report selects one confirmed finding and rejects mismatched output', async t => {
+  const options = await setup(t);
+  const generalRun = { id: 'general-report-run', mode: 'local-lab-general', modelId: 'deepseek-flash', simulated: false,
     report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general', status: 'completed',
       findings: [{ id: 'finding:h-a', status: 'confirmed', evidenceIds: ['ev-a'] },
         { id: 'finding:h-b', status: 'not_reproduced', evidenceIds: ['ev-b'] }] } };
   const runGeneral = (modelChange = value => value, responseChange = value => value) => async ({ input, env: childEnv }) => {
     const trigger = JSON.parse(input);
     assert.deepEqual(trigger.options, { findingId: 'finding:h-a' });
-    assert.equal(childEnv.DEEPSEEK_API_KEY, undefined);
+    assert.equal(childEnv.DEEPSEEK_API_KEY, env.DEEPSEEK_API_KEY);
+    assert.equal(childEnv.DEEPSEEK_MODEL, 'deepseek-flash');
     const directory = join(trigger.output.dir, 'report');
     await mkdir(directory);
     const model = Buffer.from(JSON.stringify(modelChange({ run: { runId: trigger.runId, status: 'completed' },
-      generator: { method: 'deterministic' },
+      generator: { method: 'llm' },
       sourceFindingId: 'finding:h-a', sourceEvidenceIds: ['ev-a'],
       findings: [{ common: { findingId: 'finding:h-a', status: 'confirmed' } }] })));
     await writeFile(join(directory, 'selected.hwpx'), hwpx);
@@ -110,21 +150,22 @@ test('general report selects one confirmed finding without a model key and rejec
       ] })) };
   };
   const result = await generateReportDocument({ ...options, run: generalRun, findingId: 'finding:h-a',
-    env: {}, envFile: null, execute: runGeneral() });
+    env, envFile: null, execute: runGeneral() });
   assert.equal(result.status, 'ready');
   assert.equal(result.findingId, 'finding:h-a');
   for (const execute of [
     runGeneral(value => ({ ...value, sourceFindingId: 'finding:h-b' })),
     runGeneral(value => ({ ...value, findings: [{ common: { findingId: 'finding:h-a', status: 'not_reproduced' } }] })),
     runGeneral(undefined, value => ({ ...value, findingId: 'finding:h-b' })),
+    runGeneral(value => ({ ...value, sourceEvidenceIds: ['ev-b'] })),
   ]) {
     const rejected = await generateReportDocument({ ...options, run: generalRun, findingId: 'finding:h-a',
-      env: {}, envFile: null, execute });
+      env, envFile: null, execute });
     assert.equal(rejected.errorCode, 'REPORT_INVALID_OUTPUT');
   }
   const never = () => assert.fail('nonconfirmed finding must not start Python');
   const unconfirmed = await generateReportDocument({ ...options, run: generalRun,
-    findingId: 'finding:h-b', env: {}, envFile: null, execute: never });
+    findingId: 'finding:h-b', env, envFile: null, execute: never });
   assert.equal(unconfirmed.errorCode, 'REPORT_INVALID_SELECTION');
 });
 

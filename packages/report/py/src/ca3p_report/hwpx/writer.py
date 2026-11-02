@@ -17,16 +17,11 @@ from pathlib import Path
 from hwpx import HwpxDocument
 
 NONE = "자료 없음"
-COVER_NOTICES = (
-    "이 보고서는 격리된 실습 환경에서 수행한 점검 결과입니다.",
-    "현재 데이터는 모두 synthetic(가상) 데이터입니다.",
-    "exploit 판정은 상류 에이전트가 전달한 값이며, 보고서 모듈은 판정을 검증하지 않습니다.",
-    "과거 사례와의 위치 일치는 재점검 후보일 뿐 현재 취약 판정이 아닙니다.",
+VERDICT_CAVEAT = "검증 단계에서 전달받은 판정이며, 보고서 모듈은 판정을 다시 검증하지 않았습니다."
+INCOMPLETE = (
+    "점검 미완료: 실행이 끝나기 전에 확인된 결과만 기록했으며, "
+    "전체 점검 범위의 완료를 뜻하지 않습니다."
 )
-VERDICT_CAVEAT = (
-    "에이전트의 결정론적 판정(전달받음)이며, 보고서 모듈과 저장소는 검증하지 않았습니다."
-)
-CVSS_NOTE = "LLM이 CVSS 3.1로 산출한 값이며, 재계산·검증하지 않았습니다."
 TRIAGE_CAVEAT = "위치 일치는 재점검 후보일 뿐 현재 취약 판정이 아닙니다."
 CHECK_FOOTNOTE = (
     "상태 열은 상태 표시일 뿐 취약 판정이 아닙니다. "
@@ -90,7 +85,6 @@ def _cover(model: dict) -> list[tuple]:
     return [
         ("h", 1, f"CA3P 취약점 점검 보고서 — {_text(run.get('runId'))}"),
         ("p", f"생성일: {_text(model.get('generatedAt'))}"),
-        ("box", [*COVER_NOTICES, *(_text(n) for n in model.get("notices") or [])]),
     ]
 
 
@@ -115,10 +109,10 @@ def _overview(run: dict) -> list[tuple]:
     ]
 
 
-def _summary(model: dict, failed: bool) -> list[tuple]:
+def _summary(model: dict) -> list[tuple]:
     blocks: list[tuple] = [("h", 1, "2. 취약점 요약")]
     findings = _dicts(model, "findings")
-    if not failed and not findings and _obj(model, "referenceContext"):
+    if not findings and _obj(model, "referenceContext"):
         return [
             ("h", 1, "2. 취약점 요약"),
             (
@@ -127,9 +121,8 @@ def _summary(model: dict, failed: bool) -> list[tuple]:
                 "입력 위치 확인 필요 사항은 별도 검토 상태 절에 포함했습니다.",
             ),
         ]
-    if failed or not findings:
-        reason = "실행이 실패하여" if failed else "보고된 취약점이 없어"
-        return [*blocks, ("p", f"{reason} 요약할 취약점이 없습니다.")]
+    if not findings:
+        return [*blocks, ("p", "보고된 취약점이 없어 요약할 취약점이 없습니다.")]
     origin = _text(_obj(_obj(model, "run"), "target").get("origin"))
     rows = [["번호", "취약점", "CWE", "CVSS 점수·등급", "공격 대상", "exploit 여부(판정 상태)"]]
     for index, finding in enumerate(findings, 1):
@@ -144,18 +137,13 @@ def _summary(model: dict, failed: bool) -> list[tuple]:
                 _text(common.get("status")),
             ]
         )
-    cvss_note = CVSS_NOTE if any(_obj(_obj(item, "common"), "cvss") for item in findings) else NONE
-    return [*blocks, ("table", rows), ("p", f"CVSS: {cvss_note} 판정 상태: {VERDICT_CAVEAT}")]
+    return [*blocks, ("table", rows), ("p", f"판정 상태: {VERDICT_CAVEAT}")]
 
 
 def _finding(n: int, finding: dict) -> list[tuple]:
     common = _obj(finding, "common")
     score, vector = _cvss(common)
-    severity = (
-        f"{vector} / {score} — {CVSS_NOTE} 상류 severity: {_text(common.get('severity'))}"
-        if _obj(common, "cvss")
-        else f"CVSS: {NONE} / 상류 severity: {_text(common.get('severity'))}"
-    )
+    severity = f"{vector} / {score}" if _obj(common, "cvss") else NONE
     identity = (
         ["원본 finding ID", _text(common.get("findingId"))]
         if common.get("findingId") else None
@@ -208,23 +196,6 @@ def _finding(n: int, finding: dict) -> list[tuple]:
         ("table", _kv_rows(finding.get("profileData"))),
     ]
     return blocks
-
-
-def _failure(run: dict) -> list[tuple]:
-    error = _obj(run, "error")
-    return [
-        ("h", 1, "3. 실행 실패"),
-        ("p", "실행이 실패하여 취약점 상세 대신 실패 정보를 적습니다."),
-        (
-            "table",
-            [
-                ["오류 코드", _text(error.get("code"))],
-                ["발생 위치(source)", _text(error.get("source"))],
-                ["메시지", _text(error.get("message"))],
-                ["도달한 단계", _text(error.get("stage"))],
-            ],
-        ),
-    ]
 
 
 def _history(model: dict) -> list[tuple]:
@@ -384,26 +355,12 @@ def _reference_review(model: dict) -> list[tuple]:
     return blocks
 
 
-def _safety(model: dict) -> list[tuple]:
-    decisions = _dicts(_obj(model, "guardrail"), "decisions")
-    rows = [["결정", "규칙", "사유"]] + [
-        [_text(d.get("decision")), _text(d.get("ruleId")), _text(d.get("reason"))]
-        for d in decisions
-    ]
-    return [
-        ("h", 1, "7. 가드레일 결정과 안전 속성"),
-        ("table", rows if decisions else [*rows, [NONE, NONE, NONE]]),
-        ("table", _kv_rows(model.get("safety"))),
-    ]
-
-
 def _sources(model: dict) -> list[tuple]:
     refs = _obj(model, "references")
     collectors = _dicts(refs, "collectors")
     omitted = _dicts(refs, "omittedSections")
     blocks: list[tuple] = [
-        ("h", 1, "8. 출처와 한계"),
-        ("p", f"프로필: {_text(_obj(model, 'generator').get('profile'))}"),
+        ("h", 1, "7. 출처와 한계"),
         (
             "table",
             [["수집기", "원천 종류", "상태", "사유"]]
@@ -432,30 +389,18 @@ def _sources(model: dict) -> list[tuple]:
 
 def build_blocks(model: dict) -> list[tuple]:
     run = _obj(model, "run")
-    selected_general = (isinstance(model.get("sourceFindingId"), str)
-                        and _obj(model, "generator").get("method") == "deterministic")
-    failed_run = run.get("status") == "failed"
-    failed = failed_run and not selected_general
-    body = (
-        _failure(run)
-        if failed
-        else [("h", 1, "3. 취약점 상세")]
-        + [block for n, f in enumerate(_dicts(model, "findings"), 1) for block in _finding(n, f)]
-    )
-    if selected_general and failed_run:
-        body += [("p", "점검 미완료: 실행 실패 전에 독립 검증으로 확정된 finding만 기록했습니다.")]
+    body = [("h", 1, "3. 취약점 상세")] + [
+        block for n, f in enumerate(_dicts(model, "findings"), 1) for block in _finding(n, f)
+    ]
+    if run.get("status") == "failed" or run.get("incomplete") is True:
+        body.append(("p", INCOMPLETE))
     return [
         *_cover(model),
         *_overview(run),
-        *(
-            [("p", f"원본 finding ID: {_text(model.get('sourceFindingId'))}")]
-            if selected_general else []
-        ),
-        *_summary(model, failed),
+        *_summary(model),
         *body,
         *_history(model),
         *_reference_review(model),
-        *_safety(model),
         *_sources(model),
     ]
 
@@ -493,8 +438,8 @@ def write_hwpx(model: dict, out_path, *, image_root=None) -> Path:
         elif kind == "code":
             for line in block[1].splitlines() or [""]:
                 doc.add_paragraph(line, char_pr_id_ref=mono)
-        elif kind in ("table", "box"):
-            rows = block[1] if kind == "table" else [["\n".join(block[1])]]
+        elif kind == "table":
+            rows = block[1]
             table = doc.add_table(len(rows), len(rows[0]))
             for r, row in enumerate(rows):
                 for c, cell in enumerate(row):
@@ -530,8 +475,6 @@ def write_markdown(model: dict, out_path) -> Path:
             lines += [_md(block[1]), ""]
         elif kind == "code":
             lines += ["<pre>" + _md(block[1]) + "</pre>", ""]
-        elif kind == "box":
-            lines += ["> " + _md(line) for line in block[1]] + [""]
         elif kind == "table":
             rows = block[1]
             lines.append("| " + " | ".join(_md(c, cell=True) for c in rows[0]) + " |")
@@ -567,8 +510,7 @@ def write_html(model: dict, out_path, *, image_root=None) -> Path:
         "th,td{border:1px solid #cbd5e1;padding:.55em .7em;text-align:left;"
         "vertical-align:top;overflow-wrap:anywhere;white-space:pre-wrap}th{background:#edf3fa}"
         "pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6fa;"
-        "padding:1em;border-radius:6px}aside{border-left:4px solid #7692b2;"
-        "background:#f3f6fa;padding:.7em 1em}aside p{margin:.35em 0}"
+        "padding:1em;border-radius:6px}"
         "figure{margin:1.3em 0}img{display:block;max-width:100%;height:auto}"
         "figcaption{font-size:.9em;color:#46566c;margin-top:.5em}</style></head><body>",
     ]
@@ -582,8 +524,6 @@ def write_html(model: dict, out_path, *, image_root=None) -> Path:
             lines.append(f"<p>{escape(block[1])}</p>")
         elif kind == "code":
             lines.append(f"<pre><code>{escape(block[1])}</code></pre>")
-        elif kind == "box":
-            lines.append("<aside>" + "".join(f"<p>{escape(line)}</p>" for line in block[1]) + "</aside>")
         elif kind == "table":
             rows = block[1]
             lines.append("<table><tbody>")

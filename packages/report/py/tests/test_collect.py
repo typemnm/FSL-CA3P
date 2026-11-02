@@ -85,18 +85,18 @@ def test_collects_a_sealed_bundle(stored_run, casper_db, run_id, tmp_path, kind)
         "run/report.json",
         "run/events.json",
         "history/casper.json",
-        "hints/capture.json",
+        "run/finding.json",
+        "run/attack.json",
     }
     for item in manifest["files"]:
         data = (bundle / item["path"]).read_bytes()
         assert item["sha256"] == "sha256:" + hashlib.sha256(data).hexdigest()
         assert item["size"] == len(data)
-    assert [c.get("driver") for c in manifest["collectors"]] == [kind, "casper-db", None]
-    hints = json.loads((bundle / "hints/capture.json").read_text(encoding="utf-8"))
-    # stored_xss fixture carries a compose form and a session-switch API
-    assert any(f["carries_attack_param"] for f in hints.get("inputForms", []))
-    assert hints["sessionSwitch"]["path"].endswith("/session")
-    assert hints["attackerAccount"] == "alice"
+    assert [c.get("driver") for c in manifest["collectors"]] == [kind, "casper-db"]
+    finding = json.loads((bundle / "run/finding.json").read_text(encoding="utf-8"))
+    assert finding["schemaVersion"] == "report-finding-1.0" and finding["runId"] == run_id
+    attack = json.loads((bundle / "run/attack.json").read_text(encoding="utf-8"))
+    assert [record["kind"] for record in attack["records"]] == ["loop.act"]
     history = json.loads((bundle / "history/casper.json").read_text(encoding="utf-8"))
     assert history["status"] == "ok"
     # The bundle names source kinds only, never where the sources live.

@@ -18,8 +18,8 @@ RESERVED = {
 UNSAFE = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
 
 
-def normalize_filename(proposed: str | None, run_id: str) -> str:
-    fallback = f"{run_id}{EXTENSION}"
+def normalize_filename(proposed: str | None, fallback_stem: str) -> str:
+    fallback = f"{fallback_stem}{EXTENSION}"
     if not isinstance(proposed, str):
         return fallback
     name = UNSAFE.sub("", unicodedata.normalize("NFC", proposed))

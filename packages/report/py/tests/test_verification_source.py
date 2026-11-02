@@ -1,4 +1,4 @@
-"""A verifier handoff directory is a sealed report source; its images reach the general HWPX."""
+"""A verifier handoff directory is a sealed report source; its images and attack reach the HWPX."""
 
 from __future__ import annotations
 
@@ -11,10 +11,9 @@ import pytest
 from ca3p_report.collect.bundle import BundleWriter, OutputError
 from ca3p_report.collect.collector import collect
 from ca3p_report.collect.model import CollectError
-from ca3p_report.general_model import build_general_model
 from ca3p_report.llm.tools import ReportTools
 from ca3p_report.trigger import TriggerError, parse_trigger
-from test_general_report import _report, _store, _trigger
+from test_general_report import _report, _store, _trigger, llm_model
 from test_hwpx_writer import png
 
 IMAGE = png()
@@ -22,12 +21,19 @@ DIGEST = "sha256:" + hashlib.sha256(IMAGE).hexdigest()
 REASON = "교차 사용자 삭제 응답이 확인됨"
 
 
-def _handoff(directory: Path, *, attack_id: str = "p-a", schema: str = "verification-handoff/1") -> Path:
+ATTACK = {"kind": "http", "request": {"method": "DELETE", "url": "http://127.0.0.1:40123/api/posts/1",
+                                     "headers": {"cookie": "[redacted]"}},
+          "response": {"status": 200, "bodyJson": {"deleted": True}}}
+
+
+def _handoff(directory: Path, *, attack_id: str = "p-a", schema: str = "verification-handoff/1",
+             attack: dict | None = None) -> Path:
     (directory / "images").mkdir(parents=True)
     (directory / "images" / "shot.png").write_bytes(IMAGE)
     document = {
         "schemaVersion": schema,
-        "result": {"status": "confirmed", "attackId": attack_id, "reason": REASON},
+        "result": {"status": "confirmed", "attackId": attack_id, "reason": REASON,
+                   **({"attack": attack} if attack else {})},
         "images": [{"file": "images/shot.png", "sha256": DIGEST, "bytes": len(IMAGE), "label": "삭제 응답"}],
     }
     (directory / "verification.json").write_text(json.dumps(document), encoding="utf-8")
@@ -110,13 +116,14 @@ def test_valid_handoff_images_are_sealed_into_the_manifest(tmp_path):
     assert files["run/verification.json"]["role"] == "verification-handoff"
     verification = json.loads((bundle / "run" / "verification.json").read_text("utf-8"))
     assert verification["images"][0]["ref"] == "evidence/images/shot.png"
-    assert collected.selection["verification"]["result"]["status"] == "confirmed"
+    assert verification["result"]["status"] == "confirmed"
 
 
 def test_collection_without_verification_source_is_unchanged(tmp_path):
     collected = collect(_trigger_with(tmp_path, None))
     assert not (collected.bundle / "run" / "verification.json").exists()
-    assert "verification" not in collected.selection
+    attack = json.loads((collected.bundle / "run" / "attack.json").read_text("utf-8"))
+    assert attack["records"] == []
 
 
 def test_tampered_image_is_refused_and_nothing_is_sealed(tmp_path):
@@ -140,29 +147,40 @@ def test_attack_that_is_not_a_confirmed_probe_is_refused(tmp_path):
     assert not (tmp_path / "out" / "bundle").exists()
 
 
-def test_general_model_embeds_handoff_images_into_hwpx(tmp_path):
-    handoff = _handoff(tmp_path / "handoff")
-    collected = collect(_trigger_with(tmp_path, handoff))
-    report = _report("run-general")
-    model = build_general_model(collected.selection, report, collected.manifest)
-    finding = model["findings"][0]
-    assert finding["images"] == [{
-        "step": None,
-        "caption": f"삭제 응답 — AI verifier: {REASON}",
-        "ref": "evidence/images/shot.png",
-        "integrity": "ok",
-    }]
-    assert {"label": "AI 검증 판정", "text": f"confirmed — {REASON}"} in finding["textEvidence"]
+def test_handoff_attack_record_is_sealed_as_the_attack_source(tmp_path):
+    collected = collect(_trigger_with(tmp_path, _handoff(tmp_path / "handoff", attack=ATTACK)))
+    attack = json.loads((collected.bundle / "run" / "attack.json").read_text("utf-8"))
+    assert attack["records"] == [ATTACK]
 
-    tools = ReportTools(collected.bundle, tmp_path / "document",
-                        origin="http://127.0.0.1:40123", session_switch=None)
+
+def test_handoff_screenshot_and_verified_values_are_in_the_hwpx(tmp_path):
+    collected = collect(_trigger_with(tmp_path, _handoff(tmp_path / "handoff")))
+    model = llm_model()
+    # The model places the real screenshot and also invents one that does not exist.
+    model["findings"][0]["images"] = [
+        {"ref": "shot.png", "step": 1, "caption": "삭제 요청 뒤 목록"},
+        {"ref": "evidence/images/forged.png", "step": 1, "caption": "없는 사진"},
+    ]
+    tools = ReportTools(collected.bundle, tmp_path / "document")
     tools.finish_report(model=model)
+    saved = json.loads((tmp_path / "document" / "report-model.json").read_text("utf-8"))
+    assert saved["findings"][0]["images"] == [{
+        "step": 1, "caption": "삭제 요청 뒤 목록", "ref": "evidence/images/shot.png", "integrity": "ok",
+    }]
     with zipfile.ZipFile(tmp_path / "document" / tools.finished.report_filename) as archive:
-        assert sum(name.startswith("BinData/") for name in archive.namelist()) == 1
+        pictures = [name for name in archive.namelist() if name.startswith("BinData/")]
+        assert [archive.read(name) for name in pictures] == [IMAGE]
+        xml = "".join(archive.read(name).decode("utf-8") for name in archive.namelist()
+                      if name.startswith("Contents/section"))
+    for value in ("finding:h-a", "confirmed", "run-general", "삭제 요청 뒤 목록", "CWE-639"):
+        assert value in xml
+    for forged in ("finding:h-b", "not_reproduced", "another-run", "없는 사진"):
+        assert forged not in xml
 
 
-def test_general_model_without_verification_has_no_images(tmp_path):
+def test_without_verification_the_report_has_no_screenshot(tmp_path):
     collected = collect(_trigger_with(tmp_path, None))
-    model = build_general_model(collected.selection, _report("run-general"), collected.manifest)
-    assert model["findings"][0]["images"] == []
-    assert all(item["label"] != "AI 검증 판정" for item in model["findings"][0]["textEvidence"])
+    tools = ReportTools(collected.bundle, tmp_path / "document")
+    tools.finish_report(model=llm_model())
+    with zipfile.ZipFile(tmp_path / "document" / tools.finished.report_filename) as archive:
+        assert not any(name.startswith("BinData/") for name in archive.namelist())
