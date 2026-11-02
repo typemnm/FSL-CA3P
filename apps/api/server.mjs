@@ -40,6 +40,8 @@ function confirmedDocumentFinding(run, document, store) {
     || typeof document.sourceFindingId !== 'string') return false;
   const task = store?.getSubtask?.(run.id, document.subtaskId);
   return task?.status === 'completed' && task.sourceFindingId === document.sourceFindingId
+    && Array.isArray(run.report?.findings)
+    && run.report.findings.some(finding => finding?.id === task.sourceFindingId)
     && task.result?.report?.schemaVersion === 'general-assessment/1'
     && task.result.report.runId === task.id && task.result.report.status === 'completed'
     && Array.isArray(task.result.report.findings)
