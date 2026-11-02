@@ -5,6 +5,7 @@ import { generalObservedProbeCount, generalReport, generalSummary, isGeneralAsse
 import { createWebInfoLoader, renderWebInfoSection } from './web-info-view.js';
 import { createOperationsPages } from './operations-pages.js';
 import { createWorkspaceChat } from './workspace-chat.js';
+import { createFlowView } from './flow-view.js';
 
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -327,6 +328,57 @@ const runtime = createRuntimeClient({
 });
 const operations = createOperationsPages({ runtime, canEdit: () => authSession?.user?.role === 'admin', notify });
 const workspaceChat = createWorkspaceChat({ api: runtime.api, canEdit: canOperate, notify, getRuns: () => history });
+const flowView = createFlowView({
+  root: $('flow-root'),
+  iconPath: name => iconPaths[name] || iconPaths.box,
+  onSelectEvent: openFlowEvent,
+  onOpenArtifact: openFlowArtifact,
+  artifactHref(artifact, runId) {
+    if (!runId || !/^[a-f0-9]{64}$/u.test(artifact.artifactId || '')) return null;
+    if (artifact.kind === 'hwpx-report') return artifact.findingId
+      ? runtime.findingReportDownloadUrl(runId, artifact.artifactId) : runtime.reportDownloadUrl(runId);
+    return artifact.kind === 'web-info' ? `/api/artifacts/${artifact.artifactId}` : null;
+  },
+  onNewArtifact(activity) { if (activeView !== 'dashboard') notify(`새 산출물 · ${activity.artifact.label} — 공격 화면의 활동 요약에서 열 수 있습니다.`); },
+});
+/** Trace inspector entry for an activity that came from one stored event. */
+function openFlowEvent(eventId) {
+  const item = currentRun();
+  const event = item.events.find(entry => entry.id === eventId);
+  if (!event) return;
+  chooseModule(isGeneralAssessment(item) ? 'agent' : event.module || 'agent', event.id);
+  $('inspector-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+/** Moves to the report area that holds an artifact and flashes it. */
+let artifactFocus = null;
+const ARTIFACT_FLASH_MS = 2600;
+function locateArtifact(artifact) {
+  const content = $('report-content');
+  const id = globalThis.CSS?.escape ? CSS.escape : value => value;
+  if (artifact.kind === 'web-info') return content.querySelector(`[data-web-info-artifact="${id(artifact.artifactId)}"]`);
+  if (artifact.kind === 'run-report') return content.querySelector('[data-report-anchor="run-report"]');
+  return (artifact.findingId && content.querySelector(`[data-report-finding="${id(artifact.findingId)}"]`))
+    || content.querySelector('.report-document');
+}
+// The report view is rebuilt on every state update; keep the highlight on the rebuilt element.
+function applyArtifactFocus() {
+  if (!artifactFocus || activeView !== 'reports') return null;
+  const elapsed = Date.now() - artifactFocus.at;
+  if (elapsed > ARTIFACT_FLASH_MS) { artifactFocus = null; return null; }
+  const target = locateArtifact(artifactFocus.artifact) ?? $('report-content').firstElementChild;
+  if (target && !target.classList.contains('artifact-flash')) {
+    target.style.animationDelay = `-${elapsed}ms`;
+    target.classList.add('artifact-flash');
+  }
+  return target;
+}
+function openFlowArtifact(artifact) {
+  artifactFocus = { artifact, at: Date.now() };
+  navigate('reports');
+  const target = applyArtifactFocus();
+  if (target?.tagName === 'DETAILS') target.open = true;
+  if (target) requestAnimationFrame(() => (locateArtifact(artifact) ?? target).scrollIntoView({ behavior: 'smooth', block: 'center' }));
+}
 function persistSettings() { try { localStorage.setItem(SETTINGS, JSON.stringify(settings)); } catch { notify('설정을 브라우저에 저장할 수 없습니다.'); } }
 function updateStars() {
   if (settings.motion && !stars) stars = initStarfield($('starfield'));
@@ -630,7 +682,7 @@ function generalReportDocumentsMarkup(item) {
     const button = ready
       ? `<span class="report-document-actions"><button type="button" class="button secondary" data-preview-finding="${escape(findingId)}">본문 읽기</button><a class="button primary report-document-download" href="${escape(runtime.findingReportDownloadUrl(item.id, document.artifactId))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-label="${escape(findingId)} HWPX 다운로드">${icon('download')}HWPX 다운로드</a></span>`
       : '<button class="button secondary report-document-download" disabled>HWPX 다운로드</button>';
-    return `<li class="report-document-item"><div><strong>${escape(title)}</strong><small>finding ID: ${escape(findingId || '—')} · ${escape(itemLabels[itemStatus] || itemStatus || '대기')}</small>${document?.message ? `<small>${escape(document.message)}</small>` : ''}</div>${button}</li>`;
+    return `<li class="report-document-item" data-report-finding="${escape(findingId)}"><div><strong>${escape(title)}</strong><small>finding ID: ${escape(findingId || '—')} · ${escape(itemLabels[itemStatus] || itemStatus || '대기')}</small>${document?.message ? `<small>${escape(document.message)}</small>` : ''}</div>${button}</li>`;
   }).join('');
   return `<section class="panel report-document report-documents" aria-labelledby="report-document-title"><div><h2 id="report-document-title">확정 finding별 HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(statusLabels[status] || '보고서 상태 확인 중')}</p><small>${escape(description)}</small>${documents.message ? `<p class="report-document-message">${escape(documents.message)}</p>` : ''}<small class="report-cost-note">저장된 현재 검증 결과와 근거를 사용합니다.</small></div>${rows ? `<ul class="report-document-list">${rows}</ul>` : ''}</section>`;
 }
@@ -689,7 +741,7 @@ function renderReports() {
     }
     const previousWebInfo = $('report-content').querySelector('.web-info-section');
     const webInfo = renderWebInfoSection(item);
-    $('report-content').innerHTML = `${reportDocumentMarkup(item)}${renderGeneralReport(item)}${webInfo}${jsonSection('범용 점검 결과 원문', generalReport(item))}`;
+    $('report-content').innerHTML = `${reportDocumentMarkup(item)}${renderGeneralReport(item)}${webInfo}${jsonSection('범용 점검 결과 원문', generalReport(item), 'run-report')}`;
     keepWebInfoSection(previousWebInfo, webInfo);
     if (item.manifest) $('report-content').insertAdjacentHTML('beforeend', jsonSection('실행 조건 · 코드 / 모델 / 입력 / 정책', item.manifest));
     if (item.historyWrite) $('report-content').insertAdjacentHTML('beforeend', historyCheckMarkup(item));
@@ -740,11 +792,12 @@ function render() {
   if (activeView === 'dashboard') { renderInspector(); renderHistoryChecks(); }
   if (activeView === 'sessions') renderSessions();
   if (activeView === 'modules') renderModules();
-  if (activeView === 'reports') { renderReportPicker(); renderReports(); }
+  if (activeView === 'reports') { renderReportPicker(); renderReports(); applyArtifactFocus(); }
   if (activeView === 'compare') renderComparison();
   if (activeView === 'ci') renderCiResults();
   if (activeView === 'platform') renderPlatform();
   if (!$('notification-popover').hidden) renderNotifications();
+  flowView.update(currentRun(), { visible: activeView === 'dashboard', live: !inspectedRun });
   updateStars();
 }
 
@@ -1023,8 +1076,8 @@ function runModelName(item) {
 function runRevision(item) {
   return String(item.manifest?.source?.commitSha || item.manifest?.source?.commit || item.manifest?.source?.sha || item.manifest?.commitSha || item.manifest?.gitSha || item.source?.commit || '미기록');
 }
-function jsonSection(title, value) {
-  return `<section class="panel core-report"><h2>${escape(title)}</h2><pre tabindex="0" aria-label="${escape(title)}">${highlightJSON(redactTelemetry(value))}</pre></section>`;
+function jsonSection(title, value, anchor = '') {
+  return `<section class="panel core-report"${anchor ? ` data-report-anchor="${escape(anchor)}"` : ''}><h2>${escape(title)}</h2><pre tabindex="0" aria-label="${escape(title)}">${highlightJSON(redactTelemetry(value))}</pre></section>`;
 }
 function historyCheckMarkup(item) {
   const historyWrite = item.historyWrite;
