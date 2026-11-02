@@ -528,7 +528,7 @@ function renderStats() {
   $('external-preflight-button').disabled = !canOperate() || !connected || active || externalPreflightPending;
   $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange
     || !externalPreflight?.ready || !model?.available
-    || !(model.provider === 'deepseek' || (model.provider === 'local' && model.supportedModes?.includes('external-general')))
+    || !(model.provider === 'deepseek' || model.provider === 'custom' || (model.provider === 'local' && model.supportedModes?.includes('external-general')))
     || !model.supportedModes?.includes('external-general')
     || !labReadiness.externalSupported || !labReadiness.externalAvailable;
   $('external-model-select').value = $('model-select').value;
@@ -868,7 +868,7 @@ $('external-run-button').addEventListener('click', async () => {
   if (['queued','preparing','running','stopping'].includes(run.status)) return;
   const model = selectedModel();
   if (!model?.available || !model.supportedModes?.includes('external-general')
-    || !(model.provider === 'deepseek' || (model.provider === 'local' && model.supportedModes.includes('external-general')))
+    || !(model.provider === 'deepseek' || model.provider === 'custom' || (model.provider === 'local' && model.supportedModes.includes('external-general')))
     || !labReadiness.externalSupported || !labReadiness.externalAvailable
     || pendingModelChange || browserResetError || ['failed', 'resetting'].includes(experimentStatus)) return;
   await submitControl(async () => {
@@ -887,7 +887,7 @@ $('lab-run-button').addEventListener('click', async () => {
   const model = selectedModel();
   if (['queued','preparing','running','stopping'].includes(run.status) || controlPending || connection !== 'connected' || !model?.available
     || !labReadiness.generalSupported || !labReadiness.generalAvailable
-    || !(model.provider === 'deepseek' || (model.provider === 'local' && model.supportedModes?.includes('local-lab-general')))) return;
+    || !(model.provider === 'deepseek' || model.provider === 'custom' || (model.provider === 'local' && model.supportedModes?.includes('local-lab-general')))) return;
   let target;
   if (selectedIdorFixture()) {
     try {
@@ -1135,25 +1135,28 @@ function acceptSession(value) {
   if (activeView === 'templates') void operations.showTemplates();
   if (activeView.startsWith('module-')) void operations.showModule(activeView.slice('module-'.length));
 }
+/** Reloads the planner model selectors from the server registry. */
+async function refreshModels(generation = workspaceGeneration) {
+  const payload = await runtime.getModels();
+  if (generation !== workspaceGeneration) return;
+  const previous = $('model-select').value;
+  models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string'
+    && ((item.supportedModes ?? []).includes('local-lab-general') || item.mode === 'local-lab-general')
+    && (item.provider === 'deepseek' || item.provider === 'local' || item.provider === 'custom')
+    && item.id !== 'rule-baseline') : [];
+  const options = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
+  const externalModels = models.filter(item => item.supportedModes?.includes('external-general'));
+  const externalOptions = externalModels.length ? externalModels.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">외부 점검 모델 없음</option>';
+  $('model-select').innerHTML = options;
+  $('external-model-select').innerHTML = externalOptions;
+  $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
+  renderStats();
+  acceptedModelId = $('model-select').value;
+}
+globalThis.addEventListener('ca3p:models-changed', () => { void refreshModels().catch(error => showRuntimeError(error.message)); });
 async function loadWorkspace() {
   const generation = workspaceGeneration;
-  await Promise.allSettled([refreshHistory(), refreshCiResults(), (async () => {
-    const payload = await runtime.getModels();
-    if (generation !== workspaceGeneration) return;
-    const previous = $('model-select').value;
-    models = Array.isArray(payload.models) ? payload.models.filter(item => item && typeof item.id === 'string'
-      && ((item.supportedModes ?? []).includes('local-lab-general') || item.mode === 'local-lab-general')
-      && (item.provider === 'deepseek' || item.provider === 'local')
-      && item.id !== 'rule-baseline') : [];
-    const options = models.length ? models.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">실행 모델 없음</option>';
-    const externalModels = models.filter(item => item.supportedModes?.includes('external-general'));
-    const externalOptions = externalModels.length ? externalModels.map(item => `<option value="${escape(item.id)}"${item.available ? '' : ' disabled'}>${escape(item.name || item.id)}${item.available ? '' : ' · 사용 불가'}</option>`).join('') : '<option value="">외부 점검 모델 없음</option>';
-    $('model-select').innerHTML = options;
-    $('external-model-select').innerHTML = externalOptions;
-    $('model-select').value = models.find(item => item.id === previous && item.available)?.id || models.find(item => item.available)?.id || '';
-    renderStats();
-    acceptedModelId = $('model-select').value;
-  })().catch(error => showRuntimeError(error.message)), (async () => {
+  await Promise.allSettled([refreshHistory(), refreshCiResults(), refreshModels(generation).catch(error => showRuntimeError(error.message)), (async () => {
     const payload = await runtime.getPlatform();
     if (generation !== workspaceGeneration) return;
     platform = redactTelemetry(payload); platformError = ''; if (activeView === 'platform') renderPlatform();

@@ -63,7 +63,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     const remote = models.find(model => model.provider === 'deepseek' && model.available);
     const localPlanner = models.find(model => model.provider === 'local'
       && model.supportedModes?.includes('local-lab-general') && model.available);
-    const plannerReady = Boolean(remote || localPlanner);
+    const customPlanner = models.find(model => model.provider === 'custom' && model.available);
+    const plannerReady = Boolean(remote || localPlanner || customPlanner);
     const experiment = store.experimentState();
     return { run, mode: run.mode, instanceId, experiment: { epoch: experiment.epoch, lastResetAt: experiment.lastResetAt, status: experiment.status },
       experimentReset: experiment, lab: { available: true, model: 'rule-baseline', provider: 'rules',
@@ -142,8 +143,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       const modelId = body.modelId ?? 'deepseek-flash';
       const model = listModels().find(item => item.id === modelId);
       if (!model || !model.supportedModes?.includes('external-general')
-        || (model.provider !== 'deepseek' && !(model.provider === 'local' && model.local))) {
-        throw fault(400, 'External assessment requires a registered DeepSeek or local planner model.');
+        || (model.provider !== 'deepseek' && model.provider !== 'custom' && !(model.provider === 'local' && model.local))) {
+        throw fault(400, 'External assessment requires a registered DeepSeek, local or AI API provider model.');
       }
       if (!model.available) throw fault(503, 'Selected model is unavailable. Configure server credentials before starting.');
       const { normalizedUrl, scope } = normalizeExternalTarget(body);
@@ -188,9 +189,9 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     const model = listModels().find(item => item.id === modelId);
     if (!model) throw fault(400, 'Choose a registered model.');
     if (!model.available) throw fault(503, 'Selected model is unavailable. Configure server credentials before starting.');
-    if (general && model.provider !== 'deepseek'
+    if (general && model.provider !== 'deepseek' && model.provider !== 'custom'
       && !(model.provider === 'local' && model.supportedModes?.includes('local-lab-general'))) {
-      throw fault(400, 'General assessment requires a registered DeepSeek or local planner model.');
+      throw fault(400, 'General assessment requires a registered DeepSeek, local or AI API provider model.');
     }
     if (!idorOrigin && body.target !== undefined) throw fault(400, 'The board lab does not accept a target URL.');
     const delayMs = body.delayMs ?? defaultDelayMs;

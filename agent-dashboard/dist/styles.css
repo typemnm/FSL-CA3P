@@ -625,3 +625,32 @@ button.flow-activity-main:hover{background:#ffffff08}
 @media(max-width:1100px){.flow-layout{grid-template-columns:1fr}.flow-stage{border-right:0;border-bottom:1px solid var(--line-soft)}.flow-activity{max-height:440px}}
 @media(max-width:600px){.flow-stage{padding:10px}.flow-node-role{display:none}.flow-replay{margin-left:0}}
 @media(prefers-reduced-motion:reduce){.flow-node.is-pulse .flow-node-halo,.flow-activity-item.is-new,.artifact-flash{animation:none}.flow-edge{transition:none}}
+/* LLM module: local discovery and AI API providers. */
+.llm-settings-root{display:grid;gap:16px;margin-top:16px}
+.llm-settings-root>.runtime-error,.llm-settings-root>.llm-budget-notice{margin:0}
+.llm-settings-panel h3{margin:0 0 4px}
+.llm-settings-panel h4{margin:18px 0 10px;font-size:16px}
+.llm-settings-panel p{margin:4px 0 10px;color:var(--muted);font-size:14px}
+.llm-local-current{color:var(--text)!important}
+.llm-local-current .text-button{display:inline-flex;margin-left:6px}
+.llm-local-list{display:grid;gap:8px}
+.llm-local-server{border:1px solid var(--line);border-radius:6px;padding:10px 12px;background:#0d1615}
+.llm-local-server.is-down{opacity:.7}
+.llm-local-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px}
+.llm-local-head .mono{font-size:13px}
+.llm-local-head .state-chip{margin-left:auto}
+.llm-local-models{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
+.llm-local-model{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 8px;border-radius:4px;background:#101d16;overflow-wrap:anywhere}
+.llm-local-model.is-selected{box-shadow:inset 0 0 0 1px var(--green)}
+.llm-local-model .button{padding:4px 10px;font-size:13px}
+.llm-provider-row{align-items:flex-start}
+.llm-provider-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.llm-provider-actions .button{padding:5px 10px;font-size:13px}
+.llm-test-ok{color:var(--green)!important}.llm-test-fail{color:#ffb3a6!important}
+.llm-provider-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.llm-provider-fields label{display:grid;gap:5px;font-size:14px;color:var(--muted)}
+.llm-provider-fields input,.llm-provider-fields select{min-width:0;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:5px;background:#0b1312;color:var(--text)}
+.llm-provider-fields input:disabled{opacity:.6}
+.llm-provider-form .ops-form-actions{margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.llm-provider-form .ops-form-actions small{color:var(--muted);font-size:13px;flex:1;min-width:220px}
+@media(max-width:600px){.llm-provider-row{flex-direction:column}.llm-provider-actions{justify-content:flex-start}}

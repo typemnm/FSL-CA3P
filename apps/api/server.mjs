@@ -13,6 +13,20 @@ import { redact } from '../../packages/contracts/index.mjs';
 import { deploymentPaused, deploymentStatus } from './deployment.mjs';
 import { createWorkspaceChatRoutes } from './workspace-chat-routes.mjs';
 import { createAttackTemplateRoutes } from './attack-template-routes.mjs';
+import { addProvider, discoverLocalServers, listProviderSettings, removeProvider, setLocalSelection, testProvider }
+  from '../../packages/models/provider-settings.mjs';
+
+/** LLM module settings: operator-entered AI API providers and the discovered local LLM. */
+export function createLlmSettings({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
+  return {
+    list: () => listProviderSettings({ env }),
+    add: body => addProvider(body, { env }),
+    remove: id => removeProvider(id, { env }),
+    test: id => testProvider(id, { env, fetchImpl }),
+    discover: () => discoverLocalServers({ fetchImpl }),
+    selectLocal: body => setLocalSelection(body, { env }),
+  };
+}
 
 const root = fileURLToPath(new URL('../../agent-dashboard/dist/', import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
@@ -79,7 +93,7 @@ function readJson(req, maxBody = MAX_BODY) {
 export function createDashboardServer({ runtime, auth = createAuthentication({ enabled: false }), publicOrigins = [], platformProvider = getPlatform, ciResults = null,
   maintenanceCheck = deploymentPaused, deploymentStatusProvider = deploymentStatus, moduleManagement = null,
   dbManagement = null, targetPreflight = preflightExternalTarget, workspaceChat = null,
-  templateCatalog = undefined } = {}) {
+  templateCatalog = undefined, llmSettings = createLlmSettings() } = {}) {
   if (!runtime) throw new TypeError('createDashboardServer requires a run service runtime.');
   const configured = publicOrigins.map(value => new URL(value));
   if (configured.some(url => url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/')) throw new Error('Public origins must be plain HTTPS origins.');
@@ -409,6 +423,36 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
           if (req.method !== 'PUT') return json(res, 405, { error: 'Use GET or PUT.' }, { Allow: 'GET, PUT' });
           auth.requireUser(req, { mutate: true, admin: true });
           return json(res, 200, await modules.updateLoopBudget(await readJson(req)));
+        }
+        if (pathname === '/api/modules/llm/providers') {
+          if (req.method === 'GET') return json(res, 200, llmSettings.list());
+          if (req.method !== 'POST') return json(res, 405, { error: 'Use GET or POST.' }, { Allow: 'GET, POST' });
+          auth.requireUser(req, { mutate: true, admin: true });
+          const provider = llmSettings.add(await readJson(req));
+          return json(res, 201, { provider, ...llmSettings.list() });
+        }
+        const providerRoute = /^\/api\/modules\/llm\/providers\/(custom-[a-f0-9]{12})(\/test)?$/.exec(pathname);
+        if (providerRoute) {
+          const [, providerId, test] = providerRoute;
+          if (test) {
+            if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
+            auth.requireUser(req, { mutate: true, admin: true });
+            return json(res, 200, await llmSettings.test(providerId));
+          }
+          if (req.method !== 'DELETE') return json(res, 405, { error: 'Use DELETE.' }, { Allow: 'DELETE' });
+          auth.requireUser(req, { mutate: true, admin: true });
+          llmSettings.remove(providerId);
+          return json(res, 200, llmSettings.list());
+        }
+        if (pathname === '/api/modules/llm/local/discover') {
+          if (req.method !== 'GET') return json(res, 405, { error: 'Use GET.' }, { Allow: 'GET' });
+          return json(res, 200, { servers: await llmSettings.discover(), local: llmSettings.list().local });
+        }
+        if (pathname === '/api/modules/llm/local') {
+          if (req.method !== 'PUT') return json(res, 405, { error: 'Use PUT.' }, { Allow: 'PUT' });
+          auth.requireUser(req, { mutate: true, admin: true });
+          llmSettings.selectLocal(await readJson(req));
+          return json(res, 200, llmSettings.list());
         }
         const moduleConfig = /^\/api\/modules\/([a-zA-Z0-9-]+)\/config$/.exec(pathname);
         if (moduleConfig) {

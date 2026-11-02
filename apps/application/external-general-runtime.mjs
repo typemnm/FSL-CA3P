@@ -7,7 +7,7 @@ import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
 import { judgeAttackRecord, projectGeneralEvent, recordForProbe } from './general-runtime.mjs';
 import { externalScopeRejectionReason, normalizeExternalTarget, requestExternalHttp } from './external-target.mjs';
-import { createAssessmentPlanner, createLocalJsonClient, isGeneralPlannerModel, LOCAL_PLANNER_MODEL_ID } from '../../packages/models/local-planner.mjs';
+import { createAssessmentPlanner, createModelJsonClient, isGeneralPlannerModel, plannerProvider, usesJsonClient } from '../../packages/models/local-planner.mjs';
 
 const { runGeneralAssessment } = generalCore;
 const { GeneralModelPlanner } = generalPlanner;
@@ -58,7 +58,7 @@ function verifierCallMetadata(item, modelId, probeId, iteration) {
     ['prompt_tokens', 'completion_tokens', 'total_tokens']
       .filter(key => Number.isSafeInteger(item.usage[key]) && item.usage[key] >= 0)
       .map(key => [key, item.usage[key]])) : {};
-  return { provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek', role: 'verifier', requestedModel: modelId,
+  return { provider: plannerProvider(modelId), role: 'verifier', requestedModel: modelId,
     model: isGeneralPlannerModel(item.model) ? item.model : modelId,
     ...(typeof item.reportedModel === 'string' && /^[A-Za-z0-9._:/-]{1,128}$/u.test(item.reportedModel)
       ? { reportedModel: item.reportedModel } : {}),
@@ -147,14 +147,14 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
     testProfile: 'external-general', fixtureId: null, target: redact(normalizedUrl),
     targetKind: 'external', coreTargetOrigin: scope.origin, simulated: false,
     targetContacted: false, requestAttempted: false, totalSteps: 1, iterations: 0,
-    modelId, provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek' });
+    modelId, provider: plannerProvider(modelId) });
   let run = initial(); let controller = null; let task = null; let closed = false;
 
   function getState() {
     if (ACTIVE.has(run.status)) run.elapsedMs = Date.now() - Date.parse(run.startedAt);
     return structuredClone({ run, mode: run.mode, instanceId,
       lab: { available: true, generalSupported: true, externalSupported: true,
-        model: modelId, provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek' } });
+        model: modelId, provider: plannerProvider(modelId) } });
   }
   function publish() {
     const state = getState();
@@ -247,8 +247,8 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
         ? await plannerFactory({ modelId, env, envFile, signal: runSignal })
         : await createAssessmentPlanner({ modelId, env, envFile });
       if (!planner || typeof planner.propose !== 'function') throw new TypeError('General planner is unavailable.');
-      const localVerifier = verifierModel ?? (modelId === LOCAL_PLANNER_MODEL_ID && (verifyAttackImpl ?? verifyAttack) === verifyAttack
-        ? await createLocalJsonClient({ env, envFile }) : undefined);
+      const localVerifier = verifierModel ?? (usesJsonClient(modelId) && (verifyAttackImpl ?? verifyAttack) === verifyAttack
+        ? await createModelJsonClient({ modelId, env, envFile }) : undefined);
       const observer = { async observe() {
         if (observed) return { inventory: undefined, evidence: [] };
         observed = true;
@@ -366,7 +366,7 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
         try { plan = await planner.propose(context); }
         catch (error) {
           const attempts = planner instanceof GeneralModelPlanner && Array.isArray(error?.modelAttempts)
-            ? error.modelAttempts : [{ provider: modelId === LOCAL_PLANNER_MODEL_ID ? 'local' : 'deepseek', requestedModel: modelId,
+            ? error.modelAttempts : [{ provider: plannerProvider(modelId), requestedModel: modelId,
               status: 'failed', iteration: context.iteration }];
           for (const attempt of attempts) await onModelCall?.(attempt);
           throw error;
