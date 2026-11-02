@@ -41,3 +41,5 @@ class RunRecord:
     # Provenance as the source recorded it; never upgraded to "verified" here.
     provenance: dict | None
     events: list[StoredEvent] = field(default_factory=list)
+    # Run-state fields the report header needs (startedAt, testProfile, target, fixtureId).
+    meta: dict = field(default_factory=dict)

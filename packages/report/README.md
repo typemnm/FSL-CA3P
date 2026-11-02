@@ -2,7 +2,7 @@
 
 취약점 한 건의 점검 결과를 수집해 LLM이 HWPX 보고서 한 부를 작성합니다.
 취약점 유형에 따른 프로필 없이 번들의 자료만으로 다양한 취약점의 보고서를 씁니다.
-현재 설계는 [`REDESIGN.md`](REDESIGN.md), 최초 설계의 이력은 [`PLAN.md`](PLAN.md)에 있습니다.
+현재 설계는 [`REDESIGN.md`](REDESIGN.md), 보고서 내용·모양은 [`REPORT_SPEC.md`](REPORT_SPEC.md), 최초 설계의 이력은 [`PLAN.md`](PLAN.md)에 있습니다.
 
 ## 통합 대시보드
 

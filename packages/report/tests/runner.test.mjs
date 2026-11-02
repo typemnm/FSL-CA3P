@@ -10,8 +10,8 @@ const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}
 const env = { DEEPSEEK_API_KEY: 'report-test-fake-key' };
 const run = { id: 'report-run-test', mode: 'local-lab-rule', modelId: 'rule-baseline', simulated: false,
   report: { runId: 'report-run-test', status: 'completed', finding: { category: 'CWE-639', status: 'confirmed' } } };
-const legacyModel = runId => ({ run: { runId, status: 'completed' }, sourceFindingId: 'finding', sourceEvidenceIds: [],
-  findings: [{ common: { findingId: 'finding', status: 'confirmed' } }] });
+const legacyModel = (runId, verdict = 'confirmed') => ({ run: { run_id: runId, status: 'completed' },
+  sourceFindingId: 'finding', sourceEvidenceIds: [], findings: [{ id: 'V-01', finding_id: 'finding', verdict }] });
 const hwpx = Buffer.from('PK\x03\x04synthetic document');
 const preview = Buffer.from('# 검사 결과\n\n| 항목 | 값 |\n| --- | --- |\n| 상태 | 완료 |\n');
 const htmlPreview = Buffer.from('<!doctype html><html><body><table><tr><td>완료</td></tr></table></body></html>');
@@ -100,12 +100,17 @@ test('the report uses the run model, falls back for rule-only runs and refuses o
   assert.equal(local.errorCode, 'REPORT_NOT_CONFIGURED');
 });
 
-test('legacy output must keep the source finding identity', async t => {
+test('legacy output must keep the source finding identity and verdict', async t => {
   const options = await setup(t);
-  for (const change of [
-    value => ({ ...value, sourceFindingId: 'another' }),
-    value => ({ ...value, findings: [{ common: { findingId: 'finding', status: 'not_confirmed' } }] }),
-    value => ({ ...value, sourceEvidenceIds: ['invented'] }),
+  const unconfirmed = { ...run, report: { ...run.report, finding: { status: 'not_confirmed' } } };
+  for (const [change, source = run, accepted = false] of [
+    [value => ({ ...value, sourceFindingId: 'another' })],
+    [value => ({ ...value, findings: [{ ...value.findings[0], verdict: 'unverified' }] })],
+    [value => ({ ...value, findings: [{ ...value.findings[0], finding_id: 'another' }] })],
+    [value => ({ ...value, findings: [...value.findings, ...value.findings] })],
+    [value => ({ ...value, sourceEvidenceIds: ['invented'] })],
+    [value => value, unconfirmed],
+    [value => ({ ...value, findings: [{ ...value.findings[0], verdict: 'unverified' }] }), unconfirmed, true],
   ]) {
     const execute = async args => {
       const trigger = JSON.parse(args.input);
@@ -119,8 +124,9 @@ test('legacy output must keep the source finding identity', async t => {
           { name: 'r.hwpx', sha256: sha(hwpx), size: hwpx.length },
           { name: 'report-model.json', sha256: sha(model), size: model.length }] }) };
     };
-    const rejected = await generateReportDocument({ ...options, run, env, envFile: null, execute });
-    assert.equal(rejected.errorCode, 'REPORT_INVALID_OUTPUT');
+    const result = await generateReportDocument({ ...options, run: source, env, envFile: null, execute });
+    assert.equal(result.status, accepted ? 'ready' : 'failed');
+    if (!accepted) assert.equal(result.errorCode, 'REPORT_INVALID_OUTPUT');
   }
 });
 
@@ -137,10 +143,10 @@ test('general report selects one confirmed finding and rejects mismatched output
     assert.equal(childEnv.DEEPSEEK_MODEL, 'deepseek-flash');
     const directory = join(trigger.output.dir, 'report');
     await mkdir(directory);
-    const model = Buffer.from(JSON.stringify(modelChange({ run: { runId: trigger.runId, status: 'completed' },
+    const model = Buffer.from(JSON.stringify(modelChange({ run: { run_id: trigger.runId, status: 'completed' },
       generator: { method: 'llm' },
       sourceFindingId: 'finding:h-a', sourceEvidenceIds: ['ev-a'],
-      findings: [{ common: { findingId: 'finding:h-a', status: 'confirmed' } }] })));
+      findings: [{ id: 'V-01', finding_id: 'finding:h-a', verdict: 'confirmed' }] })));
     await writeFile(join(directory, 'selected.hwpx'), hwpx);
     await writeFile(join(directory, 'report-model.json'), model);
     return { code: 0, stdout: JSON.stringify(responseChange({ schemaVersion: 'report-result-1.0', ok: true,
@@ -155,7 +161,8 @@ test('general report selects one confirmed finding and rejects mismatched output
   assert.equal(result.findingId, 'finding:h-a');
   for (const execute of [
     runGeneral(value => ({ ...value, sourceFindingId: 'finding:h-b' })),
-    runGeneral(value => ({ ...value, findings: [{ common: { findingId: 'finding:h-a', status: 'not_reproduced' } }] })),
+    runGeneral(value => ({ ...value, findings: [{ id: 'V-01', finding_id: 'finding:h-a', verdict: 'unverified' }] })),
+    runGeneral(value => ({ ...value, run: { ...value.run, run_id: 'another-run' } })),
     runGeneral(undefined, value => ({ ...value, findingId: 'finding:h-b' })),
     runGeneral(value => ({ ...value, sourceEvidenceIds: ['ev-b'] })),
   ]) {

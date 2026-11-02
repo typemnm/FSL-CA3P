@@ -168,4 +168,6 @@ def read_run(db_path: Path, run_id: str) -> RunRecord | None:
             "verifiedByStorage": False,
         },
         events=events,
+        meta={key: state[key] for key in ("startedAt", "testProfile", "target", "fixtureId")
+              if key in state},
     )

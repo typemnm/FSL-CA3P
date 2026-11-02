@@ -4,6 +4,7 @@
 - 상태: **구현 완료. 커밋 전.** packages/report와 함께 §6-1(verifier)·§6-2(worker 테스트)도 반영. 남은 일은 §6-3·§6-5.
 - 기준 코드: `woohyun212/report` (`1358648`)
 - 원래 설계: [PLAN.md](./PLAN.md). 이 문서가 PLAN과 다르면 이 문서를 따른다.
+- 보고서 내용(JSON)과 모양: [REPORT_SPEC.md](./REPORT_SPEC.md) (팀 보고서 키트 기준, 11-03). 아래 §4의 필드 이름은 이 명세를 따른다.
 
 ## 0. 배경
 
@@ -91,18 +92,18 @@ CWE를 하나 골라 그 이름을 제목으로 쓰고, CVSS 3.1을 평가하고
 판정·ID·증거·캡처는 코드가 채운다고 알린다. 캡처는 `run/verification.json`의 ref로 step과 caption만 정한다.
 
 ### 4.2 `finish_report`가 고정하는 필드(`llm/tools.py`)
-LLM이 보낸 모델을 마스킹한 뒤 아래를 번들 값으로 덮어쓴다. finding이 정확히 한 건이 아니면 거부한다.
+LLM이 보낸 REPORT_SPEC JSON을 마스킹한 뒤, 필수 필드가 빠졌거나 형식이 틀리면 `ToolError`로 되돌려 LLM이 고치게 한다
+(finding이 정확히 1건, severity 값, CWE·CVSS 형식, 재현 절차 3단계 이상, 대조·공격 증거 둘 다 등). 통과하면 아래를 번들 값으로 덮어쓴다.
 
 | 필드 | 값 |
 |---|---|
-| `sourceFindingId`, `findings[0].common.findingId` | `run/finding.json.sourceFindingId` |
-| `findings[0].common.status` | `run/finding.json.status` |
-| `run.runId`, `run.status`, `run.incomplete` | `run/finding.json` |
-| `sourceEvidenceIds` | `run/finding.json.evidenceIds` 전체 |
-| `findings[0].images` | `run/verification.json`의 캡처. LLM은 같은 ref에 step·caption만 지정. 없는 ref는 버림 |
-| `generator` | `{ "method": "llm" }` |
-| `generatedAt` | 보고서를 확정한 시각(UTC) |
-| `notices`, `guardrail`, `safety` | 삭제 |
+| `run` | `run/finding.json`의 실행 메타데이터(실행 기록에서 수집) + `generated_at` |
+| `findings[0].id`, `finding_id`, `verdict` | `V-01`, 원본 finding ID, 원본 판정(confirmed → `confirmed`, 그 밖 → `unverified`) |
+| `findings[0].screenshots` | `run/verification.json` 캡처 `[{caption, ref}]`, 캡션 끝에 `(보조 자료, 판정 근거 아님)` |
+| `review_status`, `classification` | `초안 — 사람 검토 후 배포`, `대외비 (CONFIDENTIAL)` |
+| `sourceFindingId`, `sourceEvidenceIds`, `generator`, `referenceContext` | 출력 검증과 casper 참고 자료용 |
+
+렌더링은 `hwpx/writer.py`가 python-hwpx 6.11 서식 API로 키트 레이아웃(표지·요약·개요·목록·상세·한계·부록)을 그린다.
 
 ## 5. 확인한 것
 
