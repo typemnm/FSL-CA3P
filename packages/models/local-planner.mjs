@@ -113,10 +113,18 @@ function createJsonChatClient({ endpoint, protocol, apiKey, model, provider, req
         : { model, messages, response_format: { type: 'json_object' }, stream: false,
           [tokenField]: LOCAL_MAX_OUTPUT_TOKENS, ...(temperature ? { temperature: 0 } : {}) };
       const started = performance.now();
-      const value = await transport(fetchImpl,
+      const send = payload => transport(fetchImpl,
         `${endpoint}${protocol === 'ollama' ? '/api/chat' : '/chat/completions'}`,
-        { method: 'POST', body, apiKey, signal, timeoutMs: LOCAL_COMPLETION_TIMEOUT_MS,
+        { method: 'POST', body: payload, apiKey, signal, timeoutMs: LOCAL_COMPLETION_TIMEOUT_MS,
           limit: MAX_CONTENT_BYTES + 64 * 1024 });
+      let value;
+      try { value = await send(body); }
+      catch (error) {
+        // Some OpenAI-compatible gateways reject JSON mode; the prompt still asks for JSON and the parser extracts it.
+        if (protocol === 'ollama' || !['LLM_PROVIDER_REJECTED', 'LOCAL_CHAT_REQUEST_REJECTED'].includes(error?.code)) throw error;
+        const { response_format: _jsonMode, ...plain } = body;
+        value = await send(plain);
+      }
       const choice = value.choices?.[0];
       if (protocol === 'ollama' ? value.done !== true || (value.done_reason && value.done_reason !== 'stop')
         : !Array.isArray(value.choices) || value.choices.length !== 1 || choice?.finish_reason !== 'stop') {

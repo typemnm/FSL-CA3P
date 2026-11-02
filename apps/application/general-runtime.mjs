@@ -486,8 +486,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       let response;
       try {
         const timeout = AbortSignal.timeout(5000);
-        response = await fetchImpl(url, { method: 'GET', redirect: 'manual',
-          signal: currentSignal ? AbortSignal.any([currentSignal, timeout]) : timeout });
+        try {
+          response = await fetchImpl(url, { method: 'GET', redirect: 'manual',
+            signal: currentSignal ? AbortSignal.any([currentSignal, timeout]) : timeout });
+        } catch (error) {
+          if (currentSignal?.aborted) throw error;
+          // A stopped lab site is an environment problem, not a runtime fault.
+          throw Object.assign(new Error('The registered university fixture is not reachable.'), { code: 'FIXTURE_UNREACHABLE' });
+        }
         run.targetContacted = true;
         const body = await limitedBody(response);
         if (response.status !== 200 || !check.expect(body)) {

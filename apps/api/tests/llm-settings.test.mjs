@@ -84,7 +84,7 @@ test('connection test uses the stored key server-side; local discovery and selec
   const testRoute = `/api/modules/llm/providers/${created.body.provider.id}/test`;
   assert.equal((await api(base, testRoute, { method: 'POST', headers: viewer, body: {} })).status, 403);
   const tested = await api(base, testRoute, { method: 'POST', headers: admin, body: {} });
-  assert.deepEqual(tested.body, { ok: true, modelFound: true, models: ['deepseek-chat'] });
+  assert.deepEqual(tested.body, { ok: true, method: 'models', modelFound: true, models: ['deepseek-chat'] });
   assert.ok(!tested.text.includes(KEY));
   assert.deepEqual(providerRequests.at(-1), { url: 'https://api.deepseek.com/models', authorization: `Bearer ${KEY}` });
 

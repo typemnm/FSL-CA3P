@@ -12,9 +12,14 @@ import { LOCAL_DEFAULTS, LOCAL_DISCOVERY_TIMEOUT_MS, LOCAL_RUNTIME_LABELS, local
  */
 
 export const PROVIDER_KINDS = Object.freeze({
-  deepseek: Object.freeze({ label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', tokenField: 'max_tokens' }),
-  openai: Object.freeze({ label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', tokenField: 'max_completion_tokens' }),
-  'openai-compatible': Object.freeze({ label: 'OpenAI 호환 API', baseUrl: null, tokenField: 'max_tokens' }),
+  deepseek: Object.freeze({ label: 'DeepSeek (api.deepseek.com)', baseUrl: 'https://api.deepseek.com', tokenField: 'max_tokens',
+    modelHint: 'deepseek-chat' }),
+  // deploy.com serves hosted models (DeepSeek and others) behind an OpenAI-compatible gateway.
+  deploy: Object.freeze({ label: 'Deploy (deploy.com)', baseUrl: 'https://api-sf1-cdn.deploy.com/api/v1', tokenField: 'max_tokens',
+    modelHint: 'deepseek-ai/deepseek-v4.1-flash-1017' }),
+  openai: Object.freeze({ label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', tokenField: 'max_completion_tokens',
+    modelHint: 'gpt-4o-mini' }),
+  'openai-compatible': Object.freeze({ label: 'OpenAI 호환 API (직접 입력)', baseUrl: null, tokenField: 'max_tokens', modelHint: null }),
 });
 export const CUSTOM_MODEL_ID = /^custom-[a-f0-9]{12}$/u;
 const MAX_PROVIDERS = 20;
@@ -22,12 +27,17 @@ const SCHEMA_VERSION = 1;
 const fault = (status, code, message) => Object.assign(new Error(message), { status, code });
 const CONTROL = /[\u0000-\u001f\u007f]/u;
 
+/**
+ * Settings location. An explicit CA3P_LLM_PROVIDERS_PATH wins ('' disables
+ * operator settings); otherwise it follows the run store directory. A caller
+ * that passes its own env object without either key gets no on-disk settings,
+ * so isolated callers never read the developer's real configuration.
+ */
 export function providerSettingsPath(env = process.env) {
-  const explicit = env.CA3P_LLM_PROVIDERS_PATH ?? process.env.CA3P_LLM_PROVIDERS_PATH;
-  if (explicit) return resolve(explicit);
-  const store = env.CA3P_STORE_PATH ?? process.env.CA3P_STORE_PATH;
-  const runtimeDir = store ? dirname(resolve(store)) : fileURLToPath(new URL('../../.runtime', import.meta.url));
-  return join(runtimeDir, 'llm-providers.json');
+  if (Object.hasOwn(env, 'CA3P_LLM_PROVIDERS_PATH')) return env.CA3P_LLM_PROVIDERS_PATH ? resolve(env.CA3P_LLM_PROVIDERS_PATH) : null;
+  if (env.CA3P_STORE_PATH) return join(dirname(resolve(env.CA3P_STORE_PATH)), 'llm-providers.json');
+  if (env !== process.env) return null;
+  return join(fileURLToPath(new URL('../../.runtime', import.meta.url)), 'llm-providers.json');
 }
 
 function emptySettings() { return { version: SCHEMA_VERSION, providers: [], local: null }; }
@@ -35,6 +45,7 @@ function emptySettings() { return { version: SCHEMA_VERSION, providers: [], loca
 const cache = new Map();
 /** Reads the settings; a missing file is an empty configuration. Cached by mtime and size. */
 export function readProviderSettings({ env = process.env, path = providerSettingsPath(env) } = {}) {
+  if (!path) return emptySettings();
   let info;
   try { info = statSync(path); }
   catch (error) { if (error.code === 'ENOENT') return emptySettings(); throw fault(503, 'LLM_SETTINGS_UNREADABLE', 'LLM 설정 파일을 읽지 못했습니다.'); }
@@ -54,6 +65,7 @@ export function readProviderSettings({ env = process.env, path = providerSetting
 }
 
 function writeProviderSettings(settings, { env = process.env, path = providerSettingsPath(env) } = {}) {
+  if (!path) throw fault(503, 'LLM_SETTINGS_UNAVAILABLE', 'LLM 설정을 저장할 위치가 지정되지 않았습니다.');
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomBytes(6).toString('hex')}.tmp`;
   writeFileSync(temporary, JSON.stringify(settings, null, 2), { mode: 0o600, flag: 'wx' });
@@ -108,7 +120,7 @@ export function publicProvider(provider) {
 export function listProviderSettings(options = {}) {
   const settings = readProviderSettings(options);
   return { providers: settings.providers.map(publicProvider), local: settings.local,
-    kinds: Object.entries(PROVIDER_KINDS).map(([id, kind]) => ({ id, label: kind.label, baseUrl: kind.baseUrl })) };
+    kinds: Object.entries(PROVIDER_KINDS).map(([id, kind]) => ({ id, label: kind.label, baseUrl: kind.baseUrl, modelHint: kind.modelHint })) };
 }
 
 export function addProvider(body, options = {}) {
@@ -193,16 +205,32 @@ export async function remoteJson(fetchImpl, url, options) {
   }
 }
 
-/** Lists the provider's models with the stored key; reports whether the configured model exists. */
+/**
+ * Lists the provider's models with the stored key and reports whether the
+ * configured model exists. Gateways without a model list endpoint are checked
+ * with one minimal chat completion instead; a rejected key is reported as is.
+ */
 export async function testProvider(id, { fetchImpl = globalThis.fetch, ...options } = {}) {
   const provider = resolveProvider(id, options);
   if (!provider) throw fault(404, 'LLM_PROVIDER_NOT_FOUND', '공급자를 찾을 수 없습니다.');
+  let listError;
   try {
     const value = await remoteJson(fetchImpl, `${provider.baseUrl}/models`, { apiKey: provider.apiKey, timeoutMs: 10_000, limit: 1024 * 1024 });
     const names = Array.isArray(value?.data) ? value.data.map(item => item?.id).filter(safeLocalModelName) : null;
-    return { ok: true, modelFound: names ? names.includes(provider.model) : null, models: (names ?? []).slice(0, 30) };
+    if (names) return { ok: true, method: 'models', modelFound: names.includes(provider.model), models: names.slice(0, 30) };
   } catch (error) {
-    return { ok: false, code: error.code, error: error.message };
+    if (['LLM_PROVIDER_AUTH_FAILED', 'LLM_PROVIDER_RATE_LIMITED'].includes(error.code)) return { ok: false, code: error.code, error: error.message };
+    listError = error;
+  }
+  const kind = PROVIDER_KINDS[provider.kind] ?? PROVIDER_KINDS['openai-compatible'];
+  try {
+    const value = await remoteJson(fetchImpl, `${provider.baseUrl}/chat/completions`, { method: 'POST', apiKey: provider.apiKey,
+      timeoutMs: 30_000, limit: 256 * 1024,
+      body: { model: provider.model, messages: [{ role: 'user', content: 'Reply with OK.' }], stream: false, [kind.tokenField]: 16 } });
+    if (!Array.isArray(value?.choices)) throw fault(502, 'LLM_PROVIDER_OUTPUT_INVALID', '공급자 응답의 형식이 올바르지 않습니다.');
+    return { ok: true, method: 'chat', modelFound: true, models: [] };
+  } catch (error) {
+    return { ok: false, code: error.code ?? listError?.code, error: error.message ?? listError?.message };
   }
 }
 

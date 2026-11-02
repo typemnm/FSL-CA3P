@@ -267,6 +267,22 @@ function showRuntimeError(message) {
   $('runtime-error').textContent = message;
   $('runtime-error').hidden = !message;
 }
+// Known failure codes stored in run.error, explained for the operator. Unknown values are shown as recorded.
+const RUN_FAILURE_MESSAGES = {
+  FIXTURE_UNREACHABLE: '실습 대상 사이트에 연결할 수 없습니다. vul-web2 대학 실습은 Docker Compose로 먼저 사이트를 띄우고, 입력한 IP·포트를 확인하세요.',
+  FIXTURE_IDENTITY_MISMATCH: '입력한 주소의 사이트가 선택한 실습 대학과 일치하지 않습니다. 실습 대상과 포트를 확인하세요.',
+  LLM_PROVIDER_AUTH_FAILED: '등록한 AI API 공급자가 API 키를 거부했습니다. LLM 모듈에서 키·종류·Base URL을 확인하고 연결 테스트를 해 보세요.',
+  LLM_PROVIDER_REJECTED: 'AI API 공급자가 요청을 거부했습니다. LLM 모듈에서 모델 이름이 그 공급자에 실제로 있는지 확인하세요.',
+  LLM_PROVIDER_UNAVAILABLE: 'AI API 공급자에 연결할 수 없거나 공급자 설정이 삭제되었습니다. LLM 모듈 설정을 확인하세요.',
+  LLM_PROVIDER_TIMEOUT: 'AI API 공급자의 응답 시간이 초과되었습니다.',
+  LLM_PROVIDER_RATE_LIMITED: 'AI API 공급자가 요청 한도를 초과했다고 응답했습니다. 잠시 후 다시 실행하세요.',
+  LLM_PROVIDER_OUTPUT_INVALID: 'AI API 공급자가 JSON 형식의 응답을 돌려주지 않았습니다. JSON 응답을 지원하는 모델인지 확인하세요.',
+  LOCAL_PLANNER_UNAVAILABLE: '로컬 LLM에 연결할 수 없습니다. LLM 모듈에서 로컬 LLM을 다시 탐지하세요.',
+};
+function runFailureMessage(item) {
+  const code = typeof item.error === 'string' ? item.error.trim() : '';
+  return RUN_FAILURE_MESSAGES[code] ? `${RUN_FAILURE_MESSAGES[code]} (${code})` : code || '코어 실행에 실패했습니다.';
+}
 function acceptState(envelope) {
   let resetViews = false;
   const next = normalizeGeneralRun(redactTelemetry(envelope.run));
@@ -309,7 +325,7 @@ function acceptState(envelope) {
   if (next.id !== previousId || next.status !== previousStatus) void refreshHistory();
   if (selectedEventId && !currentRun().events.some((event) => event.id === selectedEventId)) selectedEventId = null;
   showRuntimeError(browserResetError || (experimentStatus === 'failed' ? '이전 실험 초기화가 완료되지 않았습니다. 모델 변경 확인 창에서 초기화를 다시 시도하세요.'
-    : run.status === 'failed' ? run.error || '코어 실행에 실패했습니다.' : ''));
+    : run.status === 'failed' ? runFailureMessage(run) : ''));
   render();
   if (!pendingModelChange && models.length) acceptedModelId = $('model-select').value;
   if (resetViews) void loadWorkspace();

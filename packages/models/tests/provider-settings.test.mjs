@@ -102,7 +102,7 @@ test('connection test lists the provider models with the stored key', async () =
   let seen;
   const ok = await testProvider(provider.id, { env, fetchImpl: async (url, init) => { seen = { url, auth: init.headers.Authorization };
     return response(200, { data: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }] }); } });
-  assert.deepEqual(ok, { ok: true, modelFound: true, models: ['deepseek-chat', 'deepseek-reasoner'] });
+  assert.deepEqual(ok, { ok: true, method: 'models', modelFound: true, models: ['deepseek-chat', 'deepseek-reasoner'] });
   assert.deepEqual(seen, { url: 'https://api.deepseek.com/models', auth: `Bearer ${KEY}` });
   const failed = await testProvider(provider.id, { env, fetchImpl: async () => response(403, {}) });
   assert.equal(failed.ok, false);
@@ -134,4 +134,40 @@ test('local discovery probes the default loopback runtimes and a chosen model be
   assert.throws(() => setLocalSelection({ label: 'ollama', model: 'x', endpoint: 'http://10.0.0.1' }, { env }), { code: 'LLM_LOCAL_INVALID' });
   setLocalSelection({ clear: true }, { env });
   assert.equal(listProviderSettings({ env }).local, null);
+});
+
+test('deploy.com gateway preset: fixed base URL, JSON-mode retry and chat fallback for the connection test', async () => {
+  const { env } = sandbox();
+  const model = 'deepseek-ai/deepseek-v4.1-flash-1017';
+  const deploy = addProvider({ name: 'deploy', kind: 'deploy', model, apiKey: KEY, baseUrl: 'https://ignored.example' }, { env });
+  assert.equal(deploy.baseUrl, 'https://api-sf1-cdn.deploy.com/api/v1');
+  assert.ok(listProviderSettings({ env }).kinds.some(kind => kind.id === 'deploy' && kind.modelHint === model));
+
+  // The gateway rejects JSON mode once; the client retries without response_format and still parses the JSON reply.
+  const bodies = [];
+  const client = await createCustomJsonClient({ modelId: deploy.id, env, fetchImpl: async (url, init) => {
+    const body = JSON.parse(init.body); bodies.push(body);
+    assert.equal(url, 'https://api-sf1-cdn.deploy.com/api/v1/chat/completions');
+    if (body.response_format) return response(400, { error: 'response_format unsupported' });
+    return response(200, { choices: [{ finish_reason: 'stop', message: { content: 'Plan:\n```json\n{"done":true}\n```' } }] });
+  } });
+  const result = await client.completeJson({ systemPrompt: 'Return JSON.', userPayload: {} });
+  assert.deepEqual(result.value, { done: true });
+  assert.deepEqual(bodies.map(body => Boolean(body.response_format)), [true, false]);
+  assert.equal(bodies[1].model, model);
+  assert.equal(bodies[1].stream, false);
+
+  // No /models endpoint: one minimal chat completion proves key and model.
+  const seen = [];
+  const tested = await testProvider(deploy.id, { env, fetchImpl: async (url, init) => {
+    seen.push(url);
+    if (url.endsWith('/models')) return response(404, {});
+    assert.equal(init.headers.Authorization, `Bearer ${KEY}`);
+    return response(200, { choices: [{ finish_reason: 'stop', message: { content: 'OK' } }] });
+  } });
+  assert.deepEqual(tested, { ok: true, method: 'chat', modelFound: true, models: [] });
+  assert.deepEqual(seen, ['https://api-sf1-cdn.deploy.com/api/v1/models', 'https://api-sf1-cdn.deploy.com/api/v1/chat/completions']);
+  // A rejected key stops at the first request.
+  const denied = await testProvider(deploy.id, { env, fetchImpl: async () => response(401, {}) });
+  assert.equal(denied.code, 'LLM_PROVIDER_AUTH_FAILED');
 });

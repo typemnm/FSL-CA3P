@@ -8,6 +8,7 @@ import { validateUniversityOrigin } from '../../packages/contracts/university-ta
 import { normalizeExternalTarget, resolvePublicAddresses, verifyExternalPreflightToken } from './external-target.mjs';
 import { compareRunRecords } from '../../packages/evaluation/index.mjs';
 import { listModels as registryModels } from '../../packages/models/registry.mjs';
+import { providerSettingsPath } from '../../packages/models/provider-settings.mjs';
 import { prepareCaseSnapshot } from './case-snapshot.mjs';
 import { importLegacyRuns } from './import-legacy.mjs';
 import { prepareExperimentCleanup, prepareHistoryReset } from './experiment-cleanup.mjs';
@@ -95,7 +96,9 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (child || closing || resetting || store.experimentState().status !== 'ready' || !autoStartWorker) return;
     child = fork(workerFile, ['--store', store.path, '--owner', owner], {
       env: { ...env, ...(envFile ? { CA3P_MODEL_ENV_FILE: envFile } : {}),
-        CA3P_WORKER_OPTIONS: JSON.stringify(workerOptions) },
+        CA3P_WORKER_OPTIONS: JSON.stringify(workerOptions),
+        // The worker resolves operator LLM settings exactly as this service does.
+        CA3P_LLM_PROVIDERS_PATH: providerSettingsPath(env) ?? '' },
       execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true,
     });
     child.on('message', message => {

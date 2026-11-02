@@ -7,7 +7,7 @@ const date = value => value ? new Date(value).toLocaleString('ko-KR', { timeZone
 export function createLlmSettings({ root, runtime, canEdit, notify = () => {}, onChanged = () => {} }) {
   const state = { loaded: false, loading: false, providers: [], kinds: [], local: null, servers: null, discovering: false,
     busy: false, error: '', notice: '', tests: new Map(), confirmDelete: null,
-    draft: { name: '', kind: 'deepseek', baseUrl: '', model: '' } };
+    draft: { name: '', kind: '', baseUrl: '', model: '' } };
   let container = null;
 
   function accept(payload) {
@@ -58,13 +58,15 @@ export function createLlmSettings({ root, runtime, canEdit, notify = () => {}, o
   }
 
   function providerSection() {
-    const kinds = state.kinds.length ? state.kinds : [{ id: 'deepseek', label: 'DeepSeek' }, { id: 'openai', label: 'OpenAI' }, { id: 'openai-compatible', label: 'OpenAI 호환 API' }];
+    const kinds = state.kinds;
     const draft = state.draft;
     const fixedBase = kinds.find(kind => kind.id === draft.kind)?.baseUrl;
     const rows = state.providers.map(provider => {
       const test = state.tests.get(provider.id);
       const testLine = !test ? '' : test.pending ? '<small role="status">연결 확인 중…</small>'
-        : test.ok ? `<small class="llm-test-ok" role="status">연결 성공${test.modelFound === false ? ` · 목록에 ${escape(provider.model)} 없음` : test.modelFound ? ' · 모델 확인됨' : ''}</small>`
+        : test.ok ? `<small class="${test.modelFound === false ? 'llm-test-fail' : 'llm-test-ok'}" role="status">${test.modelFound === false
+          ? `키는 유효하지만 모델 목록에 ${escape(provider.model)}이(가) 없습니다. 모델 ID를 확인하세요.${test.models?.length ? ` 예: ${escape(test.models.slice(0, 3).join(', '))}` : ''}`
+          : test.method === 'chat' ? '연결 성공 · 짧은 응답으로 모델 동작 확인' : '연결 성공 · 모델 확인됨'}</small>`
           : `<small class="llm-test-fail" role="alert">${escape(test.error || '연결 실패')}</small>`;
       const confirming = state.confirmDelete === provider.id;
       return `<div class="ops-row llm-provider-row"><span><strong>${escape(provider.name)}</strong><small>${escape(provider.kindLabel)} · <span class="mono">${escape(provider.model)}</span> · ${escape(provider.baseUrl)}</small><small>API 키 <span class="mono">${escape(provider.keyHint)}</span> · 등록 ${escape(date(provider.createdAt))}</small>${testLine}</span>${canEdit() ? `<span class="llm-provider-actions">${confirming
@@ -73,9 +75,9 @@ export function createLlmSettings({ root, runtime, canEdit, notify = () => {}, o
     }).join('');
     const form = canEdit() ? `<form id="llm-provider-form" class="llm-provider-form" autocomplete="off"><h4>공급자 추가</h4><div class="llm-provider-fields">
       <label>이름<input name="name" required maxlength="60" placeholder="예: 팀 DeepSeek" value="${escape(draft.name)}"></label>
-      <label>종류<select name="kind">${kinds.map(kind => `<option value="${escape(kind.id)}"${kind.id === draft.kind ? ' selected' : ''}>${escape(kind.label)}</option>`).join('')}</select></label>
-      <label>Base URL<input name="baseUrl" type="url" ${fixedBase ? `value="${escape(fixedBase)}" disabled` : `required placeholder="https://api.example.com/v1" value="${escape(draft.baseUrl)}"`}></label>
-      <label>모델 이름<input name="model" required maxlength="160" placeholder="${draft.kind === 'openai' ? 'gpt-4o-mini' : draft.kind === 'deepseek' ? 'deepseek-chat' : 'model-id'}" value="${escape(draft.model)}"></label>
+      <label>종류<select name="kind" required><option value=""${draft.kind ? '' : ' selected'} disabled>키를 발급한 서비스 선택</option>${kinds.map(kind => `<option value="${escape(kind.id)}"${kind.id === draft.kind ? ' selected' : ''}>${escape(kind.label)}</option>`).join('')}</select><small>키가 이 서비스로 전송됩니다. 목록에 없는 서비스는 OpenAI 호환 API를 고르고 Base URL을 입력하세요.</small></label>
+      <label>Base URL<input name="baseUrl" type="url" ${fixedBase ? `value="${escape(fixedBase)}" disabled` : draft.kind ? `required placeholder="https://api.example.com/v1" value="${escape(draft.baseUrl)}"` : 'disabled placeholder="종류를 먼저 선택하세요"'}></label>
+      <label>모델 이름<input name="model" required maxlength="160" placeholder="${escape(kinds.find(kind => kind.id === draft.kind)?.modelHint ? `예: ${kinds.find(kind => kind.id === draft.kind).modelHint}` : '공급자 문서의 모델 ID')}" value="${escape(draft.model)}"></label>
       <label class="llm-key-field">API 키<input name="apiKey" type="password" required minlength="8" autocomplete="new-password" spellcheck="false" placeholder="저장 후에는 끝 4자리만 표시됩니다"></label>
       </div><div class="ops-form-actions"><button class="button primary" type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? '저장 중…' : '공급자 추가'}</button><small>키는 서버의 .runtime 설정 파일에만 저장되고 화면·로그·실행 기록에 표시되지 않습니다. OpenAI 호환 API는 /chat/completions와 JSON 응답 형식을 지원해야 합니다.</small></div></form>`
       : '<p class="muted">공급자 추가와 삭제는 관리자만 할 수 있습니다.</p>';
@@ -136,6 +138,7 @@ export function createLlmSettings({ root, runtime, canEdit, notify = () => {}, o
     event.preventDefault();
     const form = event.target;
     const kind = form.elements.kind.value;
+    if (!kind) { state.error = '키를 발급한 서비스(종류)를 선택하세요.'; render(); return; }
     state.draft = { name: form.elements.name.value, kind, baseUrl: form.elements.baseUrl.disabled ? '' : form.elements.baseUrl.value, model: form.elements.model.value };
     const body = { name: form.elements.name.value, kind, model: form.elements.model.value, apiKey: form.elements.apiKey.value,
       ...(form.elements.baseUrl.disabled ? {} : { baseUrl: form.elements.baseUrl.value }) };
@@ -149,7 +152,7 @@ export function createLlmSettings({ root, runtime, canEdit, notify = () => {}, o
 
   function reset() {
     Object.assign(state, { loaded: false, loading: false, providers: [], local: null, servers: null, discovering: false,
-      busy: false, error: '', notice: '', confirmDelete: null, draft: { name: '', kind: 'deepseek', baseUrl: '', model: '' } });
+      busy: false, error: '', notice: '', confirmDelete: null, draft: { name: '', kind: '', baseUrl: '', model: '' } });
     state.tests.clear();
   }
 
