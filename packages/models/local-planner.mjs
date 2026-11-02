@@ -3,7 +3,7 @@ import {
   localConfigs, localJson, safeLocalModelName, LOCAL_RUNTIME_LABELS,
   LOCAL_COMPLETION_TIMEOUT_MS, LOCAL_DISCOVERY_TIMEOUT_MS, LOCAL_MAX_OUTPUT_TOKENS,
 } from './workspace-chat.mjs';
-import { CUSTOM_MODEL_ID, PROVIDER_KINDS, readProviderSettings, remoteJson, resolveProvider } from './provider-settings.mjs';
+import { CUSTOM_MODEL_ID, PROVIDER_KINDS, providerOutputTokens, readProviderSettings, remoteJson, resolveProvider } from './provider-settings.mjs';
 
 const require = createRequire(import.meta.url);
 const planner = require('../../agent/src/general-model-planner.js');
@@ -89,8 +89,11 @@ async function resolveLocalModel(server, fetchImpl) {
 /** Bounded JSON completion over the Ollama or OpenAI-compatible chat API. */
 function createJsonChatClient({ endpoint, protocol, apiKey, model, provider, requestedModel, runtime,
   contextWindowTokens = 8192, tokenField = 'max_tokens', temperature = true, transport = localJson,
-  fetchImpl = globalThis.fetch, errorCode = 'LOCAL_PLANNER_OUTPUT_INVALID', label = '로컬 LLM' }) {
+  fetchImpl = globalThis.fetch, errorCode = 'LOCAL_PLANNER_OUTPUT_INVALID', label = '로컬 LLM',
+  maxOutputTokens = LOCAL_MAX_OUTPUT_TOKENS }) {
   const invalid = message => fault(502, errorCode, message);
+  // Reasoning text is part of the response body; allow for it while keeping a hard upper bound.
+  const responseLimit = Math.min(4 * 1024 * 1024, MAX_CONTENT_BYTES + 64 * 1024 + maxOutputTokens * 16);
   return {
     provider,
     requestedModel,
@@ -109,14 +112,14 @@ function createJsonChatClient({ endpoint, protocol, apiKey, model, provider, req
       const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: serialized }];
       const body = protocol === 'ollama'
         ? { model, messages, format: 'json', stream: false,
-          options: { num_predict: LOCAL_MAX_OUTPUT_TOKENS, num_ctx: contextWindowTokens, temperature: 0 } }
+          options: { num_predict: maxOutputTokens, num_ctx: contextWindowTokens, temperature: 0 } }
         : { model, messages, response_format: { type: 'json_object' }, stream: false,
-          [tokenField]: LOCAL_MAX_OUTPUT_TOKENS, ...(temperature ? { temperature: 0 } : {}) };
+          [tokenField]: maxOutputTokens, ...(temperature ? { temperature: 0 } : {}) };
       const started = performance.now();
       const send = payload => transport(fetchImpl,
         `${endpoint}${protocol === 'ollama' ? '/api/chat' : '/chat/completions'}`,
         { method: 'POST', body: payload, apiKey, signal, timeoutMs: LOCAL_COMPLETION_TIMEOUT_MS,
-          limit: MAX_CONTENT_BYTES + 64 * 1024 });
+          limit: responseLimit });
       let value;
       try { value = await send(body); }
       catch (error) {
@@ -126,6 +129,11 @@ function createJsonChatClient({ endpoint, protocol, apiKey, model, provider, req
         value = await send(plain);
       }
       const choice = value.choices?.[0];
+      const truncated = protocol === 'ollama' ? value.done_reason === 'length' : choice?.finish_reason === 'length';
+      if (truncated && !String((protocol === 'ollama' ? value.message?.content : choice?.message?.content) ?? '').trim()) {
+        throw fault(502, errorCode === 'LLM_PROVIDER_OUTPUT_INVALID' ? 'LLM_PROVIDER_OUTPUT_TRUNCATED' : errorCode,
+          `${label}이 최대 출력 토큰(${maxOutputTokens})을 추론에 모두 사용해 답변이 비었습니다. 최대 출력 토큰을 늘리세요.`);
+      }
       if (protocol === 'ollama' ? value.done !== true || (value.done_reason && value.done_reason !== 'stop')
         : !Array.isArray(value.choices) || value.choices.length !== 1 || choice?.finish_reason !== 'stop') {
         throw invalid(`${label}이 완전한 JSON 응답을 반환하지 않았습니다.`);
@@ -180,7 +188,7 @@ export async function createCustomJsonClient({ modelId, env = process.env, fetch
   const kind = PROVIDER_KINDS[provider.kind] ?? PROVIDER_KINDS['openai-compatible'];
   return createJsonChatClient({ endpoint: provider.baseUrl, protocol: 'openai', apiKey: provider.apiKey, model: provider.model,
     provider: 'custom', requestedModel: provider.id, runtime: kind.label, tokenField: kind.tokenField,
-    temperature: provider.kind !== 'openai', transport: remoteJson, fetchImpl,
+    temperature: provider.kind !== 'openai', transport: remoteJson, fetchImpl, maxOutputTokens: providerOutputTokens(provider),
     errorCode: 'LLM_PROVIDER_OUTPUT_INVALID', label: provider.name });
 }
 

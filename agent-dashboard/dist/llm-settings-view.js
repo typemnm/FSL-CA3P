@@ -11,6 +11,7 @@ export function createLlmSettings({ root, runtime, canEdit, notify = () => {}, o
   let container = null;
 
   function accept(payload) {
+    if (payload?.outputTokens) state.outputTokens = payload.outputTokens;
     state.providers = Array.isArray(payload?.providers) ? payload.providers : [];
     state.kinds = Array.isArray(payload?.kinds) ? payload.kinds : state.kinds;
     state.local = payload?.local && typeof payload.local === 'object' ? payload.local : null;
@@ -69,7 +70,7 @@ export function createLlmSettings({ root, runtime, canEdit, notify = () => {}, o
           : test.method === 'chat' ? '연결 성공 · 짧은 응답으로 모델 동작 확인' : '연결 성공 · 모델 확인됨'}</small>`
           : `<small class="llm-test-fail" role="alert">${escape(test.error || '연결 실패')}</small>`;
       const confirming = state.confirmDelete === provider.id;
-      return `<div class="ops-row llm-provider-row"><span><strong>${escape(provider.name)}</strong><small>${escape(provider.kindLabel)} · <span class="mono">${escape(provider.model)}</span> · ${escape(provider.baseUrl)}</small><small>API 키 <span class="mono">${escape(provider.keyHint)}</span> · 등록 ${escape(date(provider.createdAt))}</small>${testLine}</span>${canEdit() ? `<span class="llm-provider-actions">${confirming
+      return `<div class="ops-row llm-provider-row"><span><strong>${escape(provider.name)}</strong><small>${escape(provider.kindLabel)} · <span class="mono">${escape(provider.model)}</span> · ${escape(provider.baseUrl)}</small><small>API 키 <span class="mono">${escape(provider.keyHint)}</span> · 최대 출력 ${escape(provider.maxOutputTokens ?? '—')} 토큰 · 등록 ${escape(date(provider.createdAt))}</small>${testLine}</span>${canEdit() ? `<span class="llm-provider-actions">${confirming
         ? `<button type="button" class="button primary" data-llm-delete="${escape(provider.id)}" ${state.busy ? 'disabled' : ''}>삭제 확인</button><button type="button" class="button secondary" data-llm-cancel-delete>취소</button>`
         : `<button type="button" class="button secondary" data-llm-test="${escape(provider.id)}" ${test?.pending ? 'disabled' : ''}>연결 테스트</button><button type="button" class="button secondary" data-llm-ask-delete="${escape(provider.id)}">삭제</button>`}</span>` : ''}</div>`;
     }).join('');
@@ -78,6 +79,7 @@ export function createLlmSettings({ root, runtime, canEdit, notify = () => {}, o
       <label>종류<select name="kind" required><option value=""${draft.kind ? '' : ' selected'} disabled>키를 발급한 서비스 선택</option>${kinds.map(kind => `<option value="${escape(kind.id)}"${kind.id === draft.kind ? ' selected' : ''}>${escape(kind.label)}</option>`).join('')}</select><small>키가 이 서비스로 전송됩니다. 목록에 없는 서비스는 OpenAI 호환 API를 고르고 Base URL을 입력하세요.</small></label>
       <label>Base URL<input name="baseUrl" type="url" ${fixedBase ? `value="${escape(fixedBase)}" disabled` : draft.kind ? `required placeholder="https://api.example.com/v1" value="${escape(draft.baseUrl)}"` : 'disabled placeholder="종류를 먼저 선택하세요"'}></label>
       <label>모델 이름<input name="model" required maxlength="160" placeholder="${escape(kinds.find(kind => kind.id === draft.kind)?.modelHint ? `예: ${kinds.find(kind => kind.id === draft.kind).modelHint}` : '공급자 문서의 모델 ID')}" value="${escape(draft.model)}"></label>
+      <label>최대 출력 토큰<input name="maxOutputTokens" type="number" min="${state.outputTokens?.min ?? 1024}" max="${state.outputTokens?.max ?? 32768}" step="1024" value="${escape(draft.maxOutputTokens ?? state.outputTokens?.default ?? 16384)}"><small>추론 모델은 생각에도 토큰을 씁니다. 답변이 비면 늘리세요.</small></label>
       <label class="llm-key-field">API 키<input name="apiKey" type="password" required minlength="8" autocomplete="new-password" spellcheck="false" placeholder="저장 후에는 끝 4자리만 표시됩니다"></label>
       </div><div class="ops-form-actions"><button class="button primary" type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? '저장 중…' : '공급자 추가'}</button><small>키는 서버의 .runtime 설정 파일에만 저장되고 화면·로그·실행 기록에 표시되지 않습니다. OpenAI 호환 API는 /chat/completions와 JSON 응답 형식을 지원해야 합니다.</small></div></form>`
       : '<p class="muted">공급자 추가와 삭제는 관리자만 할 수 있습니다.</p>';
@@ -140,7 +142,9 @@ export function createLlmSettings({ root, runtime, canEdit, notify = () => {}, o
     const kind = form.elements.kind.value;
     if (!kind) { state.error = '키를 발급한 서비스(종류)를 선택하세요.'; render(); return; }
     state.draft = { name: form.elements.name.value, kind, baseUrl: form.elements.baseUrl.disabled ? '' : form.elements.baseUrl.value, model: form.elements.model.value };
+    state.draft.maxOutputTokens = form.elements.maxOutputTokens.value;
     const body = { name: form.elements.name.value, kind, model: form.elements.model.value, apiKey: form.elements.apiKey.value,
+      maxOutputTokens: Number(form.elements.maxOutputTokens.value),
       ...(form.elements.baseUrl.disabled ? {} : { baseUrl: form.elements.baseUrl.value }) };
     form.elements.apiKey.value = '';
     void mutate(async () => {

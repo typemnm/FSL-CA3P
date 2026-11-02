@@ -76,7 +76,7 @@ test('registered providers become general planner models and run through the JSO
   assert.deepEqual(result.value, { done: true });
   assert.equal(calls[0].url, 'https://api.openai.com/v1/chat/completions');
   assert.equal(calls[0].init.headers.Authorization, `Bearer ${KEY}`);
-  assert.equal(calls[0].body.max_completion_tokens, 2048);
+  assert.equal(calls[0].body.max_completion_tokens, 16384);
   assert.equal(calls[0].body.temperature, undefined);
   assert.equal(result.metadata.provider, 'custom');
   assert.equal(result.metadata.requestedModel, openai.id);
@@ -87,7 +87,7 @@ test('registered providers become general planner models and run through the JSO
   const dsClient = await createCustomJsonClient({ modelId: deepseek.id, env, fetchImpl });
   await dsClient.completeJson({ systemPrompt: 'Return JSON.', userPayload: {} });
   assert.equal(calls[1].url, 'https://api.deepseek.com/chat/completions');
-  assert.equal(calls[1].body.max_tokens, 2048);
+  assert.equal(calls[1].body.max_tokens, 16384);
   assert.equal(calls[1].body.temperature, 0);
 
   const rejected = await createCustomJsonClient({ modelId: deepseek.id, env, fetchImpl: async () => response(401, {}) });
@@ -170,4 +170,24 @@ test('deploy.com gateway preset: fixed base URL, JSON-mode retry and chat fallba
   // A rejected key stops at the first request.
   const denied = await testProvider(deploy.id, { env, fetchImpl: async () => response(401, {}) });
   assert.equal(denied.code, 'LLM_PROVIDER_AUTH_FAILED');
+});
+
+test('reasoning models get a configurable output budget and an explicit error when it is used up', async () => {
+  const { env } = sandbox();
+  const base = { name: 'gw', kind: 'deploy', model: 'deepseek-ai/deepseek-v4.1-flash-1017', apiKey: KEY };
+  assert.throws(() => addProvider({ ...base, maxOutputTokens: 512 }, { env }), { code: 'LLM_PROVIDER_INVALID' });
+  assert.throws(() => addProvider({ ...base, maxOutputTokens: 40000 }, { env }), { code: 'LLM_PROVIDER_INVALID' });
+  const small = addProvider({ ...base, maxOutputTokens: 4096 }, { env });
+  assert.equal(small.maxOutputTokens, 4096);
+  assert.equal(addProvider({ ...base, name: 'default' }, { env }).maxOutputTokens, 16384);
+
+  let sent;
+  const client = await createCustomJsonClient({ modelId: small.id, env, fetchImpl: async (url, init) => {
+    sent = JSON.parse(init.body);
+    return response(200, { choices: [{ finish_reason: 'length', message: { content: '', reasoning_content: 'thinking...' } }],
+      usage: { completion_tokens: 4096, reasoning_tokens: 4097 } });
+  } });
+  await assert.rejects(client.completeJson({ systemPrompt: 'Return JSON.', userPayload: {} }),
+    { code: 'LLM_PROVIDER_OUTPUT_TRUNCATED', message: /최대 출력 토큰\(4096\)/u });
+  assert.equal(sent.max_tokens, 4096);
 });

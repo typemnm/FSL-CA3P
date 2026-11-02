@@ -23,6 +23,9 @@ export const PROVIDER_KINDS = Object.freeze({
 });
 export const CUSTOM_MODEL_ID = /^custom-[a-f0-9]{12}$/u;
 const MAX_PROVIDERS = 20;
+// Reasoning models spend output tokens on thinking before the JSON answer.
+export const DEFAULT_PROVIDER_OUTPUT_TOKENS = 16384;
+export const PROVIDER_OUTPUT_TOKEN_RANGE = Object.freeze({ min: 1024, max: 32768 });
 const SCHEMA_VERSION = 1;
 const fault = (status, code, message) => Object.assign(new Error(message), { status, code });
 const CONTROL = /[\u0000-\u001f\u007f]/u;
@@ -94,8 +97,13 @@ export function normalizeProviderBaseUrl(raw) {
 
 export function validateProviderInput(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)
-    || Object.keys(body).some(key => !['name', 'kind', 'baseUrl', 'model', 'apiKey'].includes(key))) {
-    throw fault(400, 'LLM_PROVIDER_INVALID', '이름, 종류, Base URL, 모델, API 키만 입력할 수 있습니다.');
+    || Object.keys(body).some(key => !['name', 'kind', 'baseUrl', 'model', 'apiKey', 'maxOutputTokens'].includes(key))) {
+    throw fault(400, 'LLM_PROVIDER_INVALID', '이름, 종류, Base URL, 모델, API 키, 최대 출력 토큰만 입력할 수 있습니다.');
+  }
+  const maxOutputTokens = body.maxOutputTokens === undefined || body.maxOutputTokens === '' ? DEFAULT_PROVIDER_OUTPUT_TOKENS
+    : Number(body.maxOutputTokens);
+  if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < PROVIDER_OUTPUT_TOKEN_RANGE.min || maxOutputTokens > PROVIDER_OUTPUT_TOKEN_RANGE.max) {
+    throw fault(400, 'LLM_PROVIDER_INVALID', `최대 출력 토큰은 ${PROVIDER_OUTPUT_TOKEN_RANGE.min}~${PROVIDER_OUTPUT_TOKEN_RANGE.max} 사이 정수여야 합니다.`);
   }
   const kind = PROVIDER_KINDS[body.kind] ? body.kind : null;
   if (!kind) throw fault(400, 'LLM_PROVIDER_INVALID', '지원하는 공급자 종류를 선택하세요.');
@@ -106,20 +114,28 @@ export function validateProviderInput(body) {
     throw fault(400, 'LLM_PROVIDER_INVALID', 'API 키를 확인하세요. 공백 없이 8자 이상이어야 합니다.');
   }
   const baseUrl = PROVIDER_KINDS[kind].baseUrl ?? normalizeProviderBaseUrl(body.baseUrl);
-  return { name, kind, baseUrl, model, apiKey: body.apiKey };
+  return { name, kind, baseUrl, model, apiKey: body.apiKey, maxOutputTokens };
 }
 
+/** Stored budget, or the default for providers registered before the setting existed. */
+export function providerOutputTokens(provider) {
+  const value = provider?.maxOutputTokens;
+  return Number.isSafeInteger(value) && value >= PROVIDER_OUTPUT_TOKEN_RANGE.min && value <= PROVIDER_OUTPUT_TOKEN_RANGE.max
+    ? value : DEFAULT_PROVIDER_OUTPUT_TOKENS;
+}
 const keyHint = key => (typeof key === 'string' && key.length >= 8 ? `…${key.slice(-4)}` : '…');
 /** Browser-safe view of a provider. The key itself is never included. */
 export function publicProvider(provider) {
   return { id: provider.id, name: provider.name, kind: provider.kind, kindLabel: PROVIDER_KINDS[provider.kind]?.label ?? provider.kind,
     baseUrl: provider.baseUrl, model: provider.model, keyHint: keyHint(provider.apiKey), keyConfigured: Boolean(provider.apiKey),
+    maxOutputTokens: providerOutputTokens(provider),
     createdAt: provider.createdAt ?? null };
 }
 
 export function listProviderSettings(options = {}) {
   const settings = readProviderSettings(options);
   return { providers: settings.providers.map(publicProvider), local: settings.local,
+    outputTokens: { default: DEFAULT_PROVIDER_OUTPUT_TOKENS, ...PROVIDER_OUTPUT_TOKEN_RANGE },
     kinds: Object.entries(PROVIDER_KINDS).map(([id, kind]) => ({ id, label: kind.label, baseUrl: kind.baseUrl, modelHint: kind.modelHint })) };
 }
 

@@ -277,6 +277,7 @@ const RUN_FAILURE_MESSAGES = {
   LLM_PROVIDER_TIMEOUT: 'AI API 공급자의 응답 시간이 초과되었습니다.',
   LLM_PROVIDER_RATE_LIMITED: 'AI API 공급자가 요청 한도를 초과했다고 응답했습니다. 잠시 후 다시 실행하세요.',
   LLM_PROVIDER_OUTPUT_INVALID: 'AI API 공급자가 JSON 형식의 응답을 돌려주지 않았습니다. JSON 응답을 지원하는 모델인지 확인하세요.',
+  LLM_PROVIDER_OUTPUT_TRUNCATED: '모델이 최대 출력 토큰을 추론에 모두 써서 답변이 비었습니다. LLM 모듈에서 공급자의 최대 출력 토큰을 늘리세요.',
   LOCAL_PLANNER_UNAVAILABLE: '로컬 LLM에 연결할 수 없습니다. LLM 모듈에서 로컬 LLM을 다시 탐지하세요.',
 };
 function runFailureMessage(item) {
