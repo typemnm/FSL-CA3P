@@ -51,6 +51,7 @@ function pushCapped(list, item, max) {
 }
 
 const READY_WAIT_MS = 5000;
+const MAX_SHOT_HEIGHT = 2000;
 
 export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10000, signal, bindingName = '__ca3pXssProbe' } = {}) {
   if (signal?.aborted) throw abortError();
@@ -166,9 +167,30 @@ export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10
       return waitForBinding(control, 1000);
     };
 
-    const screenshot = async (outDir, label, { selector, fullPage } = {}) => {
+    // Rendering only, no request: a JSON document becomes an indented, wrapped <pre> and the shot follows the
+    // content height; an HTML page keeps at least the viewport and grows with longer content, both up to MAX_SHOT_HEIGHT.
+    const readableHeight = () => page.evaluate(() => {
+      if (!/json/iu.test(document.contentType) || !document.body) {
+        return Math.max(document.documentElement.scrollHeight, window.innerHeight);
+      }
+      const raw = document.querySelector('body > pre')?.textContent ?? document.body.textContent;
+      const pre = document.createElement('pre');
+      try { pre.textContent = JSON.stringify(JSON.parse(raw), null, 2); }
+      catch { pre.textContent = raw; }
+      pre.style.cssText = 'margin:0;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 monospace';
+      document.body.style.margin = '0';
+      document.body.replaceChildren(pre);
+      return Math.ceil(pre.getBoundingClientRect().height);
+    });
+    const readableShot = async () => {
+      const { width, height } = page.viewportSize();
+      const content = await readableHeight().catch(() => height);
+      return page.screenshot({ fullPage: true, clip: { x: 0, y: 0, width, height: Math.min(Math.max(content, 1), MAX_SHOT_HEIGHT) } });
+    };
+
+    const screenshot = async (outDir, label, { selector } = {}) => {
       const file = `images/${label}-${randomBytes(4).toString('hex')}.png`;
-      const png = await guard(selector ? page.locator(selector).first().screenshot() : page.screenshot({ fullPage }));
+      const png = await guard(selector ? page.locator(selector).first().screenshot() : readableShot());
       await guard(mkdir(join(outDir, 'images'), { recursive: true }));
       await guard(writeFile(join(outDir, file), png));
       return { label, file, sha256: `sha256:${createHash('sha256').update(png).digest('hex')}`, bytes: png.length };
@@ -177,8 +199,10 @@ export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10
     const observe = async () => {
       const title = await guard(page.title().catch(() => ''));
       const text = await guard(page.evaluate(() => document.body?.innerText ?? '').catch(() => ''));
+      const contentType = await guard(page.evaluate(() => document.contentType).catch(() => ''));
       return {
         finalUrl: page.url(),
+        contentType: String(contentType).slice(0, 100),
         title: String(title).slice(0, 200),
         text: clipBytes(String(text), 4096),
         dialogs: dialogs.slice(),

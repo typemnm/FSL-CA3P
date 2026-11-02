@@ -58,9 +58,12 @@ function scriptedModel(reply) {
   return model;
 }
 
-// Round 1 asks for alice's browser view; round 2 reads what the browser observed.
+const XSS_CAPTION = '게시판에서 저장된 스크립트가 실행된 화면';
+
+// Round 1 asks for alice's browser view; round 2 reads what the browser observed; the evidence round keeps that visit.
 function xssModel(marker) {
-  return scriptedModel((payload, round) => (round === 1
+  return scriptedModel((payload, round) => (payload.round === 'evidence' ? { evidence: { use: 0, caption: XSS_CAPTION } }
+    : round === 1
     ? { verdict: 'unknown', reason: 'the stored post only runs in alice\'s browser', browser: { path: '/', role: 'alice', waitFor: WAIT_FOR_POSTS } }
     : {
       verdict: (payload.browserObservation?.bindingCalls ?? []).some(call => call.value === marker) ? 'valid' : 'invalid',
@@ -121,7 +124,8 @@ test('stored_xss is confirmed in a real browser on the vulnerable board', async 
   assert.ok(hit.result.browser.observation.bindingCalls.some(call => call.value === hit.marker));
 
   const screenshots = hit.result.artifacts.filter(artifact => artifact.kind === 'screenshot');
-  assert.ok(screenshots.length >= 1);
+  assert.deepEqual(screenshots.map(shot => shot.label), [XSS_CAPTION]);
+  assert.equal(hit.result.evidenceCapture.status, 'captured');
   for (const shot of screenshots) assert.ok(existsSync(join(hit.outDir, shot.file)), shot.file);
 
   await writeReportHandoff(hit.result, { outDir: hit.outDir });
@@ -148,15 +152,16 @@ test('stored_xss is not reproduced on the safe board: the marker shows as text o
 test('cross_user_delete over HTTP is confirmed on the vulnerable board without a browser', async t => {
   const lab = await startLocalLab();
   t.after(() => lab.close());
-  const model = scriptedModel((payload) => ({
-    verdict: payload.attack.response.status === 200 ? 'valid' : 'invalid',
-    reason: 'the delete response status decides',
-  }));
+  const model = scriptedModel((payload) => (payload.round === 'evidence'
+    ? { evidence: null, reason: '삭제된 글은 화면에 보여줄 것이 없다' }
+    : { verdict: payload.attack.response.status === 200 ? 'valid' : 'invalid', reason: 'the delete response status decides' }));
 
   const hit = await runCrossUserDelete(lab.origin, t, model);
   assert.equal(hit.result.status, 'confirmed');
   assert.equal(hit.result.method, 'ai');
   assert.equal(hit.browserCalls, 0);
+  assert.deepEqual(hit.result.artifacts, []);
+  assert.equal(hit.result.evidenceCapture.status, 'none');
 });
 
 test('cross_user_delete over HTTP is not reproduced on the safe board', async t => {
