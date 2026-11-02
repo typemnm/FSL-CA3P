@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   generalObservedProbeCount, generalReport, generalSummary, isGeneralAssessment, normalizeGeneralRun,
-  renderGeneralLiveResults, renderGeneralOverview, renderGeneralReport,
+  renderGeneralLiveResults, renderGeneralOverview, renderGeneralReport, renderFindingSubagents,
 } from '../dist/general-results.js';
 
 function result() {
@@ -42,6 +42,30 @@ test('general report normalization keeps variable events and does not change leg
   assert.equal(isGeneralAssessment(legacy), false);
   assert.equal(normalizeGeneralRun(legacy), legacy);
   assert.equal(generalReport(legacy), null);
+});
+
+test('subagent findings remain distinct from the main report and are escaped', () => {
+  const item = { id: 'run-a', report: result(), multiAgent: { schemaVersion: 'finding-subagents/1',
+    status: 'completed', tasks: [{ id: 'task-a', sourceFindingId: 'finding:h-2', status: 'completed',
+      finding: { status: 'confirmed', category: '<script>alert(1)</script>', asset: '/search' } }] } };
+  const html = renderFindingSubagents(item);
+  assert.match(html, /서브에이전트 후속 검사/);
+  assert.match(html, /후속 판정 확정/);
+  assert.match(html, /data-subtask-detail="task-a"/);
+  assert.match(html, /data-subtask-export="task-a"/);
+  assert.match(html, /이 실행의 HWPX 통합 보류/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
+  const detail = renderFindingSubagents(item, new Map([['run-a:task-a', { status: 'ready',
+    task: { id: 'task-a', status: 'completed', result: { report: { rationale: '<img src=x onerror=alert(1)>' } } } }]]));
+  assert.match(detail, /작업 전체 기록/);
+  assert.match(detail, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(detail, /<img src/);
+  const stale = renderFindingSubagents(item, new Map([['run-a:task-a', { status: 'ready',
+    task: { id: 'task-a', status: 'running', result: { report: { rationale: 'stale evidence' } } } }]]));
+  assert.match(stale, /상세를 다시 열어 최신 기록/);
+  assert.doesNotMatch(stale, /stale evidence/);
+  assert.equal(generalSummary(item).confirmed, 1, 'main report totals remain unchanged');
 });
 
 test('queued general run stays a waiting state until a report exists', () => {

@@ -9,6 +9,7 @@ import { once } from 'node:events';
 import { digest } from '../../../packages/contracts/index.mjs';
 import { createDashboardServer } from '../../api/server.mjs';
 import { runWorker } from '../worker.mjs';
+import { createGeneralRuntime } from '../../application/general-runtime.mjs';
 
 async function waitFor(check, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
@@ -20,7 +21,7 @@ async function waitFor(check, timeoutMs = 5000) {
   assert.fail('general worker state did not settle');
 }
 
-async function setup(modelId = 'deepseek-flash', loopBudget) {
+async function setup(modelId = 'deepseek-flash', loopBudget, multiAgent) {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   mkdirSync(runtimeRoot, { recursive: true });
   const directory = mkdtempSync(join(runtimeRoot, 'general-worker-'));
@@ -32,10 +33,90 @@ async function setup(modelId = 'deepseek-flash', loopBudget) {
     state: { id, mode: 'local-lab-general', assessmentMode: 'general', modelId,
       status: 'queued', events: [] },
     options: { mode: 'local-lab-general', testProfile: 'general', fixtureId: 'vul-web2-daehan',
-      target: 'http://127.0.0.1:4101', delayMs: 0, ...(loopBudget ? { loopBudget } : {}) } });
+      target: 'http://127.0.0.1:4101', delayMs: 0,
+      ...(loopBudget ? { loopBudget } : {}), ...(multiAgent ? { multiAgent } : {}) } });
   store.close();
   return { id, storePath, directory };
 }
+
+test('multi-agent worker persists child tasks and defers document generation', async t => {
+  const config = { enabled: true, maxConcurrentAgents: 2, maxTasks: 2 };
+  const { id, storePath, directory } = await setup('deepseek-flash', undefined, config);
+  let reportCalls = 0;
+  const factory = options => {
+    const listeners = new Set();
+    let state;
+    return {
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      async startLab() {
+        assert.deepEqual(options.multiAgent, config);
+        const task = { id: 'sub-one', agentId: 'agent-one', sourceFindingId: 'finding:h1',
+          sourceFindingDigest: 'a'.repeat(64), input: { hypothesisId: 'h1' } };
+        options.subtaskRepository.create(task);
+        options.subtaskRepository.start(task.id);
+        options.subtaskRepository.finish(task.id, { status: 'completed', result: {
+          report: { findings: [{ id: 'finding:h1', status: 'confirmed' }] },
+        } });
+        state = { run: { id, mode: 'local-lab-general', status: 'completed',
+          events: [], report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
+            status: 'completed', findings: [{ id: 'finding:h1', status: 'confirmed', evidenceIds: ['e1'] }] },
+          multiAgent: { status: 'completed', tasks: [{ id: task.id, status: 'completed' }] },
+          reviewItems: [] } };
+        for (const listener of listeners) listener(structuredClone(state));
+      },
+      getState() { return structuredClone(state); }, stop() {}, async close() {},
+    };
+  };
+  const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10,
+    env: {}, generalRuntimeFactory: factory,
+    reportGenerator: () => { reportCalls += 1; throw new Error('unexpected report call'); } });
+  t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+  const run = await waitFor(() => { const value = worker.store.getRun(id);
+    return value.status === 'completed' && value.reportDocuments?.completedAt && value; });
+  assert.equal(reportCalls, 0);
+  assert.equal(run.reportDocuments.status, 'skipped');
+  assert.equal(run.reportDocuments.errorCode, 'MULTI_AGENT_REPORT_DEFERRED');
+  assert.equal(worker.store.listSubtasks(id)[0].status, 'completed');
+});
+
+test('worker runs a real finding-focused child and persists its independent verdict', async t => {
+  const { id, storePath, directory } = await setup('deepseek-flash', undefined,
+    { enabled: true, maxConcurrentAgents: 2, maxTasks: 2 });
+  const fetchImpl = async (url) => {
+    const path = new URL(url).pathname;
+    const body = path === '/api/search'
+      ? JSON.stringify({ site: '대한대학교', results: [] })
+      : '<html><title>대한대학교</title><a href="/about">About</a></html>';
+    return new Response(body, { status: 200, headers: { 'content-type': path === '/api/search'
+      ? 'application/json' : 'text/html' } });
+  };
+  const plannerFactory = () => ({ async propose(context) {
+    if (context.focusHypothesisId) return context.iteration > 1
+      ? { done: true, hypotheses: [], probes: [] }
+      : { done: false, hypotheses: [], probes: [{ id: 'child-read',
+        hypothesisId: context.focusHypothesisId, tool: 'http_get', input: { path: '/about' } }] };
+    return context.iteration > 1 ? { done: true, hypotheses: [], probes: [] }
+      : { done: false, hypotheses: [{ id: 'h-followup', category: 'access_control',
+        asset: '/about', rationale: 'Check the observed path', evidenceIds: [context.evidence[0].id] }], probes: [] };
+  } });
+  const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10, env: {},
+    generalPlannerFactory: plannerFactory,
+    generalRuntimeFactory: options => createGeneralRuntime({ ...options,
+      fetchImpl, unavailableInputs: ['casper-db'], enableRequiredTemplates: false,
+      approvalRequired: false,
+      verifyAttackImpl: async record => ({ schemaVersion: 'verifier/1', attackId: record.id,
+        status: 'confirmed', reason: 'synthetic evidence', artifacts: [] }) }),
+    reportGenerator: () => assert.fail('multi-agent document generation is deferred') });
+  t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+  const run = await waitFor(() => { const value = worker.store.getRun(id);
+    return value.status === 'completed' && value.reportDocuments?.completedAt && value; });
+  assert.equal(run.report.findings[0].status, 'not_tested');
+  assert.equal(run.multiAgent.tasks[0].finding.status, 'confirmed');
+  const [task] = worker.store.listSubtasks(id);
+  assert.equal(task.status, 'completed');
+  assert.equal(task.result.report.findings[0].status, 'confirmed');
+  assert.equal(run.reportDocuments.errorCode, 'MULTI_AGENT_REPORT_DEFERRED');
+});
 
 async function runWithFindings(t, { findings, status = 'completed', reportGenerator, beforeWait }) {
   const { id, storePath, directory } = await setup();

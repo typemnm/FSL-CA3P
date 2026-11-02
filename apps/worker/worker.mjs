@@ -129,6 +129,14 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         caseSnapshot: lease.options.caseSnapshot,
         unavailableInputs: lease.options.unavailableInputs ?? [],
         ...(generalLab ? { limits: lease.options.loopBudget, verificationRoot } : {}),
+        ...(generalLab && !externalRun && lease.options.multiAgent ? {
+          multiAgent: lease.options.multiAgent,
+          subtaskRepository: {
+            create: task => { const saved = store.createSubtask(lease, task); notify(); return saved; },
+            start: id => { const saved = store.startSubtask(lease, id); notify(); return saved; },
+            finish: (id, outcome) => { const saved = store.finishSubtask(lease, id, outcome); notify(); return saved; },
+          },
+        } : {}),
         historyProvider,
         cleanupRegistryPath: join(dirname(store.path), 'lab-sessions'),
         ...(generalPlannerFactory ? { plannerFactory: generalPlannerFactory } : {}),
@@ -205,7 +213,15 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         // Persist the core JSON before the report collector opens its read-only DB.
         // The lease/heartbeat and local board stay alive through document capture.
         const startedAt = new Date().toISOString();
-        if (generalLab) {
+        if (generalLab && lease.options.multiAgent && final.report
+          && status !== 'cancelled' && !controller.signal.aborted) {
+          // Child findings remain separate until the report module consumes the
+          // multi-agent result contract. Existing report generation is untouched.
+          finalState.reportDocuments = { schemaVersion: GENERAL_DOCUMENTS_SCHEMA_VERSION,
+            status: 'skipped', startedAt, completedAt: new Date().toISOString(), items: [],
+            errorCode: 'MULTI_AGENT_REPORT_DEFERRED',
+            message: '이 실행의 HWPX 보고서 통합은 후속 작업으로 보류되었습니다.' };
+        } else if (generalLab) {
           const confirmed = Array.isArray(final.report?.findings)
             ? final.report.findings.filter(finding => finding?.status === 'confirmed') : [];
           const items = confirmed.map(finding => ({ findingId: finding.id, status: 'waiting' }));

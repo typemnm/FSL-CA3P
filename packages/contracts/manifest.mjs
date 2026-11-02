@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { digest, redact, CONTRACT_VERSIONS } from './index.mjs';
 import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from './general-loop-budget.mjs';
+import { validateMultiAgentOptions } from './multi-agent.mjs';
 
 export const PROJECT_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const EXCLUDED = new Set(['node_modules', '.git', '.runtime', 'data', '__pycache__', '.pytest_cache', '.ruff_cache', '.venv', 'reports', '.env']);
@@ -44,6 +45,8 @@ function attackCatalogSnapshot(path) {
   finally { database?.close(); }
 }
 export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
+  const multiAgent = validateMultiAgentOptions(options.multiAgent);
+  if (multiAgent && mode !== 'local-lab-general') throw new TypeError('Multi-agent follow-up requires local-lab-general mode.');
   if (mode === 'external-general') {
     const loopBudget = validateGeneralLoopBudget(options.loopBudget ?? GENERAL_LOOP_BUDGET_DEFAULTS);
     const effectiveLoopBudget = { ...loopBudget,
@@ -100,7 +103,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
   const moduleNames = general
     ? ['agent', universityLab ? 'vul-web2' : 'vul-web-1', 'casper-db',
       'attack-tool', 'attack-module', 'guardrail', 'packages/models', 'packages/adapters', 'web-parser',
-      'packages/report', 'packages/run-store', 'apps/application', 'apps/worker']
+      ...(multiAgent ? [] : ['packages/report']), 'packages/run-store', 'apps/application', 'apps/worker']
     : ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker'];
   const modules = Object.fromEntries(moduleNames
     .map(name => [name, { contentDigest: treeDigest(join(PROJECT_ROOT, name)),
@@ -115,14 +118,16 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       lockDigest: null,
       modelRegistryDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')) },
     execution: { mode, simulated: false, maxIterations: loopBudget?.maxIterations ?? 1,
-      ...(general ? { loopBudget } : {}), delayMs: options.delayMs ?? 0 },
+      ...(general ? { loopBudget } : {}), ...(multiAgent ? { multiAgent } : {}),
+      delayMs: options.delayMs ?? 0 },
     model: { id: modelId, provider: model.provider ?? (requestedModel ? 'deepseek' : 'rules'), requestedModel,
       reportedModel: null, snapshot: null, adapterDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')),
       promptTemplateDigest: general ? treeDigest(join(PROJECT_ROOT, 'agent/src/general-model-planner.js')) : null,
       ...(fixedUniversityProbe ? { executionRole: 'not-used-fixed-probe' } : {}),
       settings: model.settings ?? {}, actualPromptDigests: [] },
     data: { logicalInputDigest: digest({ mode, fixtureId, testProfile,
-      ...(general ? { loopBudget } : {}), ...(universityLab ? { origin: universityOrigin } : {}) }),
+      ...(general ? { loopBudget } : {}), ...(multiAgent ? { multiAgent } : {}),
+      ...(universityLab ? { origin: universityOrigin } : {}) }),
       datasetDigest: treeDigest(join(PROJECT_ROOT, universityLab ? 'vul-web2' : 'vul-web-1')),
       catalogDigest: general && options.caseSnapshot?.path ? attackCatalogSnapshot(options.caseSnapshot.path) : null,
       catalogSeedDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')),

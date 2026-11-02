@@ -193,6 +193,30 @@ test('general run freezes configured loop limits in queued options and manifest'
   assert.deepEqual(reopen().getGeneralLoopBudget(), limits);
 });
 
+test('finding follow-up is explicit and bounded in a queued general run', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: 'test-key', CASPER_DB_PYTHON: 'unavailable-python-for-general' } });
+  const defaults = await service.start({ mode: 'local-lab-general', modelId: 'deepseek-flash',
+    fixtureId: 'vul-web2-daehan' });
+  assert.equal(defaults.run.manifest.execution.multiAgent, undefined);
+  const config = { enabled: true, maxConcurrentAgents: 1, maxTasks: 2 };
+  const started = await service.start({ mode: 'local-lab-general', modelId: 'deepseek-flash',
+    fixtureId: 'vul-web2-daehan', multiAgent: config });
+  assert.deepEqual(started.run.manifest.execution.multiAgent, config);
+  const first = service.store.claimNext('follow-up-first');
+  assert.equal(first.options.multiAgent, undefined);
+  service.store.finish(first, 'completed');
+  const second = service.store.claimNext('follow-up-second');
+  assert.deepEqual(second.options.multiAgent, config);
+  service.store.finish(second, 'completed');
+  for (const body of [
+    { mode: 'local-lab-rule', fixtureId: 'vul-web2-daehan', multiAgent: { enabled: true } },
+    { mode: 'external-general', multiAgent: { enabled: true } },
+    { mode: 'local-lab-general', fixtureId: 'vul-web2-daehan', multiAgent: { enabled: false } },
+    { mode: 'local-lab-general', fixtureId: 'vul-web2-daehan', multiAgent: { enabled: true, maxTasks: 5 } },
+  ]) await assert.rejects(service.start(body), { status: 400 });
+});
+
 test('general assessment requires a real configured model and registered target scope', async t => {
   const { service } = setup(t, { autoStartWorker: false, importLegacy: false,
     env: { DEEPSEEK_API_KEY: '', CA3P_CHAT_LOCAL_ENDPOINT: '', LOCAL_LLM_BASE_URL: '', SLLM_ENDPOINT: '', OLLAMA_HOST: '' } });

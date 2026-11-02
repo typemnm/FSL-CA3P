@@ -506,6 +506,14 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
           const runs = await runtime.listRuns?.({ limit, offset, status: params.get('status') ?? undefined }) ?? [];
           return json(res, 200, Array.isArray(runs) ? { runs } : { ...runs, runs: runs.runs ?? runs.items ?? [] });
         }
+        const subtaskDetail = /^\/api\/runs\/([a-zA-Z0-9_-]+)\/subtasks\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.exec(pathname);
+        if (subtaskDetail && req.method === 'GET') {
+          const run = await (runtime.store?.getRun?.(subtaskDetail[1]) ?? runtime.getRun?.(subtaskDetail[1]));
+          if (!run) throw error(404, 'Run not found.');
+          const task = runtime.store?.getSubtask?.(subtaskDetail[1], subtaskDetail[2]);
+          if (!task) throw error(404, 'Subtask not found.');
+          return json(res, 200, { task });
+        }
         const detail = /^\/api\/runs\/([a-zA-Z0-9_-]+)(?:\/(export|events))?$/.exec(pathname);
         if (detail && req.method === 'GET') {
           const run = await runtime.getRun?.(detail[1]);

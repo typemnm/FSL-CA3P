@@ -131,9 +131,10 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       session = { ...session, authenticated: false, user: null, csrfToken: null };
       onSession(session); onAuthRequired(); onConnection('disconnected', transport);
     },
-    async startAssessment(modelId, fixtureId = 'vul-web-1', target) {
+    async startAssessment(modelId, fixtureId = 'vul-web-1', target, multiAgent) {
       const value = await request('/api/runs', { mode: 'local-lab-general', modelId,
-        ...(fixtureId !== 'vul-web-1' ? { fixtureId } : {}), ...(target ? { target } : {}) });
+        ...(fixtureId !== 'vul-web-1' ? { fixtureId } : {}), ...(target ? { target } : {}),
+        ...(multiAgent ? { multiAgent } : {}) });
       receive(value); return value;
     },
     preflightExternal(target, pathPrefix = '/') { return api('/api/targets/preflight', { method: 'POST', body: { target, scope: { pathPrefix }, authorizationConfirmed: true } }); },
@@ -168,6 +169,7 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       return request(`/api/runs${query.size ? `?${query}` : ''}`);
     },
     getRun(id) { return request(`/api/runs/${encodeURIComponent(id)}`); },
+    getSubtask(runId, taskId) { return request(`/api/runs/${encodeURIComponent(runId)}/subtasks/${encodeURIComponent(taskId)}`); },
     reportDownloadUrl(id) { return `/api/runs/${encodeURIComponent(id)}/report.hwpx`; },
     findingReportDownloadUrl(runId, artifactId) {
       return `/api/runs/${encodeURIComponent(runId)}/reports/${encodeURIComponent(artifactId)}.hwpx`;

@@ -15,6 +15,8 @@ import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/
 import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse, listTemplates } from '../../packages/adapters/integrations/attack-tool.mjs';
 import { buildRequiredTemplatePlan, librariesFromInventory } from './required-templates.mjs';
 import { createAssessmentPlanner, createModelJsonClient, isGeneralPlannerModel, plannerProvider, usesJsonClient } from '../../packages/models/local-planner.mjs';
+import { validateMultiAgentOptions } from '../../packages/contracts/multi-agent.mjs';
+import { selectFindingSubtasks, runFindingSubtasks } from './finding-subagents.mjs';
 
 const { runGeneralAssessment } = generalCore;
 const { createGeneralModelPlannerFromEnv } = generalPlanner;
@@ -392,7 +394,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   catalogReader = readKnowledgeCatalogReadOnly, templateCatalog,
   webParserCollect = collectWebInfo, verificationRoot, verifyAttackImpl = verifyAttack, verifierModel,
   limits = GENERAL_LOOP_BUDGET_DEFAULTS, enableRequiredTemplates = true,
-  approvalRequired = false, approvalTimeoutMs = 1_800_000 } = {}) {
+  approvalRequired = false, approvalTimeoutMs = 1_800_000,
+  multiAgent, subtaskRepository } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!isGeneralPlannerModel(modelId)) throw new TypeError('A registered planner model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
@@ -410,6 +413,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     throw new TypeError('Invalid general runtime approval options.');
   }
   limits = validateGeneralLoopBudget(limits);
+  multiAgent = validateMultiAgentOptions(multiAgent);
+  if (multiAgent && (!subtaskRepository || ['create', 'start', 'finish'].some(key =>
+    typeof subtaskRepository[key] !== 'function'))) throw new TypeError('A subtask repository is required for multi-agent assessment.');
   const config = FIXTURES[fixtureId];
   const origin = config.siteKey ? validateUniversityOrigin(targetOrigin ?? config.origin) : null;
   const instanceId = randomUUID();
@@ -425,6 +431,17 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   let board = null;
   let closed = false;
   let approvalController = null;
+  let approvalQueue = Promise.resolve();
+  async function requestSerializedApproval(input) {
+    let release;
+    const previous = approvalQueue;
+    approvalQueue = new Promise(resolve => { release = resolve; });
+    await previous;
+    try {
+      input.signal?.throwIfAborted();
+      return await approvalController.request(input);
+    } finally { release(); }
+  }
   // Session cookies stay only in this runtime process. Inventory and reports keep role labels.
   const sessionCookies = new Map();
 
@@ -753,7 +770,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     };
     return { inventory, evidence };
   }
-  async function execute(allowedOrigin, currentSignal) {
+  async function execute(allowedOrigin, currentSignal, { initialContext, taskId,
+    agentId, focusAsset, coreLimits = limits } = {}) {
     const planner = plannerFactory
       ? await plannerFactory({ modelId, env, envFile, signal: currentSignal })
       : await createAssessmentPlanner({ modelId, env, envFile });
@@ -771,7 +789,10 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     const failedModelCalls = [];
     let evidenceCount = 0;
     let webInfoBytes = 0;
+    const focusPath = taskId ? safePath(focusAsset, allowedOrigin)?.pathname : null;
+    const focusFile = taskId && Object.hasOwn(config.files, focusAsset) ? focusAsset : null;
     const allowedPaths = new Set(config.routes.map(path => new URL(path, allowedOrigin).pathname));
+    if (focusPath) allowedPaths.add(focusPath);
     const extendPaths = page => {
       for (const path of [...(page.links ?? []), ...(page.forms ?? []).map(form => form.path)]) {
         const url = safePath(path, allowedOrigin);
@@ -780,7 +801,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     };
     const observer = { async observe() {
       if (observed) return { inventory, evidence: [] };
-      const initial = await initialObservation(allowedOrigin, currentSignal);
+      const initial = initialContext
+        ? { inventory: structuredClone(initialContext.inventory), evidence: [] }
+        : await initialObservation(allowedOrigin, currentSignal);
       observed = true; inventory = { ...initial.inventory, attackTool: {
         transport: 'http-json', flow: ['agent', 'attack-tool', 'guardrail', 'executor'],
         endpoints: attackTool.endpoints, templates: attackTool.templates,
@@ -802,10 +825,12 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           return { allowed: false, reason: 'invalid_' + probe.tool + '_input' };
         }
         const url = safePath(probe.input.path, allowedOrigin);
-        return { allowed: !!url && allowedPaths.has(url.pathname), reason: 'path_out_of_scope' };
+        return { allowed: !!url && allowedPaths.has(url.pathname)
+          && (!taskId || url.pathname === focusPath), reason: 'path_out_of_scope' };
       }
       if (probe.tool === 'repository_read') return {
         allowed: Object.hasOwn(config.files, probe.input.file)
+          && (!taskId || probe.input.file === focusFile)
           && (probe.input.offset === undefined || Number.isSafeInteger(probe.input.offset)
             && probe.input.offset >= 0 && probe.input.offset <= 32 * 1024),
         reason: 'file_out_of_scope' };
@@ -882,7 +907,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const sessionRole = probe.input.sessionRole;
         const cookie = sessionRole === undefined ? null : sessionCookies.get(sessionRole);
         // The core ends the run when one execution returns more evidence than it has room for.
-        const remaining = limits.maxEvidenceItems - evidenceCount;
+        const remaining = coreLimits.maxEvidenceItems - evidenceCount;
         // A page can reflect a fixed session value (header, URL) or carry URL userinfo; keep both out.
         const evidenceText = value => [...sessionCookies.values()].reduce(
           (text, pair) => text.replaceAll(pair.slice(pair.indexOf('=') + 1), '[redacted]'),
@@ -1076,7 +1101,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         env, envFile, signal });
     } };
     const wrappedPlanner = { async propose(context) {
-      if (enableRequiredTemplates && !requiredPass) {
+      if (enableRequiredTemplates && !initialContext && !requiredPass) {
         const evidenceId = context.evidence?.[0]?.id;
         const forms = observedPages.flatMap(page => page.forms ?? []);
         requiredPass = evidenceId
@@ -1134,7 +1159,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           && Array.isArray(error?.modelAttempts) ? error.modelAttempts : [];
         for (const attempt of attempts) {
           failedModelCalls.push(attempt);
-          await onModelCall?.(attempt);
+          await onModelCall?.(taskId ? { ...attempt, taskId, agentId } : attempt);
         }
         if (attempts.length && error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR') throw error;
         const failed = { provider: plannerProvider(modelId),
@@ -1151,20 +1176,32 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           failed.finishReason = error.finishReason;
         }
         failedModelCalls.push(failed);
-        await onModelCall?.(failed);
+        await onModelCall?.(taskId ? { ...failed, taskId, agentId } : failed);
         throw error;
       }
       const trustedPlanner = planner instanceof generalPlanner.GeneralModelPlanner;
       const attempts = trustedPlanner && Array.isArray(plan?.modelAttempts)
         ? plan.modelAttempts : [plan?.modelMetadata];
-      for (const attempt of attempts) if (attempt) await onModelCall?.(attempt);
+      for (const attempt of attempts) if (attempt) await onModelCall?.(taskId
+        ? { ...attempt, taskId, agentId } : attempt);
       if (!trustedPlanner && plan && typeof plan === 'object' && Object.hasOwn(plan, 'modelAttempts')) {
         plan = { ...plan };
         delete plan.modelAttempts;
       }
+      if (taskId && Array.isArray(plan?.probes)) {
+        const prefix = `s${createHash('sha256').update(taskId).digest('hex').slice(0, 8)}-`;
+        plan = { ...plan, probes: plan.probes.map(probe => {
+          if (!record(probe) || typeof probe.id !== 'string') return probe;
+          const namespaced = probe.id.startsWith(prefix) ? probe.id : prefix + probe.id;
+          return { ...probe, id: namespaced.length <= 64 ? namespaced
+            : prefix + createHash('sha256').update(probe.id).digest('hex').slice(0, 32) };
+        }) };
+      }
       return plan;
     } };
-    const availableTools = ['http_get', 'web_info', 'repository_read', 'execute_attack_template'];
+    const availableTools = taskId
+      ? focusPath ? ['http_get'] : ['repository_read']
+      : ['http_get', 'web_info', 'repository_read', 'execute_attack_template'];
     // Each vulnerability worker receives its own authenticated logical client.
     // The daemon owns the transport, while target and policy authority remain in
     // this runtime; model input cannot install an executor or change its scope.
@@ -1190,7 +1227,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         digest: createHash('sha256').update(JSON.stringify(action)).digest('hex') };
       };
       const { summary, digest: actionDigest } = actionForApproval();
-      const outcome = await approvalController.request({ kind: 'general-probe', probeId: probe.id,
+      const outcome = await requestSerializedApproval({ kind: 'general-probe', probeId: probe.id,
         summary, actionDigest, signal: approvalSignal });
       if (outcome.decision === 'approved' && actionForApproval().digest !== actionDigest) {
         throw fault(409, 'Approved probe changed before execution.');
@@ -1201,13 +1238,15 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     try {
       ({ report } = await runGeneralAssessment({
         target: { fixtureId, origin: allowedOrigin }, observer, planner: wrappedPlanner,
-        policy, executor: toolExecutor, verifier, approval, availableTools, limits, signal: currentSignal,
+        policy, executor: toolExecutor, verifier, approval, availableTools,
+        limits: coreLimits, initialContext, signal: currentSignal,
         onEvent: async event => {
           // The core reports its stored evidence count (initial observation included) before each probe.
           evidenceCount = event.progress?.evidenceCount ?? evidenceCount;
           const iteration = eventCount(event.iteration) ?? run.iterations;
           run.iterations = Math.max(run.iterations, iteration);
-          appendEvent({ ...projectGeneralEvent(event, limits), iteration });
+          appendEvent({ ...projectGeneralEvent(event, coreLimits), iteration,
+            ...(taskId ? { source: 'agent/finding-subagent', module: 'subagent', taskId, agentId } : {}) });
         },
       }));
       report.attackTool = { transport: 'http-json',
@@ -1220,7 +1259,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       probeHypotheses.clear();
       templatePlans.clear();
     }
-    report.runId = run.id;
+    report.runId = taskId ?? run.id;
     const requiredIds = requiredPass?.requiredIds ?? [];
     const used = new Set((report.probes ?? []).filter(item => item.tool === 'execute_attack_template').map(item => item.id));
     report.coverage = {
@@ -1236,8 +1275,77 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     report.scope = { fixtureId, origin: allowedOrigin,
       methods: ['GET'],
       sessionBootstrap: (config.siteKey ? 'POST /login' : 'POST /api/session') + ' using fixed demo accounts',
-      toolIds: availableTools, allowedPaths: [...allowedPaths].sort(), ...limits };
+      toolIds: availableTools, allowedPaths: [...allowedPaths].sort(), ...coreLimits };
     return report;
+  }
+  async function followUpFindings(mainReport, allowedOrigin, runSignal, probeBudget) {
+    const tasks = selectFindingSubtasks(mainReport, {
+      runId: run.id, maxTasks: multiAgent.maxTasks, probeBudget,
+      eligible: finding => {
+        const path = safePath(finding.asset, allowedOrigin)?.pathname;
+        return Boolean(path && mainReport.scope?.allowedPaths?.includes(path))
+          || Object.hasOwn(config.files, finding.asset);
+      },
+    });
+    const summaries = tasks.map(task => ({ id: task.id, agentId: task.agentId,
+      sourceFindingId: task.sourceFindingId, sourceStatus: task.finding.status,
+      hypothesisId: task.hypothesis.id, status: 'queued', maxProbes: task.maxProbes }));
+    run.multiAgent = { schemaVersion: 'finding-subagents/1', status: tasks.length ? 'running' : 'skipped',
+      maxConcurrentAgents: multiAgent.maxConcurrentAgents, maxTasks: multiAgent.maxTasks,
+      probeBudget, tasks: summaries,
+      ...(tasks.length ? {} : { reason: probeBudget ? 'no_eligible_findings' : 'no_child_probe_budget' }),
+      completedAt: tasks.length ? null : new Date().toISOString() };
+    publish();
+    for (const task of tasks) {
+      await subtaskRepository.create({ id: task.id, agentId: task.agentId,
+        sourceFindingId: task.sourceFindingId, sourceFindingDigest: task.sourceFindingDigest,
+        input: { hypothesisId: task.hypothesis.id, sourceStatus: task.finding.status,
+          maxProbes: task.maxProbes } });
+    }
+    await runFindingSubtasks(tasks, multiAgent.maxConcurrentAgents, async (task, index) => {
+      await subtaskRepository.start(task.id);
+      summaries[index].status = 'running';
+      appendEvent({ source: 'agent/finding-subagent', module: 'subagent', stage: 'subagent.started',
+        title: '서브에이전트 후속 검사', taskId: task.id, agentId: task.agentId,
+        sourceFindingId: task.sourceFindingId });
+      const initialContext = { inventory: mainReport.inventory, evidence: task.evidence,
+        hypotheses: [task.hypothesis], focusHypothesisId: task.hypothesis.id };
+      const coreLimits = { maxIterations: Math.min(2, limits.maxIterations),
+        maxProbes: task.maxProbes,
+        maxEvidenceItems: Math.min(limits.maxEvidenceItems,
+          Math.max(task.evidence.length + 8, 16)) };
+      let child;
+      try {
+        child = await execute(allowedOrigin, runSignal, { initialContext,
+          taskId: task.id, agentId: task.agentId, focusAsset: task.finding.asset, coreLimits });
+      } catch (error) {
+        if (runSignal.aborted) child = { status: 'cancelled', stopReason: 'cancelled' };
+        else child = { status: 'failed', error: { code: 'SUBAGENT_FAILED' },
+          stopReason: 'failure' };
+      }
+      const taskStatus = ['completed', 'cancelled'].includes(child.status) ? child.status : 'failed';
+      await subtaskRepository.finish(task.id, { status: taskStatus, result: { report: child },
+        ...(taskStatus === 'completed' ? {} : { errorCode: taskStatus === 'cancelled'
+          ? 'SUBAGENT_CANCELLED' : 'SUBAGENT_FAILED' }) });
+      summaries[index].status = taskStatus;
+      summaries[index].finding = child.findings?.[0]
+        ? { id: child.findings[0].id, category: child.findings[0].category,
+          asset: child.findings[0].asset, status: child.findings[0].status,
+          evidenceIds: child.findings[0].evidenceIds } : null;
+      summaries[index].stopReason = child.stopReason ?? null;
+      appendEvent({ source: 'agent/finding-subagent', module: 'subagent', stage: 'subagent.completed',
+        title: '서브에이전트 후속 검사 결과', taskId: task.id, agentId: task.agentId,
+        sourceFindingId: task.sourceFindingId, response: { status: taskStatus,
+          findingStatus: summaries[index].finding?.status ?? null } });
+      return summaries[index];
+    }, runSignal);
+    if (runSignal.aborted) for (const summary of summaries) {
+      if (summary.status === 'queued') summary.status = 'cancelled';
+    }
+    run.multiAgent.status = runSignal.aborted ? 'cancelled'
+      : summaries.some(item => item.status !== 'completed') ? 'partial' : 'completed';
+    run.multiAgent.completedAt = new Date().toISOString();
+    publish();
   }
   async function runTask() {
     try {
@@ -1258,9 +1366,20 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       run.target = allowedOrigin; run.coreTargetOrigin = allowedOrigin;
       await verifyFixtureIdentity(allowedOrigin, runSignal);
       run.status = 'running'; publish();
-      const report = await execute(allowedOrigin, runSignal);
+      const childProbeBudget = multiAgent && limits.maxProbes > 1
+        ? Math.min(8, Math.max(1, Math.floor(limits.maxProbes / 3))) : 0;
+      const mainLimits = childProbeBudget
+        ? { ...limits, maxProbes: limits.maxProbes - childProbeBudget } : limits;
+      const report = await execute(allowedOrigin, runSignal, { coreLimits: mainLimits });
       run.report = report;
-      run.status = report.status === 'cancelled' ? 'stopped' : report.status;
+      if (multiAgent && report.status === 'completed') {
+        await followUpFindings(report, allowedOrigin, runSignal, childProbeBudget);
+      } else if (multiAgent) {
+        run.multiAgent = { schemaVersion: 'finding-subagents/1', status: 'skipped',
+          reason: report.stopReason ?? 'main_assessment_incomplete', tasks: [],
+          completedAt: new Date().toISOString() };
+      }
+      run.status = runSignal.aborted || report.status === 'cancelled' ? 'stopped' : report.status;
       run.error = report.status === 'failed' ? report.error?.code ?? 'GENERAL_ASSESSMENT_FAILED' : undefined;
       run.reviewItems = report.findings.map(finding => ({
         id: run.id + ':' + finding.id, title: finding.category + ' · ' + finding.asset,

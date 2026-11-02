@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository, DEFAULT_STORE_PATH } from '../../packages/run-store/index.mjs';
 import { createRunManifest } from '../../packages/contracts/manifest.mjs';
+import { validateMultiAgentOptions } from '../../packages/contracts/multi-agent.mjs';
 import { emptyRun, RUN_MODES, RETIRED_RUN_MODES, ACTIVE_STATUSES, redact } from '../../packages/contracts/index.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import { normalizeExternalTarget, resolvePublicAddresses, verifyExternalPreflightToken } from './external-target.mjs';
@@ -132,10 +133,14 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (closing || closed) throw fault(503, 'Run service is closed.');
     if (resetting || store.experimentState().status !== 'ready') throw fault(409, '실험 초기화 또는 검토가 진행 중이거나 초기화 재시도가 필요합니다.');
     if (!body || typeof body !== 'object' || Array.isArray(body)
-      || Object.keys(body).some(key => !['mode', 'modelId', 'target', 'delayMs', 'testProfile', 'fixtureId',
+      || Object.keys(body).some(key => !['mode', 'modelId', 'target', 'delayMs', 'testProfile', 'fixtureId', 'multiAgent',
         'scope', 'preflightToken', 'authorizationConfirmed'].includes(key))) {
       throw fault(400, 'Unsupported run options.');
     }
+    if (body.multiAgent !== undefined && body.mode !== 'local-lab-general') {
+      throw fault(400, 'Multi-agent follow-up requires local-lab-general mode.');
+    }
+    const multiAgent = validateMultiAgentOptions(body.multiAgent);
     if (RETIRED_RUN_MODES.includes(body.mode) || RETIRED_PROFILES.includes(body.testProfile)) {
       throw Object.assign(fault(400, 'The single stored-XSS/BOLA check was retired. Start a general assessment instead.'),
         { code: RETIRED_RUN_MODES.includes(body.mode) ? 'RETIRED_MODE' : 'RETIRED_PROFILE' });
@@ -206,6 +211,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     const options = { mode, modelId, target, delayMs: 0, testProfile, fixtureId };
     if (general) {
       options.loopBudget = store.getGeneralLoopBudget();
+      if (multiAgent) options.multiAgent = multiAgent;
       try { options.caseSnapshot = prepareCaseSnapshot({ runId: id, storePath: store.path, fixtureId, env }); }
       catch (failure) {
         if (failure.code !== 'CASE_SNAPSHOT_UNAVAILABLE') throw failure;

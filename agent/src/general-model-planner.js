@@ -18,6 +18,7 @@ Use the supplied inventory, evidence IDs, prior hypotheses, usedProbeIds, remain
 For this response, do not exceed proposalLimits.maxHypotheses new hypotheses or proposalLimits.maxProbes probes. Use JSON booleans and arrays, not strings or null, for done, hypotheses, and probes.
 The hypotheses field lists only NEW hypotheses. You may refer to an existing hypothesis ID in a probe, but do not redeclare it. Every probe ID must be unique across this run; never reuse an ID from usedProbeIds.
 Only suggest tools listed in availableTools. Do not invent evidence IDs, credentials, shell commands, headers, or targets outside the observed inventory. Do not claim a vulnerability is confirmed; an independent verifier decides that from later evidence.
+When focusHypothesisId is present, follow up only that existing hypothesis. Return hypotheses: [] and bind every probe to focusHypothesisId. focusAsset is the only permitted target: an http_get probe must set input.path exactly to focusAsset, and a repository_read probe must set input.file exactly to focusAsset. Use only those tools when available. If no useful probe exists at that asset, return done: true with no probes. Existing evidence is context, not confirmation; a new probe needs independent verification.
 Bind execute_attack_template probes to observed pathnames from inventory. Prefer inventory.remainingTemplateIds. Do not select a template because of a site name. Do not repeat IDs in usedProbeIds.
 Return JSON only, with exactly these top-level keys: done (boolean), hypotheses (array), probes (array).
 Each hypothesis must have exactly: id (string), category (string), asset (string), rationale (string), evidenceIds (array of existing evidence IDs).
@@ -232,16 +233,21 @@ function validateToolInput(value, depth = 0) {
 function probeRejectionReason(error) {
   if (error.message === 'Probe references unknown hypothesis') return 'unknown_hypothesis_id';
   if (error.message === 'Probe selected an unavailable tool') return 'unavailable_tool';
+  if (error.message === 'Focused probe must use the assigned asset') return 'focus_asset_out_of_scope';
   if (error.message.startsWith('probe.input')) return 'unsafe_probe_input';
   return 'invalid_probe_schema';
 }
 
 function validateModelPlan(value, { evidenceIds, priorHypotheses, priorProbeIds, iteration,
-  availableTools, maxHypotheses, maxProbes }) {
+  availableTools, maxHypotheses, maxProbes, focusHypothesisId, focusAsset }) {
   exactKeys(value, ['done', 'hypotheses', 'probes'], 'Model plan');
   if (typeof value.done !== 'boolean') throw plannerError('GENERAL_PLANNER_SCHEMA_ERROR', 'Model plan.done must be a boolean');
   if (!Array.isArray(value.hypotheses)) throw plannerError('GENERAL_PLANNER_SCHEMA_ERROR', 'Model plan.hypotheses must be an array');
   if (!Array.isArray(value.probes)) throw plannerError('GENERAL_PLANNER_SCHEMA_ERROR', 'Model plan.probes must be an array');
+  if (focusHypothesisId && (value.hypotheses.length
+    || value.probes.some(item => item?.hypothesisId !== focusHypothesisId))) {
+    throw plannerError('GENERAL_PLANNER_SCHEMA_ERROR', 'Focused plan may only probe the selected existing hypothesis');
+  }
   if (value.hypotheses.length > maxHypotheses + priorHypotheses.size) throw plannerError('GENERAL_PLANNER_SCHEMA_ERROR', 'Model plan.hypotheses exceed the proposal limit');
   if (value.probes.length > maxProbes + 16) throw plannerError('GENERAL_PLANNER_SCHEMA_ERROR', 'Model plan.probes exceed the hard proposal limit');
   if (value.done && value.probes.length) throw plannerError('GENERAL_PLANNER_SCHEMA_ERROR', 'A completed plan cannot contain probes');
@@ -295,12 +301,22 @@ function validateModelPlan(value, { evidenceIds, priorHypotheses, priorProbeIds,
       const tool = identifier(item.tool, `probes[${index}].tool`);
       if (!availableTools.has(tool)) throw plannerError('GENERAL_PLANNER_SCHEMA_ERROR', 'Probe selected an unavailable tool');
       const input = validateToolInput(item.input);
+      if (focusAsset !== undefined && !(
+        tool === 'http_get' && input.path === focusAsset
+        || tool === 'repository_read' && input.file === focusAsset)) {
+        throw plannerError('GENERAL_PLANNER_SCHEMA_ERROR', 'Focused probe must use the assigned asset');
+      }
       probeIds.add(id);
       probes.push({ id, hypothesisId, tool, input });
     } catch (error) {
       if (error?.code !== 'GENERAL_PLANNER_SCHEMA_ERROR') throw error;
       rejectedProbes.push({ index, reason: probeRejectionReason(error) });
     }
+  }
+  if (focusHypothesisId && rejectedProbes.length) {
+    throw plannerError('GENERAL_PLANNER_SCHEMA_ERROR', rejectedProbes.some(item => item.reason === 'focus_asset_out_of_scope')
+      ? 'Focused probe must use the assigned asset'
+      : 'Focused plan must use an available tool and valid probe input');
   }
   return { hypotheses, probes, rejectedProbes, done: value.done };
 }
@@ -318,7 +334,7 @@ class GeneralModelPlanner {
   }
 
   async propose({ inventory, evidence = [], hypotheses = [], usedProbeIds = [],
-    iteration, budget, availableTools, signal } = {}) {
+    iteration, budget, availableTools, focusHypothesisId, signal } = {}) {
     if (!Number.isSafeInteger(iteration) || iteration < 1) {
       throw plannerError('GENERAL_PLANNER_CONTEXT_ERROR', 'iteration must be a positive integer');
     }
@@ -332,13 +348,20 @@ class GeneralModelPlanner {
     if (!isRecord(safeInventory)) throw plannerError('GENERAL_PLANNER_CONTEXT_ERROR', 'inventory must be an object');
     const safeEvidence = evidenceForPrompt(evidence, state);
     const prior = validatePriorHypotheses(hypotheses, state);
+    if (focusHypothesisId !== undefined
+      && (typeof focusHypothesisId !== 'string' || !IDENTIFIER.test(focusHypothesisId)
+        || !prior.byId.has(focusHypothesisId))) {
+      throw plannerError('GENERAL_PLANNER_CONTEXT_ERROR', 'focusHypothesisId must select an existing hypothesis');
+    }
     const priorProbeIds = validateUsedProbeIds(usedProbeIds);
+    const focusAsset = focusHypothesisId ? prior.byId.get(focusHypothesisId).asset : undefined;
     const proposalLimits = { maxHypotheses: this.maxHypotheses,
       maxProbes: Math.min(this.maxProbesPerStep, safeBudget.remainingProbes) };
     const userPayload = { task: 'propose_general_security_checks', iteration, budget: safeBudget,
       proposalLimits,
       availableTools: tools, inventory: safeInventory, evidence: safeEvidence.result,
       hypotheses: prior.result, usedProbeIds: priorProbeIds,
+      ...(focusHypothesisId ? { focusHypothesisId, focusAsset } : {}),
       contextRedactions: state.redactedFields };
     const promptBytes = Buffer.byteLength(GENERAL_SYSTEM_PROMPT, 'utf8')
       + Buffer.byteLength(JSON.stringify(userPayload), 'utf8');
@@ -347,7 +370,7 @@ class GeneralModelPlanner {
     }
     const validationContext = { evidenceIds: safeEvidence.ids,
       priorHypotheses: prior.byId, priorProbeIds, iteration,
-      availableTools: new Set(tools), maxHypotheses: this.maxHypotheses,
+      availableTools: new Set(tools), maxHypotheses: this.maxHypotheses, focusHypothesisId, focusAsset,
       maxProbes: proposalLimits.maxProbes };
     const promptDigest = createHash('sha256').update(JSON.stringify(userPayload)).digest('hex');
     const attempts = [];

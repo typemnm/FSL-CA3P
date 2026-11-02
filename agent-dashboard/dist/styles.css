@@ -121,6 +121,7 @@
 .report-preview pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow:auto;background:#0a150e;border:1px solid #2c4334;border-radius:6px;padding:18px;color:#dce9df;line-height:1.7}
 .report-preview iframe{display:block;width:100%;min-height:72vh;border:1px solid #3c5445;border-radius:6px;background:#fff;color:#111}
 .report-document-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.subtask-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 12px}.subtask-detail{margin:10px 0 16px}.subtask-detail pre{max-height:440px;overflow:auto;padding:12px;border:1px solid var(--line);border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere}.subtask-error{color:var(--danger,#ff928a)}
 
 /* DB intake, case management and module observability. */
 .operations-loading,.ops-panel{padding:22px}

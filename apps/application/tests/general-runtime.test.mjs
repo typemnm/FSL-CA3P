@@ -49,6 +49,106 @@ function response(path) {
   });
 }
 
+test('multi-agent follow-up runs separate focused planners and preserves the main report', async () => {
+  const origin = 'http://127.0.0.1:53987';
+  const tasks = new Map();
+  const runtime = runtimeWith({
+    fixtureId: 'vul-web2-daehan', targetOrigin: origin,
+    modelId: 'deepseek-flash', runIdFactory: () => 'multi-agent-runtime-test',
+    unavailableInputs: ['casper-db'],
+    fetchImpl: async url => response(new URL(url).pathname),
+    verifyAttackImpl: scriptedVerdicts('confirmed'),
+    approvalRequired: true,
+    multiAgent: { enabled: true, maxConcurrentAgents: 2, maxTasks: 2 },
+    subtaskRepository: {
+      create(task) { assert.equal(tasks.has(task.id), false); tasks.set(task.id, { ...task, status: 'queued' }); },
+      start(id) { assert.equal(tasks.get(id).status, 'queued'); tasks.get(id).status = 'running'; },
+      finish(id, result) { assert.equal(tasks.get(id).status, 'running'); tasks.get(id).status = result.status;
+        tasks.get(id).result = result.result; },
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.focusHypothesisId) {
+        if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+        const path = context.hypotheses[0].asset;
+        return { done: false, hypotheses: [], probes: [
+          { id: 'off-finding-path', hypothesisId: context.focusHypothesisId,
+            tool: 'http_get', input: { path: path === '/about' ? '/api/search' : '/about' } },
+          { id: 'same-probe-id', hypothesisId: context.focusHypothesisId,
+            tool: 'http_get', input: { path } },
+        ] };
+      }
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [
+        { id: 'h-first', category: 'access_control', asset: '/about',
+          rationale: 'A role check is needed.', evidenceIds: [context.evidence[0].id] },
+        { id: 'h-second', category: 'access_control', asset: '/api/search',
+          rationale: 'A second role check is needed.', evidenceIds: [context.evidence[0].id] },
+      ], probes: [] };
+    } }),
+  });
+  const approvals = new Set();
+  runtime.subscribe(({ run }) => {
+    const pending = run.pendingApproval;
+    if (!pending || approvals.has(pending.id)) return;
+    approvals.add(pending.id);
+    queueMicrotask(() => runtime.decideApproval({ id: pending.id, decision: 'approve', actor: 'tester' }));
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed');
+  assert.deepEqual(run.report.findings.map(item => item.status), ['not_tested', 'not_tested']);
+  assert.equal(run.multiAgent.status, 'completed');
+  assert.equal(run.multiAgent.tasks.length, 2);
+  assert.deepEqual(run.multiAgent.tasks.map(item => item.finding.status), ['confirmed', 'confirmed']);
+  assert.equal(tasks.size, 2);
+  assert.ok([...tasks.values()].every(item => item.status === 'completed' && item.result.report.findings[0].status === 'confirmed'));
+  assert.ok([...tasks.values()].every(item => item.result.report.probes[0].status === 'blocked'
+    && item.result.report.probes[0].reason === 'path_out_of_scope'));
+  const probeIds = [...tasks.values()].map(item => item.result.report.probes[1].id);
+  assert.equal(new Set(probeIds).size, 2, 'subtasks namespace the planner probe IDs');
+  assert.equal(approvals.size, 2, 'concurrent child requests are approved one at a time');
+  assert.ok(run.events.some(event => event.stage === 'subagent.completed'));
+  await runtime.close();
+});
+
+test('stopping a parent run cancels concurrent child approvals and results', async () => {
+  const tasks = new Map();
+  const runtime = runtimeWith({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:53987',
+    modelId: 'deepseek-flash', runIdFactory: () => 'multi-agent-cancel-test',
+    unavailableInputs: ['casper-db'], approvalRequired: true,
+    fetchImpl: async url => response(new URL(url).pathname),
+    multiAgent: { enabled: true, maxConcurrentAgents: 2, maxTasks: 3 },
+    subtaskRepository: {
+      create(task) { tasks.set(task.id, { status: 'queued' }); },
+      start(id) { tasks.get(id).status = 'running'; },
+      finish(id, result) { tasks.get(id).status = result.status; },
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.focusHypothesisId) return { done: false, hypotheses: [], probes: [{
+        id: 'pending-read', hypothesisId: context.focusHypothesisId, tool: 'http_get',
+        input: { path: '/about' },
+      }] };
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [1, 2, 3].map(number => ({ id: `h${number}`,
+        category: 'access_control', asset: '/about', rationale: 'Need a check',
+        evidenceIds: [context.evidence[0].id] })), probes: [] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  await approvalPending(runtime);
+  runtime.stop('multi-agent-cancel-test');
+  const run = await done;
+  assert.equal(run.status, 'stopped');
+  assert.equal(run.multiAgent.status, 'cancelled');
+  assert.equal(run.multiAgent.tasks.length, 3);
+  assert.ok(run.multiAgent.tasks.every(task => task.status === 'cancelled'));
+  assert.equal([...tasks.values()].filter(task => task.status === 'cancelled').length, 2);
+  await runtime.close();
+});
+
 test('general university run uses multiple model hypotheses and the AI verifier decides each executed probe', async () => {
   const origin = 'http://127.0.0.1:53987';
   const calls = [];

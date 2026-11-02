@@ -87,6 +87,23 @@ test('general university manifests record model execution and omit deferred XSS 
   assert.equal(manifest.environment.browserVersion, 'not-applicable');
 });
 
+test('general manifest freezes multi-agent follow-up and separates its logical input', () => {
+  const base = { runId: 'general-follow-up', mode: 'local-lab-general', modelId: 'deepseek-flash',
+    model: { provider: 'deepseek' }, options: { fixtureId: 'vul-web2-daehan', testProfile: 'general' } };
+  const ordinary = createRunManifest(base);
+  const followUp = createRunManifest({ ...base,
+    options: { ...base.options, multiAgent: { enabled: true } } });
+  assert.equal(ordinary.execution.multiAgent, undefined);
+  assert.deepEqual(followUp.execution.multiAgent,
+    { enabled: true, maxConcurrentAgents: 2, maxTasks: 4 });
+  assert.ok(ordinary.modules['packages/report']);
+  assert.equal(followUp.modules['packages/report'], undefined);
+  assert.notEqual(followUp.data.logicalInputDigest, ordinary.data.logicalInputDigest);
+  assert.throws(() => createRunManifest({ ...base, mode: 'local-lab-rule',
+    options: { fixtureId: 'vul-web2-daehan', testProfile: 'known_record_idor_read',
+      multiAgent: { enabled: true } } }), /local-lab-general/);
+});
+
 test('external general manifest binds the model, verifier, loop budget and public scope', () => {
   const scope = { origin: 'https://example.com', pathPrefix: '/audit', methods: ['GET', 'HEAD'],
     maxRequests: 8, maxResponseBytes: 65536, requestTimeoutMs: 5000, maxDurationMs: 30000 };
