@@ -4,13 +4,17 @@ import { lstat, mkdir, readFile, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import configuration from '../../agent/src/deepseek-config.js';
+import modelDefinitions from '../../agent/src/model-definitions.js';
 
 const PYTHON_ROOT = fileURLToPath(new URL('./py/src/', import.meta.url));
 const MAX_PROCESS_OUTPUT = 1_000_000;
 const MAX_DOCUMENT_BYTES = 20_000_000;
 const MAX_PREVIEW_BYTES = 2_000_000;
 const MAX_HTML_PREVIEW_BYTES = 30_000_000;
-const DEFAULT_TIMEOUT_MS = 180_000;
+const DEFAULT_TIMEOUT_MS = 300_000;
+const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+// Runs without a language model (rule-only) write with the configured default DeepSeek model.
+const RULE_ONLY_MODELS = new Set([undefined, 'rule-baseline']);
 const hash = value => createHash('sha256').update(value).digest('hex');
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
@@ -77,7 +81,24 @@ async function readVerifiedFile(directory, name, entry, maxBytes) {
   return bytes;
 }
 
-/** Runs the existing Python report agent; public results never contain paths or credentials. */
+/** The id a legacy `report.finding` is reported under. Mirrors legacy_finding_id() in Python. */
+function legacyFindingId(finding) {
+  for (const key of ['findingId', 'id']) {
+    if (typeof finding?.[key] === 'string' && FINDING_ID.test(finding[key])) return finding[key];
+  }
+  return 'finding';
+}
+
+/** The run's own DeepSeek model, or the configured default for rule-only runs. Other models
+ * (a local LLM) are refused rather than silently sent to an external provider. */
+function resolveSettings({ modelId, env, envFile }) {
+  const own = modelDefinitions.DEEPSEEK_MODELS.includes(modelId);
+  if (!own && !RULE_ONLY_MODELS.has(modelId)) return null;
+  return configuration.resolveDeepSeekOptions({ env: own ? { ...env, DEEPSEEK_MODEL: modelId } : env,
+    ...(envFile !== undefined ? { envFile } : {}) });
+}
+
+/** Runs the Python report agent; public results never contain paths or credentials. */
 export async function generateReportDocument({ run, storePath, historyPath, envFile, env = process.env,
   findingId, verificationDir, signal, timeoutMs = DEFAULT_TIMEOUT_MS, execute = executeReportProcess } = {}) {
   if (run?.mode === 'core-fixture' || run?.simulated) {
@@ -102,10 +123,17 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     return { status: 'failed', errorCode: 'REPORT_INVALID_SELECTION',
       message: '이 보고서 형식은 finding 선택을 지원하지 않습니다.' };
   }
+  const source = general ? selectedFinding : run.report.finding;
+  const expectedId = general ? findingId : legacyFindingId(source);
+  const sourceStatus = general ? 'confirmed' : source?.status ?? null;
+  const sourceEvidence = general ? selectedFinding.evidenceIds
+    : Array.isArray(source?.evidenceRefs) ? source.evidenceRefs.filter(id => typeof id === 'string') : [];
   let settings;
-  if (!general) {
-    try { settings = configuration.resolveDeepSeekOptions({ env, ...(envFile !== undefined ? { envFile } : {}) }); }
-    catch { return { status: 'unavailable', errorCode: 'REPORT_NOT_CONFIGURED', message: '보고서용 DeepSeek API 설정이 필요합니다.' }; }
+  try { settings = resolveSettings({ modelId: run.modelId, env, envFile }); }
+  catch { settings = null; }
+  if (!settings) {
+    return { status: 'unavailable', errorCode: 'REPORT_NOT_CONFIGURED',
+      message: '이 실행의 모델로 보고서를 작성할 LLM 설정이 필요합니다.' };
   }
   try {
     if (signal?.aborted) throw failure('REPORT_CANCELLED', '보고서 생성을 취소했습니다.');
@@ -117,11 +145,7 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
         ...(verificationDir ? { verification: { kind: 'handoff-dir', location: resolve(verificationDir) } } : {}) },
       output: { dir: output }, ...(general ? { options: { findingId } } : {}) };
     const childEnv = { ...env, PYTHONPATH: PYTHON_ROOT, PYTHONIOENCODING: 'utf-8',
-      ...(settings ? { DEEPSEEK_BASE_URL: settings.baseUrl,
-        DEEPSEEK_API_KEY: settings.apiKey, DEEPSEEK_MODEL: settings.model } : {}) };
-    if (general) for (const key of Object.keys(childEnv)) {
-      if (/^DEEPSEEK_/iu.test(key)) delete childEnv[key];
-    }
+      DEEPSEEK_BASE_URL: settings.baseUrl, DEEPSEEK_API_KEY: settings.apiKey, DEEPSEEK_MODEL: settings.model };
     const result = await execute({ command: env.CA3P_REPORT_PYTHON || env.CASPER_DB_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'),
       args: ['-m', 'ca3p_report', 'run', '--trigger', '-'], input: JSON.stringify(trigger), env: childEnv, signal, timeoutMs });
     if (signal?.aborted) throw failure('REPORT_CANCELLED', '보고서 생성을 취소했습니다.');
@@ -138,7 +162,7 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     }
     const name = response.reportFilename;
     if (response.schemaVersion !== 'report-result-1.0' || response.runId !== run.id || response.stage !== 'reported'
-      || (general && response.findingId !== findingId)
+      || response.findingId !== expectedId
       || typeof name !== 'string' || !/^[^<>:"/\\|?*\u0000-\u001f]{1,120}\.hwpx$/u.test(name)
       || name.includes('..') || !Array.isArray(response.files)) {
       throw failure('REPORT_INVALID_OUTPUT', '보고서 실행 식별자 또는 파일명이 올바르지 않습니다.');
@@ -153,19 +177,19 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     let model;
     try { model = JSON.parse(modelBytes.toString('utf8')); }
     catch { throw failure('REPORT_INVALID_OUTPUT', '보고서 모델의 형식이 올바르지 않습니다.'); }
-    if (model?.run?.runId !== run.id) {
+    if (model?.run?.run_id !== run.id) {
       throw failure('REPORT_INVALID_OUTPUT', '보고서 내용의 실행 식별자가 일치하지 않습니다.');
     }
-    if (general && (model.sourceFindingId !== findingId
-      || model.generator?.method !== 'deterministic'
-      || model.run?.status !== run.report.status
+    const evidenceIds = model.sourceEvidenceIds;
+    if (model.sourceFindingId !== expectedId
+      || model.run.status !== run.report.status
       || !Array.isArray(model.findings) || model.findings.length !== 1
-      || model.findings[0]?.common?.findingId !== findingId
-      || model.findings[0]?.common?.status !== 'confirmed'
-      || !Array.isArray(model.sourceEvidenceIds) || !model.sourceEvidenceIds.length
-      || new Set(model.sourceEvidenceIds).size !== model.sourceEvidenceIds.length
-      || model.sourceEvidenceIds.some(id => typeof id !== 'string' || !selectedFinding.evidenceIds.includes(id)))) {
-      throw failure('REPORT_INVALID_OUTPUT', '보고서의 확정 finding 또는 증거 참조가 원본과 일치하지 않습니다.');
+      || model.findings[0]?.finding_id !== expectedId
+      || model.findings[0].verdict !== (sourceStatus === 'confirmed' ? 'confirmed' : 'unverified')
+      || !Array.isArray(evidenceIds) || (sourceEvidence.length > 0 && !evidenceIds.length)
+      || new Set(evidenceIds).size !== evidenceIds.length
+      || evidenceIds.some(id => typeof id !== 'string' || !sourceEvidence.includes(id))) {
+      throw failure('REPORT_INVALID_OUTPUT', '보고서의 finding 또는 증거 참조가 원본과 일치하지 않습니다.');
     }
     const bytes = await readVerifiedFile(reportDir, name, response.files.find(item => item.name === name), MAX_DOCUMENT_BYTES);
     if (bytes.length < 4 || !bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {

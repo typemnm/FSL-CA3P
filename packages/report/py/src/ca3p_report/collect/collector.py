@@ -10,8 +10,7 @@ from pathlib import Path
 from ..trigger import Trigger
 from . import casper, pentest_db, run_store
 from .bundle import EVENTS_SCHEMA, HISTORY_SCHEMA, RUN_SCHEMA, VERIFICATION_SCHEMA, BundleWriter
-from .general import select_finding
-from .hints import capture_hints
+from .finding import ATTACK_SCHEMA, attack_records, finding_document
 from .model import CollectError, RunRecord
 from .verification import VerificationHandoffError, load_verification_handoff
 
@@ -34,17 +33,18 @@ class CollectResult:
     bundle: Path
     manifest: dict
     run: RunRecord
-    selection: dict | None = None
+    finding: dict | None = None
 
 
-def _verification(run_id: str, location: Path, selection: dict | None) -> tuple[dict, list]:
+def _verification(run_id: str, location: Path, finding: dict) -> tuple[dict, list]:
     """The sealed verification document and the (ref, bytes) pairs of its images."""
     try:
         handoff = load_verification_handoff(location)
     except VerificationHandoffError as exc:
         raise CollectError(str(exc)) from exc
     attack_id = handoff["result"].get("attackId")
-    if selection is not None and attack_id not in {p["id"] for p in selection["confirmedProbes"]}:
+    probes = finding.get("confirmedProbes")
+    if probes is not None and attack_id not in {p["id"] for p in probes}:
         raise CollectError("verification attackId is not a confirmed probe of the selected finding")
     names = [image["path"].name for image in handoff["images"]]
     if len(set(names)) != len(names):
@@ -69,9 +69,7 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
         raise RunNotFound(trigger.run_id)
     if run.report is None:
         raise RunIncomplete(trigger.run_id)
-    if run.report.get("assessmentMode") == "general" and trigger.finding_id is None:
-        raise CollectError("general report collection requires options.findingId")
-    selection = select_finding(run, trigger.finding_id) if trigger.finding_id else None
+    finding = finding_document(run, trigger.finding_id)
 
     if trigger.history.kind == casper.DRIVER:
         history = casper.read_history(trigger.history.location, casper.history_refs(run.events))
@@ -84,7 +82,7 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
 
     verification, blobs = (None, [])
     if trigger.verification.kind == "handoff-dir":
-        verification, blobs = _verification(run.run_id, trigger.verification.location, selection)
+        verification, blobs = _verification(run.run_id, trigger.verification.location, finding)
 
     writer = BundleWriter(trigger.output_dir / "bundle")
     try:
@@ -99,8 +97,16 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
                 "report": run.report,
             },
         )
-        if selection is not None:
-            writer.add_json("run/selection.json", "general-finding-selection", selection)
+        writer.add_json("run/finding.json", "report-finding", finding)
+        writer.add_json(
+            "run/attack.json",
+            "attack-records",
+            {
+                "schemaVersion": ATTACK_SCHEMA,
+                "runId": run.run_id,
+                "records": attack_records(run.events, verification),
+            },
+        )
         writer.add_json(
             "run/events.json",
             "run-events",
@@ -119,8 +125,6 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
                 **history,
             },
         )
-        hints = capture_hints(run.events)
-        writer.add_json("hints/capture.json", "capture-hints", {"runId": run.run_id, **hints})
         if verification is not None:
             writer.add_json("run/verification.json", "verification-handoff", verification)
             for ref, data in blobs:
@@ -139,18 +143,9 @@ def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
                 "status": history["status"],
                 **({"reason": history["reason"]} if "reason" in history else {}),
             },
-            {
-                "name": "collect-hints",
-                "status": "ok",
-                "forms": len(hints.get("inputForms", [])),
-                "sessionSwitch": "sessionSwitch" in hints,
-            },
         ]
         manifest = writer.seal(run_id=run.run_id, collected_at=collected_at, collectors=collectors)
     except BaseException:
         writer.discard()
         raise
-    if selection is not None and verification is not None:
-        # The general model reads the verification through the selection it already receives.
-        selection = {**selection, "verification": verification}
-    return CollectResult(bundle=writer.root, manifest=manifest, run=run, selection=selection)
+    return CollectResult(bundle=writer.root, manifest=manifest, run=run, finding=finding)

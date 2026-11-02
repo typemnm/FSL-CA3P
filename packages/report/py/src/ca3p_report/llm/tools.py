@@ -1,12 +1,12 @@
 """The tools the LLM calls to write the report. Each enforces its own limits.
 
 - read_bundle: read a redacted view of a file inside the sealed bundle only.
-- capture_screenshot: drive the Node sandbox against the bundle's loopback origin only,
-  replaying at most the one session-switch the collector recorded.
-- finish_report: mask the LLM-assembled ReportModel, render HWPX + Markdown + JSON, and end.
+- finish_report: check and mask the LLM-written REPORT_SPEC JSON, overwrite the fields the
+  sealed bundle already decides (run header, finding identity, verdict, evidence IDs, verifier
+  screenshots), render HWPX + Markdown + HTML + JSON, and end.
 
-The legacy LLM path remains a draft for human review. General findings are
-selected and rendered from verified source data, with their identity checked here.
+The LLM writes the prose (CWE, CVSS, summary, steps, evidence, remediation, impact). It cannot
+change what was verified: those fields come from run/finding.json and run/verification.json.
 """
 
 from __future__ import annotations
@@ -14,26 +14,29 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
+from ..collect.finding import TIME_FORMAT
 from ..hwpx.filename import normalize_filename
 from ..hwpx.writer import write_html, write_hwpx, write_markdown
 from .redact import redact
 
-CAPTURE_CLI = Path(__file__).resolve().parents[4] / "capture" / "cli.mjs"
 MAX_READ_BYTES = 2_000_000
-# The capture target must be a loopback origin with a valid port (defense-in-depth on the
-# Python side; the Node sandbox enforces the same). Blocks SSRF to an arbitrary host/port.
-_LOOPBACK_ORIGIN = re.compile(r"^http://(?:127\.0\.0\.1|\[::1\]):([1-9]\d{0,4})$")
-
-
-def _validate_origin(origin: object) -> str:
-    match = _LOOPBACK_ORIGIN.fullmatch(origin) if isinstance(origin, str) else None
-    if not match or int(match.group(1)) > 65535:
-        raise ToolError("capture origin must be http://127.0.0.1:<port>")
-    return origin
+REVIEW_STATUS = "초안 — 사람 검토 후 배포"
+CLASSIFICATION = "대외비 (CONFIDENTIAL)"
+SCREENSHOT_NOTE = " (보조 자료, 판정 근거 아님)"
+SEVERITIES = ("critical", "high", "medium", "low", "info")
+SOURCE_STATUSES = ("captured", "completed", "available", "empty")
+CWE = re.compile(r"CWE-\d+")
+# REPORT_SPEC §3: what the LLM writes. Anything else it sends is dropped.
+REQUIRED_TEXT = ("executive_summary", "objective", "scope", "run_limitations")
+LLM_KEYS = (*REQUIRED_TEXT, "method", "sources", "history", "omitted", "findings")
+FINDING_TEXT = ("title", "cvss_score", "cvss_vector", "cwe", "location", "privilege",
+                "description", "impact", "fix_summary", "fix_short", "fix_long")
+FINDING_KEYS = (*FINDING_TEXT, "severity", "steps", "evidence", "checks", "limitations",
+                "references")
 
 
 class ToolError(RuntimeError):
@@ -47,22 +50,67 @@ class FinishResult:
     report_filename: str
 
 
-class ReportTools:
-    def __init__(
-        self,
-        bundle: Path,
-        out_dir: Path,
-        *,
-        origin: str,
-        session_switch: dict | None,
-        node: str = "node",
+def _text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _texts(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _rows(value: object, keys: tuple[str, ...]) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(item, dict) and all(isinstance(item.get(key), str) for key in keys)
+        for item in value
+    )
+
+
+def _problems(model: dict) -> list[str]:
+    """What keeps this model from being a REPORT_SPEC report; told to the LLM to fix."""
+    finding = model["findings"][0]
+    problems = [f"{key} is required" for key in REQUIRED_TEXT if not _text(model.get(key))]
+    problems += [f"findings[0].{key} is required" for key in FINDING_TEXT
+                 if not _text(finding.get(key))]
+    if finding.get("severity") not in SEVERITIES:
+        problems.append(f"findings[0].severity must be one of {', '.join(SEVERITIES)}")
+    if _text(finding.get("cwe")) and not CWE.fullmatch(finding["cwe"]):
+        problems.append("findings[0].cwe must look like CWE-89")
+    if _text(finding.get("cvss_vector")) and not finding["cvss_vector"].startswith("CVSS:3.1/"):
+        problems.append("findings[0].cvss_vector must be a CVSS:3.1/ vector")
+    steps = finding.get("steps")
+    if not _texts(steps) or len(steps) < 3 or not all(_text(step) for step in steps):
+        problems.append("findings[0].steps needs at least 3 steps: control, attack, comparison")
+    evidence = finding.get("evidence")
+    if not _rows(evidence, ("label", "content")) or not all(
+        any(word in item["label"] for item in evidence) for word in ("대조", "공격")
     ):
+        problems.append("findings[0].evidence needs [{label, content}] items with both a "
+                        "control ([대조 ...]) and an attack ([공격 ...]) item")
+    if not _rows(finding.get("checks"), ("item", "result")) or not finding["checks"]:
+        problems.append("findings[0].checks needs [{item, result}] rows")
+    if not isinstance(finding.get("limitations"), str):
+        problems.append("findings[0].limitations must be a string")
+    if not _texts(finding.get("references")):
+        problems.append("findings[0].references must be a list of strings")
+    if not isinstance(model.get("method", ""), str):
+        problems.append("method must be a string")
+    sources = model.get("sources", [])
+    if not _rows(sources, ("collector", "kind", "status", "note")) or any(
+        item["status"] not in SOURCE_STATUSES for item in sources
+    ):
+        problems.append("sources must be [{collector, kind, status, note}] with status one of "
+                        + ", ".join(SOURCE_STATUSES))
+    if not _rows(model.get("history", []), ("date", "finding", "result")):
+        problems.append("history must be [{date, finding, result}]")
+    if not _texts(model.get("omitted", [])):
+        problems.append("omitted must be a list of strings")
+    return problems
+
+
+class ReportTools:
+    def __init__(self, bundle: Path, out_dir: Path):
         self._bundle = Path(bundle).resolve()
         self._out = Path(out_dir)
-        self._origin = _validate_origin(origin)
-        self._session_switch = session_switch
-        self._node = node
-        self._evidence = self._bundle / "evidence" / "images"
         self.finished: FinishResult | None = None
 
     # -- read_bundle -------------------------------------------------------------------
@@ -79,6 +127,12 @@ class ReportTools:
             raise ToolError("file too large to read")
         return data
 
+    def _read_json(self, path: str) -> object:
+        try:
+            return json.loads(self._read_bundle_bytes(path))
+        except ValueError as exc:
+            raise ToolError(f"{path} is not valid JSON") from exc
+
     def read_bundle(self, path: str) -> str:
         data = self._read_bundle_bytes(path)
         text = data.decode("utf-8", errors="replace")
@@ -90,128 +144,82 @@ class ReportTools:
         # to the report model is masked, including structured credential keys.
         return json.dumps(redact(value), ensure_ascii=False)
 
-    # -- capture_screenshot ------------------------------------------------------------
-    def capture_screenshot(
-        self, *, selector: str | None = None, full_page: bool = False, viewer: str | None = None
-    ) -> dict:
-        self._evidence.mkdir(parents=True, exist_ok=True)
-        args = [
-            self._node,
-            str(CAPTURE_CLI),
-            "--origin",
-            self._origin,
-            "--expected-origin",
-            self._origin,
-            "--out",
-            str(self._evidence),
-        ]
-        if selector:
-            args += ["--selector", selector]
-        if full_page:
-            args.append("--full-page")
-        # A viewer switch is built from the collector's recorded method/path only; the LLM
-        # supplies just the account id. The sandbox also checks it against the allow-list.
-        if viewer is not None:
-            if not self._session_switch:
-                raise ToolError("no session-switch is permitted for this run")
-            path = self._session_switch.get("path")
-            # The path comes from the collector, but a crafted hints file could carry an
-            # odd value; require a plain absolute path (no scheme/host/query) before replay.
-            if (
-                not isinstance(path, str)
-                or not path.startswith("/")
-                or any(c in path for c in " ?#\\")
-                or path.startswith("//")
-            ):
-                raise ToolError("session-switch path is not a plain absolute path")
-            switch = {
-                "method": self._session_switch.get("method", "POST"),
-                "path": path,
-                "body": {"userId": viewer},
-            }
-            args += ["--session", json.dumps(switch), "--allow-session", json.dumps([switch])]
-        try:
-            proc = subprocess.run(args, capture_output=True, text=True, timeout=120)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ToolError(f"capture failed: {type(exc).__name__}") from exc
-        try:
-            result = json.loads(proc.stdout.splitlines()[-1]) if proc.stdout.strip() else {}
-        except (ValueError, IndexError):
-            raise ToolError("capture returned no JSON") from None
-        # The writer resolves images[].ref against the bundle root; hand the LLM that exact
-        # value so it copies it instead of guessing from the absolute path.
-        for record in result.get("captures") or []:
-            if isinstance(record, dict) and isinstance(record.get("path"), str):
-                record["ref"] = f"evidence/images/{Path(record['path']).name}"
-        return result
-
     # -- finish_report -----------------------------------------------------------------
+    def _screenshots(self) -> list[dict]:
+        """The verifier's sealed screenshots; the LLM cannot add, drop or caption them."""
+        if not (self._bundle / "run" / "verification.json").is_file():
+            return []
+        document = self._read_json("run/verification.json")
+        return [
+            {"caption": redact(record.get("label") or "검증 화면") + SCREENSHOT_NOTE,
+             "ref": record["ref"]}
+            for record in document.get("images") or []
+        ]
+
+    def _fix_verified_fields(self, model: dict) -> None:
+        source = self._read_json("run/finding.json")
+        model["run"] = {**source["run"], "generated_at": datetime.now(UTC).strftime(TIME_FORMAT)}
+        finding = model["findings"][0]
+        finding["id"] = "V-01"
+        finding["finding_id"] = source["sourceFindingId"]
+        finding["verdict"] = "confirmed" if source["status"] == "confirmed" else "unverified"
+        finding["screenshots"] = self._screenshots()
+        model["review_status"] = REVIEW_STATUS
+        model["classification"] = CLASSIFICATION
+        model["sourceFindingId"] = source["sourceFindingId"]
+        model["sourceEvidenceIds"] = list(source["evidenceIds"])
+        model["generator"] = {"method": "llm"}
+
+    def _reference_context(self) -> dict | None:
+        """Source review state is carried deterministically, independent of prose generation."""
+        if not (self._bundle / "history" / "casper.json").is_file():
+            return None
+        history_bytes = self._read_bundle_bytes("history/casper.json")
+        history = json.loads(history_bytes)
+        if "referenceContext" not in history:
+            return None
+        manifest = self._read_json("manifest.json")
+        entry = next(
+            (item for item in manifest["files"] if item["path"] == "history/casper.json"),
+            None,
+        )
+        expected = "sha256:" + hashlib.sha256(history_bytes).hexdigest()
+        if entry is None or entry["sha256"] != expected:
+            raise ToolError("reference context does not match the sealed manifest")
+        context = history["referenceContext"]
+        if (
+            not isinstance(context, dict)
+            or context.get("schema_version") != "casper-reference-1"
+            or context.get("automatic_execution_allowed") is not False
+        ):
+            raise ToolError("unsupported reference context")
+        return redact(context)
+
     def finish_report(self, *, model: dict, filename: str | None = None) -> dict:
         if not isinstance(model, dict):
             raise ToolError("model must be an object")
-        selection_path = self._bundle / "run" / "selection.json"
-        if selection_path.is_file():
-            try:
-                selection = json.loads(self._read_bundle_bytes("run/selection.json"))
-            except (ValueError, KeyError) as exc:
-                raise ToolError("general finding selection is invalid") from exc
-            finding_rows = model.get("findings")
-            finding = (
-                finding_rows[0]
-                if isinstance(finding_rows, list) and len(finding_rows) == 1 else None
-            )
-            common = finding.get("common") if isinstance(finding, dict) else None
-            model_run = model.get("run") if isinstance(model.get("run"), dict) else {}
-            generator = model.get("generator") if isinstance(model.get("generator"), dict) else {}
-            if (not isinstance(selection, dict)
-                or selection.get("schemaVersion") != "general-finding-selection/1"
-                or model.get("sourceFindingId") != selection.get("sourceFindingId")
-                or model.get("sourceEvidenceIds") != selection.get("verificationEvidenceIds")
-                or not isinstance(common, dict)
-                or common.get("findingId") != selection.get("sourceFindingId")
-                or common.get("status") != "confirmed"
-                or model_run.get("runId") != selection.get("runId")
-                or model_run.get("status") != selection.get("runStatus")
-                or generator.get("method") != "deterministic"):
-                raise ToolError("general report does not match the confirmed source finding")
-        elif "sourceFindingId" in model:
-            raise ToolError("legacy report cannot claim a general source finding")
-        run_id = str(
-            ((model.get("run") or {}) if isinstance(model.get("run"), dict) else {}).get("runId")
-            or "report"
-        )
-        safe_model = redact(model)
-        for finding in safe_model.get("findings") or []:
-            for image in (finding.get("images") or []) if isinstance(finding, dict) else []:
-                ref = image.get("ref") if isinstance(image, dict) else None
-                if isinstance(ref, str) and ref and "/" not in ref:
-                    image["ref"] = f"evidence/images/{ref}"  # bare file name from the LLM
-        # Source review state is carried deterministically, independent of prose
-        # generation. A writer cannot omit it or replace it with invented approval.
-        safe_model.pop("referenceContext", None)
-        history_path = self._bundle / "history" / "casper.json"
-        if history_path.is_file():
-            history_bytes = self._read_bundle_bytes("history/casper.json")
-            history = json.loads(history_bytes)
-            if "referenceContext" in history:
-                manifest = json.loads(self._read_bundle_bytes("manifest.json"))
-                entry = next(
-                    (item for item in manifest["files"] if item["path"] == "history/casper.json"),
-                    None,
-                )
-                expected = "sha256:" + hashlib.sha256(history_bytes).hexdigest()
-                if entry is None or entry["sha256"] != expected:
-                    raise ToolError("reference context does not match the sealed manifest")
-                context = history["referenceContext"]
-                if (
-                    not isinstance(context, dict)
-                    or context.get("schema_version") != "casper-reference-1"
-                    or context.get("automatic_execution_allowed") is not False
-                ):
-                    raise ToolError("unsupported reference context")
-                safe_model["referenceContext"] = redact(context)
+        findings = model.get("findings")
+        one = isinstance(findings, list) and len(findings) == 1 and isinstance(findings[0], dict)
+        if not one:
+            raise ToolError("model.findings must hold exactly one finding object")
+        written = {key: model[key] for key in LLM_KEYS if model.get(key) is not None}
+        written["findings"] = [{key: findings[0][key] for key in FINDING_KEYS
+                                if findings[0].get(key) is not None}]
+        score = written["findings"][0].get("cvss_score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            written["findings"][0]["cvss_score"] = str(score)
+        safe_model = redact(written)
+        if problems := _problems(safe_model):
+            raise ToolError("fix and call finish_report again: " + "; ".join(problems))
+        # After masking, so the sealed identifiers are never altered by it.
+        self._fix_verified_fields(safe_model)
+        if (context := self._reference_context()) is not None:
+            safe_model["referenceContext"] = context
         self._out.mkdir(parents=True, exist_ok=True)
-        name = normalize_filename(filename, run_id)
+        # Fallback differs per finding so two reports of one run never share a name.
+        finding_hash = hashlib.sha256(safe_model["sourceFindingId"].encode("utf-8")).hexdigest()
+        fallback = f"{safe_model['run']['run_id'][:100]}-{finding_hash[:8]}"
+        name = normalize_filename(filename, fallback)
         hwpx_path = self._out / name
         model_path = self._out / "report-model.json"
         md_path = self._out / "report.md"
@@ -226,8 +234,6 @@ class ReportTools:
 
 
 def _file_entry(path: Path) -> dict:
-    import hashlib
-
     data = path.read_bytes()
     return {
         "name": path.name,
@@ -249,9 +255,9 @@ def tool_schemas() -> list[dict]:
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Path relative to the bundle root, "
-                            "e.g. run/report.json, run/events.json, history/casper.json, "
-                            "hints/capture.json, manifest.json",
+                            "description": "Path relative to the bundle root, e.g. "
+                            "run/finding.json, run/attack.json, run/verification.json, "
+                            "run/report.json, run/events.json, history/casper.json, manifest.json",
                         }
                     },
                     "required": ["path"],
@@ -261,39 +267,16 @@ def tool_schemas() -> list[dict]:
         {
             "type": "function",
             "function": {
-                "name": "capture_screenshot",
-                "description": "Screenshot the live loopback target. GET-only sandbox; an optional "
-                "viewer switch replays only the collector's recorded session request.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "selector": {
-                            "type": "string",
-                            "description": "CSS selector to capture; omit for a full page",
-                        },
-                        "full_page": {"type": "boolean"},
-                        "viewer": {
-                            "type": "string",
-                            "description": "Account id to switch to before the "
-                            "shot, e.g. the victim; omit to stay as the default viewer",
-                        },
-                    },
-                    "required": [],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "finish_report",
-                "description": "Render the ReportModel to HWPX (+ Markdown + JSON) and end. "
-                "Secrets are masked before rendering.",
+                "description": "Check the report JSON, render it to HWPX (+ Markdown + HTML + "
+                "JSON) and end. A refusal says what to fix. Secrets are masked before rendering.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "model": {
                             "type": "object",
-                            "description": "The full ReportModel (report-1.0).",
+                            "description": "The report JSON (REPORT_SPEC) with exactly one "
+                            "finding.",
                         },
                         "filename": {"type": "string", "description": "Proposed .hwpx file name."},
                     },

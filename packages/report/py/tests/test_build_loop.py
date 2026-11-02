@@ -3,69 +3,54 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import zipfile
-from pathlib import Path
 
 import pytest
 from conftest import needs_node, write_sources
-from fixtures import PAYLOAD, stored_xss_report
+from fixtures import ORIGIN, PAYLOAD, stored_xss_report
 
 from ca3p_report.llm.client import LLMError
 from ca3p_report.llm.loop import run_build
 
 
 def model_for(run_id: str) -> dict:
+    """What a model writes for the stored-XSS fixture: REPORT_SPEC JSON with one finding."""
     report = stored_xss_report(run_id)
-    finding = report["finding"]
     return {
-        "generatedAt": "2026-10-20T00:00:00Z",
-        "notices": ["격리 실습", "데이터 synthetic", "판정은 전달받은 값"],
-        "generator": {"profile": "stored_xss"},
-        "run": {
-            "runId": run_id,
-            "status": "completed",
-            "testProfile": "stored_xss_canary",
-            "target": {"origin": report["target"]["origin"]},
-            "startedAt": report["startedAt"],
-            "completedAt": report["completedAt"],
-            "metrics": {"requestCount": 1},
-        },
+        "executive_summary": "게시글 본문에서 저장형 XSS 1건을 확인했습니다. "
+        "즉시 출력 인코딩을 적용해야 합니다.",
+        "objective": "게시판의 저장형 XSS 여부를 확인합니다.",
+        "scope": f"{report['target']['origin']} (시험 환경). 공격자 세션을 사용했습니다.",
+        "run_limitations": "단일 반복으로 점검했습니다.",
+        "omitted": ["세션 쿠키 — 사유: 비밀값에 해당하여 기재하지 않음"],
         "findings": [
             {
-                "common": {
-                    "title": finding["title"],
-                    "cwe": finding["cwe"],
-                    "location": {"method": "POST", "path": "/api/posts", "parameter": "content"},
-                    "cvss": {
-                        "version": "3.1",
-                        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
-                        "score": 6.1,
-                        "rating": "Medium",
-                    },
-                    "severity": finding["severity"],
-                    "status": finding["status"],
-                    "summary": "저장형 XSS가 브라우저에서 실행되었습니다.",
-                    "remediation": "출력 인코딩/HTML 정화를 적용합니다.",
-                    "limitations": "격리 실습 단일 반복 판정입니다.",
-                },
-                "reproduction": [{"step": 1, "text": "canary를 게시합니다."}],
-                "textEvidence": [{"label": "점검 페이로드", "text": PAYLOAD}],
-                "checks": [{"label": "브라우저 콜백 실행", "result": "예"}],
+                "title": "저장형 XSS (Stored Cross-Site Scripting)",
+                "severity": "medium",
+                "cvss_score": "6.1",
+                "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+                "cwe": report["finding"]["cwe"],
+                "location": "POST /api/posts (content)",
+                "privilege": "일반 사용자",
+                "description": "게시글 본문이 인코딩 없이 화면에 출력됩니다.",
                 "impact": "세션 탈취로 이어질 수 있습니다.",
-                "profileData": {"marker": finding["marker"]},
+                "steps": [
+                    "일반 문자열로 게시글을 작성한다.",
+                    "canary 페이로드를 담아 게시글을 작성한다.",
+                    "브라우저 콜백 실행 여부를 비교해 판정한다.",
+                ],
+                "evidence": [
+                    {"label": "[대조 요청]", "content": "기록된 대조 요청이 없습니다."},
+                    {"label": "[공격 요청]", "content": f"POST /api/posts\n{PAYLOAD}"},
+                ],
+                "checks": [{"item": "브라우저 콜백 실행", "result": "예"}],
+                "fix_summary": "출력 인코딩 적용",
+                "fix_short": "본문을 HTML 인코딩해 출력합니다.",
+                "fix_long": "HTML 정화 라이브러리와 회귀 테스트를 도입합니다.",
+                "limitations": "",
+                "references": ["CWE-79"],
             }
         ],
-        "triage": {
-            "status": "ok",
-            "rows": [
-                {"caseId": "LAB-STORED-XSS", "location": "POST /api/posts", "label": "재점검 후보"}
-            ],
-        },
-        "priorCases": [],
-        "guardrail": {"decisions": []},
-        "safety": {},
-        "references": {"collectors": [], "verifiedByStorage": False},
     }
 
 
@@ -78,6 +63,7 @@ class FakeLLM:
 
     def complete(self, messages, tools):
         self.calls += 1
+        self.messages = list(messages)
         if not self._scripted:
             raise AssertionError("fake LLM ran out of scripted turns")
         return self._scripted.pop(0)
@@ -135,9 +121,6 @@ def test_fake_llm_reads_bundle_then_finishes(tmp_path, run_id):
         llm,
         bundle=bundle,
         out_dir=tmp_path / "out" / "report",
-        test_profile="stored_xss_canary",
-        origin="http://127.0.0.1:1",
-        session_switch=None,
     )
     names = {f["name"] for f in result["files"]}
     assert "report-model.json" in names and result["reportFilename"].endswith(".hwpx")
@@ -164,12 +147,28 @@ def test_injection_in_bundle_cannot_make_tools_misbehave(tmp_path, run_id):
         llm,
         bundle=bundle,
         out_dir=tmp_path / "out" / "report",
-        test_profile="stored_xss_canary",
-        origin="http://127.0.0.1:1",
-        session_switch=None,
     )
     # The traversal was refused by the tool, and the run still finished.
-    assert (tmp_path / "out" / "report" / f"{run_id}.hwpx").exists()
+    [document] = (tmp_path / "out" / "report").glob("*.hwpx")
+    assert document.name.startswith(f"{run_id}-") and len(document.stem) == len(run_id) + 9
+
+
+@needs_node
+def test_refused_report_is_returned_to_the_llm_to_fix(tmp_path, run_id):
+    bundle = _bundle(tmp_path, run_id)
+    broken = model_for(run_id)
+    broken["findings"][0]["severity"] = "severe"
+    broken["findings"][0]["steps"] = ["한 단계만 쓴다."]
+    llm = FakeLLM(
+        [
+            _call("finish_report", {"model": broken}),
+            _call("finish_report", {"model": model_for(run_id)}),
+        ]
+    )
+    run_build(llm, bundle=bundle, out_dir=tmp_path / "out" / "report")
+    refusal = json.loads(llm.messages[-1]["content"])
+    assert refusal["ok"] is False and "severity" in refusal["error"] and "steps" in refusal["error"]
+    assert llm.calls == 2 and (tmp_path / "out" / "report" / "report-model.json").is_file()
 
 
 def test_llm_failure_propagates(tmp_path):
@@ -182,26 +181,7 @@ def test_llm_failure_propagates(tmp_path):
             Boom(),
             bundle=tmp_path,
             out_dir=tmp_path / "o",
-            test_profile=None,
-            origin="http://127.0.0.1:1",
-            session_switch=None,
         )
-
-
-def test_capture_origin_must_be_loopback(tmp_path):
-    from ca3p_report.llm.tools import ReportTools, ToolError
-
-    for bad in (
-        "http://example.com:80",
-        "https://127.0.0.1:8080",
-        "http://127.0.0.1:",
-        "http://127.0.0.1:99999",
-        None,
-    ):
-        with pytest.raises(ToolError):
-            ReportTools(tmp_path, tmp_path / "o", origin=bad, session_switch=None)
-    # A valid loopback origin is accepted.
-    ReportTools(tmp_path, tmp_path / "o", origin="http://127.0.0.1:8080", session_switch=None)
 
 
 def test_redact_masks_newer_openai_key_formats():
@@ -216,48 +196,26 @@ def test_redact_masks_newer_openai_key_formats():
         assert key not in redact(f"token is {key} end")
 
 
-@pytest.mark.parametrize("ref_key", ["ref", "name"])
-def test_captured_ref_is_embedded_in_hwpx(tmp_path, monkeypatch, ref_key):
-    """The ref the capture tool returns must be the one the writer resolves (regression)."""
-    from test_hwpx_writer import png
-
-    import ca3p_report.llm.tools as tools_module
-
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    run_id = "run-1760918400000-ref00001"
-
-    def fake_capture(args, **_):
-        out = Path(args[args.index("--out") + 1])
-        out.mkdir(parents=True, exist_ok=True)
-        shot = out / "element-1-abcd.png"
-        shot.write_bytes(png())
-        record = {"kind": "element", "path": str(shot), "sha256": "sha256:x", "mime": "image/png"}
-        stdout = json.dumps({"ok": True, "captures": [record]})
-        return subprocess.CompletedProcess(args, 0, stdout, "")
-
-    monkeypatch.setattr(tools_module.subprocess, "run", fake_capture)
-
-    class CopyRefLLM:
-        def complete(self, messages, tools):
-            last = messages[-1]
-            if last["role"] != "tool":
-                return _call("capture_screenshot", {"selector": "form"})
-            record = json.loads(last["content"])["result"]["captures"][0]
-            ref = record["ref"] if ref_key == "ref" else Path(record["path"]).name
-            model = model_for(run_id)
-            model["findings"][0]["images"] = [
-                {"step": 1, "caption": "입력 지점", "ref": ref, "integrity": "ok"}
-            ]
-            return _call("finish_report", {"model": model})
-
-    result = run_build(
-        CopyRefLLM(),
-        bundle=bundle,
-        out_dir=tmp_path / "report",
-        test_profile="stored_xss_canary",
-        origin="http://127.0.0.1:1",
-        session_switch=None,
-    )
-    with zipfile.ZipFile(tmp_path / "report" / result["reportFilename"]) as z:
-        assert sum(n.startswith("BinData/") for n in z.namelist()) == 1
+@needs_node
+def test_legacy_loop_act_is_sealed_as_the_attack_source(tmp_path, run_id):
+    bundle = _bundle(tmp_path, run_id)
+    attack = json.loads((bundle / "run" / "attack.json").read_text("utf-8"))
+    finding = json.loads((bundle / "run" / "finding.json").read_text("utf-8"))
+    [record] = attack["records"]
+    assert record["kind"] == "loop.act" and record["session"] == "attacker"
+    assert record["request"]["method"] == "POST" and record["request"]["body"]["content"] == PAYLOAD
+    assert record["response"]["status"] == 201
+    assert finding["sourceFindingId"] == f"finding-{run_id}-stored-xss-canary"
+    assert finding["status"] == "confirmed" and finding["evidenceIds"] == []
+    # The header comes from the legacy report; it records no request count.
+    assert finding["run"] == {
+        "run_id": run_id,
+        "target_origin": ORIGIN,
+        "target_name": ORIGIN,
+        "profile": "stored_xss_canary",
+        "started_at": "2026-10-20 00:00:00 UTC",
+        "finished_at": "2026-10-20 00:00:05 UTC",
+        "request_count": None,
+        "status": "completed",
+        "incomplete": False,
+    }

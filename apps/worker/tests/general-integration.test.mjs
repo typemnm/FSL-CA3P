@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import { once } from 'node:events';
 import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +14,10 @@ const scriptedRuntime = status => options => createGeneralRuntime({ ...options,
   enableRequiredTemplates: false,
   verifyAttackImpl: async record => ({ schemaVersion: 'verifier/1', attackId: record.id, status,
     reason: 'scripted ' + status, artifacts: [] }) });
+
+const toolCall = (name, args) => ({ role: 'assistant', content: null, tool_calls: [{
+  id: name, type: 'function', function: { name, arguments: JSON.stringify(args) },
+}] });
 
 async function waitFor(check) {
   const deadline = Date.now() + 30_000;
@@ -30,15 +36,58 @@ async function approvePending(worker, service, runId) {
   assert.equal(result.decision, 'approved');
 }
 
-test('service, worker, and general runtime turn an AI-confirmed probe into a real HWPX without a report model API',
+test('service, worker, and general runtime turn an AI-confirmed probe into a real HWPX written by a loopback report model',
   { timeout: 60_000 }, async () => {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   mkdirSync(runtimeRoot, { recursive: true });
   const directory = mkdtempSync(join(runtimeRoot, 'general-integration-'));
   const storePath = join(directory, 'runs.sqlite');
   const origin = 'http://127.0.0.1:53987';
+  // Loopback stand-in for the report LLM: read the sealed finding, then submit a minimal model.
+  let reportRequests = 0; let protocolFailure; const written = [];
+  const provider = http.createServer(async (req, res) => {
+    try {
+      assert.equal(`${req.method} ${req.url}`, 'POST /chat/completions');
+      assert.equal(req.headers.authorization, 'Bearer synthetic-test-only');
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      assert.equal(input.model, 'deepseek-flash');
+      reportRequests += 1;
+      const tool = input.messages.find(item => item.role === 'tool' && item.tool_call_id === 'read_bundle');
+      let message;
+      if (!tool) message = toolCall('read_bundle', { path: 'run/finding.json' });
+      else {
+        written.push(JSON.parse(JSON.parse(tool.content).content).sourceFindingId);
+        message = toolCall('finish_report', { filename: '합성 접근 제어 보고서.hwpx', model: {
+          executive_summary: '접근 제어 취약점 1건을 확인했습니다.', objective: '객체 수준 인가를 확인합니다.',
+          scope: '합성 시험 환경', run_limitations: '합성 점검 결과입니다.',
+          findings: [{ title: '합성 접근 제어 우회 (Authorization Bypass)', severity: 'medium', cvss_score: '6.5',
+            cvss_vector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N', cwe: 'CWE-639',
+            location: 'GET /api/records/:id (id)', privilege: '일반 사용자',
+            description: '다른 사용자의 지원서를 읽을 수 있습니다.', impact: '타인 정보가 노출됩니다.',
+            steps: ['본인 계정으로 자기 지원서를 요청한다.', '다른 계정으로 같은 지원서를 요청한다.',
+              '두 응답을 비교해 판정한다.'],
+            evidence: [{ label: '[대조 요청]', content: 'GET /api/records/1' },
+              { label: '[공격 요청]', content: 'GET /api/records/2' }],
+            checks: [{ item: '대조군 대비 결과 차이', result: '타인 지원서 열람' }],
+            fix_summary: '서버에서 소유자를 확인', fix_short: '조회 전에 소유자를 비교합니다.',
+            fix_long: '객체 수준 인가와 회귀 테스트를 둡니다.', limitations: '', references: ['CWE-639'] }] } });
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message }] }));
+    } catch (error) {
+      protocolFailure = error;
+      res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"error":"synthetic protocol mismatch"}');
+    }
+  });
+  provider.listen(0, '127.0.0.1'); await once(provider, 'listening');
   const localPython = fileURLToPath(new URL(`../../../.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`, import.meta.url));
-  const env = { ...process.env, DEEPSEEK_API_KEY: 'synthetic-test-only',
+  // Only the loopback fake can receive the synthetic key: provider and proxy settings are all overridden.
+  const env = { ...process.env, DEEPSEEK_BASE_URL: `http://127.0.0.1:${provider.address().port}`,
+    DEEPSEEK_API_KEY: 'synthetic-test-only', DEEPSEEK_MODEL: 'deepseek-flash',
+    HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', http_proxy: '', https_proxy: '', all_proxy: '',
+    NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1',
     CA3P_REPORT_PYTHON: process.env.CA3P_REPORT_PYTHON || process.env.CASPER_DB_PYTHON
       || (existsSync(localPython) ? localPython : process.platform === 'win32' ? 'py' : 'python3') };
   let service; let worker; let reopened;
@@ -89,6 +138,9 @@ test('service, worker, and general runtime turn an AI-confirmed probe into a rea
       env, generalPlannerFactory, generalFetchImpl, generalRuntimeFactory: scriptedRuntime('confirmed') });
     await approvePending(worker, service, id);
     const final = await waitFor(() => { const run = service.getRun(id); return run.status === 'completed' && run; });
+    assert.ifError(protocolFailure);
+    assert.equal(reportRequests, 2, 'the report model is called twice for the one confirmed finding');
+    assert.deepEqual(written, ['finding:h-access']);
     assert.equal(final.assessmentMode, 'general');
     assert.equal(final.report.schemaVersion, 'general-assessment/1');
     assert.equal(final.report.findings.length, 2);
@@ -121,6 +173,7 @@ test('service, worker, and general runtime turn an AI-confirmed probe into a rea
     await worker?.shutdown();
     await service?.close();
     await reopened?.close();
+    provider.closeAllConnections(); await new Promise(resolve => provider.close(resolve));
     rmSync(directory, { recursive: true, force: true });
   }
 });

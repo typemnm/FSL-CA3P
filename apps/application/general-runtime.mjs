@@ -323,7 +323,8 @@ function surfaceFromHtml(html, origin) {
     if (url) forms.push({ path: url.pathname, method: method === 'POST' ? 'POST' : 'GET', fields });
     if (forms.length >= 12) break;
   }
-  return { links, forms };
+  const title = utf8Prefix(safeText(/<title\b[^>]*>([^<]*)/iu.exec(html)?.[1] ?? '').replace(/\s+/gu, ' ').trim(), 120);
+  return { title, links, forms };
 }
 
 function responseSummary(path, response, body, origin) {
@@ -345,16 +346,42 @@ function responseSummary(path, response, body, origin) {
     securityHeaderPresence: headers, securityHeaderValues, ...surface };
 }
 
+/** Measured facts of one template exchange for the AI verifier; never attack-tool's verdict. */
+function templateMeasurement(response, view) {
+  const contentType = view.headers['content-type'];
+  const rows = Array.isArray(response.json) ? response.json : response.json?.results;
+  return { status: view.status, contentType, bodyBytes: view.bodyBytes, truncated: view.truncated,
+    ...(Array.isArray(rows) ? { resultCount: rows.length } : {}),
+    ...(/html/iu.test(contentType) ? { listItems: (response.body.match(/<li\b/giu) ?? []).length } : {}) };
+}
+
+/**
+ * Observed HTML pages a user can open, so the verifier can capture where an effect shows: at most 40
+ * {path, role, title}, unique by path+role. Query strings, bodies, cookies and form values stay out.
+ */
+function userPages(pages) {
+  const unique = new Map();
+  for (const page of pages) {
+    if (unique.size >= 40) break;
+    if (!(page.status >= 200 && page.status < 300) || !/html/iu.test(page.contentType ?? '')) continue;
+    const entry = { path: String(page.path).split('?', 1)[0], role: page.sessionRole ?? 'public', title: page.title ?? '' };
+    const key = entry.role + ' ' + entry.path;
+    if (!unique.has(key)) unique.set(key, entry);
+  }
+  return [...unique.values()];
+}
+
 /**
  * Builds a tool-agnostic AttackRecord from one executed probe: the hypothesis, the tool and its input, and the
  * tool's own bounded evidence. A result that already carries an AttackRecord keeps its exchanges.
  */
-export function recordForProbe({ probe, hypothesis, execution, origin, relatedEvidence = [] }) {
+export function recordForProbe({ probe, hypothesis, execution, origin, relatedEvidence = [], pages = [] }) {
   const summaries = items => items.map(({ id, kind, asset, summary }) => ({ id, kind, ...(asset ? { asset } : {}), summary }));
   const info = { goal: 'Decide whether the hypothesis ' + hypothesis.category + ' at ' + hypothesis.asset + ' is valid',
     hypothesis: { id: hypothesis.id, category: hypothesis.category, asset: hypothesis.asset, rationale: hypothesis.rationale },
     tool: probe.tool, input: probe.input, relatedEvidence: summaries(relatedEvidence).slice(-8),
-    ...(typeof probe.input?.sessionRole === 'string' ? { session: probe.input.sessionRole } : {}) };
+    ...(typeof probe.input?.sessionRole === 'string' ? { session: probe.input.sessionRole } : {}),
+    pages: userPages(pages) };
   if (execution.attackRecord) return { ...execution.attackRecord, info: { ...info, ...execution.attackRecord.info } };
   const url = typeof probe.input?.path === 'string' ? new URL(probe.input.path, origin).href : undefined;
   return { schemaVersion: 'attack-record/1', id: probe.id, kind: String(hypothesis.category).slice(0, 64),
@@ -1038,14 +1065,23 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           const identity = templateIdentity(rendered.template, rendered.packet.path);
           const baselineView = projectTemplateResponse(baseline);
           const attackView = projectTemplateResponse(attack);
+          const followUpView = followUp ? projectTemplateResponse(followUp) : undefined;
+          const counts = Object.fromEntries(['baselineCount', 'attackCount']
+            .filter(key => typeof verification[key] === 'number').map(key => [key, verification[key]]));
           return {
             kind: 'execute_attack_template',
             result: { status: attack.status, verification: verification.status, ...(identity ? { identity } : {}) },
             attackRecord: {
               schemaVersion: 'attack-record/1', id: probe.id, kind: rendered.template.attackType?.name ?? 'template',
               target: { origin: allowedOrigin },
+              // attack-tool's own comparison stays out of the verifier input (verifier CONTRACT.md);
+              // only its measured facts go in, so a truncated excerpt cannot hide a count difference.
               info: { tool: 'execute_attack_template', templateId: rendered.template.templateId,
-                payload: probe.input.payload, verification: verification.status, session: sessionRole },
+                payload: probe.input.payload, session: sessionRole,
+                measurements: { compare: rendered.template.verify?.mode ?? null, ...counts,
+                  control: templateMeasurement(baseline, baselineView),
+                  attack: templateMeasurement(attack, attackView),
+                  ...(followUp ? { followUp: templateMeasurement(followUp, followUpView) } : {}) } },
               request: { method: attack.method, url: attack.url, headers: {}, body: null },
               response: { status: attack.status, bodyText: attackView.bodyExcerpt,
                 truncated: attackView.truncated || attackView.excerptTruncated },
@@ -1053,7 +1089,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
                 response: { status: baseline.status, bodyText: baselineView.bodyExcerpt,
                   truncated: baselineView.truncated || baselineView.excerptTruncated } },
               ...(followUp ? { followUp: { request: { method: followUp.method, url: followUp.url, headers: {}, body: null },
-                response: { status: followUp.status, bodyText: projectTemplateResponse(followUp).bodyExcerpt } } } : {}),
+                response: { status: followUp.status, bodyText: followUpView.bodyExcerpt } } } : {}),
             },
             evidence: [{ id: evidenceId('probe', probe.id),
               source: 'attack-tool/' + fixtureId + (sessionRole === 'public' ? '' : '/role:' + sessionRole),
@@ -1063,8 +1099,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
                 + (verification.baselineCount === undefined ? '' : ' count=' + (verification.baselineCount ?? 'none'))
                 + '; attack HTTP ' + attack.status
                 + (verification.attackCount === undefined ? '' : ' count=' + (verification.attackCount ?? 'none'))
-                + (followUp ? '; followUp HTTP ' + followUp.status : '')
-                + '; compare ' + verification.status), 1200) }],
+                // No attack-tool verdict here: this summary reaches the verifier as related evidence.
+                + (followUp ? '; followUp HTTP ' + followUp.status : '')), 1200) }],
           };
         } catch (error) {
           if (probeSignal?.aborted || error?.fatalProbe) throw error;
@@ -1080,25 +1116,20 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     const judgedEvidence = new Map();
     const verifier = { async verify({ hypothesis, probe, execution, evidence, signal }) {
       const id = execution.evidence[0].id;
-      const templateStatus = execution.result?.verification;
-      if (probe.tool === 'execute_attack_template'
-        && ['confirmed', 'not_reproduced', 'inconclusive'].includes(templateStatus)) {
-        const identity = execution.result?.identity;
-        const verdict = templateStatus === 'inconclusive'
-          ? { status: 'inconclusive', evidenceIds: [id], reason: 'template_compare_inconclusive' }
-          : { status: templateStatus, completed: true, evidenceIds: [id], reason: 'template_compare_' + templateStatus };
-        return identity ? { ...verdict, identity } : verdict;
-      }
+      // Every executed attack, template or not, is judged by the AI verifier; a template only
+      // contributes its catalog identity so its finding stays bound to that template.
+      const identity = probe.tool === 'execute_attack_template' ? execution.result?.identity : undefined;
       const own = new Set(execution.evidence.map(item => item.id));
       const earlier = judgedEvidence.get(hypothesis.id) ?? [];
       const cited = evidence.filter(item => hypothesis.evidenceIds.includes(item.id) && !own.has(item.id));
       judgedEvidence.set(hypothesis.id, [...earlier, ...execution.evidence]);
       const sessions = Object.fromEntries([...sessionCookies].map(([role, cookie]) => [role,
         [{ name: cookie.slice(0, cookie.indexOf('=')), value: cookie.slice(cookie.indexOf('=') + 1) }]]));
-      return judgeAttackRecord(recordForProbe({ probe, hypothesis, execution, origin: allowedOrigin,
-        relatedEvidence: [...cited, ...earlier] }), { evidenceId: id, sessions, verify: verifyAttackImpl,
+      const verdict = await judgeAttackRecord(recordForProbe({ probe, hypothesis, execution, origin: allowedOrigin,
+        relatedEvidence: [...cited, ...earlier], pages: observedPages }), { evidenceId: id, sessions, verify: verifyAttackImpl,
         outDir: verificationRoot ? join(verificationRoot, probe.id) : undefined, model: localVerifier,
         env, envFile, signal });
+      return identity ? { ...verdict, identity } : verdict;
     } };
     const wrappedPlanner = { async propose(context) {
       if (enableRequiredTemplates && !initialContext && !requiredPass) {

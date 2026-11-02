@@ -16,6 +16,23 @@ const scriptedVerdicts = (status = 'not_reproduced', seen = []) => async (record
   seen.push({ record, options });
   return { schemaVersion: 'verifier/1', attackId: record.id, status, reason: 'scripted ' + status, artifacts: [] };
 };
+// Script the AI verifier per record (record.id is the probe id, record.info.templateId the catalog id).
+const verifierFrom = (statusFor, seen = []) => async (record, options) => {
+  seen.push({ record, options });
+  const status = statusFor(record) || 'not_reproduced';
+  return { schemaVersion: 'verifier/1', attackId: record.id, status, reason: 'scripted ' + status, artifacts: [] };
+};
+// A template probe's record carries the request and the baseline control exchange, with no attack-tool verdict (CONTRACT.md).
+function assertTemplateRecord(entry, templateId) {
+  assert.ok(entry, 'the verifier saw the template record');
+  assert.equal(entry.record.info.tool, 'execute_attack_template');
+  assert.equal(entry.record.info.templateId, templateId);
+  assert.ok(entry.record.request?.url && entry.record.control?.request, 'request and control exchanges are present');
+  assert.equal('verification' in entry.record.info, false);
+  // Measured facts reach the verifier; no attack-tool verdict value appears anywhere in info.
+  assert.ok(entry.record.info.measurements?.control && entry.record.info.measurements?.attack, 'measurements are present');
+  assert.doesNotMatch(JSON.stringify(entry.record.info), /confirmed|not_reproduced|inconclusive/u);
+}
 function runtimeWith(options) {
   return createGeneralRuntime({ verifyAttackImpl: scriptedVerdicts(), enableRequiredTemplates: false, ...options });
 }
@@ -1124,7 +1141,7 @@ test('general runtime routes vulnerability workers through two daemon ports and 
   let advertised;
   const expectedTemplates = listTemplates();
   const runtime = runtimeWith({
-    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:53988',
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:53987',
     modelId: 'deepseek-flash', runIdFactory: () => 'general-attack-tool-workers',
     fetchImpl: async url => response(new URL(url).pathname),
     plannerFactory: () => ({ async propose(context) {
@@ -1167,10 +1184,11 @@ test('general runtime routes vulnerability workers through two daemon ports and 
 test('general runtime executes a catalog SQLi template through GET baseline and attack comparison', async () => {
   const origin = 'http://127.0.0.1:53987';
   const queries = [];
+  const seen = [];
   const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: origin,
     modelId: 'deepseek-flash', runIdFactory: () => 'general-template-sqli',
-    unavailableInputs: ['casper-db'],
+    unavailableInputs: ['casper-db'], verifyAttackImpl: scriptedVerdicts('confirmed', seen),
     fetchImpl: async (url, init) => {
       const parsed = new URL(url);
       if (parsed.pathname === '/api/search') {
@@ -1203,17 +1221,70 @@ test('general runtime executes a catalog SQLi template through GET baseline and 
   assert.ok(queries.includes("' OR '1'='1"));
   const evidence = run.report.evidence.find(item => item.id === probe.evidenceIds[0]);
   assert.equal(evidence.kind, 'template-exchange');
-  assert.match(evidence.summary, /compare confirmed/u);
+  assert.match(evidence.summary, /baseline HTTP 200 count=0; attack HTTP 200 count=1/u);
+  assert.doesNotMatch(evidence.summary, /compare|confirmed|not_reproduced|inconclusive/u);
+  // The AI verifier judged the template's own attack record (no attack-tool verdict in record.info).
+  assertTemplateRecord(seen.find(entry => entry.record.id === 'p-sqli'), 'search-sqli-template');
+  const json = results => ({ status: 200, contentType: 'application/json', truncated: false,
+    bodyBytes: Buffer.byteLength(JSON.stringify({ site: '대한대학교', results })), resultCount: results.length });
+  assert.deepEqual(seen.find(entry => entry.record.id === 'p-sqli').record.info.measurements, {
+    compare: 'resultCount', baselineCount: 0, attackCount: 1,
+    control: json([]), attack: json([{ id: 1, title: 'hit' }]) });
+  // The confirmed finding stays bound to the catalog template identity.
+  const finding = run.report.findings.find(item => item.status === 'confirmed');
+  assert.match(finding.id, /^finding:t-[0-9a-f]{16}$/u);
+  assert.equal(finding.category, 'sql_injection');
+  assert.equal(finding.templateId, 'search-sqli-template');
+  assert.equal(finding.reason, 'scripted confirmed');
+  await runtime.close();
+});
+
+test('template HTML exchanges reach the verifier as list-item counts, not truncated excerpts alone', async () => {
+  const seen = [];
+  const page = items => '<html><body><ul>' + items.map(item => '<li>' + item + '</li>').join('') + '</ul></body></html>';
+  const runtime = runtimeWith({
+    fixtureId: 'vul-web2-daehan', targetOrigin: 'http://127.0.0.1:53987',
+    modelId: 'deepseek-flash', runIdFactory: () => 'general-template-html-measure',
+    unavailableInputs: ['casper-db'], verifyAttackImpl: scriptedVerdicts('confirmed', seen),
+    fetchImpl: async url => {
+      const parsed = new URL(url);
+      const q = parsed.searchParams.get('q');
+      if (parsed.pathname !== '/api/search' || q === 'ca3p-identity') return response(parsed.pathname);
+      const body = page(q === 'zzqnomatch' ? [] : ['a', 'b', 'c']);
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-sqli', category: 'sql_injection', asset: '/api/search',
+        rationale: 'Search query is interpolated.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-sqli', hypothesisId: 'h-sqli', tool: 'execute_attack_template',
+        input: { templateId: 'search-sqli-template', payload: "' OR '1'='1" } }] };
+    } }),
+  });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  const entry = seen.find(item => item.record.id === 'p-sqli');
+  assertTemplateRecord(entry, 'search-sqli-template');
+  const html = items => ({ status: 200, contentType: 'text/html; charset=utf-8', truncated: false,
+    bodyBytes: Buffer.byteLength(page(items)), listItems: items.length });
+  // HTML bodies have no JSON rows, so attack-tool's counts are absent and the <li> counts carry the difference.
+  assert.deepEqual(entry.record.info.measurements, { compare: 'resultCount',
+    control: html([]), attack: html(['a', 'b', 'c']) });
   await runtime.close();
 });
 
 test('required pass binds observed surfaces and does not reject cross-site template classes', async () => {
   const origin = 'http://127.0.0.1:53993';
   const plannerIterations = [];
+  const seen = [];
   const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: origin, enableRequiredTemplates: true,
     modelId: 'deepseek-flash', runIdFactory: () => 'general-bound-templates',
     unavailableInputs: ['casper-db'],
+    verifyAttackImpl: verifierFrom(record =>
+      record.info.templateId === 'search-sqli-template' ? 'confirmed' : 'not_reproduced', seen),
     fetchImpl: async (url, init = {}) => {
       const parsed = new URL(url);
       const method = init.method || 'GET';
@@ -1287,18 +1358,23 @@ test('required pass binds observed surfaces and does not reject cross-site templ
   assert.deepEqual(plannerIterations, [2]);
   assert.equal(run.report.probes.some(item => item.reason === 'fixture_mismatch'), false);
   assert.ok(run.report.coverage.requiredTemplates >= 5);
+  // Every required template reached the AI verifier with its own attack record (no attack-tool verdict).
+  assertTemplateRecord(seen.find(entry => entry.record.info.templateId === 'search-sqli-template'), 'search-sqli-template');
   const sqli = run.report.findings.find(item => item.templateId === 'search-sqli-template');
   assert.equal(sqli?.status, 'confirmed');
   assert.equal(sqli?.category, 'sql_injection');
+  assert.match(sqli.id, /^finding:t-[0-9a-f]{16}$/u);
+  assert.equal(sqli.reason, 'scripted confirmed');
   await runtime.close();
 });
 
 test('SQLi template success is recorded as sql_injection even when the planner labeled the hypothesis XSS', async () => {
   const origin = 'http://127.0.0.1:53991';
+  const seen = [];
   const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: origin,
     modelId: 'deepseek-flash', runIdFactory: () => 'general-template-identity',
-    unavailableInputs: ['casper-db'],
+    unavailableInputs: ['casper-db'], verifyAttackImpl: scriptedVerdicts('confirmed', seen),
     fetchImpl: async url => {
       const parsed = new URL(url);
       if (parsed.pathname === '/api/search') {
@@ -1335,17 +1411,25 @@ test('SQLi template success is recorded as sql_injection even when the planner l
   assert.equal(findings[0].category, 'sql_injection');
   assert.equal(findings[0].asset, '/api/search');
   assert.equal(findings[0].cwe, 'CWE-89');
+  assert.match(findings[0].id, /^finding:t-[0-9a-f]{16}$/u);
   assert.equal(run.report.findings.some(item => item.category === 'xss_vulnerable'), false);
+  // Both probes went to the AI verifier as template attack records; the catalog identity, not the planner label, binds them.
+  assert.equal(seen.filter(entry => entry.record.info.tool === 'execute_attack_template').length, 2);
+  assertTemplateRecord(seen.find(entry => entry.record.id === 'p-xss'), 'search-sqli-template');
+  assertTemplateRecord(seen.find(entry => entry.record.id === 'p-sqli'), 'search-sqli-template');
   await runtime.close();
 });
 
 test('general runtime confirms JSON5, partner IDOR and unauthenticated delete from catalog templates', async () => {
   const origin = 'http://127.0.0.1:53987';
   const calls = [];
+  const seen = [];
+  const executed = new Set(['p-json5', 'p-idor', 'p-delete', 'p-diag']);
   const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: origin,
     modelId: 'deepseek-flash', runIdFactory: () => 'general-template-report-items',
     unavailableInputs: ['casper-db'],
+    verifyAttackImpl: verifierFrom(record => executed.has(record.id) ? 'confirmed' : 'not_reproduced', seen),
     fetchImpl: async (url, init = {}) => {
       const parsed = new URL(url);
       calls.push({ method: init.method || 'GET', path: parsed.pathname, query: parsed.search, cookie: init.headers?.cookie || '' });
@@ -1422,7 +1506,13 @@ test('general runtime confirms JSON5, partner IDOR and unauthenticated delete fr
   assert.equal(run.report.probes.find(item => item.id === 'p-staff').reason, 'path_out_of_scope');
   assert.equal(run.report.probes.find(item => item.id === 'p-lodash').status, 'blocked');
   assert.equal(run.report.probes.find(item => item.id === 'p-lodash').reason, 'unsupported_template');
-  assert.equal(run.report.findings.find(item => item.hypothesisId === 'h-json5').status, 'confirmed');
+  const json5 = run.report.findings.find(item => item.hypothesisId === 'h-json5');
+  assert.equal(json5.status, 'confirmed');
+  assert.match(json5.id, /^finding:t-[0-9a-f]{16}$/u);
+  assert.ok(json5.category);
+  // Only the four executable templates reached the AI verifier, each with its attack record (no attack-tool verdict).
+  assert.equal(seen.filter(entry => entry.record.info.tool === 'execute_attack_template').length, 4);
+  assertTemplateRecord(seen.find(entry => entry.record.id === 'p-delete'), 'unauth-featured-post-delete-template');
   assert.ok(calls.some(item => item.path === '/api/admissions/partner/applications/3' && item.cookie.includes('partner1')));
   assert.ok(calls.some(item => item.path === '/admin/posts/1/delete' && item.method === 'POST' && !item.cookie));
   await runtime.close();
@@ -1488,11 +1578,13 @@ test('general runtime executes only after the matching human approval', async t 
 for (const decision of ['reject', 'approve']) {
   test(`catalog POST template shows its complete request sequence before ${decision}`, async t => {
     const calls = [];
+    const seen = [];
     let deleted = false;
     const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan',
       targetOrigin: decision === 'approve' ? 'http://127.0.0.1:53992' : 'http://127.0.0.1:53993',
       modelId: 'deepseek-flash', approvalRequired: true,
       runIdFactory: () => `template-human-${decision}`, unavailableInputs: ['casper-db'],
+      verifyAttackImpl: scriptedVerdicts('confirmed', seen),
       fetchImpl: async (url, init = {}) => {
         const path = new URL(url).pathname;
         const method = init.method ?? 'GET';
@@ -1535,6 +1627,15 @@ for (const decision of ['reject', 'approve']) {
       ? [{ method: 'GET', path: '/' }, { method: 'POST', path: '/admin/posts/1/delete' },
         { method: 'GET', path: '/' }] : []);
     assert.equal(run.report.attackTool.agentIds.length, decision === 'approve' ? 1 : 0);
+    if (decision === 'approve') {
+      // The approved template was judged by the AI verifier from its own attack record (no attack-tool verdict).
+      assertTemplateRecord(seen.find(entry => entry.record.id === 'p-delete'), 'unauth-featured-post-delete-template');
+      const finding = run.report.findings.find(item => item.status === 'confirmed');
+      assert.match(finding.id, /^finding:t-[0-9a-f]{16}$/u);
+      assert.ok(finding.category);
+    } else {
+      assert.equal(seen.length, 0);
+    }
   });
 }
 
@@ -1552,10 +1653,12 @@ test('approved template packets stay fixed when the catalog changes before execu
       return id === currentTemplate.templateId ? structuredClone(currentTemplate) : null; },
   };
   const calls = [];
+  const seen = [];
   let deleted = false;
   const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan',
     targetOrigin: 'http://127.0.0.1:53994', modelId: 'deepseek-flash',
     approvalRequired: true, templateCatalog, unavailableInputs: ['casper-db'],
+    verifyAttackImpl: scriptedVerdicts('confirmed', seen),
     runIdFactory: () => 'template-catalog-snapshot',
     fetchImpl: async (url, init = {}) => {
       const path = new URL(url).pathname;
@@ -1601,6 +1704,11 @@ test('approved template packets stay fixed when the catalog changes before execu
     { method: 'GET', path: '/' }, { method: 'POST', path: '/admin/posts/1/delete' },
     { method: 'GET', path: '/' }]);
   assert.equal(run.report.probes[0].status, 'confirmed');
+  // The frozen packet reached the AI verifier as the template's attack record (no attack-tool verdict).
+  assertTemplateRecord(seen.find(entry => entry.record.id === 'p-delete'), original.templateId);
+  const finding = run.report.findings.find(item => item.status === 'confirmed');
+  assert.match(finding.id, /^finding:t-[0-9a-f]{16}$/u);
+  assert.ok(finding.category);
 });
 
 const attackRecord = { schemaVersion: 'attack-record/1', id: 'p-any', kind: 'any',
@@ -1676,6 +1784,67 @@ test('recordForProbe builds a tool-agnostic record from the hypothesis, the tool
   assert.equal(attack.request.method, 'POST');
   assert.equal(attack.info.goal, 'own goal');
   assert.equal(attack.info.hypothesis.id, 'h1');
+  assert.deepEqual(attack.info.pages, []);
+});
+
+test('recordForProbe lists at most 40 unique HTML pages by path and role, without query, body or form values', () => {
+  const hypothesis = { id: 'h1', category: 'stored_xss', asset: '/inquiry', rationale: 'r', evidenceIds: [] };
+  const html = { status: 200, contentType: 'text/html' };
+  const pages = [
+    { ...html, path: '/inquiry?id=1&token=QuerySecret42', title: 'Inquiry', links: ['/x'],
+      forms: [{ path: '/inquiry', method: 'POST', fields: [{ name: 'FormFieldSecret', type: 'text' }] }] },
+    { ...html, path: '/inquiry?id=2', title: 'Inquiry again' },
+    { ...html, path: '/inquiry', title: 'Inquiry', sessionRole: 'student' },
+    { path: '/api/posts', status: 200, contentType: 'application/json' },
+    { path: '/admissions', status: null, error: 'request_unavailable' },
+    { ...html, path: '/admin', status: 403, sessionRole: 'student' },
+    ...Array.from({ length: 60 }, (_, index) => ({ ...html, path: '/p' + index, title: 'P' + index })),
+  ];
+  const record = recordForProbe({ probe: { id: 'p1', tool: 'x', input: {} }, hypothesis, pages,
+    origin: 'http://127.0.0.1:4101', execution: { evidence: [], attackRecord: { schemaVersion: 'attack-record/1',
+      id: 'p1', info: { tool: 'execute_attack_template' }, target: { origin: 'http://127.0.0.1:4101' },
+      request: { method: 'GET', url: 'http://127.0.0.1:4101/api/x' }, response: { status: 200 } } } });
+  assert.equal(record.info.pages.length, 40);
+  assert.deepEqual(record.info.pages.slice(0, 3), [
+    { path: '/inquiry', role: 'public', title: 'Inquiry' },
+    { path: '/inquiry', role: 'student', title: 'Inquiry' },
+    { path: '/p0', role: 'public', title: 'P0' }]);
+  assert.doesNotMatch(JSON.stringify(record.info.pages), /QuerySecret|FormFieldSecret|api\/posts|admin|admissions/u);
+  assert.equal(record.request.url, 'http://127.0.0.1:4101/api/x');
+});
+
+test('the AI verifier receives observed public and authenticated HTML pages without bodies or cookies', async () => {
+  const seen = [];
+  const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan', modelId: 'deepseek-flash',
+    runIdFactory: () => 'general-verifier-pages',
+    fetchImpl: async url => {
+      const path = new URL(url).pathname;
+      if (path === '/login') return new Response('', { status: 302,
+        headers: { location: '/mypage', 'set-cookie': 'session=SecretSession123456; HttpOnly' } });
+      return response(path);
+    },
+    verifyAttackImpl: async (record, options) => { seen.push(record); return scriptedVerdicts()(record, options); },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-search', category: 'information_disclosure', asset: '/api/search',
+        rationale: 'The search API may leak records.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-a', hypothesisId: 'h-search', tool: 'http_get', input: { path: '/api/search' } }] };
+    } }) });
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  const pages = seen[0].info.pages;
+  assert.ok(pages.length > 0 && pages.length <= 40);
+  assert.ok(pages.every(page => Object.keys(page).join() === 'path,role,title' && page.title.length <= 120));
+  assert.equal(new Set(pages.map(page => page.role + ' ' + page.path)).size, pages.length);
+  assert.deepEqual(pages.find(page => page.path === '/'), { path: '/', role: 'public', title: '대한대학교' });
+  assert.deepEqual(pages.find(page => page.role === 'student' && page.path === '/mypage'),
+    { path: '/mypage', role: 'student', title: '대한대학교' });
+  assert.ok(pages.some(page => page.role === 'owner') && pages.some(page => page.role === 'admin'));
+  assert.ok(!pages.some(page => page.path === '/api/search'), 'JSON APIs are not user pages');
+  assert.doesNotMatch(JSON.stringify(pages), /SecretSession|<html|<form|http:\/\//u);
+  await runtime.close();
 });
 
 test('the AI verdict on any executed probe decides the finding, and the latest verdict wins', async () => {
