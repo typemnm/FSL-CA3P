@@ -21,18 +21,17 @@
 5. 화면 캡처는 보조 자료다. 캡션 끝에 `(보조 자료, 판정 근거 아님)`을 코드가 붙인다.
 6. 비밀값(세션 쿠키, 인증 헤더, 토큰, 비밀번호)은 쓰지 않고 `omitted`에 사유를 남긴다.
 7. 문체는 "~합니다"로 통일한다. 재현 절차(`steps`)만 "~한다"를 허용한다.
-8. 보고서는 초안이다. `review_status` 기본값은 `초안 — 사람 검토 후 배포`.
-9. 번들 파일 이름(`run/finding.json` 등)과 내부 필드 이름은 보고서 어디에도 쓰지 않는다.
+8. 번들 파일 이름(`run/finding.json` 등)과 내부 필드 이름은 보고서 어디에도 쓰지 않는다.
 
 ## 2. 문서 구조
 
 | 순서 | 섹션 | 채우는 필드 |
 |---|---|---|
-| 표지 | 등급 문구, 제목 띠, 점검 정보 표, 검토 상태, 면책 문구 | `run`, `classification`, `review_status` |
+| 표지 | 등급 문구, 제목 띠, 점검 정보 표, 면책 문구 (내부용이라 검토 상태 표시 없음) | `run`, `classification` |
 | 1 | 점검 결과 요약: 심각도별 건수(자동), 총평, 우선 조치 권고 표 | `executive_summary`, `findings[].fix_summary` |
-| 2 | 점검 개요 | `objective`, `scope`, `method`(선택) |
+| 2 | 점검 개요 (판정 기준 안내 없음: 검토자는 이미 판정된 결과만 본다) | `objective`, `scope`, `method`(선택) |
 | 3 | 취약점 목록 | `findings[]` |
-| 4 | 취약점 상세(새 페이지): 배지, 위치·벡터·ID, 설명, 영향, 재현 절차, 증거, 화면 캡처, 판정 근거, 조치 방안, 검증 한계, 참고 | `findings[]` |
+| 4 | 취약점 상세(새 페이지): 배지, 위치·벡터·ID, CVSS 3.1 평가 표(코드가 벡터를 지표별 한국어로 풀이), 설명, 영향, 재현 절차, 증거, 화면 캡처, 판정 근거, 조치 방안, 검증 한계, 참고 | `findings[]` |
 | 5 | 점검 한계 및 면책 | `run_limitations` |
 | 부록 A | 심각도 기준(고정 문구) | 없음 |
 | 부록 B | 증적 수집 상태, 재점검 이력, 생략된 정보, 참고 자료 검토 상태 | `sources`, `history`, `omitted`, `referenceContext` |
@@ -53,7 +52,6 @@
 | `sources` | LLM | `[{collector, kind, status, note}]` status: captured / completed / available / empty |
 | `history` | LLM | `[{date, finding, result}]` 재점검 이력(과거 사례 자료가 있을 때) |
 | `omitted` | LLM | `["항목 — 사유: ..."]` |
-| `review_status` | 코드 | `초안 — 사람 검토 후 배포` |
 | `classification` | 코드 | `대외비 (CONFIDENTIAL)` |
 | `sourceFindingId`, `sourceEvidenceIds`, `generator`, `referenceContext` | 코드 | 출력 검증과 casper 참고 자료용(렌더링: `referenceContext`만 부록 B) |
 
@@ -109,3 +107,4 @@
 | 표지 | 등급 문구 빨강 `#C00000`, 네이비 제목 띠(흰 24pt 제목, `#DCE6F2` 부제) |
 | 글꼴 | 본문 함초롬돋움 10pt, 코드 D2Coding 8.5pt |
 | 화면 캡처 | 실제 PNG(폭 150mm 이내), 아래에 캡션(작은 회색 글씨) |
+| CVSS 3.1 평가 표 | 지표(AV 공격자의 접근 방법, AC 공격 복잡도, PR 필요한 권한, UI 사용자 상호 작용, S 범위, C 기밀성, I 무결성, A 가용성) · 평가 · 선택 가능 값 |

@@ -100,7 +100,7 @@ LLM이 보낸 REPORT_SPEC JSON을 마스킹한 뒤, 필수 필드가 빠졌거�
 | `run` | `run/finding.json`의 실행 메타데이터(실행 기록에서 수집) + `generated_at` |
 | `findings[0].id`, `finding_id`, `verdict` | `V-01`, 원본 finding ID, 원본 판정(confirmed → `confirmed`, 그 밖 → `unverified`) |
 | `findings[0].screenshots` | `run/verification.json` 캡처 `[{caption, ref}]`, 캡션 끝에 `(보조 자료, 판정 근거 아님)` |
-| `review_status`, `classification` | `초안 — 사람 검토 후 배포`, `대외비 (CONFIDENTIAL)` |
+| `classification` | `대외비 (CONFIDENTIAL)` (내부용 보고서라 검토 상태는 두지 않음) |
 | `sourceFindingId`, `sourceEvidenceIds`, `generator`, `referenceContext` | 출력 검증과 casper 참고 자료용 |
 
 렌더링은 `hwpx/writer.py`가 python-hwpx 6.11 서식 API로 키트 레이아웃(표지·요약·개요·목록·상세·한계·부록)을 그린다.

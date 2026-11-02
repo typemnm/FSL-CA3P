@@ -66,7 +66,6 @@ def model(status="completed"):
     """First finding of the team kit's sample_run.json, plus screenshots and a payload."""
     return {
         "classification": "대외비 (CONFIDENTIAL)",
-        "review_status": "초안 — 사람 검토 후 배포",
         "run": {
             "target_name": "대한대학교 웹사이트 (시험 환경)",
             "target_origin": "http://127.0.0.1:4101",
@@ -388,3 +387,36 @@ def test_malformed_llm_built_model_still_renders(tmp_path, image_root, corrupt):
     assert structure_errors(out) == [] and NONE in text_of(out)
     assert write_markdown(broken, tmp_path / "broken.md").exists()
     assert write_html(broken, tmp_path / "broken.html", image_root=image_root).exists()
+
+
+def test_cvss_vector_is_explained_per_metric_in_korean(tmp_path):
+    from ca3p_report.hwpx.writer import cvss_breakdown
+
+    rows = cvss_breakdown("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N")
+    assert [(m, v) for m, _, v, _ in rows] == [
+        ("AV", "네트워크"), ("AC", "특정 정보/조건 불필요"), ("PR", "없음"), ("UI", "없음"),
+        ("S", "해당자원 한정"), ("C", "높음"), ("I", "없음"), ("A", "없음"),
+    ]
+    assert rows[0][1] == "공격자의 접근 방법"
+    assert rows[0][3] == "네트워크 / 제한된 네트워크 / 로컬 / 물리"
+    other = cvss_breakdown("CVSS:3.1/AV:A/AC:H/PR:H/UI:R/S:C/C:L/I:L/A:H")
+    assert {m: v for m, _, v, _ in other} == {
+        "AV": "제한된 네트워크", "AC": "특정 정보/조건 필요", "PR": "상위권한 (관리자)",
+        "UI": "필요 (메일열람, 페이지접근, 실행 등)", "S": "해당자원 이상",
+        "C": "낮음", "I": "낮음", "A": "높음",
+    }
+    for broken in (None, "", "AV:N/AC:L", "CVSS:3.1/AV:Z"):
+        assert {v for _, _, v, _ in cvss_breakdown(broken)} == {NONE}
+    text = write_markdown(model(), tmp_path / "report.md").read_text(encoding="utf-8")
+    for expected in ("CVSS 3.1 평가", "공격자의 접근 방법", "특정 정보/조건 불필요"):
+        assert expected in text
+
+
+def test_internal_report_has_no_review_status_or_verdict_guide(tmp_path, image_root):
+    md = write_markdown(model(), tmp_path / "report.md").read_text(encoding="utf-8")
+    out = write_hwpx(model(), tmp_path / "r.hwpx", image_root=image_root)
+    for text in (md, HwpxDocument.open(out).text.markdown()):
+        # The cover row and draft notice are gone; B.4 (casper case review) is another topic.
+        for absent in ("사람 검토 후 배포", "판정 기준", "재현·검증 완료 / unverified"):
+            assert absent not in text
+    assert "| 검토 상태 |" not in md
