@@ -49,6 +49,8 @@ test('remote deployment polls state and submits general assessments with CSRF an
   assert.equal(client.reportDownloadUrl('run /?#'), '/api/runs/run%20%2F%3F%23/report.hwpx');
   assert.equal(client.findingReportDownloadUrl('run /?#', 'artifact /?#'),
     '/api/runs/run%20%2F%3F%23/reports/artifact%20%2F%3F%23.hwpx');
+  assert.equal(client.reportPreviewUrl('run-1', 'finding:h1', 'sub-123'),
+    '/api/runs/run-1/report-preview/sub-123/finding%3Ah1');
   const comparison = calls.find(call => call.path.startsWith('/api/comparisons'));
   assert.equal(new URL(comparison.path, 'http://test').searchParams.get('baseline'), 'baseline /?');
   client.close(); const count = calls.length; await pause(30); assert.equal(calls.length, count);

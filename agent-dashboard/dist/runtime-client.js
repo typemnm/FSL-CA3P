@@ -174,8 +174,9 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
     findingReportDownloadUrl(runId, artifactId) {
       return `/api/runs/${encodeURIComponent(runId)}/reports/${encodeURIComponent(artifactId)}.hwpx`;
     },
-    reportPreviewUrl(runId, findingId) {
-      return `/api/runs/${encodeURIComponent(runId)}/report-preview/${encodeURIComponent(findingId)}`;
+    reportPreviewUrl(runId, findingId, subtaskId) {
+      const taskPath = subtaskId ? `${encodeURIComponent(subtaskId)}/` : '';
+      return `/api/runs/${encodeURIComponent(runId)}/report-preview/${taskPath}${encodeURIComponent(findingId)}`;
     },
     getModels() { return request('/api/models'); },
     getPlatform() { return request('/api/platform'); },

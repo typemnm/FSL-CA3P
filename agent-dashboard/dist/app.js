@@ -375,7 +375,8 @@ function locateArtifact(artifact) {
   const id = globalThis.CSS?.escape ? CSS.escape : value => value;
   if (artifact.kind === 'web-info') return content.querySelector(`[data-web-info-artifact="${id(artifact.artifactId)}"]`);
   if (artifact.kind === 'run-report') return content.querySelector('[data-report-anchor="run-report"]');
-  return (artifact.findingId && content.querySelector(`[data-report-finding="${id(artifact.findingId)}"]`))
+  return (artifact.subtaskId && content.querySelector(`[data-report-subtask="${id(artifact.subtaskId)}"]`))
+    || (artifact.findingId && content.querySelector(`[data-report-finding="${id(artifact.findingId)}"]`))
     || content.querySelector('.report-document');
 }
 // The report view is rebuilt on every state update; keep the highlight on the rebuilt element.
@@ -683,11 +684,11 @@ function generalReportDocumentsMarkup(item) {
     generating: '취약점별 HWPX 생성 중', ready: `HWPX ${readyCount}건 준비됨`,
     partial: `HWPX ${readyCount}건 준비됨 · 일부 생성 실패`, failed: '취약점별 HWPX 생성 실패',
     unavailable: '보고서 생성 환경 확인 필요', skipped: multiAgentDeferred ? '이 실행의 HWPX 통합 보류'
-      : confirmedCount === 0 ? '확정된 취약점 없음 · HWPX 미작성' : 'HWPX 생성 생략',
+      : confirmedCount === 0 && entries.length === 0 ? '확정된 취약점 없음 · HWPX 미작성' : 'HWPX 생성 생략',
   };
   const description = multiAgentDeferred
     ? '메인과 서브의 검사 결과는 아래에서 확인할 수 있습니다. 이 실행의 HWPX 생성과 통합은 추후 제공됩니다.'
-    : status === 'skipped' && confirmedCount === 0
+    : status === 'skipped' && confirmedCount === 0 && entries.length === 0
     ? '이번 실행에서 확인된 취약점이 없어 HWPX를 작성하지 않았습니다. 다른 점검 결과는 아래와 JSON에서 확인할 수 있습니다.'
     : status === 'generating' ? '확정된 finding마다 문서를 작성하고 있습니다. 완료된 문서는 먼저 다운로드할 수 있습니다.'
       : status === 'unavailable' ? '보고서 생성 환경을 확인하세요. 검사 결과와 증거는 JSON에 보존되어 있습니다.'
@@ -696,15 +697,17 @@ function generalReportDocumentsMarkup(item) {
             : '검사 결과와 증거는 아래와 JSON에서 확인할 수 있습니다.';
   const rows = entries.map((document, index) => {
     const findingId = typeof document?.findingId === 'string' ? document.findingId : '';
-    const finding = byId.get(findingId);
-    const title = finding ? `${finding.category || '분류 미상'} · ${finding.asset || '위치 미상'}` : findingId || `결과 ${index + 1}`;
+    const subtaskId = typeof document?.subtaskId === 'string' ? document.subtaskId : '';
+    const task = subtaskId ? item.multiAgent?.tasks?.find(row => row?.id === subtaskId) : null;
+    const finding = subtaskId ? task?.finding : byId.get(findingId);
+    const title = `${subtaskId ? '서브에이전트 · ' : ''}${finding ? `${finding.category || '분류 미상'} · ${finding.asset || '위치 미상'}` : findingId || `결과 ${index + 1}`}`;
     const itemStatus = document?.status;
     const itemLabels = { generating: '생성 중', ready: '준비됨', failed: '생성 실패', unavailable: '생성 환경 확인 필요', skipped: '생략' };
     const ready = itemStatus === 'ready' && /^[a-f0-9]{64}$/u.test(document.artifactId || '') && !!item.id;
     const button = ready
-      ? `<span class="report-document-actions"><button type="button" class="button secondary" data-preview-finding="${escape(findingId)}">본문 읽기</button><a class="button primary report-document-download" href="${escape(runtime.findingReportDownloadUrl(item.id, document.artifactId))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-label="${escape(findingId)} HWPX 다운로드">${icon('download')}HWPX 다운로드</a></span>`
+      ? `<span class="report-document-actions"><button type="button" class="button secondary" data-preview-finding="${escape(findingId)}"${subtaskId ? ` data-preview-subtask="${escape(subtaskId)}"` : ''}>본문 읽기</button><a class="button primary report-document-download" href="${escape(runtime.findingReportDownloadUrl(item.id, document.artifactId))}" download="${escape(document.filename || 'ca3p-report.hwpx')}" aria-label="${escape(findingId)} HWPX 다운로드">${icon('download')}HWPX 다운로드</a></span>`
       : '<button class="button secondary report-document-download" disabled>HWPX 다운로드</button>';
-    return `<li class="report-document-item" data-report-finding="${escape(findingId)}"><div><strong>${escape(title)}</strong><small>finding ID: ${escape(findingId || '—')} · ${escape(itemLabels[itemStatus] || itemStatus || '대기')}</small>${document?.message ? `<small>${escape(document.message)}</small>` : ''}</div>${button}</li>`;
+    return `<li class="report-document-item" data-report-finding="${escape(findingId)}"${subtaskId ? ` data-report-subtask="${escape(subtaskId)}"` : ''}><div><strong>${escape(title)}</strong><small>finding ID: ${escape(findingId || '—')}${subtaskId ? ` · task ID: ${escape(subtaskId)}` : ''} · ${escape(itemLabels[itemStatus] || itemStatus || '대기')}</small>${document?.message ? `<small>${escape(document.message)}</small>` : ''}</div>${button}</li>`;
   }).join('');
   return `<section class="panel report-document report-documents" aria-labelledby="report-document-title"><div><h2 id="report-document-title">확정 finding별 HWPX 보고서</h2><p id="report-document-status" role="status" aria-live="polite">${escape(statusLabels[status] || '보고서 상태 확인 중')}</p><small>${escape(description)}</small>${documents.message ? `<p class="report-document-message">${escape(documents.message)}</p>` : ''}<small class="report-cost-note">저장된 현재 검증 결과와 근거를 사용합니다.</small></div>${rows ? `<ul class="report-document-list">${rows}</ul>` : ''}</section>`;
 }
@@ -1090,7 +1093,8 @@ $('report-content').addEventListener('click', async event => {
   frame.srcdoc = '';
   body.textContent = '문서 본문을 불러오는 중입니다.';
   try {
-    const payload = await runtime.api(runtime.reportPreviewUrl(currentRun().id, button.dataset.previewFinding));
+    const payload = await runtime.api(runtime.reportPreviewUrl(currentRun().id, button.dataset.previewFinding,
+      button.dataset.previewSubtask));
     if (generation !== reportPreviewGeneration) return;
     if (typeof payload.html === 'string' && payload.html) {
       frame.srcdoc = payload.html;

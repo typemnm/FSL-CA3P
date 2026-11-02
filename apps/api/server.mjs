@@ -32,6 +32,26 @@ const root = fileURLToPath(new URL('../../agent-dashboard/dist/', import.meta.ur
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
 const MAX_BODY = 8192;
 const GENERAL_REPORT_DOCUMENTS_SCHEMA_VERSION = 'general-report-documents/1';
+function confirmedDocumentFinding(run, document, store) {
+  if (typeof document?.findingId !== 'string') return false;
+  if (!document.subtaskId) return Array.isArray(run.report?.findings)
+    && run.report.findings.some(finding => finding?.id === document.findingId && finding.status === 'confirmed');
+  if (typeof document.subtaskId !== 'string' || !/^sub-[a-f0-9]{24}$/u.test(document.subtaskId)
+    || typeof document.sourceFindingId !== 'string') return false;
+  const task = store?.getSubtask?.(run.id, document.subtaskId);
+  return task?.status === 'completed' && task.sourceFindingId === document.sourceFindingId
+    && task.result?.report?.schemaVersion === 'general-assessment/1'
+    && task.result.report.runId === task.id && task.result.report.status === 'completed'
+    && Array.isArray(task.result.report.findings)
+    && task.result.report.findings.some(finding => finding?.id === document.findingId
+      && finding.status === 'confirmed');
+}
+
+function matchingDocumentArtifact(artifact, document) {
+  return artifact?.findingId === document.findingId
+    && artifact?.subtaskId === document.subtaskId
+    && artifact?.sourceFindingId === document.sourceFindingId;
+}
 const headers = {
   'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
@@ -373,18 +393,17 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
           if (linked.length !== 1) throw error(404, 'Report document not found.');
           const [document] = linked;
           if (document.status !== 'ready') throw error(409, 'The HWPX report is not ready.');
-          if (!Array.isArray(run.report?.findings)
-            || !run.report.findings.some(finding => finding?.id === document.findingId && finding.status === 'confirmed')) {
+          if (!confirmedDocumentFinding(run, document, runtime.store)) {
             throw error(409, 'Report finding is not confirmed.');
           }
           const artifact = runtime.store?.getArtifact(generalReportMatch[2]);
           if (!artifact || artifact.runId !== run.id || artifact.kind !== 'hwpx-report'
-            || artifact.findingId !== document.findingId || artifact.filename !== document.filename) {
+            || !matchingDocumentArtifact(artifact, document) || artifact.filename !== document.filename) {
             throw error(404, 'Report artifact not found.');
           }
           return await sendHwpx(res, artifact, document);
         }
-        const previewMatch = /^\/api\/runs\/([a-zA-Z0-9_-]+)\/report-preview\/([a-zA-Z0-9][a-zA-Z0-9._:-]{0,71})$/.exec(pathname);
+        const previewMatch = /^\/api\/runs\/([a-zA-Z0-9_-]+)\/report-preview\/(?:(sub-[a-f0-9]{24})\/)?([a-zA-Z0-9][a-zA-Z0-9._:-]{0,127})$/.exec(pathname);
         if (previewMatch && req.method === 'GET') {
           const run = await (runtime.store?.getRun?.(previewMatch[1]) ?? runtime.getRun?.(previewMatch[1]));
           if (!run) throw error(404, 'Run not found.');
@@ -392,11 +411,11 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
           const document = general
             ? run.reportDocuments?.schemaVersion === GENERAL_REPORT_DOCUMENTS_SCHEMA_VERSION
               && Array.isArray(run.reportDocuments.items)
-              ? run.reportDocuments.items.find(item => item?.findingId === previewMatch[2]) : null
-            : previewMatch[2] === 'single' ? run.reportDocument : null;
+              ? run.reportDocuments.items.find(item => item?.findingId === previewMatch[3]
+                && item?.subtaskId === previewMatch[2]) : null
+            : !previewMatch[2] && previewMatch[3] === 'single' ? run.reportDocument : null;
           if (!document || document.status !== 'ready') throw error(404, 'Report preview not found.');
-          if (general && (!Array.isArray(run.report?.findings)
-            || !run.report.findings.some(finding => finding?.id === document.findingId && finding.status === 'confirmed'))) {
+          if (general && !confirmedDocumentFinding(run, document, runtime.store)) {
             throw error(409, 'Report finding is not confirmed.');
           }
           const htmlPreview = typeof document.previewHtmlArtifactId === 'string';
@@ -405,7 +424,7 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
             ? runtime.store?.getArtifact(previewId) : null;
           if (!artifact || artifact.runId !== run.id
             || artifact.kind !== (htmlPreview ? 'report-preview-html' : 'report-preview')
-            || (general && artifact.findingId !== document.findingId)
+            || (general && !matchingDocumentArtifact(artifact, document))
             || artifact.size > (htmlPreview ? 30_000_000 : 2_000_000)) throw error(404, 'Report preview not found.');
           const bytes = await readFile(artifact.path);
           if (bytes.length !== artifact.size || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) {
