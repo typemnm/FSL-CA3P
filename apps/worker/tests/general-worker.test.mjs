@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import http from 'node:http';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +20,10 @@ async function waitFor(check, timeoutMs = 5000) {
   }
   assert.fail('general worker state did not settle');
 }
+
+const toolCall = (name, args) => ({ role: 'assistant', content: null, tool_calls: [{
+  id: name, type: 'function', function: { name, arguments: JSON.stringify(args) },
+}] });
 
 async function setup(modelId = 'deepseek-flash', loopBudget) {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
@@ -185,13 +190,55 @@ test('general worker generates two distinct real Python HWPX files for two confi
         },
         getState() { return structuredClone(state); }, stop() {}, async close() {} };
     };
+    // Loopback stand-in for the report LLM: each report reads its sealed finding, then submits a minimal model.
+    let requests = 0; let protocolFailure; const written = [];
+    const provider = http.createServer(async (req, res) => {
+      try {
+        assert.equal(`${req.method} ${req.url}`, 'POST /chat/completions');
+        assert.equal(req.headers.authorization, 'Bearer synthetic-report-key');
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        assert.equal(input.model, 'deepseek-flash');
+        requests += 1;
+        const tool = input.messages.find(item => item.role === 'tool' && item.tool_call_id === 'read_bundle');
+        let message;
+        if (!tool) message = toolCall('read_bundle', { path: 'run/finding.json' });
+        else {
+          const { sourceFindingId } = JSON.parse(JSON.parse(tool.content).content);
+          written.push(sourceFindingId);
+          message = toolCall('finish_report', { filename: `${sourceFindingId.replace(':', '-')}.hwpx`, model: {
+            findings: [{ common: { title: '합성 접근 제어 우회', cwe: 'CWE-639',
+              cvss: { version: '3.1', score: 6.5, rating: 'Medium', vector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N' },
+              summary: '다른 사용자의 기록에 접근할 수 있습니다.', remediation: '서버에서 소유자를 확인합니다.' },
+            reproduction: [{ step: 1, text: '다른 계정으로 같은 기록을 요청합니다.' }] }] } });
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message }] }));
+      } catch (error) {
+        protocolFailure = error;
+        res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"error":"synthetic protocol mismatch"}');
+      }
+    });
+    provider.listen(0, '127.0.0.1'); await once(provider, 'listening');
     const localPython = fileURLToPath(new URL(`../../../.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`, import.meta.url));
-    const env = { ...process.env, DEEPSEEK_API_KEY: '', CA3P_REPORT_PYTHON: process.env.CA3P_REPORT_PYTHON
+    // Only the loopback fake can receive the synthetic key: provider and proxy settings are all overridden.
+    const env = { ...process.env, DEEPSEEK_BASE_URL: `http://127.0.0.1:${provider.address().port}`,
+      DEEPSEEK_API_KEY: 'synthetic-report-key', DEEPSEEK_MODEL: 'deepseek-flash',
+      HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', http_proxy: '', https_proxy: '', all_proxy: '',
+      NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1', CA3P_REPORT_PYTHON: process.env.CA3P_REPORT_PYTHON
       || process.env.CASPER_DB_PYTHON || (existsSync(localPython) ? localPython : process.platform === 'win32' ? 'py' : 'python3') };
     const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10, env, generalRuntimeFactory });
-    t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+    t.after(async () => {
+      await worker.shutdown();
+      provider.closeAllConnections(); await new Promise(resolve => provider.close(resolve));
+      rmSync(directory, { recursive: true, force: true });
+    });
     const run = await waitFor(() => { const value = worker.store.getRun(id);
       return value.status === 'completed' && value.reportDocuments?.completedAt && value; }, 30_000);
+    assert.ifError(protocolFailure);
+    assert.equal(requests, 4, 'two model turns per confirmed finding');
+    assert.deepEqual(written, ['finding:h1', 'finding:h2']);
     assert.equal(run.reportDocuments.status, 'ready', JSON.stringify(run.reportDocuments));
     const documents = run.reportDocuments.items;
     assert.deepEqual(documents.map(item => item.findingId), ['finding:h1', 'finding:h2']);
