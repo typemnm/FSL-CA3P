@@ -30,13 +30,11 @@ PHOTO_WIDTH_MM = 150.0
 PHOTO_MAX_HEIGHT_MM = 200.0
 PHOTO_MAX_BYTES = 10_000_000
 CLASSIFICATION = "대외비 (CONFIDENTIAL)"
-REVIEW_STATUS = "초안 — 사람 검토 후 배포"
 AUTHOR = "CA3P 자동 침투테스트 에이전트"
 METHOD = (
     "CA3P 자동 침투테스트 에이전트가 정찰 → 취약점 탐색 → 재현 검증 → 보고 순으로 수행했습니다. "
     "검증 단계에서 대조 요청과 공격 요청의 응답 차이로 판정했습니다."
 )
-VERDICT_GUIDE = "confirmed: 재현·검증 완료 / unverified: 미검증"
 DISCLAIMER = (
     "본 보고서는 승인된 범위와 기간 내에서 수행한 점검 결과이며, 점검 시점 이후의 변경 사항은 "
     "반영하지 않습니다. 보고서에 기재되지 않았다고 해서 취약점이 없음을 의미하지 않습니다. "
@@ -209,6 +207,43 @@ def _missing_shot(caption: str) -> tuple:
     return _table([[_cell(paras, fill="shot", pp="center", margin=(700, 700, 900, 900))]], [1])
 
 
+# CVSS 3.1 base metrics: (지표 설명, {값: 한국어 평가}), in vector order.
+CVSS_METRICS = {
+    "AV": ("공격자의 접근 방법",
+           {"N": "네트워크", "A": "제한된 네트워크", "L": "로컬", "P": "물리"}),
+    "AC": ("공격 복잡도", {"L": "특정 정보/조건 불필요", "H": "특정 정보/조건 필요"}),
+    "PR": ("필요한 권한", {"N": "없음", "L": "일반 사용자", "H": "상위권한 (관리자)"}),
+    "UI": ("사용자 상호 작용", {"N": "없음", "R": "필요 (메일열람, 페이지접근, 실행 등)"}),
+    "S": ("범위", {"U": "해당자원 한정", "C": "해당자원 이상"}),
+    "C": ("기밀성", {"H": "높음", "L": "낮음", "N": "없음"}),
+    "I": ("무결성", {"H": "높음", "L": "낮음", "N": "없음"}),
+    "A": ("가용성", {"H": "높음", "L": "낮음", "N": "없음"}),
+}
+
+
+def cvss_breakdown(vector: object) -> list[tuple[str, str, str, str]]:
+    """(지표, 설명, 평가, 선택 가능 값) per base metric; 평가 is 자료 없음 when missing."""
+    parts = dict(
+        item.split(":", 1) for item in str(vector or "").split("/")[1:] if item.count(":") == 1
+    ) if str(vector or "").startswith("CVSS:3.") else {}
+    return [
+        (metric, meaning, values.get(parts.get(metric, ""), NONE), " / ".join(values.values()))
+        for metric, (meaning, values) in CVSS_METRICS.items()
+    ]
+
+
+def _cvss_table(vector: object) -> tuple:
+    rows = [
+        [
+            _cell([[(metric, "label"), (f"  {meaning}", "small")]], fill="label"),
+            _cell(value, "small" if value == NONE else "body_b", pp="center"),
+            _cell(options, "small"),
+        ]
+        for metric, meaning, value, options in cvss_breakdown(vector)
+    ]
+    return _table(_rows(_head("지표", "평가", "선택 가능 값"), rows), [30, 24, 46], header=True)
+
+
 # ---- REPORT_SPEC.md §2 sections ----
 
 def _period(run: dict) -> str:
@@ -233,7 +268,6 @@ def _cover(model: dict, run: dict) -> list[tuple]:
                 ("시험 프로필", _text(run.get("profile"))),
                 ("보고서 생성", _text(run.get("generated_at"))),
                 ("작성", _text(run.get("author") or AUTHOR)),
-                ("검토 상태", [[(_text(model.get("review_status") or REVIEW_STATUS), "sev_high")]]),
             ],
             22,
         ),
@@ -284,7 +318,6 @@ def _overview(model: dict, run: dict) -> list[tuple]:
                 ("점검 방법", _text(model.get("method") or METHOD)),
                 ("점검 기간", _period(run)),
                 ("총 요청 수", _text(run.get("request_count"))),
-                ("판정 기준", VERDICT_GUIDE),
             ]
         ),
     ]
@@ -307,7 +340,6 @@ def _inventory(findings: list[dict]) -> list[tuple]:
     return [
         _h(1, "3. 취약점 목록"),
         _table(_rows(head, body), [9, 27, 12, 13, 28, 11], header=True),
-        _p([("※ 판정 — " + VERDICT_GUIDE, "hint")], "tight"),
     ]
 
 
@@ -353,6 +385,8 @@ def _finding(n: int, f: dict) -> list[tuple]:
                 ("finding ID", [[(_text(f.get("finding_id")), "small")]]),
             ]
         ),
+        _h(3, "CVSS 3.1 평가"),
+        _cvss_table(f.get("cvss_vector")),
         _h(3, "취약점 설명"),
         *[_p(part) for part in _paras(f.get("description"))],
         _h(3, "영향"),

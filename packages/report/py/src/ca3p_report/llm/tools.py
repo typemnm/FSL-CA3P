@@ -24,7 +24,6 @@ from ..hwpx.writer import write_html, write_hwpx, write_markdown
 from .redact import redact
 
 MAX_READ_BYTES = 2_000_000
-REVIEW_STATUS = "초안 — 사람 검토 후 배포"
 CLASSIFICATION = "대외비 (CONFIDENTIAL)"
 SCREENSHOT_NOTE = " (보조 자료, 판정 근거 아님)"
 SEVERITIES = ("critical", "high", "medium", "low", "info")
@@ -164,7 +163,7 @@ class ReportTools:
         finding["finding_id"] = source["sourceFindingId"]
         finding["verdict"] = "confirmed" if source["status"] == "confirmed" else "unverified"
         finding["screenshots"] = self._screenshots()
-        model["review_status"] = REVIEW_STATUS
+        model.pop("review_status", None)
         model["classification"] = CLASSIFICATION
         model["sourceFindingId"] = source["sourceFindingId"]
         model["sourceEvidenceIds"] = list(source["evidenceIds"])

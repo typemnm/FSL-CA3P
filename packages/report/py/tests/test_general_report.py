@@ -128,7 +128,7 @@ def _result(capsys) -> dict:
 
 
 SPEC_KEYS = {"run", "executive_summary", "objective", "scope", "run_limitations", "findings",
-             "review_status", "classification", "sourceFindingId", "sourceEvidenceIds",
+             "classification", "sourceFindingId", "sourceEvidenceIds",
              "generator"}
 FINDING_KEYS = {"id", "finding_id", "verdict", "screenshots", "title", "severity", "cvss_score",
                 "cvss_vector", "cwe", "location", "privilege", "description", "impact", "steps",
@@ -384,7 +384,7 @@ def test_finish_report_overwrites_verified_fields_and_requires_one_finding(tmp_p
         "started_at": "2026-10-28 00:00:00 UTC", "finished_at": "2026-10-28 00:00:03 UTC",
         "request_count": 2, "status": "completed", "incomplete": False,
     }
-    assert model["review_status"] == "초안 — 사람 검토 후 배포"
+    assert "review_status" not in model  # internal report: no review-status line
     assert model["classification"] == "대외비 (CONFIDENTIAL)"
     assert model["sourceFindingId"] == "finding:h-a"
     assert model["sourceEvidenceIds"] == ["ev-a"]
