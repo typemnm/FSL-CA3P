@@ -208,10 +208,19 @@ test('general worker generates two distinct real Python HWPX files for two confi
           const { sourceFindingId } = JSON.parse(JSON.parse(tool.content).content);
           written.push(sourceFindingId);
           message = toolCall('finish_report', { filename: `${sourceFindingId.replace(':', '-')}.hwpx`, model: {
-            findings: [{ common: { title: '합성 접근 제어 우회', cwe: 'CWE-639',
-              cvss: { version: '3.1', score: 6.5, rating: 'Medium', vector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N' },
-              summary: '다른 사용자의 기록에 접근할 수 있습니다.', remediation: '서버에서 소유자를 확인합니다.' },
-            reproduction: [{ step: 1, text: '다른 계정으로 같은 기록을 요청합니다.' }] }] } });
+            executive_summary: '접근 제어 취약점 1건을 확인했습니다.', objective: '객체 수준 인가를 확인합니다.',
+            scope: '합성 시험 환경', run_limitations: '합성 점검 결과입니다.',
+            findings: [{ title: '합성 접근 제어 우회 (Authorization Bypass)', severity: 'medium', cvss_score: '6.5',
+              cvss_vector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N', cwe: 'CWE-639',
+              location: 'GET /api/records/:id (id)', privilege: '일반 사용자',
+              description: '다른 사용자의 기록을 읽을 수 있습니다.', impact: '타인 정보가 노출됩니다.',
+              steps: ['본인 계정으로 자기 기록을 요청한다.', '다른 계정으로 같은 기록을 요청한다.',
+                '두 응답을 비교해 판정한다.'],
+              evidence: [{ label: '[대조 요청]', content: 'GET /api/records/1' },
+                { label: '[공격 요청]', content: 'GET /api/records/2' }],
+              checks: [{ item: '대조군 대비 결과 차이', result: '타인 기록 열람' }],
+              fix_summary: '서버에서 소유자를 확인', fix_short: '조회 전에 소유자를 비교합니다.',
+              fix_long: '객체 수준 인가와 회귀 테스트를 둡니다.', limitations: '', references: ['CWE-639'] }] } });
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ choices: [{ message }] }));

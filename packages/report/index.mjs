@@ -177,15 +177,15 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     let model;
     try { model = JSON.parse(modelBytes.toString('utf8')); }
     catch { throw failure('REPORT_INVALID_OUTPUT', '보고서 모델의 형식이 올바르지 않습니다.'); }
-    if (model?.run?.runId !== run.id) {
+    if (model?.run?.run_id !== run.id) {
       throw failure('REPORT_INVALID_OUTPUT', '보고서 내용의 실행 식별자가 일치하지 않습니다.');
     }
     const evidenceIds = model.sourceEvidenceIds;
     if (model.sourceFindingId !== expectedId
-      || model.run?.status !== run.report.status
+      || model.run.status !== run.report.status
       || !Array.isArray(model.findings) || model.findings.length !== 1
-      || model.findings[0]?.common?.findingId !== expectedId
-      || (model.findings[0]?.common?.status ?? null) !== sourceStatus
+      || model.findings[0]?.finding_id !== expectedId
+      || model.findings[0].verdict !== (sourceStatus === 'confirmed' ? 'confirmed' : 'unverified')
       || !Array.isArray(evidenceIds) || (sourceEvidence.length > 0 && !evidenceIds.length)
       || new Set(evidenceIds).size !== evidenceIds.length
       || evidenceIds.some(id => typeof id !== 'string' || !sourceEvidence.includes(id))) {

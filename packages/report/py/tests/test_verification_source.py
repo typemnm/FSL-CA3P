@@ -156,25 +156,26 @@ def test_handoff_attack_record_is_sealed_as_the_attack_source(tmp_path):
 def test_handoff_screenshot_and_verified_values_are_in_the_hwpx(tmp_path):
     collected = collect(_trigger_with(tmp_path, _handoff(tmp_path / "handoff")))
     model = llm_model()
-    # The model places the real screenshot and also invents one that does not exist.
-    model["findings"][0]["images"] = [
-        {"ref": "shot.png", "step": 1, "caption": "삭제 요청 뒤 목록"},
-        {"ref": "evidence/images/forged.png", "step": 1, "caption": "없는 사진"},
+    # The model recaptions the real screenshot and also invents one that does not exist.
+    model["findings"][0]["screenshots"] = [
+        {"ref": "evidence/images/shot.png", "caption": "삭제 요청 뒤 목록"},
+        {"ref": "evidence/images/forged.png", "caption": "없는 사진"},
     ]
     tools = ReportTools(collected.bundle, tmp_path / "document")
     tools.finish_report(model=model)
     saved = json.loads((tmp_path / "document" / "report-model.json").read_text("utf-8"))
-    assert saved["findings"][0]["images"] == [{
-        "step": 1, "caption": "삭제 요청 뒤 목록", "ref": "evidence/images/shot.png", "integrity": "ok",
-    }]
+    caption = "삭제 응답 (보조 자료, 판정 근거 아님)"
+    assert saved["findings"][0]["screenshots"] == [
+        {"caption": caption, "ref": "evidence/images/shot.png"}]
     with zipfile.ZipFile(tmp_path / "document" / tools.finished.report_filename) as archive:
         pictures = [name for name in archive.namelist() if name.startswith("BinData/")]
         assert [archive.read(name) for name in pictures] == [IMAGE]
         xml = "".join(archive.read(name).decode("utf-8") for name in archive.namelist()
                       if name.startswith("Contents/section"))
-    for value in ("finding:h-a", "confirmed", "run-general", "삭제 요청 뒤 목록", "CWE-639"):
+    for value in ("finding:h-a", "confirmed", "run-general", caption, "CWE-639"):
         assert value in xml
-    for forged in ("finding:h-b", "not_reproduced", "another-run", "없는 사진"):
+    for forged in ("finding:h-b", "not_reproduced", "another-run", "없는 사진",
+                   "삭제 요청 뒤 목록"):
         assert forged not in xml
 
 

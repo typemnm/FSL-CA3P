@@ -38,3 +38,22 @@ def test_read_bundle_masks_plain_text_headers_without_rewriting_evidence(tmp_pat
     assert "synthetic-token" not in view
     assert "marker=ok" in view
     assert source.read_bytes() == original
+
+
+def test_finish_report_masks_secrets_the_model_wrote(tmp_path):
+    from test_general_report import _report, _store, _trigger, llm_model
+
+    from ca3p_report.collect.collector import collect
+    from ca3p_report.trigger import parse_trigger
+
+    db = tmp_path / "runs.sqlite"
+    _store(db, _report("run-general"))
+    collected = collect(parse_trigger(json.loads(_trigger(db, tmp_path / "out", "finding:h-a"))))
+    model = llm_model()
+    model["findings"][0]["evidence"][1]["content"] = (
+        "DELETE /api/posts/1\nCookie: session=synthetic-session-value"
+    )
+    tools = ReportTools(collected.bundle, tmp_path / "document")
+    tools.finish_report(model=model)
+    for name in ("report-model.json", "report.md", "report.html"):
+        assert "synthetic-session-value" not in (tmp_path / "document" / name).read_text("utf-8")

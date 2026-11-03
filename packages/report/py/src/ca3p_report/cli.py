@@ -126,8 +126,6 @@ def _run(trigger_text: str, *, client=None) -> int:
 
     source = collected.finding
     finding = source["finding"]
-    report = collected.run.report or {}
-    target = report.get("target") if isinstance(report.get("target"), dict) else {}
     vulnerability = " · ".join(
         str(finding[key]) for key in ("title", "category", "cwe", "asset") if finding.get(key)
     )
@@ -140,7 +138,7 @@ def _run(trigger_text: str, *, client=None) -> int:
             "findingId": source["sourceFindingId"],
             "summary": {
                 "vulnerability": vulnerability,
-                "target": target.get("origin") or "",
+                "target": source["run"]["target_origin"] or "",
                 "exploit": source["status"] or "",
             },
             "files": built["files"],
