@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import json as _json
 import sys
-from pathlib import Path
 
 from .collect.bundle import BundleExistsError, OutputError
 from .collect.collector import RunIncomplete, RunNotFound, collect
@@ -81,20 +78,8 @@ def _collect(trigger_text: str) -> int:
     return EXIT_OK
 
 
-def _origin_and_switch(bundle: Path, run_report: dict) -> tuple[str, dict | None]:
-    target = run_report.get("target") if isinstance(run_report, dict) else None
-    origin = target.get("origin") if isinstance(target, dict) else None
-    switch = None
-    try:
-        hints = _json.loads((bundle / "hints" / "capture.json").read_text("utf-8"))
-        switch = hints.get("sessionSwitch") if isinstance(hints, dict) else None
-    except (OSError, ValueError):
-        pass
-    return origin, switch
-
-
-def _run(trigger_text: str, *, client=None, node: str = "node") -> int:
-    """Collect and render a selected general finding or run the legacy LLM writer."""
+def _run(trigger_text: str, *, client=None) -> int:
+    """Collect the one finding the trigger names, then let the LLM write its report."""
     try:
         trigger = parse_trigger(json.loads(trigger_text))
     except (json.JSONDecodeError, RecursionError, TriggerError) as exc:
@@ -125,43 +110,13 @@ def _run(trigger_text: str, *, client=None, node: str = "node") -> int:
         return EXIT_INTERNAL
 
     # Imported here so `collect` stays free of the LLM/network surface.
-    from .collect.collector import collect as _c  # noqa: F401  (keep import graph obvious)
     from .llm.client import HttpChatClient, LLMConfig, LLMError
     from .llm.loop import run_build
 
-    report = collected.run.report or {}
-    origin, switch = _origin_and_switch(collected.bundle, report)
     try:
-        if collected.selection is not None:
-            from .general_model import build_general_model
-            from .llm.tools import ReportTools
-
-            model = build_general_model(
-                collected.selection, report, collected.manifest,
-                stored_at=collected.run.stored_at,
-            )
-            tools = ReportTools(
-                collected.bundle, trigger.output_dir / "report",
-                origin=origin, session_switch=None, node=node,
-            )
-            suffix = hashlib.sha256(trigger.finding_id.encode("utf-8")).hexdigest()[:16]
-            tools.finish_report(model=model, filename=f"issue-{suffix}-{trigger.run_id[:80]}.hwpx")
-            built = {
-                "files": tools.finished.files,
-                "reportFilename": tools.finished.report_filename,
-            }
-        else:
-            if client is None:
-                client = HttpChatClient(LLMConfig.from_env())
-            built = run_build(
-                client,
-                bundle=collected.bundle,
-                out_dir=trigger.output_dir / "report",
-                test_profile=report.get("testProfile"),
-                origin=origin,
-                session_switch=switch,
-                node=node,
-            )
+        if client is None:
+            client = HttpChatClient(LLMConfig.from_env())
+        built = run_build(client, bundle=collected.bundle, out_dir=trigger.output_dir / "report")
     except LLMError as exc:
         _emit(_failure(trigger.run_id, "LLM_FAILED", str(exc)))
         return EXIT_LLM
@@ -169,12 +124,12 @@ def _run(trigger_text: str, *, client=None, node: str = "node") -> int:
         _emit(_failure(trigger.run_id, "INTERNAL_ERROR", type(exc).__name__))
         return EXIT_INTERNAL
 
-    finding = (collected.selection["finding"] if collected.selection is not None
-               else report.get("finding") if isinstance(report.get("finding"), dict) else {})
-    vulnerability = (
-        f"{finding.get('category', '')} · {finding.get('asset', '')}".strip(" ·")
-        if collected.selection is not None
-        else f"{finding.get('title', '')} ({finding.get('cwe', '')})".strip()
+    source = collected.finding
+    finding = source["finding"]
+    report = collected.run.report or {}
+    target = report.get("target") if isinstance(report.get("target"), dict) else {}
+    vulnerability = " · ".join(
+        str(finding[key]) for key in ("title", "category", "cwe", "asset") if finding.get(key)
     )
     _emit(
         {
@@ -182,11 +137,11 @@ def _run(trigger_text: str, *, client=None, node: str = "node") -> int:
             "ok": True,
             "runId": trigger.run_id,
             "stage": "reported",
-            **({"findingId": trigger.finding_id} if collected.selection is not None else {}),
+            "findingId": source["sourceFindingId"],
             "summary": {
                 "vulnerability": vulnerability,
-                "target": origin or "",
-                "exploit": finding.get("status", ""),
+                "target": target.get("origin") or "",
+                "exploit": source["status"] or "",
             },
             "files": built["files"],
             "reportFilename": built["reportFilename"],

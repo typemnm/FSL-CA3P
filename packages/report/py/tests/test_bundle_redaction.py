@@ -18,7 +18,7 @@ def test_read_bundle_masks_structured_credentials_without_rewriting_evidence(tmp
         }
     ).encode()
     source.write_bytes(original)
-    tools = ReportTools(bundle, tmp_path / "out", origin="http://127.0.0.1:4100", session_switch=None)
+    tools = ReportTools(bundle, tmp_path / "out")
     view = json.loads(tools.read_bundle("report.json"))
     assert view["headers"] == {"Cookie": "[REDACTED]", "Authorization": "[REDACTED]"}
     assert view["history"][0]["password"] == "[REDACTED]"
@@ -33,7 +33,7 @@ def test_read_bundle_masks_plain_text_headers_without_rewriting_evidence(tmp_pat
     source = bundle / "observation.txt"
     original = b"Synthetic observation\nAuthorization: Bearer synthetic-token\nmarker=ok"
     source.write_bytes(original)
-    tools = ReportTools(bundle, tmp_path / "out", origin="http://127.0.0.1:4100", session_switch=None)
+    tools = ReportTools(bundle, tmp_path / "out")
     view = tools.read_bundle("observation.txt")
     assert "synthetic-token" not in view
     assert "marker=ok" in view

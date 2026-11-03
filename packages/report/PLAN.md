@@ -1,5 +1,7 @@
 # 보고서 생성 모듈(Report Agent) — 조사 결과 및 개발 PLAN
 
+> **2026-11-02 재설계:** 현재 설계는 [REDESIGN.md](./REDESIGN.md)를 따른다. 이 문서는 최초 설계의 이력이다.
+
 - 작성일: 2026-10-18 / 개정: 2026-10-19
 - 브랜치: `woohyun212/report-module`. `origin/develop`(`1560b1c`)에서 새로 만들었다.
 - 모듈 위치: `packages/report/`. 이 문서도 모듈 안에 둔다.

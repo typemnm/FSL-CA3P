@@ -21,7 +21,9 @@ const PAGES = {
     + 'setTimeout(() => { throw new Error(\'e1\'); }, 0);'
     + '</script></body>',
   '/long': '<!doctype html><body><script>document.body.textContent = \'가\'.repeat(5000);</script></body>',
+  '/tall': '<!doctype html><body><div style="height:3000px">tall content</div></body>',
 };
+const DATA = { users: [{ id: 1, email: 'a@example.test', role: 'admin' }, { id: 2, token: 'x'.repeat(400) }] };
 
 const seen = { writes: 0, cookies: [] };
 let server;
@@ -31,7 +33,10 @@ before(async () => {
   server = createServer((req, res) => {
     if (req.method !== 'GET') seen.writes += 1;
     seen.cookies.push(req.headers.cookie ?? '');
-    if (req.method === 'GET' && PAGES[req.url]) {
+    if (req.method === 'GET' && req.url === '/data.json') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(DATA));
+    } else if (req.method === 'GET' && PAGES[req.url]) {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end(PAGES[req.url]);
     } else {
@@ -170,5 +175,40 @@ test('observe bounds text to 4096 utf8 bytes on whole characters', { skip: !CHRO
     assert.ok(!snapshot.text.includes('�'));
   } finally {
     await session.close();
+  }
+});
+
+const pngSize = png => ({ width: png.readUInt32BE(16), height: png.readUInt32BE(20) });
+
+test('a JSON page is shot as indented, wrapped JSON clipped to its content; HTML keeps the viewport up to a 2000px cap', { skip: !CHROMIUM_AVAILABLE }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'verifier-browser-'));
+  const session = await openVerifierBrowser(origin);
+  const shoot = async path => {
+    await session.goto(path);
+    const observation = await session.observe();
+    const shot = await session.screenshot(dir, 'viewport');
+    return { observation, size: pngSize(await readFile(join(dir, shot.file))) };
+  };
+  try {
+    const json = await shoot('/data.json');
+    // The model still reads the raw response; only the screenshot is formatted.
+    assert.equal(json.observation.contentType, 'application/json');
+    assert.equal(json.observation.text, JSON.stringify(DATA));
+    const dom = await session.page.evaluate(() => {
+      const pre = document.querySelector('body > pre');
+      return { children: document.body.children.length, text: pre.textContent, overflow: pre.scrollWidth > pre.clientWidth };
+    });
+    assert.deepEqual(dom, { children: 1, text: JSON.stringify(DATA, null, 2), overflow: false });
+    assert.equal(json.size.width, 1280);
+    assert.ok(json.size.height > 100 && json.size.height < 720, `JSON shot height ${json.size.height}`);
+
+    assert.deepEqual((await shoot('/ok')).size, { width: 1280, height: 720 });
+    const tall = await shoot('/tall');
+    assert.equal(tall.observation.contentType, 'text/html');
+    assert.deepEqual(tall.size, { width: 1280, height: 2000 });
+    assert.equal(seen.writes, 0);
+  } finally {
+    await session.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });

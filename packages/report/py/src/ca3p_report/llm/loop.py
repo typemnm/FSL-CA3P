@@ -1,9 +1,9 @@
 """The build-stage tool-calling loop.
 
-An injected chat client (real or fake) drives the conversation. The LLM reads the bundle,
-optionally captures screenshots, and assembles a ReportModel it submits via finish_report,
-which ends the loop. There is no verifier and no iteration cap (PLAN §3.8); the loop ends
-only when finish_report succeeds. Any client/transport failure raises LLMError → LLM_FAILED.
+An injected chat client (real or fake) drives the conversation. The LLM reads the bundle and
+assembles a ReportModel it submits via finish_report, which ends the loop. There is no
+iteration cap (PLAN §3.8); the loop ends only when finish_report succeeds, and the Node runner
+bounds the whole process in time. Any client/transport failure raises LLMError → LLM_FAILED.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..profiles import resolve_profile
 from .client import LLMError
 from .prompt import build_system_prompt
 from .tools import ReportTools, ToolError, tool_schemas
@@ -30,15 +29,6 @@ def _dispatch(tools: ReportTools, name: str, args: dict) -> dict:
     try:
         if name == "read_bundle":
             return {"ok": True, "content": tools.read_bundle(args.get("path"))}
-        if name == "capture_screenshot":
-            return {
-                "ok": True,
-                "result": tools.capture_screenshot(
-                    selector=args.get("selector"),
-                    full_page=bool(args.get("full_page")),
-                    viewer=args.get("viewer"),
-                ),
-            }
         if name == "finish_report":
             return tools.finish_report(model=args.get("model"), filename=args.get("filename"))
         return {"ok": False, "error": f"unknown tool: {name}"}
@@ -47,22 +37,12 @@ def _dispatch(tools: ReportTools, name: str, args: dict) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def run_build(
-    client,
-    *,
-    bundle: Path,
-    out_dir: Path,
-    test_profile: str | None,
-    origin: str,
-    session_switch: dict | None,
-    node: str = "node",
-) -> dict:
+def run_build(client, *, bundle: Path, out_dir: Path) -> dict:
     """Drive the LLM until finish_report succeeds. Returns the finish result dict."""
     bundle = Path(bundle)
-    profile = resolve_profile(test_profile)
-    tools = ReportTools(bundle, out_dir, origin=origin, session_switch=session_switch, node=node)
+    tools = ReportTools(bundle, out_dir)
     messages = [
-        {"role": "system", "content": build_system_prompt(profile)},
+        {"role": "system", "content": build_system_prompt()},
         {"role": "user", "content": _bundle_summary(bundle)},
     ]
     schemas = tool_schemas()

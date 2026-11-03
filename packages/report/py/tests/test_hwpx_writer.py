@@ -6,7 +6,13 @@ import pytest
 from hwpx import HwpxDocument
 
 from ca3p_report.hwpx import write_html, write_hwpx, write_markdown
-from ca3p_report.hwpx.writer import PHOTO_MISSING, PHOTO_NOTE, TRIAGE_CAVEAT, VERDICT_CAVEAT
+from ca3p_report.hwpx.writer import (
+    INCOMPLETE,
+    PHOTO_MISSING,
+    PHOTO_NOTE,
+    TRIAGE_CAVEAT,
+    VERDICT_CAVEAT,
+)
 
 RUN = "run-20261020-xss"
 PAYLOAD = "<img src=x onerror=alert(document.cookie)> & ]]> | <script>alert(1)</script>"
@@ -18,8 +24,7 @@ HEADINGS = [
     "4. 과거 사례 대조(재점검 triage)",
     "5. 관련 전월 보고서",
     "6. 재점검 이력",
-    "7. 가드레일 결정과 안전 속성",
-    "8. 출처와 한계",
+    "7. 출처와 한계",
 ]
 
 
@@ -161,7 +166,7 @@ def test_hwpx_saves_validates_and_carries_the_outline(tmp_path, image_root):
     for heading in HEADINGS:
         assert heading in preview
     assert VERDICT_CAVEAT in preview and TRIAGE_CAVEAT in preview
-    assert "LLM이 CVSS 3.1로 산출" in preview and "상류 severity: medium" in preview
+    assert "LLM" not in preview and "상류 severity" not in preview and "가드레일" not in preview
 
 
 def test_payload_is_stored_escaped_never_as_raw_markup(tmp_path, image_root):
@@ -189,13 +194,17 @@ def test_body_has_no_hashes(tmp_path, image_root):
     assert "sha256" not in xml
 
 
-def test_failed_run_renders_the_failure_variant(tmp_path):
-    out = write_hwpx(model(status="failed"), tmp_path / "failed.hwpx")
-    text = HwpxDocument.open(out).text.markdown()
-    assert "3. 실행 실패" in text and "3. 취약점 상세" not in text
-    assert "TARGET_UNREACHABLE" in text and "loop.act" in text
-    assert "실행이 실패하여 요약할 취약점이 없습니다." in text
-    assert "<script>alert" not in section_xml(out)
+def test_failed_or_partial_run_keeps_the_finding_and_marks_it_incomplete(tmp_path):
+    for status, incomplete in (("failed", None), ("completed", True)):
+        value = model(status=status)
+        if incomplete:
+            value["run"]["incomplete"] = True
+        out = write_hwpx(value, tmp_path / f"{status}.hwpx")
+        text = HwpxDocument.open(out).text.markdown()
+        assert "3. 취약점 상세" in text and INCOMPLETE in text
+        assert "<script>alert" not in section_xml(out)
+    complete = HwpxDocument.open(write_hwpx(model(), tmp_path / "done.hwpx")).text.markdown()
+    assert INCOMPLETE not in complete
 
 
 def test_markdown_preview_is_html_escaped(tmp_path):
