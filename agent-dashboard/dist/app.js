@@ -552,6 +552,7 @@ function renderStats() {
     || !labReadiness.externalSupported || !labReadiness.externalAvailable;
   $('external-model-select').value = $('model-select').value;
   $('external-model-select').disabled = controlPending || active || !canOperate();
+  $('external-multi-agent-toggle').disabled = controlPending || active || !canOperate();
   $('external-model-readiness').textContent = !labReadiness.externalSupported ? '외부 범용 점검 서버 경로가 연결되지 않았습니다.'
     : !labReadiness.externalAvailable || !model?.available ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 또는 이 장치의 로컬 LLM 설정을 확인하세요.'
       : !model.supportedModes?.includes('external-general') ? '외부 범용 점검을 지원하는 모델을 선택하세요.'
@@ -898,7 +899,8 @@ $('external-run-button').addEventListener('click', async () => {
     || pendingModelChange || browserResetError || ['failed', 'resetting'].includes(experimentStatus)) return;
   await submitControl(async () => {
     await runtime.startExternal({ target: externalPreflight.normalizedUrl,
-      pathPrefix: externalPreflight.scope.pathPrefix, preflightToken: externalPreflight.token, modelId: model.id });
+      pathPrefix: externalPreflight.scope.pathPrefix, preflightToken: externalPreflight.token,
+      modelId: model.id, ...($('external-multi-agent-toggle').checked ? { multiAgent: { enabled: true } } : {}) });
     inspectedRun = null;
     selectedEventId = null;
     externalPreflight = null;

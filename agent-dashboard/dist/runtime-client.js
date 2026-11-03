@@ -138,10 +138,11 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       receive(value); return value;
     },
     preflightExternal(target, pathPrefix = '/') { return api('/api/targets/preflight', { method: 'POST', body: { target, scope: { pathPrefix }, authorizationConfirmed: true } }); },
-    async startExternal({ target, pathPrefix, preflightToken, modelId }) {
+    async startExternal({ target, pathPrefix, preflightToken, modelId, multiAgent }) {
       const value = await api('/api/runs', { method: 'POST', body: {
         mode: 'external-general', target, scope: { pathPrefix }, preflightToken,
         authorizationConfirmed: true, modelId,
+        ...(multiAgent ? { multiAgent } : {}),
       } });
       receive(value); return value;
     },

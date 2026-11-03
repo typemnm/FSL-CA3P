@@ -45,6 +45,12 @@ test('remote deployment polls state and submits general assessments with CSRF an
   const followUp = calls.filter(call => call.path === '/api/runs').at(-1);
   assert.deepEqual(JSON.parse(followUp.options.body), { mode: 'local-lab-general',
     modelId: 'deepseek-flash', multiAgent: { enabled: true } });
+  await client.startExternal({ target: 'https://example.org/', pathPrefix: '/', preflightToken: 'token',
+    modelId: 'deepseek-flash', multiAgent: { enabled: true } });
+  const external = calls.filter(call => call.path === '/api/runs').at(-1);
+  assert.deepEqual(JSON.parse(external.options.body), { mode: 'external-general',
+    target: 'https://example.org/', scope: { pathPrefix: '/' }, preflightToken: 'token',
+    authorizationConfirmed: true, modelId: 'deepseek-flash', multiAgent: { enabled: true } });
   await client.compare('baseline /?', 'candidate #');
   assert.equal(client.reportDownloadUrl('run /?#'), '/api/runs/run%20%2F%3F%23/report.hwpx');
   assert.equal(client.findingReportDownloadUrl('run /?#', 'artifact /?#'),
