@@ -6,7 +6,21 @@ import { join } from 'node:path';
 import { createRunService } from '../run-service.mjs';
 import { createExternalRuntime } from '../external-runtime.mjs';
 import { isPublicAddress, normalizeExternalTarget, preflightExternalTarget,
-  requestExternalHttp, resolvePublicAddresses, verifyExternalPreflightToken } from '../external-target.mjs';
+  pinnedAddressLookup, requestExternalHttp, resolvePublicAddresses, verifyExternalPreflightToken } from '../external-target.mjs';
+
+test('pinned DNS callback supports Node 24 single and all-address lookups', () => {
+  const pinned = { address: '8.8.8.8', family: 4 };
+  const lookup = pinnedAddressLookup(pinned);
+  lookup('example.com', { all: true }, (error, rows) => {
+    assert.equal(error, null);
+    assert.deepEqual(rows, [pinned]);
+  });
+  lookup('example.com', { all: false }, (error, address, family) => {
+    assert.equal(error, null);
+    assert.equal(address, pinned.address);
+    assert.equal(family, pinned.family);
+  });
+});
 
 test('external addresses reject local, metadata, mapped, and documentation ranges', () => {
   for (const address of ['127.0.0.1', '10.1.2.3', '169.254.169.254', '192.168.1.1',

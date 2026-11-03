@@ -35,6 +35,8 @@ def build_system_prompt() -> str:
   - run/report.json, run/events.json: 실행 전체 기록
   - history/casper.json: 과거 사례와 재점검 이력
 - 모든 내용을 담은 ReportModel을 조립해 finish_report(model, filename)로 끝냅니다.
+- 대상의 현재 화면이 필요하면 capture_screenshot(path?, selector?, full_page?)을 호출합니다.
+  촬영하지 않아도 finish_report가 새 화면을 한 번 촬영합니다. 이 화면은 취약점 재현 증거가 아닙니다.
 
 작성 규칙:
 - CWE를 하나 고릅니다. common.cwe는 "CWE-<번호>", common.title은 그 CWE의 이름으로 짓습니다.

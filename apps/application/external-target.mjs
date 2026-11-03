@@ -131,6 +131,11 @@ export async function resolvePublicAddresses(hostname, { lookup = dnsLookup, sig
   return rows;
 }
 
+export function pinnedAddressLookup(pinned) {
+  return (_hostname, options, callback) => options?.all
+    ? callback(null, [pinned]) : callback(null, pinned.address, pinned.family);
+}
+
 function issueToken(normalizedUrl, scope) {
   const payload = Buffer.from(JSON.stringify({ normalizedUrl, scope, expiresAt: Date.now() + TOKEN_LIFETIME_MS })).toString('base64url');
   const signature = createHmac('sha256', TOKEN_KEY).update(payload).digest('base64url');
@@ -151,7 +156,7 @@ export function verifyExternalPreflightToken(token, normalizedUrl, scope) {
 }
 
 export async function requestExternalHttp(input, { scope, method = 'GET', signal, lookup = dnsLookup,
-  maxBytes = MAX_RESPONSE_BYTES, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  maxBytes = MAX_RESPONSE_BYTES, timeoutMs = REQUEST_TIMEOUT_MS, responseType = 'text' } = {}) {
   const url = input instanceof URL ? input : new URL(input);
   if (!withinExternalScope(url, scope) || !['GET', 'HEAD'].includes(method)) {
     throw fault(403, '외부 대상 요청이 허용 범위를 벗어났습니다.', 'EXTERNAL_SCOPE_BLOCKED');
@@ -169,7 +174,7 @@ export async function requestExternalHttp(input, { scope, method = 'GET', signal
     };
     const req = transport(url, { method, agent: false, signal, timeout: timeoutMs,
       maxHeaderSize: 8192, headers: { 'user-agent': 'CA3P-external-observer/1', 'accept-encoding': 'identity' },
-      lookup: (_host, _options, callback) => callback(null, pinned.address, pinned.family) }, res => {
+      lookup: pinnedAddressLookup(pinned) }, res => {
       const connected = req.socket?.remoteAddress;
       if (!connected || connected !== pinned.address) {
         res.destroy(); finish(fault(403, 'DNS 연결 주소가 검증한 주소와 다릅니다.', 'EXTERNAL_DNS_REBIND')); return;
@@ -188,7 +193,7 @@ export async function requestExternalHttp(input, { scope, method = 'GET', signal
             contentType: String(res.headers['content-type'] ?? ''),
             contentEncoding: String(res.headers['content-encoding'] ?? ''),
             headers: visibleHeaders,
-            location: String(res.headers.location ?? ''), body: Buffer.concat(chunks).toString('utf8'),
+            location: String(res.headers.location ?? ''), body: responseType === 'buffer' ? Buffer.concat(chunks) : Buffer.concat(chunks).toString('utf8'),
             truncated, durationMs: Date.now() - startedAt });
         } else chunks.push(chunk);
       });
@@ -197,7 +202,7 @@ export async function requestExternalHttp(input, { scope, method = 'GET', signal
         contentEncoding: String(res.headers['content-encoding'] ?? ''),
         headers: visibleHeaders,
         location: String(res.headers.location ?? ''),
-        body: Buffer.concat(chunks).toString('utf8'), truncated, durationMs: Date.now() - startedAt }));
+        body: responseType === 'buffer' ? Buffer.concat(chunks) : Buffer.concat(chunks).toString('utf8'), truncated, durationMs: Date.now() - startedAt }));
       res.on('error', error => finish(error));
     });
     req.on('timeout', () => req.destroy(fault(504, '외부 대상 응답 시간이 초과되었습니다.', 'EXTERNAL_TIMEOUT')));

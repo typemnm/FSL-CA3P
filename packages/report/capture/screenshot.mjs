@@ -1,6 +1,6 @@
 /**
- * capture_screenshot implementation (PLAN §2.5). Opens the bundle's loopback
- * target in the sandbox, optionally performs the one allow-listed session
+ * capture_screenshot implementation (PLAN §2.5). Opens the bundle's target
+ * in the sandbox, optionally performs the one allow-listed session
  * switch, and writes PNGs to outDir. The only write the target can see is
  * that session switch; the sandbox blocks everything else.
  */
@@ -8,16 +8,19 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { externalScopeRejectionReason } from '../../../apps/application/external-target.mjs';
 import { CaptureError, bodyText, openSandbox } from './sandbox.mjs';
 
 export { CaptureError } from './sandbox.mjs';
 
-/** Accept exactly `http://127.0.0.1:<port>`; no path, credentials or default port. */
-export function loopbackOrigin(value, name = 'origin') {
-  const match = typeof value === 'string' && /^http:\/\/127\.0\.0\.1:(\d{1,5})$/.exec(value);
-  const port = match ? Number(match[1]) : 0;
-  if (!match || port < 1 || port > 65535 || new URL(value).origin !== value) {
-    throw new CaptureError('INVALID_ORIGIN', `${name} must be http://127.0.0.1:<port>.`);
+/** A bare HTTP(S) origin, bound to the origin in the sealed run report. */
+export function captureOrigin(value, name = 'origin') {
+  let url;
+  try { url = new URL(value); } catch { /* Invalid origins are rejected below. */ }
+  if (typeof value !== 'string' || !url || !['http:', 'https:'].includes(url.protocol)
+    || !url.hostname || url.username || url.password || url.origin !== value
+    || url.pathname !== '/' || url.search || url.hash) {
+    throw new CaptureError('INVALID_ORIGIN', `${name} must be a bare HTTP(S) origin.`);
   }
   return value;
 }
@@ -41,23 +44,31 @@ async function load(page, url, remaining) {
  */
 export async function capture(origin, {
   selector, fullPage = false, sessionSwitch, allowSessionSwitches, outDir, expectedOrigin, timeoutMs,
+  path = '/', externalScope = null, externalRequest,
 } = {}) {
-  loopbackOrigin(origin);
+  captureOrigin(origin);
   if (expectedOrigin === undefined) {
     throw new CaptureError('ORIGIN_MISMATCH', 'expectedOrigin is required (the bundle target.origin).');
   }
-  if (origin !== loopbackOrigin(expectedOrigin, 'expectedOrigin')) {
+  if (origin !== captureOrigin(expectedOrigin, 'expectedOrigin')) {
     throw new CaptureError('ORIGIN_MISMATCH', 'origin does not equal the bundle target origin.');
   }
   if (typeof outDir !== 'string' || !outDir) throw new CaptureError('INVALID_OUT_DIR', 'outDir is required.');
+  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')
+    || path.includes('#') || path.includes('\\') || new URL(path, origin).origin !== origin) {
+    throw new CaptureError('INVALID_PATH', 'path must be a same-origin absolute path.');
+  }
+  if (externalScope && (externalScope.origin !== origin || externalScopeRejectionReason(new URL(path, origin), externalScope))) {
+    throw new CaptureError('INVALID_SCOPE', 'Capture path is outside the report target scope.');
+  }
   if (selector !== undefined && (typeof selector !== 'string' || !selector.trim())) {
     throw new CaptureError('INVALID_SELECTOR', 'selector must be a non-empty string.');
   }
 
-  const sandbox = await openSandbox(origin, { allowSessionSwitches, timeoutMs });
+  const sandbox = await openSandbox(origin, { allowSessionSwitches, timeoutMs, externalScope, externalRequest });
   const { page, remaining, blocked, sessionSwitches } = sandbox;
   try {
-    const url = `${origin}/`;
+    const url = new URL(path, origin).href;
     await load(page, url, remaining);
     sameOrigin(page, origin);
 

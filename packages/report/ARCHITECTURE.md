@@ -17,8 +17,10 @@ flowchart TB
   HANDOFF[(verifier handoff)] -. 읽기 전용 .-> COLLECT
   CLI --> COLLECT --> BUNDLE[봉인 ReportInput 번들]
   BUNDLE -->|마스킹한 읽기 뷰| LLM[LLM 도구 호출 루프]
-  LLM --> FINISH[finish_report: 판정·ID·증거·캡처를 번들 값으로 고정]
-  FINISH --> FILES[HWPX · report-model.json · report.md · report.html]
+  LLM --> FINISH[finish_report: 판정·ID·검증 캡처를 번들 값으로 고정]
+  FINISH --> CAPTURE[작성 시 대상 화면 새로 촬영]
+  CAPTURE --> FILES
+  FILES[HWPX · report-model.json · report.md · report.html]
   FILES -->|식별자·증거·경계·해시 검증| RUNNER
   RUNNER -->|검증된 bytes| ARTIFACT[run-store binary artifact]
   ARTIFACT --> API[인증된 HWPX 다운로드 API]
@@ -39,6 +41,7 @@ worker는 실제 실습의 완료·실패 보고서를 저장한 뒤 문서 생�
 | `py/src/ca3p_report/trigger.py` | run ID·선택 finding ID·원천 종류·절대 경로 검증, 원천과 출력 위치의 겹침 거부 |
 | `py/src/ca3p_report/collect/` | run·과거 사례·verifier handoff 수집, finding 한 건 정규화(`finding.py`), 범용 확정 finding과 현재 검증 증거 선택(`general.py`), SHA-256 manifest와 번들 봉인 |
 | `py/src/ca3p_report/llm/` | OpenAI-compatible 클라이언트, 도구 호출 루프, 읽기 뷰와 출력 모델 마스킹, 검증된 필드 고정 |
+| `capture/` | run 대상 origin에 고정된 Playwright PNG 촬영. 외부 대상은 공개 DNS·경로 범위를 적용한 HTTP 요청으로 전달 |
 | `py/src/ca3p_report/hwpx/` | 파일명 정규화, 고정 목차·표·이미지·점검 미완료 표시, HWPX·Markdown·HTML 렌더링 |
 | `packages/run-store/index.mjs` | `hwpx-report` binary artifact의 bytes·해시·크기·파일명·선택 finding ID 보관 |
 | `apps/api/server.mjs` | 실행과 artifact의 연결·무결성 검사 후 인증된 사용자에게 다운로드 제공 |
@@ -97,9 +100,11 @@ runner는 CLI 응답과 ReportModel의 run ID·finding ID·판정·증거 ID, �
 
 ## 실행·보호 경계와 한계
 
-- LLM은 CWE·CVSS 3.1·설명·재현 절차·PoC·조치·영향을 쓴다. finding ID·판정·실행 상태·증거 ID·캡처
-  이미지는 `finish_report`가 봉인된 번들 값으로 덮어쓰므로 모델이 바꿀 수 없다. 캡처는 verifier handoff의
-  봉인된 PNG만 실리며 모델이 만든 ref는 버린다.
+- LLM은 CWE·CVSS 3.1·설명·재현 절차·PoC·조치·영향을 쓴다. finding ID·판정·실행 상태·증거 ID·검증
+  캡처는 `finish_report`가 봉인된 번들 값으로 덮어쓰므로 모델이 바꿀 수 없다. 작성 시 새로 촬영한 대상
+  화면은 별도 캡션으로 추가하며 취약점 재현 증거로 표시하지 않는다. 촬영 실패는 문서에 기록하고 문서 생성은 계속한다.
+- 촬영은 run의 HTTP(S) `target.origin`에 고정하며 Docker 서비스 별칭을 허용한다. 다른 origin·쓰기·
+  WebSocket·서비스 워커·다운로드를 차단한다. 외부 사이트 요청은 공개 DNS 검증·경로 범위·요청량 제한을 적용한다.
 - Node runner는 실행 모델이 DeepSeek 모델이면 그 모델을, 규칙 기반 실행이면 설정된 기본 모델을
   `agent/src/deepseek-config.js`로 해석해 Python에 전달한다. 그 밖의 모델(로컬 LLM)은 외부 API로
   보내지 않도록 거부한다. 직접 CLI 실행에는 `DEEPSEEK_BASE_URL`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`이 필요하다.
