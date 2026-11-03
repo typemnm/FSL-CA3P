@@ -137,8 +137,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
         'scope', 'preflightToken', 'authorizationConfirmed'].includes(key))) {
       throw fault(400, 'Unsupported run options.');
     }
-    if (body.multiAgent !== undefined && body.mode !== 'local-lab-general') {
-      throw fault(400, 'Multi-agent follow-up requires local-lab-general mode.');
+    if (body.multiAgent !== undefined && !['local-lab-general', 'external-general'].includes(body.mode)) {
+      throw fault(400, 'Multi-agent follow-up requires a general assessment mode.');
     }
     const multiAgent = validateMultiAgentOptions(body.multiAgent);
     if (RETIRED_RUN_MODES.includes(body.mode) || RETIRED_PROFILES.includes(body.testProfile)) {
@@ -156,6 +156,9 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       }
       if (!model.available) throw fault(503, 'Selected model is unavailable. Configure server credentials before starting.');
       const { normalizedUrl, scope } = normalizeExternalTarget(body);
+      if (multiAgent && Math.min(scope.maxRequests, multiAgent.maxTargetRequests ?? scope.maxRequests) < 4) {
+        throw fault(400, 'External multi-agent follow-up needs at least four target requests.');
+      }
       if (!verifyExternalPreflightToken(body.preflightToken, normalizedUrl, scope)) {
         throw fault(400, 'External target preflight expired or changed. Check the target again.');
       }
@@ -164,6 +167,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       const options = { mode: body.mode, modelId, target: normalizedUrl, scope,
         testProfile: 'external-general', fixtureId: null, delayMs: 0,
         loopBudget: store.getGeneralLoopBudget() };
+      if (multiAgent) options.multiAgent = multiAgent;
       const manifest = createRunManifest({ runId: id, mode: body.mode, modelId, options,
         model, env });
       const experiment = store.experimentState();

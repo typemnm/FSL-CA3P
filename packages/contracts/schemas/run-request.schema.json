@@ -18,7 +18,11 @@
     "multiAgent": {"type": "object", "additionalProperties": false, "required": ["enabled"],
       "properties": {"enabled": {"const": true},
         "maxConcurrentAgents": {"type": "integer", "minimum": 1, "maximum": 2},
-        "maxTasks": {"type": "integer", "minimum": 1, "maximum": 4}}}
+        "maxTasks": {"type": "integer", "minimum": 1, "maximum": 4},
+        "maxTargetRequests": {"type": "integer", "minimum": 1, "maximum": 224},
+        "maxModelRequests": {"type": "integer", "minimum": 1, "maximum": 160},
+        "maxModelTokens": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "deadlineMs": {"type": "integer", "minimum": 1000, "maximum": 1800000}}}
   },
   "allOf": [
     {"if": {"not": {"properties": {"fixtureId": {"enum": ["vul-web2-daehan", "vul-web2-wonchang"]}}, "required": ["fixtureId"]}},
@@ -32,7 +36,7 @@
       "then": {"properties": {"modelId": {"type": "string", "pattern": "^(deepseek-flash|deepseek-v4-pro|local-llm|custom-[a-f0-9]{12})$"}, "testProfile": {"const": "general"}}},
       "else": {"properties": {"testProfile": {"not": {"const": "general"}}}}},
     {"if": {"required": ["multiAgent"]},
-      "then": {"required": ["mode"], "properties": {"mode": {"const": "local-lab-general"}}}},
+      "then": {"required": ["mode"], "properties": {"mode": {"enum": ["local-lab-general", "external-general"]}}}},
     {"if": {"properties": {"mode": {"const": "external-general"}}, "required": ["mode"]},
       "then": {"required": ["target", "preflightToken", "authorizationConfirmed"],
         "properties": {"modelId": {"type": "string", "pattern": "^(deepseek-flash|deepseek-v4-pro|local-llm|custom-[a-f0-9]{12})$"}, "authorizationConfirmed": {"const": true}},

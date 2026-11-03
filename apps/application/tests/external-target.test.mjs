@@ -259,3 +259,29 @@ test('external general assessment requires a configured model before queueing', 
     assert.equal(service.store.listRuns({ limit: 1 }).total, 0);
   } finally { await service.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('run service freezes external follow-up options after preflight without widening scope', async () => {
+  const checked = await preflightExternalTarget({ target: 'https://8.8.8.8/start' },
+    { request: async () => ({ status: 200 }) });
+  const directory = mkdtempSync(join(tmpdir(), 'ca3p-external-followup-'));
+  const service = createRunService({ storePath: join(directory, 'runs.sqlite3'),
+    autoStartWorker: false, importLegacy: false, envFile: null,
+    env: { DEEPSEEK_API_KEY: 'test-key' } });
+  try {
+    const base = { mode: 'external-general', target: checked.normalizedUrl,
+      scope: { pathPrefix: '/' }, preflightToken: checked.token,
+      authorizationConfirmed: true };
+    await assert.rejects(service.start({ ...base,
+      multiAgent: { enabled: true, maxTargetRequests: 3 } }), { status: 400 });
+    const options = { enabled: true, maxConcurrentAgents: 1, maxTasks: 1,
+      maxTargetRequests: 5, deadlineMs: 60_000 };
+    const state = await service.start({ ...base, multiAgent: options });
+    assert.equal(state.run.manifest.execution.maxRequests, 5);
+    assert.equal(state.run.manifest.policy.maxRequests, 5);
+    assert.equal(state.run.manifest.execution.assessmentDurationMs, 60_000);
+    const lease = service.store.claimNext('external-followup-options');
+    assert.deepEqual(lease.options.multiAgent, options);
+    assert.deepEqual(lease.options.scope, checked.scope);
+    service.store.finish(lease, 'completed');
+  } finally { await service.close(); rmSync(directory, { recursive: true, force: true }); }
+});

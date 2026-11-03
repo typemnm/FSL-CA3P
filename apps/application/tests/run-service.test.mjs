@@ -211,7 +211,6 @@ test('finding follow-up is explicit and bounded in a queued general run', async 
   service.store.finish(second, 'completed');
   for (const body of [
     { mode: 'local-lab-rule', fixtureId: 'vul-web2-daehan', multiAgent: { enabled: true } },
-    { mode: 'external-general', multiAgent: { enabled: true } },
     { mode: 'local-lab-general', fixtureId: 'vul-web2-daehan', multiAgent: { enabled: false } },
     { mode: 'local-lab-general', fixtureId: 'vul-web2-daehan', multiAgent: { enabled: true, maxTasks: 5 } },
   ]) await assert.rejects(service.start(body), { status: 400 });

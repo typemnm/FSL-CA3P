@@ -2,12 +2,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { emptyRun, assertIdentifier, redact } from '../../packages/contracts/index.mjs';
 import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../packages/contracts/general-loop-budget.mjs';
+import { validateMultiAgentOptions } from '../../packages/contracts/multi-agent.mjs';
 import { verifyAttack } from '../../packages/verifier/index.mjs';
 import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
 import { judgeAttackRecord, projectGeneralEvent, recordForProbe } from './general-runtime.mjs';
 import { externalScopeRejectionReason, normalizeExternalTarget, requestExternalHttp } from './external-target.mjs';
 import { createAssessmentPlanner, createModelJsonClient, isGeneralPlannerModel, plannerProvider, usesJsonClient } from '../../packages/models/local-planner.mjs';
+import { createSharedExecutionBudget, PARENT_EXECUTION_LIMITS, runFindingSubtasks,
+  selectFindingSubtasks } from './finding-subagents.mjs';
 
 const { runGeneralAssessment } = generalCore;
 const { GeneralModelPlanner } = generalPlanner;
@@ -125,7 +128,8 @@ function observationSummary(url, response) {
 export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, modelId,
   limits = GENERAL_LOOP_BUDGET_DEFAULTS, runIdFactory = () => 'external-general-' + randomUUID(),
   requestImpl = requestExternalHttp, plannerFactory, verifyAttackImpl, verifierModel,
-  verificationRoot, env = process.env, envFile, signal, onModelCall, beforeProbe, afterProbe } = {}) {
+  verificationRoot, env = process.env, envFile, signal, onModelCall, beforeProbe, afterProbe,
+  multiAgent: suppliedMultiAgent, subtaskRepository } = {}) {
   const { normalizedUrl, scope } = normalizeExternalTarget({ target: targetUrl,
     scope: { pathPrefix: suppliedScope?.pathPrefix ?? '/' } });
   if (suppliedScope && JSON.stringify(suppliedScope) !== JSON.stringify(scope)) {
@@ -138,9 +142,48 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
   for (const callback of [plannerFactory, verifyAttackImpl, onModelCall, beforeProbe, afterProbe]) {
     if (callback !== undefined && typeof callback !== 'function') throw new TypeError('Invalid external runtime callback.');
   }
+  const multiAgent = validateMultiAgentOptions(suppliedMultiAgent);
+  if (multiAgent && (!subtaskRepository || ['create', 'start', 'finish'].some(key =>
+    typeof subtaskRepository[key] !== 'function'))) throw new TypeError('External subtask repository is required.');
   const configuredLimits = validateGeneralLoopBudget(limits);
+  const requestLimit = Math.min(scope.maxRequests, multiAgent?.maxTargetRequests ?? scope.maxRequests);
+  if (multiAgent && requestLimit < 4) throw new TypeError('External multi-agent follow-up needs at least four target requests.');
+  const childRequestReserve = multiAgent ? Math.min(4, Math.floor((requestLimit - INITIAL_PAGE_LIMIT) / 2)) : 0;
+  const mainRequestLimit = requestLimit - childRequestReserve;
+  const executionBudget = multiAgent ? createSharedExecutionBudget({
+    maxTargetRequests: requestLimit,
+    maxModelRequests: Math.min(PARENT_EXECUTION_LIMITS.maxModelRequests,
+      multiAgent.maxModelRequests ?? PARENT_EXECUTION_LIMITS.maxModelRequests),
+    maxModelTokens: Math.min(PARENT_EXECUTION_LIMITS.maxModelTokens,
+      multiAgent.maxModelTokens ?? PARENT_EXECUTION_LIMITS.maxModelTokens),
+    deadlineMs: Math.min(ASSESSMENT_DURATION_MS, multiAgent.deadlineMs ?? ASSESSMENT_DURATION_MS),
+  }) : null;
+  async function modelTransportFetch(url, options) {
+    if (!executionBudget) return fetch(url, options);
+    let payload;
+    try { payload = JSON.parse(options?.body); } catch { payload = {}; }
+    const outputLimit = payload.max_tokens ?? payload.max_completion_tokens ?? payload.options?.num_predict ?? 8192;
+    const estimate = Buffer.byteLength(String(options?.body ?? ''), 'utf8')
+      + (Number.isSafeInteger(outputLimit) && outputLimit > 0 ? outputLimit : 8192);
+    const settle = executionBudget.reserveModelRequest(estimate);
+    try {
+      const response = await fetch(url, options);
+      let actual;
+      try {
+        const envelope = await response.clone().json();
+        const usage = envelope.usage;
+        actual = usage?.total_tokens ?? (Number.isSafeInteger(usage?.prompt_tokens)
+          && Number.isSafeInteger(usage?.completion_tokens)
+          ? usage.prompt_tokens + usage.completion_tokens : undefined);
+        if (actual === undefined && Number.isSafeInteger(envelope.prompt_eval_count)
+          && Number.isSafeInteger(envelope.eval_count)) actual = envelope.prompt_eval_count + envelope.eval_count;
+      } catch { /* Keep conservative reservation when usage is unavailable. */ }
+      settle(actual);
+      return response;
+    } catch (error) { settle(); throw error; }
+  }
   const loopLimits = { ...configuredLimits,
-    maxProbes: Math.min(configuredLimits.maxProbes, scope.maxRequests - INITIAL_PAGE_LIMIT) };
+    maxProbes: Math.min(configuredLimits.maxProbes, mainRequestLimit - INITIAL_PAGE_LIMIT) };
   const listeners = new Set();
   const instanceId = randomUUID();
   const initial = () => ({ ...emptyRun(), mode: 'external-general', assessmentMode: 'general',
@@ -169,14 +212,17 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
   }
 
   async function runTask() {
-    const assessmentDeadline = AbortSignal.timeout(ASSESSMENT_DURATION_MS);
+    const assessmentDurationMs = Math.min(ASSESSMENT_DURATION_MS, multiAgent?.deadlineMs ?? ASSESSMENT_DURATION_MS);
+    const assessmentDeadline = AbortSignal.timeout(assessmentDurationMs);
     const runSignal = AbortSignal.any([controller.signal, assessmentDeadline, ...(signal ? [signal] : [])]);
     const allowedPaths = new Set([new URL(normalizedUrl).pathname]);
     const observedPaths = new Set();
     const pages = []; const observationErrors = []; const rejectionCounts = {};
     const queue = [normalizedUrl]; const queued = new Set(queue);
     let observed = false; let requestsUsed = 0; let targetRequestMs = 0; let verificationAttempts = 0;
-    const verifierModelCalls = [];
+    const taskRequests = new Map();
+    let targetRequestQueue = Promise.resolve();
+    let phaseRequestLimit = mainRequestLimit;
     let requestBudgetReached = false; let partialResponse = false;
     function rejectCandidates(counts, sourcePageId) {
       for (const [reason, count] of Object.entries(counts)) {
@@ -187,33 +233,44 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
       }
     }
     async function scopedRequest(url, probe) {
-      if (requestsUsed >= scope.maxRequests || targetRequestMs >= scope.maxDurationMs) {
-        requestBudgetReached = true;
-        throw fault(429, 'External request budget exhausted.', 'EXTERNAL_REQUEST_BUDGET');
-      }
-      const remainingMs = Math.max(1, scope.maxDurationMs - targetRequestMs);
-      const requestSignal = AbortSignal.any([runSignal, AbortSignal.timeout(remainingMs)]);
-      const reservation = await invokeHook(beforeProbe, { ...probe, method: 'GET', url: url.href });
-      const started = Date.now();
-      requestsUsed += 1; run.requestAttempted = true;
-      let result;
+      // The external policy has a cumulative target HTTP time limit. Serialize target
+      // requests so two children cannot each consume the same remaining time.
+      const previous = targetRequestQueue;
+      let release;
+      targetRequestQueue = new Promise(resolve => { release = resolve; });
+      await previous;
       try {
-        result = await requestImpl(url.href, { scope, method: 'GET', signal: requestSignal,
-          maxBytes: scope.maxResponseBytes, timeoutMs: scope.requestTimeoutMs });
-        run.targetContacted = true;
-        if (result.contentEncoding && String(result.contentEncoding).toLowerCase() !== 'identity') {
-          throw fault(422, 'Compressed external response is unsupported.', 'EXTERNAL_CONTENT_ENCODING_UNSUPPORTED');
+        runSignal.throwIfAborted();
+        if (requestsUsed >= phaseRequestLimit || targetRequestMs >= scope.maxDurationMs) {
+          requestBudgetReached = true;
+          throw fault(429, 'External request budget exhausted.', 'EXTERNAL_REQUEST_BUDGET');
         }
-        if (result.truncated) partialResponse = true;
-        if (result.status >= 300 && result.status < 400) {
-          rejectCandidates({ redirect_not_followed: 1 }, probe.id);
+        const remainingMs = Math.max(1, scope.maxDurationMs - targetRequestMs);
+        const requestSignal = AbortSignal.any([runSignal, AbortSignal.timeout(remainingMs)]);
+        executionBudget?.reserveTargetRequest();
+        requestsUsed += 1; run.requestAttempted = true;
+        if (probe.taskId) taskRequests.set(probe.taskId, (taskRequests.get(probe.taskId) ?? 0) + 1);
+        const reservation = await invokeHook(beforeProbe, { ...probe, method: 'GET', url: url.href });
+        const started = Date.now();
+        let result;
+        try {
+          result = await requestImpl(url.href, { scope, method: 'GET', signal: requestSignal,
+            maxBytes: scope.maxResponseBytes, timeoutMs: scope.requestTimeoutMs });
+          run.targetContacted = true;
+          if (result.contentEncoding && String(result.contentEncoding).toLowerCase() !== 'identity') {
+            throw fault(422, 'Compressed external response is unsupported.', 'EXTERNAL_CONTENT_ENCODING_UNSUPPORTED');
+          }
+          if (result.truncated) partialResponse = true;
+          if (result.status >= 300 && result.status < 400) {
+            rejectCandidates({ redirect_not_followed: 1 }, probe.id);
+          }
+          return result;
+        } finally {
+          targetRequestMs += Date.now() - started;
+          await invokeHook(afterProbe, { ...probe, method: 'GET', url: url.href },
+            { status: result?.status ?? 'failed' }, reservation);
         }
-        return result;
-      } finally {
-        targetRequestMs += Date.now() - started;
-        await invokeHook(afterProbe, { ...probe, method: 'GET', url: url.href },
-          { status: result?.status ?? 'failed' }, reservation);
-      }
+      } finally { release(); }
     }
     function probeEvidence(probe, url, response, control) {
       const observed = observationSummary(url, response);
@@ -241,19 +298,26 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
       };
       return { kind: probe.tool, result: observed, evidence: [evidence], attackRecord };
     }
-    try {
-      runSignal.throwIfAborted(); run.status = 'running'; publish();
+    async function executeAssessment({ initialContext, taskId, agentId, focusPath,
+      coreLimits = loopLimits } = {}) {
+      const verifierModelCalls = [];
+      let coreObserved = false;
       const planner = plannerFactory
-        ? await plannerFactory({ modelId, env, envFile, signal: runSignal })
-        : await createAssessmentPlanner({ modelId, env, envFile });
+        ? await plannerFactory({ modelId, env, envFile, signal: runSignal, taskId, agentId })
+        : await createAssessmentPlanner({ modelId, env, envFile, fetchImpl: modelTransportFetch });
       if (!planner || typeof planner.propose !== 'function') throw new TypeError('General planner is unavailable.');
       const localVerifier = verifierModel ?? (usesJsonClient(modelId) && (verifyAttackImpl ?? verifyAttack) === verifyAttack
-        ? await createModelJsonClient({ modelId, env, envFile }) : undefined);
+        ? await createModelJsonClient({ modelId, env, envFile, fetchImpl: modelTransportFetch }) : undefined);
       const observer = { async observe() {
+        if (initialContext) {
+          if (coreObserved) return { inventory: undefined, evidence: [] };
+          coreObserved = true;
+          return { inventory: structuredClone(initialContext.inventory), evidence: [] };
+        }
         if (observed) return { inventory: undefined, evidence: [] };
         observed = true;
         const evidence = [];
-        while (queue.length && pages.length < INITIAL_PAGE_LIMIT && requestsUsed < scope.maxRequests) {
+        while (queue.length && pages.length < INITIAL_PAGE_LIMIT && requestsUsed < phaseRequestLimit) {
           runSignal.throwIfAborted();
           const url = new URL(queue.shift());
           try {
@@ -298,6 +362,7 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
           return { allowed: false, reason: 'tool_unavailable' };
         }
         const compare = probe.tool === 'http_compare';
+        if (taskId && compare) return { allowed: false, reason: 'child_tool_unavailable' };
         const expected = compare ? ['path', 'controlPath'] : ['path'];
         if (Object.keys(probe.input).length !== expected.length
           || expected.some(key => !Object.hasOwn(probe.input, key))) {
@@ -305,10 +370,11 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
         }
         const candidate = scopedProbeUrl(probe.input.path, scope.origin, scope, allowedPaths);
         const control = compare ? scopedProbeUrl(probe.input.controlPath, scope.origin, scope, allowedPaths) : null;
-        if (!candidate || compare && (!control || candidate.pathname !== control.pathname)) {
+        if (!candidate || compare && (!control || candidate.pathname !== control.pathname)
+          || taskId && candidate?.pathname !== focusPath) {
           return { allowed: false, reason: 'path_out_of_scope' };
         }
-        if (requestsUsed + (compare ? 2 : 1) > scope.maxRequests || targetRequestMs >= scope.maxDurationMs) {
+        if (requestsUsed + (compare ? 2 : 1) > phaseRequestLimit || targetRequestMs >= scope.maxDurationMs) {
           requestBudgetReached = true;
           return { allowed: false, reason: 'request_budget' };
         }
@@ -321,9 +387,9 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
         try {
           const control = controlUrl ? { url: controlUrl,
             response: await scopedRequest(controlUrl, { id: `${probe.id}-control`, iteration: run.iterations,
-              tool: probe.tool, session: 'public' }) } : null;
+              tool: probe.tool, session: 'public', taskId }) } : null;
           const response = await scopedRequest(candidate, { id: probe.id, iteration: run.iterations,
-            tool: probe.tool, session: 'public' });
+            tool: probe.tool, session: 'public', taskId });
           observedPaths.add(candidate.pathname);
           if (control) observedPaths.add(control.url.pathname);
           return probeEvidence(probe, candidate, response, control);
@@ -351,8 +417,9 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
           for (const item of Array.isArray(result.model) ? result.model : []) {
             const metadata = verifierCallMetadata(item, modelId, probe.id, run.iterations);
             if (!metadata) continue;
-            await invokeHook(onModelCall, metadata);
-            verifierModelCalls.push(metadata);
+            const scoped = taskId ? { ...metadata, taskId, agentId } : metadata;
+            await invokeHook(onModelCall, scoped);
+            verifierModelCalls.push(scoped);
           }
           return result;
         };
@@ -368,35 +435,54 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
           const attempts = planner instanceof GeneralModelPlanner && Array.isArray(error?.modelAttempts)
             ? error.modelAttempts : [{ provider: plannerProvider(modelId), requestedModel: modelId,
               status: 'failed', iteration: context.iteration }];
-          for (const attempt of attempts) await onModelCall?.(attempt);
+          for (const attempt of attempts) await onModelCall?.(taskId
+            ? { ...attempt, taskId, agentId } : attempt);
           throw error;
         }
         const trusted = planner instanceof GeneralModelPlanner;
         for (const attempt of trusted && Array.isArray(plan?.modelAttempts)
-          ? plan.modelAttempts : [plan?.modelMetadata]) if (attempt) await onModelCall?.(attempt);
+          ? plan.modelAttempts : [plan?.modelMetadata]) if (attempt) await onModelCall?.(taskId
+          ? { ...attempt, taskId, agentId } : attempt);
         if (!trusted && record(plan) && Object.hasOwn(plan, 'modelAttempts')) {
           plan = { ...plan }; delete plan.modelAttempts;
+        }
+        if (taskId && Array.isArray(plan?.probes)) {
+          const prefix = `s${createHash('sha256').update(taskId).digest('hex').slice(0, 8)}-`;
+          plan = { ...plan, probes: plan.probes.map(probe => {
+            if (!record(probe) || typeof probe.id !== 'string') return probe;
+            const namespaced = probe.id.startsWith(prefix) ? probe.id : prefix + probe.id;
+            return { ...probe, id: namespaced.length <= 64 ? namespaced
+              : prefix + createHash('sha256').update(probe.id).digest('hex').slice(0, 32) };
+          }) };
         }
         return plan;
       } };
       const { report } = await runGeneralAssessment({
         target: { kind: 'external', entryUrl: redact(normalizedUrl), origin: scope.origin },
         observer, planner: wrappedPlanner, policy, executor, verifier,
-        availableTools: ['http_get', 'http_compare'], limits: loopLimits, signal: runSignal,
+        availableTools: taskId ? ['http_get'] : ['http_get', 'http_compare'],
+        limits: coreLimits, initialContext, signal: runSignal,
         onEvent: async event => {
           run.iterations = Math.max(run.iterations, event.iteration ?? 0);
-          appendEvent({ ...projectGeneralEvent(event, loopLimits),
-            module: 'agent', source: 'agent/general-assessment', iteration: event.iteration });
+          appendEvent({ ...projectGeneralEvent(event, coreLimits),
+            module: taskId ? 'subagent' : 'agent',
+            source: taskId ? 'agent/finding-subagent' : 'agent/general-assessment',
+            ...(taskId ? { taskId, agentId } : {}), iteration: event.iteration });
         },
       });
-      report.runId = run.id;
+      report.runId = taskId ?? run.id;
       report.modelCalls.push(...verifierModelCalls);
+      return report;
+    }
+    try {
+      runSignal.throwIfAborted(); run.status = 'running'; publish();
+      const report = await executeAssessment();
       report.inspectionMode = 'external-general';
       report.targetContacted = run.targetContacted;
       report.requestAttempted = run.requestAttempted;
       report.scope = { ...scope, authentication: 'none', supportedTools: ['http_get', 'http_compare'],
         supportedIndependentVerifiers: ['ai-attack-record'], browserVisits: 'disabled',
-        targetHttpDurationMs: scope.maxDurationMs, assessmentDurationMs: ASSESSMENT_DURATION_MS };
+        targetHttpDurationMs: scope.maxDurationMs, assessmentDurationMs };
       report.policyRejections = { total: Object.values(rejectionCounts).reduce((sum, count) => sum + count, 0),
         byReason: { ...rejectionCounts } };
       report.observationErrors = observationErrors;
@@ -412,6 +498,85 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
         report.status = 'completed'; report.partial = true; report.stopReason = 'assessment_duration';
       }
       run.report = report;
+      if (multiAgent && report.status === 'completed' && !runSignal.aborted) {
+        const tasks = selectFindingSubtasks(report, {
+          runId: run.id, maxTasks: multiAgent.maxTasks, probeBudget: childRequestReserve,
+          eligible: finding => Boolean(scopedProbeUrl(finding.asset, scope.origin, scope, allowedPaths)),
+        });
+        const summaries = tasks.map(task => ({ id: task.id, agentId: task.agentId,
+          sourceFindingId: task.sourceFindingId, sourceStatus: task.finding.status,
+          hypothesisId: task.hypothesis.id, status: 'queued', maxProbes: task.maxProbes }));
+        run.multiAgent = { schemaVersion: 'finding-subagents/1', status: tasks.length ? 'running' : 'skipped',
+          maxConcurrentAgents: multiAgent.maxConcurrentAgents, maxTasks: multiAgent.maxTasks,
+          probeBudget: childRequestReserve, tasks: summaries,
+          ...(tasks.length ? {} : { reason: childRequestReserve ? 'no_eligible_findings' : 'no_child_request_budget' }),
+          completedAt: tasks.length ? null : new Date().toISOString() };
+        publish();
+        for (const task of tasks) {
+          await subtaskRepository.create({ id: task.id, agentId: task.agentId,
+            sourceFindingId: task.sourceFindingId, sourceFindingDigest: task.sourceFindingDigest,
+            input: { hypothesisId: task.hypothesis.id, sourceStatus: task.finding.status,
+              maxProbes: task.maxProbes } });
+        }
+        phaseRequestLimit = requestLimit;
+        await runFindingSubtasks(tasks, multiAgent.maxConcurrentAgents, async (task, index) => {
+          await subtaskRepository.start(task.id);
+          summaries[index].status = 'running';
+          appendEvent({ source: 'agent/finding-subagent', module: 'subagent', stage: 'subagent.started',
+            title: '서브에이전트 후속 검사', taskId: task.id, agentId: task.agentId,
+            sourceFindingId: task.sourceFindingId });
+          const focusPath = scopedProbeUrl(task.finding.asset, scope.origin, scope, allowedPaths).pathname;
+          const initialContext = { inventory: report.inventory, evidence: task.evidence,
+            hypotheses: [task.hypothesis], focusHypothesisId: task.hypothesis.id };
+          const coreLimits = { maxIterations: Math.min(2, loopLimits.maxIterations),
+            maxProbes: task.maxProbes,
+            maxEvidenceItems: Math.min(loopLimits.maxEvidenceItems,
+              Math.max(task.evidence.length + 8, 16)) };
+          let child;
+          try {
+            child = await executeAssessment({ initialContext, taskId: task.id,
+              agentId: task.agentId, focusPath, coreLimits });
+            child.inspectionMode = 'external-general';
+            child.scope = { ...scope, authentication: 'none', supportedTools: ['http_get'],
+              focusPath, browserVisits: 'disabled', targetHttpDurationMs: scope.maxDurationMs,
+              assessmentDurationMs };
+            child.coverage = { ...child.coverage, requestsUsed: taskRequests.get(task.id) ?? 0 };
+          } catch (error) {
+            child = runSignal.aborted ? { status: 'cancelled', stopReason: 'cancelled' }
+              : { status: 'failed', error: { code: safeText(error?.code ?? 'SUBAGENT_FAILED', 80) },
+                stopReason: 'failure' };
+          }
+          const taskStatus = ['completed', 'cancelled'].includes(child.status) ? child.status : 'failed';
+          await subtaskRepository.finish(task.id, { status: taskStatus, result: { report: child },
+            ...(taskStatus === 'completed' ? {} : { errorCode: taskStatus === 'cancelled'
+              ? 'SUBAGENT_CANCELLED' : 'SUBAGENT_FAILED' }) });
+          summaries[index].status = taskStatus;
+          summaries[index].finding = child.findings?.[0]
+            ? { id: child.findings[0].id, category: child.findings[0].category,
+              asset: child.findings[0].asset, status: child.findings[0].status,
+              evidenceIds: child.findings[0].evidenceIds } : null;
+          summaries[index].stopReason = child.stopReason ?? null;
+          appendEvent({ source: 'agent/finding-subagent', module: 'subagent', stage: 'subagent.completed',
+            title: '서브에이전트 후속 검사 결과', taskId: task.id, agentId: task.agentId,
+            sourceFindingId: task.sourceFindingId, response: { status: taskStatus,
+              findingStatus: summaries[index].finding?.status ?? null } });
+          return summaries[index];
+        }, runSignal);
+        if (runSignal.aborted) for (const summary of summaries) {
+          if (summary.status === 'queued') summary.status = 'cancelled';
+        }
+        run.multiAgent.status = runSignal.aborted ? 'cancelled'
+          : summaries.some(item => item.status !== 'completed') ? 'partial' : 'completed';
+        run.multiAgent.completedAt = new Date().toISOString();
+        run.multiAgent.budget = { ...executionBudget.snapshot(), requestsUsed, targetRequestMs };
+        report.coverage.requestsUsed = requestsUsed;
+        report.coverage.unobservedPages = [...allowedPaths].filter(path => !observedPaths.has(path)).length;
+        publish();
+      }
+      if (controller.signal.aborted || signal?.aborted) report.status = 'cancelled';
+      else if (assessmentDeadline.aborted) {
+        report.partial = true; report.stopReason = 'assessment_duration';
+      }
       run.status = report.status === 'cancelled' ? 'stopped' : report.status;
       run.error = report.status === 'failed' ? report.error?.code ?? 'GENERAL_ASSESSMENT_FAILED' : undefined;
       run.reviewItems = report.findings.map(finding => ({ id: `${run.id}:${finding.id}`,
