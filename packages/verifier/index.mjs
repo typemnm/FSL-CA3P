@@ -111,7 +111,7 @@ async function observeBrowser(attack, browser, { outDir, sessions, timeoutMs, si
     const screenshot = await session.screenshot(outDir, 'viewport');
     return { observation, screenshot };
   } catch (error) {
-    if (error?.name === 'AbortError') throw error;
+    if (error?.name === 'AbortError' || error?.fatalProbe) throw error;
     return { observation: { error: error?.code ?? 'browser_failed' }, screenshot: null };
   } finally {
     await session?.close();
@@ -258,7 +258,7 @@ export async function verifyAttack(record, {
       models.push(metadata);
       return parse(value);
     } catch (error) {
-      if (error?.name === 'AbortError') throw error;
+      if (error?.name === 'AbortError' || error?.fatalProbe) throw error;
       return { verdict: null, reason: `model_unavailable: ${error?.code ?? 'failed'}`, browser: null, failed: true };
     }
   };

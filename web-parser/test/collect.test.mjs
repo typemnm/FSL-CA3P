@@ -253,6 +253,21 @@ const DEAD_ERR = /net::ERR_(CONNECTION_[A-Z_]+|EMPTY_RESPONSE|SOCKET_NOT_CONNECT
 const header = (headers, name) => headers.filter((h) => h.name === name).map((h) => h.value);
 const onLoopback = (info) => info.resources.every((r) => r.url.startsWith(base));
 const documents = (info) => info.resources.filter((r) => r.kind === 'document').map((r) => r.url);
+
+test('request gate counts redirects and subresources before dispatch', T, async () => {
+  const seen = [];
+  await collect(`${base}/r1`, { beforeRequest: request => { seen.push(request.url); } });
+  assert.ok(seen.some(url => url.endsWith('/r1')));
+  assert.ok(seen.some(url => url.endsWith('/r2')));
+  await collect(`${base}/cross`, { beforeRequest: request => { seen.push(request.url); } });
+  assert.ok(seen.some(url => url.endsWith('/cookie-probe')));
+
+  const refused = Object.assign(new Error('quota'),
+    { code: 'PARENT_TARGET_REQUEST_BUDGET_EXCEEDED', fatalProbe: true });
+  await assert.rejects(collect(`${base}/r1`, { beforeRequest: request => {
+    if (request.url.endsWith('/r2')) throw refused;
+  } }), error => error === refused);
+});
 const EMPTY_STRUCTURE = {
   forms: [], links: [], scripts: [], iframes: [], inputs: [],
   linkTags: [], areas: [], formActions: [], frames: [], embeds: [], objects: [], metaRefresh: [], media: [],

@@ -53,8 +53,10 @@ function pushCapped(list, item, max) {
 const READY_WAIT_MS = 5000;
 const MAX_SHOT_HEIGHT = 2000;
 
-export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10000, signal, bindingName = '__ca3pXssProbe' } = {}) {
+export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10000, signal,
+  beforeRequest, bindingName = '__ca3pXssProbe' } = {}) {
   if (signal?.aborted) throw abortError();
+  if (beforeRequest !== undefined && typeof beforeRequest !== 'function') throw new TypeError('beforeRequest must be a function.');
   const allowedOrigin = originOf(origin);
   const deadline = Date.now() + timeoutMs;
   const remaining = () => Math.max(deadline - Date.now(), 1);
@@ -122,6 +124,13 @@ export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10
       if (reason) {
         block(method, request.url(), reason);
         return route.abort('blockedbyclient');
+      }
+      if (beforeRequest) try {
+        await beforeRequest({ method, url: request.url(), resourceType: request.resourceType() });
+      } catch (error) {
+        interrupt(error);
+        await route.abort('blockedbyclient').catch(() => {});
+        return;
       }
       return route.continue();
     }));

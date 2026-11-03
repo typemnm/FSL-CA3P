@@ -49,9 +49,10 @@ function terminal(runtime) {
 function approvalPending(runtime) {
   const pending = runtime.getState().run.pendingApproval;
   if (pending) return Promise.resolve(pending);
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { detach(); reject(new Error('approval did not become pending')); }, 5000);
     const detach = runtime.subscribe(({ run }) => {
-      if (run.pendingApproval) { detach(); resolve(run.pendingApproval); }
+      if (run.pendingApproval) { clearTimeout(timer); detach(); resolve(run.pendingApproval); }
     });
   });
 }
@@ -164,6 +165,43 @@ test('stopping a parent run cancels concurrent child approvals and results', asy
   assert.ok(run.multiAgent.tasks.every(task => task.status === 'cancelled'));
   assert.equal([...tasks.values()].filter(task => task.status === 'cancelled').length, 2);
   await runtime.close();
+});
+
+test('multi-agent parent target request limit stops before the next fixture request', async t => {
+  const calls = [];
+  const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan',
+    targetOrigin: 'http://127.0.0.1:53987', modelId: 'deepseek-flash',
+    runIdFactory: () => 'multi-agent-request-quota', unavailableInputs: ['casper-db'],
+    multiAgent: { enabled: true, maxConcurrentAgents: 1, maxTasks: 1, maxTargetRequests: 1 },
+    subtaskRepository: { create() {}, start() {}, finish() {} },
+    fetchImpl: async url => { calls.push(new URL(url).pathname); return response(new URL(url).pathname); },
+    plannerFactory: () => { assert.fail('planner must not start after the request quota'); },
+  });
+  t.after(() => runtime.close());
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'failed');
+  assert.equal(run.error, 'PARENT_TARGET_REQUEST_BUDGET_EXCEEDED');
+  assert.equal(calls.length, 1);
+  assert.equal(run.executionBudget.targetRequests, 1);
+});
+
+test('multi-agent parent deadline terminates a slow fixture setup', async t => {
+  const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan',
+    targetOrigin: 'http://127.0.0.1:53987', modelId: 'deepseek-flash',
+    runIdFactory: () => 'multi-agent-deadline', unavailableInputs: ['casper-db'],
+    multiAgent: { enabled: true, maxConcurrentAgents: 1, maxTasks: 1, deadlineMs: 1000 },
+    subtaskRepository: { create() {}, start() {}, finish() {} },
+    fetchImpl: async () => { await new Promise(resolve => setTimeout(resolve, 1200)); return response('/'); },
+    plannerFactory: () => { assert.fail('planner must not start after the deadline'); },
+  });
+  t.after(() => runtime.close());
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'failed');
+  assert.equal(run.error, 'PARENT_DEADLINE_EXCEEDED');
 });
 
 test('general university run uses multiple model hypotheses and the AI verifier decides each executed probe', async () => {
@@ -829,6 +867,35 @@ test('web_info observes declared paths, extends scope, and rejects off-scope or 
   await runtime.close();
 });
 
+test('web_info blocks page-script POST before it reaches the target', async t => {
+  const requests = [];
+  const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan',
+    targetOrigin: 'http://127.0.0.1:4101', modelId: 'deepseek-flash',
+    runIdFactory: () => 'web-info-write-block',
+    fetchImpl: async (url, options) => {
+      requests.push({ method: options?.method ?? 'GET', path: new URL(url).pathname });
+      return universityLoginFetch()(url, options);
+    },
+    webParserCollect: async (_url, options) => {
+      await options.beforeRequest({ method: 'POST', url: 'http://127.0.0.1:4101/admin/posts/1/delete' });
+      assert.fail('browser write should be blocked');
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { hypotheses: [{ id: 'h-browser-write', category: 'access_control', asset: '/',
+        rationale: 'Observe the page.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-browser-write', hypothesisId: 'h-browser-write', tool: 'web_info', input: { path: '/' } }] };
+    } }),
+  });
+  t.after(() => runtime.close());
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'failed');
+  assert.equal(run.error, 'BROWSER_WRITE_BLOCKED');
+  assert.equal(requests.some(item => item.method === 'POST' && item.path.includes('/delete')), false);
+});
+
 test('web_info honors cancellation mid-run', async () => {
   const collected = [];
   let runtime;
@@ -1420,11 +1487,11 @@ test('SQLi template success is recorded as sql_injection even when the planner l
   await runtime.close();
 });
 
-test('general runtime confirms JSON5, partner IDOR and unauthenticated delete from catalog templates', async () => {
+test('general runtime confirms safe templates and blocks unauthenticated delete before dispatch', async () => {
   const origin = 'http://127.0.0.1:53987';
   const calls = [];
   const seen = [];
-  const executed = new Set(['p-json5', 'p-idor', 'p-delete', 'p-diag']);
+  const executed = new Set(['p-json5', 'p-idor', 'p-diag']);
   const runtime = runtimeWith({
     fixtureId: 'vul-web2-daehan', targetOrigin: origin,
     modelId: 'deepseek-flash', runIdFactory: () => 'general-template-report-items',
@@ -1499,9 +1566,11 @@ test('general runtime confirms JSON5, partner IDOR and unauthenticated delete fr
   runtime.startLab();
   const run = await done;
   assert.equal(run.status, 'completed', run.error);
-  for (const id of ['p-json5', 'p-idor', 'p-delete', 'p-diag']) {
+  for (const id of ['p-json5', 'p-idor', 'p-diag']) {
     assert.equal(run.report.probes.find(item => item.id === id).status, 'confirmed', id);
   }
+  assert.equal(run.report.probes.find(item => item.id === 'p-delete').status, 'blocked');
+  assert.equal(run.report.probes.find(item => item.id === 'p-delete').reason, 'destructive_action_blocked');
   assert.equal(run.report.probes.find(item => item.id === 'p-staff').status, 'blocked');
   assert.equal(run.report.probes.find(item => item.id === 'p-staff').reason, 'path_out_of_scope');
   assert.equal(run.report.probes.find(item => item.id === 'p-lodash').status, 'blocked');
@@ -1510,12 +1579,48 @@ test('general runtime confirms JSON5, partner IDOR and unauthenticated delete fr
   assert.equal(json5.status, 'confirmed');
   assert.match(json5.id, /^finding:t-[0-9a-f]{16}$/u);
   assert.ok(json5.category);
-  // Only the four executable templates reached the AI verifier, each with its attack record (no attack-tool verdict).
-  assert.equal(seen.filter(entry => entry.record.info.tool === 'execute_attack_template').length, 4);
-  assertTemplateRecord(seen.find(entry => entry.record.id === 'p-delete'), 'unauth-featured-post-delete-template');
+  // Only safe executable templates reached the AI verifier.
+  assert.equal(seen.filter(entry => entry.record.info.tool === 'execute_attack_template').length, 3);
   assert.ok(calls.some(item => item.path === '/api/admissions/partner/applications/3' && item.cookie.includes('partner1')));
-  assert.ok(calls.some(item => item.path === '/admin/posts/1/delete' && item.method === 'POST' && !item.cookie));
+  assert.ok(!calls.some(item => item.path === '/admin/posts/1/delete' && item.method === 'POST'));
   await runtime.close();
+});
+
+test('general runtime blocks a destructive command hidden in an otherwise allowed template body', async t => {
+  const template = structuredClone(listTemplates().find(item => item.templateId === 'diag-config-disclosure-template'));
+  template.templateId = 'test-command-packet';
+  template.verify.mode = 'textContains';
+  template.verify.baseline = { method: 'GET', path: '/', status: 200 };
+  template.verify.attack = { status: 200, contains: 'ok' };
+  template.request.packet = { method: 'POST', path: '/api/search', body: { action: 'delete' } };
+  template.target = { method: 'POST', endpoint: '/api/search' };
+  template.payloads = ['test'];
+  const requests = [];
+  const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan',
+    targetOrigin: 'http://127.0.0.1:53988', modelId: 'deepseek-flash',
+    runIdFactory: () => 'destructive-command-blocked', unavailableInputs: ['casper-db'],
+    templateCatalog: { list: () => [structuredClone(template)],
+      get: id => id === template.templateId ? structuredClone(template) : null },
+    fetchImpl: async (url, init = {}) => {
+      requests.push({ method: init.method ?? 'GET', path: new URL(url).pathname });
+      return response(new URL(url).pathname);
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { hypotheses: [{ id: 'h-command', category: 'access_control', asset: '/api/search',
+        rationale: 'A command field might mutate state.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-command', hypothesisId: 'h-command', tool: 'execute_attack_template',
+        input: { templateId: template.templateId, payload: 'test' } }] };
+    } }),
+  });
+  t.after(() => runtime.close());
+  const done = terminal(runtime);
+  runtime.startLab();
+  const run = await done;
+  assert.equal(run.status, 'completed', run.error);
+  assert.equal(run.report.probes[0].status, 'blocked');
+  assert.equal(run.report.probes[0].reason, 'destructive_action_blocked');
+  assert.equal(requests.some(item => item.method === 'POST' && item.path === '/api/search'), false);
 });
 
 test('general runtime waits before attack-tool execution and records a rejected probe', async t => {
@@ -1576,34 +1681,41 @@ test('general runtime executes only after the matching human approval', async t 
 });
 
 for (const decision of ['reject', 'approve']) {
-  test(`catalog POST template shows its complete request sequence before ${decision}`, async t => {
+  test(`safe POST template shows its complete request sequence before ${decision}`, async t => {
     const calls = [];
     const seen = [];
-    let deleted = false;
+    let posted = false;
+    const safeTemplate = structuredClone(listTemplates().find(item => item.templateId === 'unauth-featured-post-delete-template'));
+    safeTemplate.templateId = 'test-safe-post-status-sequence';
+    safeTemplate.target.endpoint = '/api/search';
+    safeTemplate.request.packet.path = '/api/search';
+    safeTemplate.title = 'Isolated safe POST sequence';
     const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan',
       targetOrigin: decision === 'approve' ? 'http://127.0.0.1:53992' : 'http://127.0.0.1:53993',
       modelId: 'deepseek-flash', approvalRequired: true,
       runIdFactory: () => `template-human-${decision}`, unavailableInputs: ['casper-db'],
+      templateCatalog: { list: () => [structuredClone(safeTemplate)],
+        get: id => id === safeTemplate.templateId ? structuredClone(safeTemplate) : null },
       verifyAttackImpl: scriptedVerdicts('confirmed', seen),
       fetchImpl: async (url, init = {}) => {
         const path = new URL(url).pathname;
         const method = init.method ?? 'GET';
         calls.push({ method, path });
-        if (path === '/admin/posts/1/delete' && method === 'POST') {
-          deleted = true;
+        if (path === '/api/search' && method === 'POST') {
+          posted = true;
           return new Response('', { status: 302, headers: { location: '/admin' } });
         }
-        if (path === '/') return new Response(deleted ? 'TypeError' : '<html><title>대한대학교</title></html>', {
-          status: deleted ? 500 : 200, headers: { 'content-type': 'text/html' } });
+        if (path === '/') return new Response(posted ? 'Fixture changed' : '<html><title>대한대학교</title></html>', {
+          status: posted ? 500 : 200, headers: { 'content-type': 'text/html' } });
         return response(path);
       },
       plannerFactory: () => ({ async propose(context) {
         if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-        return { hypotheses: [{ id: 'h-delete', category: 'broken_access_control',
-          asset: '/admin/posts/1/delete', rationale: 'Public deletion may be accepted.',
+        return { hypotheses: [{ id: 'h-safe-post', category: 'broken_access_control',
+          asset: '/api/search', rationale: 'A local test POST sequence.',
           evidenceIds: [context.evidence[0].id] }],
-        probes: [{ id: 'p-delete', hypothesisId: 'h-delete', tool: 'execute_attack_template',
-          input: { templateId: 'unauth-featured-post-delete-template', payload: '1' } }] };
+        probes: [{ id: 'p-safe-post', hypothesisId: 'h-safe-post', tool: 'execute_attack_template',
+          input: { templateId: safeTemplate.templateId, payload: '1' } }] };
       } }),
     });
     t.after(() => runtime.close());
@@ -1611,25 +1723,25 @@ for (const decision of ['reject', 'approve']) {
     runtime.startLab();
     const pending = await approvalPending(runtime);
     assert.equal(pending.summary.method, 'POST');
-    assert.equal(pending.summary.path, '/admin/posts/1/delete');
+    assert.equal(pending.summary.path, '/api/search');
     assert.equal(pending.summary.sessionRole, 'public');
-    assert.equal(pending.summary.templateId, 'unauth-featured-post-delete-template');
+    assert.equal(pending.summary.templateId, safeTemplate.templateId);
     assert.equal(pending.summary.requestCount, 3);
     assert.deepEqual(pending.summary.steps.map(step => [step.phase, step.method, step.path]), [
-      ['baseline', 'GET', '/'], ['attack', 'POST', '/admin/posts/1/delete'], ['followUp', 'GET', '/']]);
-    assert.equal(calls.filter(call => call.method === 'POST' && call.path === '/admin/posts/1/delete').length, 0);
+      ['baseline', 'GET', '/'], ['attack', 'POST', '/api/search'], ['followUp', 'GET', '/']]);
+    assert.equal(calls.filter(call => call.method === 'POST' && call.path === '/api/search').length, 0);
     const beforeDecision = calls.length;
     runtime.decideApproval({ id: pending.id, decision, actor: 'admin' });
     const run = await done;
     assert.equal(run.status, 'completed', run.error);
     assert.equal(run.report.probes[0].status, decision === 'approve' ? 'confirmed' : 'blocked');
     assert.deepEqual(calls.slice(beforeDecision), decision === 'approve'
-      ? [{ method: 'GET', path: '/' }, { method: 'POST', path: '/admin/posts/1/delete' },
+      ? [{ method: 'GET', path: '/' }, { method: 'POST', path: '/api/search' },
         { method: 'GET', path: '/' }] : []);
     assert.equal(run.report.attackTool.agentIds.length, decision === 'approve' ? 1 : 0);
     if (decision === 'approve') {
       // The approved template was judged by the AI verifier from its own attack record (no attack-tool verdict).
-      assertTemplateRecord(seen.find(entry => entry.record.id === 'p-delete'), 'unauth-featured-post-delete-template');
+      assertTemplateRecord(seen.find(entry => entry.record.id === 'p-safe-post'), safeTemplate.templateId);
       const finding = run.report.findings.find(item => item.status === 'confirmed');
       assert.match(finding.id, /^finding:t-[0-9a-f]{16}$/u);
       assert.ok(finding.category);
@@ -1640,11 +1752,10 @@ for (const decision of ['reject', 'approve']) {
 }
 
 test('approved template packets stay fixed when the catalog changes before execution', async t => {
-  const original = listTemplates().find(item => item.templateId === 'unauth-featured-post-delete-template');
+  const original = listTemplates().find(item => item.templateId === 'diag-config-disclosure-template');
   assert.ok(original);
   const changedTemplate = structuredClone(original);
   changedTemplate.verify.baseline.path = '/about';
-  changedTemplate.verify.followUp.path = '/about';
   let currentTemplate = original;
   let catalogReads = 0;
   const templateCatalog = {
@@ -1654,7 +1765,6 @@ test('approved template packets stay fixed when the catalog changes before execu
   };
   const calls = [];
   const seen = [];
-  let deleted = false;
   const runtime = runtimeWith({ fixtureId: 'vul-web2-daehan',
     targetOrigin: 'http://127.0.0.1:53994', modelId: 'deepseek-flash',
     approvalRequired: true, templateCatalog, unavailableInputs: ['casper-db'],
@@ -1664,21 +1774,20 @@ test('approved template packets stay fixed when the catalog changes before execu
       const path = new URL(url).pathname;
       const method = init.method ?? 'GET';
       calls.push({ method, path });
-      if (path === '/admin/posts/1/delete' && method === 'POST') {
-        deleted = true;
-        return new Response('', { status: 302, headers: { location: '/admin' } });
-      }
-      if (path === '/') return new Response(deleted ? 'TypeError' : '<html><title>대한대학교</title></html>', {
-        status: deleted ? 500 : 200, headers: { 'content-type': 'text/html' } });
+      if (path === '/') return new Response('<html><title>대한대학교</title></html>', {
+        status: 200, headers: { 'content-type': 'text/html' } });
+      if (path === '/_diag/config') return new Response(JSON.stringify({ database: 'test.sqlite',
+        installedPackages: ['test'], activeSessions: 1 }), { status: 200,
+        headers: { 'content-type': 'application/json' } });
       return response(path);
     },
     plannerFactory: () => ({ async propose(context) {
       if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
-      return { hypotheses: [{ id: 'h-delete', category: 'broken_access_control',
-        asset: '/admin/posts/1/delete', rationale: 'Public deletion may be accepted.',
+      return { hypotheses: [{ id: 'h-diag', category: 'info_disclosure',
+        asset: '/_diag/config', rationale: 'Public diagnostic configuration may be exposed.',
         evidenceIds: [context.evidence[0].id] }],
-      probes: [{ id: 'p-delete', hypothesisId: 'h-delete', tool: 'execute_attack_template',
-        input: { templateId: original.templateId, payload: '1' } }] };
+      probes: [{ id: 'p-diag', hypothesisId: 'h-diag', tool: 'execute_attack_template',
+        input: { templateId: original.templateId, payload: '/_diag/config' } }] };
     } }),
   });
   t.after(() => runtime.close());
@@ -1701,11 +1810,10 @@ test('approved template packets stay fixed when the catalog changes before execu
   assert.equal(changed, true);
   assert.equal(catalogReads, readsAtApproval);
   assert.deepEqual(calls.slice(beforeDecision), [
-    { method: 'GET', path: '/' }, { method: 'POST', path: '/admin/posts/1/delete' },
-    { method: 'GET', path: '/' }]);
+    { method: 'GET', path: '/' }, { method: 'GET', path: '/_diag/config' }]);
   assert.equal(run.report.probes[0].status, 'confirmed');
   // The frozen packet reached the AI verifier as the template's attack record (no attack-tool verdict).
-  assertTemplateRecord(seen.find(entry => entry.record.id === 'p-delete'), original.templateId);
+  assertTemplateRecord(seen.find(entry => entry.record.id === 'p-diag'), original.templateId);
   const finding = run.report.findings.find(item => item.status === 'confirmed');
   assert.match(finding.id, /^finding:t-[0-9a-f]{16}$/u);
   assert.ok(finding.category);

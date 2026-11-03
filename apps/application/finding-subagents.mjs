@@ -4,6 +4,94 @@ const PRIORITY = Object.freeze({ inconclusive: 0, not_tested: 1, confirmed: 2 })
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u.test(value);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+export const PARENT_EXECUTION_LIMITS = Object.freeze({
+  maxTargetRequests: 224,
+  maxModelRequests: 160,
+  maxModelTokens: 1_000_000,
+  deadlineMs: 30 * 60 * 1000,
+});
+
+function limitError(code) {
+  return Object.assign(new Error(code), { code, fatalProbe: true });
+}
+
+/** Reservations happen synchronously, before concurrent children can send work. */
+export function createSharedExecutionBudget(limits = PARENT_EXECUTION_LIMITS) {
+  for (const key of ['maxTargetRequests', 'maxModelRequests', 'maxModelTokens']) {
+    if (!Number.isSafeInteger(limits[key]) || limits[key] < 1) throw new TypeError('Invalid parent execution limit.');
+  }
+  if (!Number.isSafeInteger(limits.deadlineMs) || limits.deadlineMs < 1) {
+    throw new TypeError('Invalid parent execution deadline.');
+  }
+  let targetRequests = 0;
+  let modelRequests = 0;
+  let modelTokens = 0;
+  return {
+    reserveTargetRequest(count = 1) {
+      if (!Number.isSafeInteger(count) || count < 1) throw new TypeError('Invalid target request count.');
+      if (targetRequests + count > limits.maxTargetRequests) throw limitError('PARENT_TARGET_REQUEST_BUDGET_EXCEEDED');
+      targetRequests += count;
+    },
+    reserveModelRequest(tokenEstimate) {
+      if (!Number.isSafeInteger(tokenEstimate) || tokenEstimate < 1) throw new TypeError('Invalid model token estimate.');
+      if (modelRequests >= limits.maxModelRequests) throw limitError('PARENT_MODEL_REQUEST_BUDGET_EXCEEDED');
+      if (modelTokens + tokenEstimate > limits.maxModelTokens) throw limitError('PARENT_MODEL_TOKEN_BUDGET_EXCEEDED');
+      modelRequests += 1;
+      modelTokens += tokenEstimate;
+      let settled = false;
+      return actualTokens => {
+        if (settled) return;
+        settled = true;
+        if (Number.isSafeInteger(actualTokens) && actualTokens >= 0) {
+          modelTokens += actualTokens - tokenEstimate;
+        }
+      };
+    },
+    snapshot() { return { targetRequests, modelRequests, modelTokens, ...limits }; },
+  };
+}
+
+/** Read requests may overlap; state-changing requests exclude all target reads and writes. */
+export function createTargetRequestGate() {
+  let readers = 0;
+  let writer = false;
+  const queue = [];
+  const drain = () => {
+    if (writer || !queue.length || (readers && queue[0].write)) return;
+    if (queue[0].write) {
+      writer = true;
+      queue.shift().resolve(() => { writer = false; drain(); });
+    } else {
+      while (queue.length && !queue[0].write) {
+        readers += 1;
+        queue.shift().resolve(() => { readers -= 1; drain(); });
+      }
+    }
+  };
+  return {
+    acquire(method = 'GET', signal) {
+      signal?.throwIfAborted();
+      const write = !['GET', 'HEAD', 'OPTIONS'].includes(String(method).toUpperCase());
+      return new Promise((resolve, reject) => {
+        const entry = { write, resolve: release => {
+          signal?.removeEventListener('abort', abort);
+          let used = false;
+          resolve(() => { if (!used) { used = true; release(); } });
+        } };
+        const abort = () => {
+          const index = queue.indexOf(entry);
+          if (index >= 0) queue.splice(index, 1);
+          reject(signal.reason ?? Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+          drain();
+        };
+        signal?.addEventListener('abort', abort, { once: true });
+        queue.push(entry);
+        drain();
+      });
+    },
+  };
+}
+
 /** Select only findings whose original hypothesis and cited observations still exist. */
 export function selectFindingSubtasks(report, { runId, maxTasks, probeBudget, eligible } = {}) {
   if (!id(runId) || !Number.isSafeInteger(maxTasks) || maxTasks < 1 || maxTasks > 4

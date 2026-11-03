@@ -1,6 +1,45 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectFindingSubtasks, runFindingSubtasks } from '../finding-subagents.mjs';
+import { selectFindingSubtasks, runFindingSubtasks, createSharedExecutionBudget,
+  createTargetRequestGate } from '../finding-subagents.mjs';
+
+test('shared execution budget reserves concurrent transport attempts and settles known model usage', () => {
+  const budget = createSharedExecutionBudget({ maxTargetRequests: 2,
+    maxModelRequests: 2, maxModelTokens: 20, deadlineMs: 1000 });
+  budget.reserveTargetRequest();
+  budget.reserveTargetRequest();
+  assert.throws(() => budget.reserveTargetRequest(), { code: 'PARENT_TARGET_REQUEST_BUDGET_EXCEEDED' });
+  const first = budget.reserveModelRequest(12);
+  assert.throws(() => budget.reserveModelRequest(9), { code: 'PARENT_MODEL_TOKEN_BUDGET_EXCEEDED' });
+  first(4);
+  const second = budget.reserveModelRequest(9);
+  second();
+  assert.throws(() => budget.reserveModelRequest(1), { code: 'PARENT_MODEL_REQUEST_BUDGET_EXCEEDED' });
+  assert.deepEqual(budget.snapshot(), { targetRequests: 2, modelRequests: 2, modelTokens: 13,
+    maxTargetRequests: 2, maxModelRequests: 2, maxModelTokens: 20, deadlineMs: 1000 });
+});
+
+test('target gate lets reads overlap but excludes writes and drops aborted waiters', async () => {
+  const gate = createTargetRequestGate();
+  const first = await gate.acquire('GET');
+  const second = await gate.acquire('HEAD');
+  let writerEntered = false;
+  const waitingWriter = gate.acquire('POST').then(release => { writerEntered = true; return release; });
+  const abort = new AbortController();
+  const waitingRead = gate.acquire('GET', abort.signal);
+  abort.abort();
+  await assert.rejects(waitingRead);
+  first(); second(); second();
+  const releaseWriter = await waitingWriter;
+  assert.equal(writerEntered, true);
+  let nextRead = false;
+  const pending = gate.acquire('GET').then(release => { nextRead = true; release(); });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nextRead, false);
+  releaseWriter();
+  await pending;
+  assert.equal(nextRead, true);
+});
 
 test('finding selection prioritizes unresolved work and bounds assigned probe budgets', () => {
   const statuses = ['confirmed', 'not_reproduced', 'not_tested', 'inconclusive'];
