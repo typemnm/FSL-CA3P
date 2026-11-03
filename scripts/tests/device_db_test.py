@@ -144,6 +144,16 @@ class DeviceDatabaseTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         with sqlite3.connect(self.run_db) as connection:
+            connection.execute("INSERT INTO runs(id,status,mode,model_id,manifest_json,state_json,created_at,updated_at) "
+                               "VALUES (?,?,?,?,?,?,?,?)",
+                               ("run-1", "completed", "local-lab-general", "deepseek-flash", "{}", "{}",
+                                "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z"))
+            connection.execute("INSERT INTO run_subtasks(run_id,id,source_finding_id,source_finding_digest,"
+                               "kind,agent_id,status,input_json,result_json,created_at,updated_at) "
+                               "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                               ("run-1", "sub-1", "finding-1", "a" * 64, "finding-followup", "sub-1",
+                                "completed", "{}", '{"report":{"status":"completed"}}',
+                                "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:01.000Z"))
             connection.execute("UPDATE experiment_control SET epoch=4,summary_json='{}' WHERE id=1")
             connection.execute("INSERT OR REPLACE INTO pending_target_resets VALUES (1,?)",
                                ('[{"targetId":"isolated-lab","reason":"preserve"}]',))
@@ -151,7 +161,7 @@ class DeviceDatabaseTests(unittest.TestCase):
                                (json.dumps({"maxIterations": 12, "maxProbes": 48, "maxEvidenceItems": 160}),
                                 "2026-01-01T00:00:00.000Z"))
             expected = {table: connection.execute(f'SELECT * FROM "{table}"').fetchall()
-                        for table in ("experiment_control", "pending_target_resets", "general_loop_budget")}
+                        for table in ("run_subtasks", "experiment_control", "pending_target_resets", "general_loop_budget")}
         self.assert_run_tables_restored(expected)
 
     def test_unknown_run_tables_are_rejected_without_altering_the_source(self):
@@ -165,7 +175,7 @@ class DeviceDatabaseTests(unittest.TestCase):
         self.assertEqual(self.run_db.read_bytes(), original)
 
     def test_malformed_optional_run_tables_are_rejected(self):
-        for table in ("experiment_control", "pending_target_resets", "general_loop_budget"):
+        for table in ("run_subtasks", "experiment_control", "pending_target_resets", "general_loop_budget"):
             with self.subTest(table=table):
                 connection = self.create_run()
                 connection.execute(f'CREATE TABLE "{table}"(unrelated TEXT)')
