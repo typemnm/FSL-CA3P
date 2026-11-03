@@ -141,3 +141,72 @@ test('external worker carries an independently confirmed finding into the HWPX h
     [['finding:h-reflect', 'ready', 'external-confirmed.hwpx']]);
   assert.equal(worker.store.getArtifact(final.reportDocuments.items[0].artifactId).kind, 'hwpx-report');
 });
+
+test('external worker persists a child finding and links its document to the completed task', async t => {
+  const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
+  mkdirSync(runtimeRoot, { recursive: true });
+  const directory = mkdtempSync(join(runtimeRoot, 'ca3p-external-child-'));
+  const storePath = join(directory, 'runs.sqlite3');
+  const { normalizedUrl, scope } = normalizeExternalTarget({ target: 'https://8.8.8.8/start',
+    scope: { pathPrefix: '/start' } });
+  const id = 'external-worker-child';
+  const multiAgent = { enabled: true, maxConcurrentAgents: 1, maxTasks: 1 };
+  const store = createRunRepository({ path: storePath });
+  store.createRun({ id, mode: 'external-general', modelId: 'deepseek-flash',
+    manifest: { runId: id, modules: {}, shared: {}, target: { kind: 'external', origin: scope.origin },
+      execution: { inspectionMode: 'external-general' }, policy: { methods: ['GET', 'HEAD'] } },
+    state: { id, mode: 'external-general', assessmentMode: 'general', modelId: 'deepseek-flash',
+      status: 'queued', events: [] },
+    options: { mode: 'external-general', modelId: 'deepseek-flash', target: normalizedUrl, scope,
+      testProfile: 'external-general', fixtureId: null, delayMs: 0, multiAgent,
+      loopBudget: { maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 } } });
+  store.close();
+  const taskId = `sub-${'a'.repeat(24)}`;
+  const reportCalls = [];
+  const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10,
+    externalRuntimeFactory: options => {
+      const listeners = new Set();
+      let state;
+      return {
+        subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+        async startLab() {
+          assert.deepEqual(options.multiAgent, multiAgent);
+          const task = { id: taskId, agentId: taskId, sourceFindingId: 'finding:h-external',
+            sourceFindingDigest: 'a'.repeat(64), input: { hypothesisId: 'h-external' } };
+          options.subtaskRepository.create(task);
+          options.subtaskRepository.start(task.id);
+          options.subtaskRepository.finish(task.id, { status: 'completed', result: { report: {
+            schemaVersion: 'general-assessment/1', assessmentMode: 'general', runId: task.id,
+            status: 'completed', findings: [{ id: 'finding:h-external', hypothesisId: 'h-external',
+              status: 'confirmed', evidenceIds: ['child-evidence'] }],
+          } } });
+          state = { run: { id, mode: 'external-general', status: 'completed', events: [],
+            report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general', runId: id,
+              status: 'completed', findings: [{ id: 'finding:h-external', hypothesisId: 'h-external',
+                status: 'not_tested', evidenceIds: [] }] },
+            multiAgent: { schemaVersion: 'finding-subagents/1', status: 'completed',
+              tasks: [{ id: taskId, status: 'completed' }] }, reviewItems: [] } };
+          for (const listener of listeners) listener(structuredClone(state));
+        },
+        getState() { return structuredClone(state); }, stop() {}, async close() {},
+      };
+    },
+    reportGenerator: args => {
+      reportCalls.push(args);
+      return { status: 'ready', filename: 'external-child.hwpx',
+        bytes: Buffer.from('PK\x03\x04external-child') };
+    } });
+  t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+  const final = await waitFor(() => { const run = worker.store.getRun(id);
+    return run.status === 'completed' && run.reportDocuments?.completedAt && run; });
+  assert.equal(reportCalls.length, 1);
+  assert.equal(reportCalls[0].subtaskId, taskId);
+  assert.equal(reportCalls[0].subtask.result.report.runId, taskId);
+  assert.deepEqual(final.reportDocuments.items.map(item => [item.findingId, item.subtaskId,
+    item.sourceFindingId, item.status]), [
+    ['finding:h-external', taskId, 'finding:h-external', 'ready'],
+  ]);
+  const artifact = worker.store.getArtifact(final.reportDocuments.items[0].artifactId);
+  assert.equal(artifact.subtaskId, taskId);
+  assert.equal(artifact.sourceFindingId, 'finding:h-external');
+});

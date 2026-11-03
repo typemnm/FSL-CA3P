@@ -44,10 +44,10 @@ async function setup(modelId = 'deepseek-flash', loopBudget, multiAgent) {
   return { id, storePath, directory };
 }
 
-test('multi-agent worker persists child tasks and defers document generation', async t => {
+test('multi-agent worker keeps parent and child documents distinct when their finding IDs match', async t => {
   const config = { enabled: true, maxConcurrentAgents: 2, maxTasks: 2 };
   const { id, storePath, directory } = await setup('deepseek-flash', undefined, config);
-  let reportCalls = 0;
+  const reportCalls = [];
   const factory = options => {
     const listeners = new Set();
     let state;
@@ -60,11 +60,14 @@ test('multi-agent worker persists child tasks and defers document generation', a
         options.subtaskRepository.create(task);
         options.subtaskRepository.start(task.id);
         options.subtaskRepository.finish(task.id, { status: 'completed', result: {
-          report: { findings: [{ id: 'finding:h1', status: 'confirmed' }] },
+          report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
+            runId: task.id, status: 'completed', findings: [{ id: 'finding:h1',
+              hypothesisId: 'h1', status: 'confirmed', evidenceIds: ['child-e1'] }] },
         } });
         state = { run: { id, mode: 'local-lab-general', status: 'completed',
           events: [], report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
-            status: 'completed', findings: [{ id: 'finding:h1', status: 'confirmed', evidenceIds: ['e1'] }] },
+            status: 'completed', findings: [{ id: 'finding:h1', hypothesisId: 'h1',
+              status: 'confirmed', evidenceIds: ['e1'] }] },
           multiAgent: { status: 'completed', tasks: [{ id: task.id, status: 'completed' }] },
           reviewItems: [] } };
         for (const listener of listeners) listener(structuredClone(state));
@@ -74,13 +77,33 @@ test('multi-agent worker persists child tasks and defers document generation', a
   };
   const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10,
     env: {}, generalRuntimeFactory: factory,
-    reportGenerator: () => { reportCalls += 1; throw new Error('unexpected report call'); } });
+    reportGenerator: ({ findingId, subtaskId, subtask }) => {
+      reportCalls.push({ findingId, subtaskId: subtaskId ?? null });
+      if (subtaskId) assert.equal(subtask.result.report.runId, subtaskId);
+      return { status: 'ready', filename: `${subtaskId ?? 'parent'}.hwpx`,
+        bytes: Buffer.from(`PK\x03\x04${subtaskId ?? 'parent'}`),
+        previewMarkdown: `# ${subtaskId ?? 'parent'}` };
+    } });
   t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
   const run = await waitFor(() => { const value = worker.store.getRun(id);
     return value.status === 'completed' && value.reportDocuments?.completedAt && value; });
-  assert.equal(reportCalls, 0);
-  assert.equal(run.reportDocuments.status, 'skipped');
-  assert.equal(run.reportDocuments.errorCode, 'MULTI_AGENT_REPORT_DEFERRED');
+  assert.deepEqual(reportCalls, [{ findingId: 'finding:h1', subtaskId: null },
+    { findingId: 'finding:h1', subtaskId: 'sub-one' }]);
+  assert.equal(run.reportDocuments.status, 'ready');
+  assert.deepEqual(run.reportDocuments.items.map(item => [item.findingId, item.subtaskId ?? null,
+    item.sourceFindingId ?? null, item.status]), [
+    ['finding:h1', null, null, 'ready'],
+    ['finding:h1', 'sub-one', 'finding:h1', 'ready'],
+  ]);
+  const [parent, child] = run.reportDocuments.items;
+  for (const [item, expectedSubtask] of [[parent, undefined], [child, 'sub-one']]) {
+    for (const artifactId of [item.artifactId, item.previewArtifactId]) {
+      const artifact = worker.store.getArtifact(artifactId);
+      assert.equal(artifact.findingId, item.findingId);
+      assert.equal(artifact.subtaskId, expectedSubtask);
+      assert.equal(artifact.sourceFindingId, expectedSubtask ? 'finding:h1' : undefined);
+    }
+  }
   assert.equal(worker.store.listSubtasks(id)[0].status, 'completed');
 });
 
@@ -111,7 +134,11 @@ test('worker runs a real finding-focused child and persists its independent verd
       approvalRequired: false,
       verifyAttackImpl: async record => ({ schemaVersion: 'verifier/1', attackId: record.id,
         status: 'confirmed', reason: 'synthetic evidence', artifacts: [] }) }),
-    reportGenerator: () => assert.fail('multi-agent document generation is deferred') });
+    reportGenerator: ({ findingId, subtaskId, subtask }) => {
+      assert.equal(findingId, 'finding:h-followup');
+      assert.equal(subtaskId, subtask.id);
+      return { status: 'ready', filename: 'child.hwpx', bytes: Buffer.from('PK\x03\x04child') };
+    } });
   t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
   const run = await waitFor(() => { const value = worker.store.getRun(id);
     return value.status === 'completed' && value.reportDocuments?.completedAt && value; });
@@ -120,7 +147,13 @@ test('worker runs a real finding-focused child and persists its independent verd
   const [task] = worker.store.listSubtasks(id);
   assert.equal(task.status, 'completed');
   assert.equal(task.result.report.findings[0].status, 'confirmed');
-  assert.equal(run.reportDocuments.errorCode, 'MULTI_AGENT_REPORT_DEFERRED');
+  assert.equal(run.reportDocuments.status, 'ready');
+  assert.deepEqual(run.reportDocuments.items.map(item => [item.subtaskId, item.findingId,
+    item.sourceFindingId, item.status]), [[task.id, task.result.report.findings[0].id,
+    'finding:h-followup', 'ready']]);
+  const artifact = worker.store.getArtifact(run.reportDocuments.items[0].artifactId);
+  assert.equal(artifact.subtaskId, task.id);
+  assert.equal(artifact.sourceFindingId, 'finding:h-followup');
 });
 
 async function runWithFindings(t, { findings, status = 'completed', reportGenerator, beforeWait }) {
@@ -467,7 +500,7 @@ test('general worker passes the verifier handoff only for a finding whose confir
       { id: 'finding:h2', hypothesisId: 'h2', status: 'confirmed', evidenceIds: ['ev2'] },
     ],
     probes: [
-      { id: 'p1', hypothesisId: 'h1', status: 'confirmed' },
+      { id: 'p1', hypothesisId: 'h1', status: 'confirmed', evidenceIds: ['ev1'] },
       { id: 'p2', hypothesisId: 'h2', status: 'not_reproduced' },
     ],
     evidence: [], coverage: { totalHypotheses: 2, confirmed: 2 } };
@@ -481,7 +514,9 @@ test('general worker passes the verifier handoff only for a finding whose confir
         mkdirSync(join(options.verificationRoot, 'p1'), { recursive: true });
         writeFileSync(join(options.verificationRoot, 'p1', 'verification.json'), '{}');
         state = { run: { id, mode: 'local-lab-general', assessmentMode: 'general',
-          status: 'completed', events: [], report, reviewItems: [] } };
+          status: 'completed', events: [{ id: 'verify-p1', source: 'agent/general-assessment',
+            module: 'agent', stage: 'verify', request: { hypothesisId: 'h1', probeId: 'p1' },
+            response: { status: 'confirmed', evidenceIds: ['ev1'] } }], report, reviewItems: [] } };
         for (const listener of listeners) listener(structuredClone(state));
       },
       getState() { return structuredClone(state); }, stop() {}, async close() {},

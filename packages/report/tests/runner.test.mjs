@@ -176,6 +176,52 @@ test('general report selects one confirmed finding and rejects mismatched output
   assert.equal(unconfirmed.errorCode, 'REPORT_INVALID_SELECTION');
 });
 
+test('child report requires completed task provenance and a matching CLI result', async t => {
+  const options = await setup(t);
+  const parent = { ...run, id: 'parent-run', mode: 'local-lab-general', modelId: 'deepseek-flash',
+    report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
+      runId: 'parent-run', status: 'completed',
+      findings: [{ id: 'finding:h-a', hypothesisId: 'h-a', status: 'not_tested', evidenceIds: ['seed'] }] } };
+  const subtask = { id: 'sub-one', kind: 'finding-followup', status: 'completed',
+    sourceFindingId: 'finding:h-a', input: { hypothesisId: 'h-a' },
+    result: { report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
+      runId: 'sub-one', status: 'completed',
+      findings: [{ id: 'finding:h-a', hypothesisId: 'h-a', status: 'confirmed',
+        evidenceIds: ['child-evidence'] }] } } };
+  const execute = (reportedSubtaskId = 'sub-one') => async ({ input }) => {
+    const trigger = JSON.parse(input);
+    assert.deepEqual(trigger.options, { findingId: 'finding:h-a', subtaskId: 'sub-one' });
+    const directory = join(trigger.output.dir, 'report');
+    await mkdir(directory);
+    const model = Buffer.from(JSON.stringify({ run: { run_id: 'parent-run', status: 'completed' },
+      sourceFindingId: 'finding:h-a', sourceEvidenceIds: ['child-evidence'],
+      findings: [{ id: 'V-01', finding_id: 'finding:h-a', verdict: 'confirmed' }] }));
+    await writeFile(join(directory, 'child.hwpx'), hwpx);
+    await writeFile(join(directory, 'report-model.json'), model);
+    return { code: 0, stdout: JSON.stringify({ schemaVersion: 'report-result-1.0', ok: true,
+      stage: 'reported', runId: 'parent-run', findingId: 'finding:h-a',
+      subtaskId: reportedSubtaskId, reportFilename: 'child.hwpx', files: [
+        { name: 'child.hwpx', sha256: sha(hwpx), size: hwpx.length },
+        { name: 'report-model.json', sha256: sha(model), size: model.length },
+      ] }) };
+  };
+  const selected = { ...options, run: parent, findingId: 'finding:h-a', subtaskId: 'sub-one',
+    subtask, env, envFile: null };
+  const result = await generateReportDocument({ ...selected, execute: execute() });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.subtaskId, 'sub-one');
+  assert.equal(result.sourceFindingId, 'finding:h-a');
+  const foreign = await generateReportDocument({ ...selected, execute: execute('other-task') });
+  assert.equal(foreign.errorCode, 'REPORT_INVALID_OUTPUT');
+  for (const task of [{ ...subtask, status: 'failed' },
+    { ...subtask, sourceFindingId: 'another-finding' },
+    { ...subtask, result: { report: { ...subtask.result.report, runId: 'other-task' } } }]) {
+    const rejected = await generateReportDocument({ ...selected, subtask: task,
+      execute: () => assert.fail('invalid task must not start Python') });
+    assert.equal(rejected.errorCode, 'REPORT_INVALID_SELECTION');
+  }
+});
+
 test('process timeout, cancellation and output cap terminate the child', async () => {
   const invoke = options => executeReportProcess({ command: process.execPath,
     args: ['-e', 'setInterval(() => {}, 1000)'], input: '', ...options });

@@ -83,6 +83,8 @@ def _document(run: RunRecord, finding_id: str | None) -> dict:
             "schemaVersion": FINDING_SCHEMA,
             "runId": run.run_id,
             "sourceFindingId": finding_id,
+            **({"subtaskId": run.subtask_id, "parentFindingId": run.source_finding_id}
+               if run.subtask_id is not None else {}),
             "status": "confirmed",
             "runStatus": report["status"],
             "incomplete": report["status"] == "failed" or selection["partial"],

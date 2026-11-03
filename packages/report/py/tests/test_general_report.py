@@ -87,19 +87,40 @@ def _store(path: Path, report: dict, *, events: list[dict] | None = None) -> Non
         db.executescript("PRAGMA user_version=1;"
                          "CREATE TABLE runs (id TEXT, state_json TEXT, updated_at TEXT);"
                          "CREATE TABLE run_events (run_id TEXT, sequence INTEGER, event_json TEXT);"
+                         "CREATE TABLE run_subtasks (run_id TEXT, id TEXT, source_finding_id TEXT,"
+                         " kind TEXT, agent_id TEXT, status TEXT, input_json TEXT, result_json TEXT);"
                          )
         db.execute("INSERT INTO runs VALUES (?,?,?)",
                    (report["runId"], json.dumps(state), "2026-10-28T00:00:00Z"))
 
 
-def _trigger(db: Path, output: Path, finding_id: str | None) -> str:
+def _trigger(db: Path, output: Path, finding_id: str | None,
+             subtask_id: str | None = None) -> str:
     value = {"schemaVersion": "report-trigger-1.0", "runId": "run-general",
              "sources": {"run": {"kind": "run-store", "location": str(db)},
                          "history": {"kind": "none"}},
              "output": {"dir": str(output)}}
-    if finding_id is not None:
+    if finding_id is not None or subtask_id is not None:
         value["options"] = {"findingId": finding_id}
+        if subtask_id is not None:
+            value["options"]["subtaskId"] = subtask_id
     return json.dumps(value)
+
+
+def _add_subtask(db_path: Path, *, child: dict | None = None,
+                 task_status: str = "completed", event: dict | None = None) -> None:
+    child = child or _report("sub-one")
+    event = event or _event("run-general", "h-a", "p-a", "ev-a")
+    event = {**event, "source": "agent/finding-subagent", "module": "subagent",
+             "taskId": "sub-one", "agentId": "sub-one"}
+    with sqlite3.connect(db_path) as db:
+        db.execute("INSERT INTO run_subtasks VALUES (?,?,?,?,?,?,?,?)",
+                   ("run-general", "sub-one", "finding:h-a", "finding-followup", "sub-one",
+                    task_status, json.dumps({"hypothesisId": "h-a"}),
+                    json.dumps({"report": child})))
+        state = json.loads(db.execute("SELECT state_json FROM runs").fetchone()[0])
+        state["events"].append(event)
+        db.execute("UPDATE runs SET state_json=?", (json.dumps(state),))
 
 
 def _result(capsys) -> dict:
@@ -188,6 +209,58 @@ def test_two_confirmed_findings_create_distinct_single_finding_documents(tmp_pat
     assert paths[0][0].read_bytes() != paths[1][0].read_bytes()
     assert paths[0][1]["sourceEvidenceIds"] == ["ev-a"]
     assert paths[1][1]["sourceEvidenceIds"] == ["ev-b"]
+
+
+def test_completed_child_uses_its_own_verification_and_preserves_parent_origin(tmp_path, capsys):
+    db = tmp_path / "runs.sqlite"
+    _store(db, _report("run-general"))
+    _add_subtask(db)
+    output = tmp_path / "child"
+    assert _run(_trigger(db, output, "finding:h-a", "sub-one"), client=writer()) == EXIT_OK
+    result = _result(capsys)
+    assert (result["runId"], result["subtaskId"], result["findingId"]) == (
+        "run-general", "sub-one", "finding:h-a")
+    source = json.loads((output / "bundle" / "run" / "finding.json").read_text("utf-8"))
+    stored = json.loads((output / "bundle" / "run" / "report.json").read_text("utf-8"))
+    events = json.loads((output / "bundle" / "run" / "events.json").read_text("utf-8"))
+    model = json.loads((output / "report" / "report-model.json").read_text("utf-8"))
+    assert source["subtaskId"] == "sub-one" and source["parentFindingId"] == "finding:h-a"
+    assert source["confirmedProbes"] == [{"id": "p-a", "tool": "known_cross_user_delete_canary",
+                                          "evidenceIds": ["ev-a"]}]
+    assert stored["report"]["runId"] == "sub-one"
+    assert stored["provenance"]["sourceFindingId"] == "finding:h-a"
+    assert stored["provenance"]["sourceHypothesisId"] == "h-a"
+    assert len(events["events"]) == 1 and events["events"][0]["stage"] == "verify"
+    assert model["run"]["run_id"] == "run-general"
+    assert model["sourceEvidenceIds"] == ["ev-a"]
+
+
+def test_child_selection_rejects_unfinished_task_and_foreign_verification(tmp_path, capsys):
+    for case in ("failed", "wrong-run", "foreign-verification"):
+        db = tmp_path / f"{case}.sqlite"
+        _store(db, _report("run-general"))
+        child = _report("sub-one")
+        if case == "wrong-run":
+            child["runId"] = "other-task"
+        event = _event("run-general", "h-a", "p-a", "ev-a")
+        if case == "foreign-verification":
+            event["response"]["evidenceIds"] = ["ev-b"]
+        _add_subtask(db, child=child, task_status="failed" if case == "failed" else "completed",
+                     event=event)
+        output = tmp_path / case
+        assert _run(_trigger(db, output, "finding:h-a", "sub-one"), client=FakeLLM([])) == EXIT_SOURCE
+        assert _result(capsys)["error"]["code"] == "SOURCE_INVALID"
+        assert not (output / "report").exists()
+
+
+def test_child_trigger_requires_a_finding_and_run_store_source(tmp_path):
+    data = json.loads(_trigger(tmp_path / "source.sqlite", tmp_path / "out", None, "sub-one"))
+    with pytest.raises(ValueError, match="requires options.findingId"):
+        parse_trigger(data)
+    data["options"]["findingId"] = "finding:h-a"
+    data["sources"]["run"]["kind"] = "pentest-db-disk"
+    with pytest.raises(ValueError, match="requires a run-store source"):
+        parse_trigger(data)
 
 
 def test_nonconfirmed_or_unverified_selection_never_writes_a_document(tmp_path, capsys):

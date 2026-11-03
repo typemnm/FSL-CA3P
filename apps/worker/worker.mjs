@@ -25,8 +25,11 @@ function generalDocumentsStatus(items) {
   return 'failed';
 }
 
-function storeReportPreviews(store, runId, document, findingId) {
+function storeReportPreviews(store, runId, document, item) {
   const artifacts = {};
+  const identity = item ? { findingId: item.findingId,
+    ...(item.subtaskId ? { subtaskId: item.subtaskId,
+      sourceFindingId: item.sourceFindingId } : {}) } : {};
   for (const [field, kind, filename, contentType, maxBytes, idField] of [
     ['previewMarkdown', 'report-preview', 'report.md', 'text/markdown; charset=utf-8', 2_000_000, 'previewArtifactId'],
     ['previewHtml', 'report-preview-html', 'report.html', 'text/html; charset=utf-8', 30_000_000, 'previewHtmlArtifactId'],
@@ -35,19 +38,33 @@ function storeReportPreviews(store, runId, document, findingId) {
     const bytes = Buffer.from(document[field], 'utf8');
     if (!bytes.length || bytes.length > maxBytes) throw new Error('Invalid report preview size.');
     const artifact = store.writeBinaryArtifact(runId, kind, bytes, {
-      filename, ...(findingId ? { findingId } : {}), contentType,
+      filename, ...identity, contentType,
       provenance: 'report-agent-generated',
     });
+    const saved = store.getArtifact(artifact.id);
+    if (Object.entries(identity).some(([key, value]) => saved[key] !== value)) {
+      throw new Error('Report preview identity conflicts with an existing artifact.');
+    }
     artifacts[idField] = artifact.id;
   }
   return artifacts;
 }
 
 // The verifier writes <root>/<probeId>/verification.json for each probe it judged.
-function verificationDirFor(report, findingId, verificationRoot) {
-  const hypothesisId = report.findings?.find(finding => finding.id === findingId)?.hypothesisId;
-  if (!hypothesisId) return null;
-  const probe = (report.probes ?? []).find(item => item.hypothesisId === hypothesisId && item.status === 'confirmed'
+function verificationDirFor(report, findingId, verificationRoot, events = [], subtaskId) {
+  const finding = report.findings?.find(item => item.id === findingId);
+  if (!finding) return null;
+  const linked = new Set([finding.hypothesisId, ...(Array.isArray(finding.hypothesisIds)
+    ? finding.hypothesisIds : [])]);
+  const cited = new Set(finding.evidenceIds ?? []);
+  const verified = new Set(events.filter(event => event?.stage === 'verify'
+    && event?.source === (subtaskId ? 'agent/finding-subagent' : 'agent/general-assessment')
+    && (!subtaskId || event.taskId === subtaskId)
+    && event.response?.status === 'confirmed' && linked.has(event.request?.hypothesisId))
+    .map(event => event.request?.probeId));
+  const probe = (report.probes ?? []).find(item => linked.has(item.hypothesisId)
+    && item.status === 'confirmed' && verified.has(item.id)
+    && item.evidenceIds?.some(id => cited.has(id))
     && existsSync(join(verificationRoot, item.id, 'verification.json')));
   return probe ? join(verificationRoot, probe.id) : null;
 }
@@ -129,7 +146,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         caseSnapshot: lease.options.caseSnapshot,
         unavailableInputs: lease.options.unavailableInputs ?? [],
         ...(generalLab ? { limits: lease.options.loopBudget, verificationRoot } : {}),
-        ...(generalLab && !externalRun && lease.options.multiAgent ? {
+        ...(generalLab && lease.options.multiAgent ? {
           multiAgent: lease.options.multiAgent,
           subtaskRepository: {
             create: task => { const saved = store.createSubtask(lease, task); notify(); return saved; },
@@ -213,26 +230,33 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
         // Persist the core JSON before the report collector opens its read-only DB.
         // The lease/heartbeat and local board stay alive through document capture.
         const startedAt = new Date().toISOString();
-        if (generalLab && lease.options.multiAgent && final.report
-          && status !== 'cancelled' && !controller.signal.aborted) {
-          // Child findings remain separate until the report module consumes the
-          // multi-agent result contract. Existing report generation is untouched.
-          finalState.reportDocuments = { schemaVersion: GENERAL_DOCUMENTS_SCHEMA_VERSION,
-            status: 'skipped', startedAt, completedAt: new Date().toISOString(), items: [],
-            errorCode: 'MULTI_AGENT_REPORT_DEFERRED',
-            message: '이 실행의 HWPX 보고서 통합은 후속 작업으로 보류되었습니다.' };
-        } else if (generalLab) {
+        if (generalLab) {
           const confirmed = Array.isArray(final.report?.findings)
             ? final.report.findings.filter(finding => finding?.status === 'confirmed') : [];
-          const items = confirmed.map(finding => ({ findingId: finding.id, status: 'waiting' }));
+          const subtasks = lease.options.multiAgent ? store.listSubtasks(lease.runId) : [];
+          const bySubtask = new Map(subtasks.map(task => [task.id, task]));
+          const childFindings = subtasks.flatMap(task => task.status === 'completed'
+            && task.result?.report?.schemaVersion === 'general-assessment/1'
+            && Array.isArray(task.result.report.findings)
+            ? task.result.report.findings.filter(finding => finding?.status === 'confirmed'
+              && [finding.hypothesisId, ...(Array.isArray(finding.hypothesisIds)
+                ? finding.hypothesisIds : [])].includes(task.input?.hypothesisId))
+              .map(finding => ({ findingId: finding.id, subtaskId: task.id,
+                sourceFindingId: task.sourceFindingId, status: 'waiting' })) : []);
+          const items = [...confirmed.map(finding => ({ findingId: finding.id, status: 'waiting' })),
+            ...childFindings];
           const documents = { schemaVersion: GENERAL_DOCUMENTS_SCHEMA_VERSION, status: 'generating',
             startedAt, items };
           finalState.reportDocuments = documents;
           const saveProgress = () => { documents.status = generalDocumentsStatus(items);
             store.saveState(lease, { ...finalState, status: 'running' }); notify(); };
-          const ids = items.map(item => item.findingId);
-          const validIds = ids.every(id => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(id))
-            && new Set(ids).size === ids.length;
+          const keys = items.map(item => `${item.subtaskId ?? 'parent'}:${item.findingId}`);
+          const validIds = items.every(item => typeof item.findingId === 'string'
+            && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(item.findingId)
+            && (!item.subtaskId || (/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u.test(item.subtaskId)
+              && typeof item.sourceFindingId === 'string'
+              && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(item.sourceFindingId))))
+            && new Set(keys).size === keys.length;
           if (!final.report) {
             documents.status = 'skipped'; documents.errorCode = 'NO_FINAL_REPORT';
             documents.message = '최종 검사 결과가 없어 HWPX를 생성하지 않았습니다.';
@@ -258,8 +282,12 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
               saveProgress();
               let document;
               try {
-                const verificationDir = verificationDirFor(final.report, item.findingId, verificationRoot);
+                const subtask = item.subtaskId ? bySubtask.get(item.subtaskId) : null;
+                const sourceReport = subtask?.result?.report ?? final.report;
+                const verificationDir = verificationDirFor(sourceReport, item.findingId,
+                  verificationRoot, final.events, item.subtaskId);
                 document = await reportGenerator({ run: finalState, findingId: item.findingId,
+                  ...(item.subtaskId ? { subtaskId: item.subtaskId, subtask } : {}),
                   storePath: store.path, historyPath: lease.options.caseSnapshot?.sourcePath,
                   envFile, env, signal: controller.signal,
                   ...(verificationDir ? { verificationDir } : {}) });
@@ -267,9 +295,11 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
                   status: 'failed', errorCode: 'REPORT_CANCELLED', message: '보고서 생성을 취소했습니다.',
                 };
                 if (document?.status === 'ready') {
-                  const previews = storeReportPreviews(store, lease.runId, document, item.findingId);
+                  const previews = storeReportPreviews(store, lease.runId, document, item);
                   const binary = store.writeBinaryArtifact(lease.runId, 'hwpx-report', document.bytes, {
                     filename: document.filename, findingId: item.findingId,
+                    ...(item.subtaskId ? { subtaskId: item.subtaskId,
+                      sourceFindingId: item.sourceFindingId } : {}),
                     contentType: 'application/hwp+zip', provenance: 'report-agent-generated',
                   });
                   if (items.some(other => other !== item && other.status === 'ready' && other.artifactId === binary.id)) {

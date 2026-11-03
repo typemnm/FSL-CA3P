@@ -6,11 +6,11 @@
 
 ## 통합 대시보드
 
-실제 로컬 실습의 최종 검사 JSON을 저장한 뒤 worker가 이 모듈의 `run` CLI를 자동 실행합니다. 범용 검사는 `confirmed` finding마다 `options.findingId`를 전달하며 결과를 `run.reportDocuments.items[]`에 저장합니다. `not_reproduced`·`inconclusive`·`not_tested` finding의 문서는 만들지 않습니다. 기존 단일 검사(`report.finding`)는 run당 한 부이며 상태는 `run.reportDocument`에 저장합니다. 실패해도 원래 검사 결과와 finding은 유지됩니다.
+실제 로컬 실습의 최종 검사 JSON을 저장한 뒤 worker가 이 모듈의 `run` CLI를 자동 실행합니다. 범용 검사는 `confirmed` finding마다 `options.findingId`를 전달하며 결과를 `run.reportDocuments.items[]`에 저장합니다. 멀티 에이전트 후속 검사의 확정 finding에는 `options.subtaskId`도 전달하고, 완료된 task의 별도 report와 해당 task의 verify 이벤트를 수집합니다. 부모 finding과 자식 finding의 ID가 같아도 `subtaskId`로 구분합니다. `not_reproduced`·`inconclusive`·`not_tested` finding의 문서는 만들지 않습니다. 기존 단일 검사(`report.finding`)는 run당 한 부이며 상태는 `run.reportDocument`에 저장합니다. 실패해도 원래 검사 결과와 finding은 유지됩니다.
 
-Node 연결부 `index.mjs`는 5분 제한·취소·자식 프로세스 정리·실행 ID·finding ID·증거 ID·산출물 경로·해시·크기를 확인합니다. Python 실행 파일은 `CA3P_REPORT_PYTHON` 또는 `CASPER_DB_PYTHON`으로 지정합니다. 모든 보고서는 모델 호출 비용이 들 수 있습니다.
+Node 연결부 `index.mjs`는 5분 제한·취소·자식 프로세스 정리·실행 ID·finding ID·증거 ID·산출물 경로·해시·크기를 확인합니다. Python 실행 파일은 `CA3P_REPORT_PYTHON` 또는 `CASPER_DB_PYTHON`으로 지정합니다. 모든 보고서는 모델 호출 비용이 들 수 있습니다. 현재 작성 경로는 DeepSeek 계열 실행 모델을 지원하며, `local-llm`과 등록한 사용자 지정 모델 실행의 문서는 `unavailable`로 표시됩니다.
 
-범용 문서는 `GET /api/runs/<runId>/reports/<artifactId>.hwpx`, 기존 단일 문서는 `GET /api/runs/<runId>/report.hwpx`에서 다운로드합니다. 서버는 실행·finding·artifact 연결과 바이너리 무결성을 확인해 attachment로 반환합니다.
+범용 문서는 `GET /api/runs/<runId>/reports/<artifactId>.hwpx`, 기존 단일 문서는 `GET /api/runs/<runId>/report.hwpx`에서 다운로드합니다. 자식 문서의 미리보기는 `GET /api/runs/<runId>/report-preview/<subtaskId>/<findingId>`를 사용합니다. 서버는 실행·task·finding·artifact 연결과 바이너리 무결성을 확인해 attachment로 반환합니다.
 
 ## 구현 현황
 
@@ -51,7 +51,7 @@ uv pip install --python .venv/bin/python -e '.[dev]' -e ../../../casper-db   # c
 }
 ```
 
-범용 `general-assessment/1` 보고서에는 `"options": {"findingId": "finding:<hypothesisId>"}`를 추가해야 합니다. `run-store`의 최종 보고서에 같은 ID의 `confirmed` finding이 정확히 하나 있고, 해당 가설의 confirmed verify 이벤트에 현재 probe 증거가 있어야 수집합니다. 기존 단일 검사에는 `findingId`를 전달하지 않으며 `report.finding`이 있어야 합니다.
+범용 `general-assessment/1` 보고서에는 `"options": {"findingId": "finding:<hypothesisId>"}`를 추가해야 합니다. `run-store`의 최종 보고서에 같은 ID의 `confirmed` finding이 정확히 하나 있고, 해당 가설의 confirmed verify 이벤트에 현재 probe 증거가 있어야 수집합니다. 자식 후속 검사에는 `"subtaskId"`를 함께 전달합니다. 수집기는 부모 finding과 원본 가설의 연결, 완료된 task report, 해당 task의 confirmed verify 이벤트와 새 probe 증거를 확인합니다. 기존 단일 검사에는 `findingId`를 전달하지 않으며 `report.finding`이 있어야 합니다.
 
 | 원천 `kind` | 읽는 방법 | 비고 |
 |---|---|---|
