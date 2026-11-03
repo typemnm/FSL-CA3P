@@ -24,13 +24,34 @@ export function createSharedExecutionBudget(limits = PARENT_EXECUTION_LIMITS) {
     throw new TypeError('Invalid parent execution deadline.');
   }
   let targetRequests = 0;
+  let pendingTargetRequests = 0;
   let modelRequests = 0;
   let modelTokens = 0;
   return {
     reserveTargetRequest(count = 1) {
       if (!Number.isSafeInteger(count) || count < 1) throw new TypeError('Invalid target request count.');
-      if (targetRequests + count > limits.maxTargetRequests) throw limitError('PARENT_TARGET_REQUEST_BUDGET_EXCEEDED');
+      if (targetRequests + pendingTargetRequests + count > limits.maxTargetRequests) {
+        throw limitError('PARENT_TARGET_REQUEST_BUDGET_EXCEEDED');
+      }
       targetRequests += count;
+    },
+    // Chromium follows at most 20 redirects for one routed request. Playwright
+    // only routes the first URL, so reserve the full chain before dispatch.
+    reserveBrowserRequest() {
+      const maximum = 21;
+      if (targetRequests + pendingTargetRequests + maximum > limits.maxTargetRequests) {
+        throw limitError('PARENT_TARGET_REQUEST_BUDGET_EXCEEDED');
+      }
+      pendingTargetRequests += maximum;
+      let settled = false;
+      return (actualRequests, complete = true) => {
+        if (settled) return;
+        settled = true;
+        const observed = Number.isSafeInteger(actualRequests) && actualRequests >= 0
+          && actualRequests <= maximum ? actualRequests : 0;
+        targetRequests += observed;
+        pendingTargetRequests -= complete ? maximum : observed;
+      };
     },
     reserveModelRequest(tokenEstimate) {
       if (!Number.isSafeInteger(tokenEstimate) || tokenEstimate < 1) throw new TypeError('Invalid model token estimate.');
@@ -47,7 +68,7 @@ export function createSharedExecutionBudget(limits = PARENT_EXECUTION_LIMITS) {
         }
       };
     },
-    snapshot() { return { targetRequests, modelRequests, modelTokens, ...limits }; },
+    snapshot() { return { targetRequests, pendingTargetRequests, modelRequests, modelTokens, ...limits }; },
   };
 }
 

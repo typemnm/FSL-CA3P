@@ -256,16 +256,20 @@ const documents = (info) => info.resources.filter((r) => r.kind === 'document').
 
 test('request gate counts redirects and subresources before dispatch', T, async () => {
   const seen = [];
-  await collect(`${base}/r1`, { beforeRequest: request => { seen.push(request.url); } });
+  const settled = [];
+  await collect(`${base}/r1`, { beforeRequest: request => {
+    seen.push(request.url);
+    return hops => settled.push({ url: request.url, hops });
+  } });
   assert.ok(seen.some(url => url.endsWith('/r1')));
-  assert.ok(seen.some(url => url.endsWith('/r2')));
+  assert.deepEqual(settled.filter(item => item.url.endsWith('/r1')).map(item => item.hops), [3]);
   await collect(`${base}/cross`, { beforeRequest: request => { seen.push(request.url); } });
   assert.ok(seen.some(url => url.endsWith('/cookie-probe')));
 
   const refused = Object.assign(new Error('quota'),
     { code: 'PARENT_TARGET_REQUEST_BUDGET_EXCEEDED', fatalProbe: true });
   await assert.rejects(collect(`${base}/r1`, { beforeRequest: request => {
-    if (request.url.endsWith('/r2')) throw refused;
+    if (request.url.endsWith('/r1')) throw refused;
   } }), error => error === refused);
 });
 const EMPTY_STRUCTURE = {

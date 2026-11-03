@@ -119,6 +119,14 @@ export async function collect(url, opts) {
   const profile = await mkdtemp(join(tmpdir(), PROFILE_PREFIX));
   let context;
   let requestFailure;
+  let completed = false;
+  const pendingRequests = new Map();
+  const requestHops = new Map();
+  const requestRoot = request => {
+    let root = request;
+    while (root.redirectedFrom?.()) root = root.redirectedFrom();
+    return root;
+  };
   let closing; // Playwright's second close() returns before the first finishes: everyone awaits this one
   const close = () => (closing ??= context?.close().catch(() => {}));
   // Abort: closing the browser makes every pending browser call reject at once, so the running stage
@@ -130,13 +138,19 @@ export async function collect(url, opts) {
       executablePath: process.env.WEB_PARSER_BROWSER_PATH || undefined,
       userAgent,
       ignoreHTTPSErrors,
+      ...(beforeRequest ? { serviceWorkers: 'block' } : {}),
     });
     signal?.throwIfAborted(); // aborted while the browser started
+    context.on('request', request => {
+      const root = requestRoot(request);
+      requestHops.set(root, (requestHops.get(root) ?? 0) + 1);
+    });
     if (beforeRequest) await context.route('**/*', async route => {
       const request = route.request();
       try {
-        await beforeRequest({ method: request.method(), url: request.url(),
+        const settle = await beforeRequest({ method: request.method(), url: request.url(),
           resourceType: request.resourceType() });
+        if (typeof settle === 'function') pendingRequests.set(request, settle);
         return await route.continue();
       } catch (error) {
         requestFailure ??= error;
@@ -307,12 +321,17 @@ export async function collect(url, opts) {
     // fingerprintWithin if aborts must cut matching short too.
     signal?.throwIfAborted();
     if (requestFailure) throw requestFailure;
+    completed = true;
     return info;
   } catch (err) {
     throw signal?.aborted ? abortError(signal) : requestFailure ?? err;
   } finally {
     signal?.removeEventListener('abort', close);
     await close();
+    for (const [request, settle] of pendingRequests) {
+      settle(requestHops.get(request) ?? 0, completed);
+    }
+    pendingRequests.clear();
     await rm(profile, { recursive: true, force: true, maxRetries: 5 }).catch(() => {});
   }
 }

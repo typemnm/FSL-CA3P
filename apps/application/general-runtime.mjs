@@ -907,7 +907,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       let browser;
       try {
         browser = await openVerifierBrowser(target, { ...options,
-          beforeRequest: () => executionBudget.reserveTargetRequest() });
+          beforeRequest: () => executionBudget.reserveBrowserRequest() });
       } catch (error) { release(); throw error; }
       let closed = false;
       return { ...browser, async close() {
@@ -1078,7 +1078,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
                 throw Object.assign(new Error('Browser write blocked before dispatch.'),
                   { code: 'BROWSER_WRITE_BLOCKED', fatalProbe: true });
               }
-              executionBudget?.reserveTargetRequest();
+              return executionBudget?.reserveBrowserRequest();
             } });
           observedStatus = info.navigation.status ?? null;
           // Extend scope with the same-origin http(s) paths web-parser discovered (like extendPaths).

@@ -15,8 +15,28 @@ test('shared execution budget reserves concurrent transport attempts and settles
   const second = budget.reserveModelRequest(9);
   second();
   assert.throws(() => budget.reserveModelRequest(1), { code: 'PARENT_MODEL_REQUEST_BUDGET_EXCEEDED' });
-  assert.deepEqual(budget.snapshot(), { targetRequests: 2, modelRequests: 2, modelTokens: 13,
+  assert.deepEqual(budget.snapshot(), { targetRequests: 2, pendingTargetRequests: 0,
+    modelRequests: 2, modelTokens: 13,
     maxTargetRequests: 2, maxModelRequests: 2, maxModelTokens: 20, deadlineMs: 1000 });
+});
+
+test('browser redirect reservations are conservative until settled to actual hops', () => {
+  const budget = createSharedExecutionBudget({ maxTargetRequests: 26,
+    maxModelRequests: 1, maxModelTokens: 100, deadlineMs: 1000 });
+  budget.reserveTargetRequest(2);
+  const settle = budget.reserveBrowserRequest();
+  assert.equal(budget.snapshot().targetRequests, 2);
+  assert.equal(budget.snapshot().pendingTargetRequests, 21);
+  assert.throws(() => budget.reserveBrowserRequest(), { code: 'PARENT_TARGET_REQUEST_BUDGET_EXCEEDED' });
+  settle(3);
+  settle(21);
+  assert.equal(budget.snapshot().targetRequests, 5);
+  assert.equal(budget.snapshot().pendingTargetRequests, 0);
+  const interrupted = budget.reserveBrowserRequest();
+  interrupted(2, false);
+  assert.equal(budget.snapshot().targetRequests, 7);
+  assert.equal(budget.snapshot().pendingTargetRequests, 19,
+    'unfinished redirect capacity remains explicitly reserved');
 });
 
 test('target gate lets reads overlap but excludes writes and drops aborted waiters', async () => {
