@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd /Users/park-woohyun/orca/workspaces/FSL-CA3P/report/packages/report/py/src/ca3p_report/llm && python3 - <<'EOF'\\np='tools.py'; s=open(p).read()\\nstart=s.index('\\\"\\\"\\\"The tools the LLM c...",
-  "error": "Exit code 1\nI001 [*] Import block is un-sorted or un-formatted\n  --> src/ca3p_report/hwpx/writer.py:9:1\n   |\n 7 |   \"\"\"\n 8 |\n 9 | / from __future__ import annotations\n10 | |\n11 | | import html\n12 | | import base64\n13 | | import json\n14 | | import struct\n15 | | from pathlib import Path\n16 | |\n17 | | from hwpx import HwpxDocument\n   | |_____________________________^\n18 |\n19 |   NONE = \"자료 없음\"\n   |\nhelp: Organize imports\n   |\n10 |\n11 + import base64\n12 | import html\n   - import base64\n13 | import j...",
-  "timestamp": "2026-11-02T16:10:41.952Z",
-  "retry_count": 1
-}
