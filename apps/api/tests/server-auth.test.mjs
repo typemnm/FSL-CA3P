@@ -81,6 +81,20 @@ test('pre-execution approval decisions require an admin session and CSRF token',
   assert.deepEqual(calls.approvals, [['run-a', 'approval-1', 'reject', 'admin']]);
 });
 
+test('disabling HITL for a local run requires an admin session', async t => {
+  const { base, calls } = await fixture(t);
+  const operator = await login(base, 'operator');
+  const admin = await login(base, 'admin');
+  for (const route of ['/api/runs', '/api/lab-runs']) {
+    assert.equal((await api(base, route, { method: 'POST', headers: operator.headers,
+      body: { approvalRequired: false } })).status, 403);
+    assert.equal((await api(base, route, { method: 'POST', headers: admin.headers,
+      body: { approvalRequired: false } })).status, 202);
+  }
+  assert.deepEqual(calls.startBodies, [{ approvalRequired: false }]);
+  assert.deepEqual(calls.lab, [{ approvalRequired: false }]);
+});
+
 test('session API, viewer access, operator mutations and logout enforce authentication and CSRF', async t => {
   const { base, calls } = await fixture(t);
   const anonymous = await api(base, '/api/auth/session');

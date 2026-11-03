@@ -542,9 +542,10 @@ export function createDashboardServer({ runtime, auth = createAuthentication({ e
         if (pathname !== '/api/runs' && pathname !== '/api/lab-runs' && pathname !== '/api/reset' && !stop) throw error(404, 'API route not found.');
         if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' }, { Allow: 'POST' });
         const body = await readJson(req);
+        if (body?.approvalRequired === false) auth.requireUser(req, { mutate: true, admin: true });
         if (pathname === '/api/runs') return json(res, runtime.listRuns ? 202 : 201, await runtime.start(body));
         if (pathname === '/api/lab-runs') {
-          if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['modelId', 'fixtureId', 'target'].includes(key))) throw error(400, 'Only modelId, fixtureId and target are accepted.');
+          if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['modelId', 'fixtureId', 'target', 'approvalRequired'].includes(key))) throw error(400, 'Unsupported lab run options.');
           if (Object.hasOwn(body, 'target') && !['vul-web2-daehan', 'vul-web2-wonchang'].includes(body.fixtureId)) {
             throw error(400, 'Only registered university fixtures accept a target origin.');
           }

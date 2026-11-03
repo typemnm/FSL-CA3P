@@ -123,7 +123,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       runtime = (externalRun ? externalRuntimeFactory : generalLab ? generalRuntimeFactory
         : idorRuntimeFactory)({ fixtureId: lease.options.fixtureId,
         targetOrigin: lease.options.target,
-        approvalRequired: !externalRun,
+        approvalRequired: lease.options.approvalRequired ?? !externalRun,
         ...(externalRun ? { targetUrl: lease.options.target, scope: lease.options.scope,
           ...(externalRequestImpl ? { requestImpl: externalRequestImpl } : {}) } : {}),
         caseSnapshot: lease.options.caseSnapshot,

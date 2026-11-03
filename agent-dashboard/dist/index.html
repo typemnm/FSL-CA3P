@@ -85,6 +85,8 @@
               <label class="model-control" for="fixture-select">실습 대상 <select id="fixture-select" aria-describedby="lab-description lab-check-scope"><option value="vul-web-1">vul-web-1 · 로컬 게시판</option><option value="vul-web2-daehan">vul-web2 · 대한대학교</option><option value="vul-web2-wonchang">vul-web2 · 원창대학교</option></select></label>
               <small class="lab-cost" id="lab-check-scope">범용 취약점 점검과 모델 가용성을 확인하는 중입니다.</small>
               <label class="model-control" for="model-select">판단 엔진 / AI 모델 <select id="model-select" aria-describedby="lab-check-scope model-scope"><option value="">모델 목록 수신 중</option></select></label>
+              <label class="experiment-reset-toggle" for="hitl-toggle"><input id="hitl-toggle" type="checkbox" role="switch" checked aria-describedby="hitl-help"><span>검사 실행 전 사람 승인 (HITL)</span></label>
+              <small id="hitl-help">실행마다 설정합니다. 끄기는 관리자만 선택할 수 있으며, 정책 검사는 계속 적용됩니다.</small>
               <label class="experiment-reset-toggle" for="model-reset-toggle"><input id="model-reset-toggle" type="checkbox" role="switch" checked aria-describedby="model-reset-help"><span>모델 변경 시 실험 초기화 확인</span></label>
               <button id="experiment-reset-button" type="button" class="button secondary experiment-reset-button" disabled>실험 초기화</button>
               <small id="model-reset-help">켜면 모델을 바꿀 때 실험 흔적 제거 여부를 묻습니다. 확인 전에는 삭제하지 않습니다.</small>
@@ -105,7 +107,7 @@
           </section>
 
           <section class="run-status-bar" aria-label="실행 상태">
-            <div class="run-status-copy"><strong id="progress-label">실행 상태 수신 대기</strong><span class="mono" id="progress-number">수신 이벤트 0건</span></div>
+            <div class="run-status-copy"><strong id="progress-label">실행 상태 수신 대기</strong><span class="mono" id="progress-number">수신 이벤트 0건</span><span class="mono" id="hitl-run-mode" hidden></span></div>
             <div class="run-status-actions"><span class="mono" id="core-state">READY TO START</span><span class="live-label" id="live-label"><span class="tiny-dot gray"></span>IDLE</span><button class="button secondary" id="stop-button" type="button" disabled><span data-icon="stop"></span>실행 중지</button></div>
           </section>
 

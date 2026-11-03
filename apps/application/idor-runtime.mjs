@@ -44,7 +44,8 @@ export function createIdorRuntime({ fixtureId, targetOrigin, runIdFactory = () =
   const listeners = new Set();
   const initial = () => ({ ...emptyRun(), mode: 'local-lab-rule', fixtureId, testProfile: PROFILE,
     target: fixture.origin, coreTargetOrigin: fixture.origin, simulated: false,
-    targetContacted: false, totalSteps: 6, modelId: 'rule-baseline', provider: 'rules', pendingApproval: null });
+    targetContacted: false, totalSteps: 6, modelId: 'rule-baseline', provider: 'rules',
+    approvalRequired, pendingApproval: null });
   let run = initial();
   let task = null;
   let controller = null;

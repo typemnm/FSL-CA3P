@@ -94,6 +94,29 @@ test('rejecting a rule IDOR approval skips every target request and invalidates 
   assert.equal(requests, 0);
   await assert.rejects(service.decideApproval(started.run.id, approval.id, 'approve', 'admin'), { status: 409 });
 });
+
+test('a local run can skip HITL while preserving its recorded execution setting', async t => {
+  const { service } = setup(t);
+  let requests = 0;
+  const started = await service.startLab({ fixtureId: 'vul-web2-daehan',
+    target: await universityTarget(t, () => { requests += 1; }), approvalRequired: false });
+  assert.equal(started.run.approvalRequired, false);
+  assert.equal(started.run.manifest.execution.approvalRequired, false);
+  const final = await waitFor(service, started.run.id);
+  assert.equal(final.status, 'completed', final.error);
+  assert.equal(final.approvalRequired, false);
+  assert.equal(final.pendingApproval, null);
+  assert.equal(final.events.some(event => event.stage === 'approval.requested'), false);
+  assert.ok(requests > 0);
+  assert.equal(final.report.evidence.length, 4);
+});
+
+test('invalid or unsupported HITL settings fail before a run is queued', async t => {
+  const { service } = setup(t, { autoStartWorker: false, importLegacy: false });
+  await assert.rejects(service.startLab({ fixtureId: 'vul-web2-daehan', approvalRequired: 'false' }), { status: 400 });
+  await assert.rejects(service.start({ mode: 'external-general', approvalRequired: true }), { status: 400 });
+  assert.equal(service.listRuns().total, 0);
+});
 test('queued cancellation never reaches a worker; arbitrary lab targets are rejected', async t => {
   const { service } = setup(t, { autoStartWorker: false });
   await assert.rejects(service.start({ mode: 'local-lab-rule', target: 'https://remote.invalid' }), { status: 400 });

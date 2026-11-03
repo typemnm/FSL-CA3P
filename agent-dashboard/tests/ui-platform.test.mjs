@@ -85,7 +85,8 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
     if (path === '/api/runs' && request.method() === 'GET') return json({ runs });
     if (path === '/api/runs' && request.method() === 'POST') {
       const body = request.postDataJSON();
-      mutations.push({ body, csrf: request.headers()['x-csrf-token'] }); state = snapshot('new-assessment', body.mode);
+      mutations.push({ body, csrf: request.headers()['x-csrf-token'] }); state = {
+        ...snapshot('new-assessment', body.mode), approvalRequired: body.approvalRequired ?? true };
       if (body.mode === 'local-lab-general') {
         state = { ...state, assessmentMode: 'general', fixtureId: body.fixtureId ?? 'vul-web-1',
           target: body.target ?? 'http://127.0.0.1:3000',
@@ -433,6 +434,8 @@ test('fixture reports skip model generation while JSON export remains available'
 test('authenticated workspace starts a general assessment and safely renders comparisons and platform evidence', async t => {
   const { page, mutations, reviews, errors, detailCalls } = await setup(t);
   await page.waitForFunction(() => document.querySelector('#model-select').value === 'deepseek-primary');
+  assert.equal(await page.locator('#hitl-toggle').isChecked(), true);
+  assert.equal(await page.locator('#hitl-toggle').isDisabled(), true);
   assert.equal(await page.locator('#lab-run-button').isEnabled(), true);
   await page.locator('#lab-run-button').click();
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
@@ -456,6 +459,19 @@ test('authenticated workspace starts a general assessment and safely renders com
   await page.locator('[data-view=platform]').click();
   await page.locator('.platform-source').waitFor(); assert.match(await page.locator('#platform-content').textContent(), /test-commit/);
   assert.equal(await page.locator('#platform-content img').count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('an administrator can disable HITL for one local assessment', async t => {
+  const { page, mutations, errors } = await setup(t, 'admin');
+  await page.waitForFunction(() => document.querySelector('#model-select').value === 'deepseek-primary');
+  assert.equal(await page.locator('#hitl-toggle').isChecked(), true);
+  await page.locator('#hitl-toggle').uncheck();
+  await page.locator('#lab-run-button').click();
+  await page.locator('#view-dashboard').waitFor({ state: 'visible' });
+  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary',
+    approvalRequired: false }, csrf: 'csrf-live' });
+  assert.equal(await page.locator('#hitl-run-mode').textContent(), 'HITL 꺼짐');
   assert.deepEqual(errors, []);
 });
 
