@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { redact, validateDisplayTarget, RUN_MODES, RETIRED_RUN_MODES } from '../index.mjs';
+import { digest, redact, validateDisplayTarget, RUN_MODES, RETIRED_RUN_MODES } from '../index.mjs';
 import { createRunManifest, PROJECT_ROOT, treeDigest } from '../manifest.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -108,6 +108,11 @@ test('external general manifest binds the model, verifier, loop budget and publi
   assert.ok(manifest.model.promptTemplateDigest);
   assert.ok(manifest.modules.agent.contentDigest);
   assert.ok(manifest.modules['packages/verifier'].contentDigest);
+  assert.ok(manifest.modules['packages/external-http'].contentDigest);
+  assert.equal(manifest.policy.rulesetDigest, digest({
+    application: treeDigest(join(PROJECT_ROOT, 'apps/application/external-target.mjs')),
+    externalHttp: treeDigest(join(PROJECT_ROOT, 'packages/external-http/index.mjs')),
+  }));
   assert.equal(manifest.target.testProfile, 'external-general');
   assert.deepEqual(manifest.target.scope, scope);
   assert.equal(manifest.data.unavailableInputs.includes('independent-verifiers'), false);
@@ -128,7 +133,7 @@ test('general manifests bind the unified catalog snapshot and actual execution d
   assert.equal(university.data.caseSnapshotDigest, snapshot.contentDigest);
   assert.match(university.data.catalogDigest, /^[a-f0-9]{64}$/u);
   assert.equal(university.data.catalogSeedDigest, treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')));
-  for (const name of ['agent', 'vul-web2', 'casper-db', 'attack-module', 'guardrail', 'packages/models', 'packages/report', 'packages/run-store']) {
+  for (const name of ['agent', 'vul-web2', 'casper-db', 'attack-module', 'guardrail', 'packages/models', 'packages/report', 'packages/external-http', 'packages/run-store']) {
     assert.ok(university.modules[name]?.contentDigest, `${name} must be frozen for general university runs`);
   }
   assert.ok(university.policy.rulesetDigest);

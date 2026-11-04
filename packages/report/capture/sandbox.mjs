@@ -1,5 +1,5 @@
 /**
- * Hardened Playwright context for one loopback origin (PLAN §2.5). Mirrors the
+ * Hardened Playwright context for one report target origin (PLAN §2.5). Mirrors the
  * verify-stage sandbox in packages/adapters/integrations/xss-execution.mjs
  * (observeStoredXssExecution): same-origin GET/HEAD only, no WebSocket, no
  * service workers, no downloads, popups closed, dialogs dismissed, deadline.
@@ -8,6 +8,7 @@
  */
 
 import { chromium } from 'playwright';
+import { externalScopeRejectionReason, requestExternalHttp } from '../../external-http/index.mjs';
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_BLOCKED = 32;
@@ -43,10 +44,21 @@ export function normalizeSwitches(list) {
  * Open a headless browser restricted to `origin`. The caller must validate the
  * origin first and always call `close()`. `blocked` records every refusal.
  */
-export async function openSandbox(origin, { allowSessionSwitches, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export async function openSandbox(origin, {
+  allowSessionSwitches, timeoutMs = DEFAULT_TIMEOUT_MS, externalScope = null,
+  externalRequest = requestExternalHttp,
+} = {}) {
   const allowed = normalizeSwitches(allowSessionSwitches);
+  if (externalScope && (externalScope.origin !== origin || allowed.length)) {
+    throw new CaptureError('INVALID_SCOPE', 'External capture must use the report target origin without session switches.');
+  }
   const blocked = [];
   const sessionSwitches = [];
+  let externalRequests = 0;
+  let externalBytes = 0;
+  const maxExternalRequests = Math.min(12, Number.isSafeInteger(externalScope?.maxRequests)
+    && externalScope.maxRequests > 0 ? externalScope.maxRequests : 12);
+  const maxExternalBytes = 2 * 1024 * 1024;
   const block = (method, url, reason) => {
     if (blocked.length < MAX_BLOCKED) blocked.push({ method, url: String(url).slice(0, 240), reason });
   };
@@ -85,6 +97,34 @@ export async function openSandbox(origin, { allowSessionSwitches, timeoutMs = DE
       if (!url || url.origin !== origin) {
         block(method, request.url(), 'outside target origin');
         await route.abort('blockedbyclient');
+        return;
+      }
+      if (externalScope) {
+        const reason = externalScopeRejectionReason(url, externalScope);
+        if (reason || !['GET', 'HEAD'].includes(method) || ++externalRequests > maxExternalRequests) {
+          block(method, request.url(), reason ?? 'external capture request limit or method');
+          await route.abort('blockedbyclient');
+          return;
+        }
+        try {
+          const response = await externalRequest(url, {
+            scope: externalScope, method, responseType: 'buffer',
+            maxBytes: Math.min(512 * 1024, externalScope.maxResponseBytes ?? 512 * 1024,
+              maxExternalBytes - externalBytes),
+            timeoutMs: Math.min(5000, externalScope.requestTimeoutMs ?? 5000, remaining()),
+          });
+          if (response.truncated || !Buffer.isBuffer(response.body)) {
+            block(method, request.url(), 'external response too large');
+            await route.abort('blockedbyclient');
+            return;
+          }
+          externalBytes += response.body.length;
+          await route.fulfill({ status: response.status, contentType: response.contentType || 'application/octet-stream',
+            body: response.body });
+        } catch (error) {
+          block(method, request.url(), error?.code ?? 'external request failed');
+          await route.abort('blockedbyclient');
+        }
         return;
       }
       if (method === 'GET' || method === 'HEAD') {
