@@ -65,13 +65,50 @@ async function withTarget(t, options, run) {
   await run(server, sandbox);
 }
 
-test('origin that differs from expectedOrigin is refused before any browser starts', async () => {
+test('capture accepts a bound HTTP(S) origin and rejects malformed or mismatched origins', async () => {
   await assert.rejects(capture('http://127.0.0.1:4000', { outDir: tmpdir(), expectedOrigin: 'http://127.0.0.1:4001' }),
     { code: 'ORIGIN_MISMATCH' });
   await assert.rejects(capture('http://127.0.0.1:4000', { outDir: tmpdir() }), { code: 'ORIGIN_MISMATCH' });
-  for (const origin of ['http://localhost:4000', 'https://127.0.0.1:4000', 'http://127.0.0.1:4000/', 'http://example.com']) {
+  for (const origin of ['ftp://example.com', 'http://example.com/path', 'http://example.com/', 'http://user@example.com', 'http://example.com:99999']) {
     await assert.rejects(capture(origin, { outDir: tmpdir(), expectedOrigin: origin }), { code: 'INVALID_ORIGIN' });
   }
+  await assert.rejects(capture('https://example.com', { outDir: tmpdir(), expectedOrigin: 'https://example.com',
+    path: '//other.example.com' }), { code: 'INVALID_PATH' });
+});
+
+test('external capture proxies only the approved path and caps browser requests', async t => {
+  const origin = 'https://example.com';
+  const scope = { origin, pathPrefix: '/allowed' };
+  const outDir = await mkdtemp(join(tmpdir(), 'ca3p-external-capture-'));
+  t.after(() => rm(outDir, { recursive: true, force: true }));
+  const requests = [];
+  const externalRequest = async (url, options) => {
+    requests.push({ url: url.href, method: options.method, responseType: options.responseType });
+    const html = '<!doctype html><title>External</title><p>Approved page</p>';
+    return { status: 200, contentType: 'text/html', body: Buffer.from(html), truncated: false };
+  };
+  await assert.rejects(capture(origin, { outDir, expectedOrigin: origin, path: '/private',
+    externalScope: scope, externalRequest }), { code: 'INVALID_SCOPE' });
+  let sandbox;
+  try { sandbox = await openSandbox(origin, { externalScope: scope, externalRequest }); }
+  catch (error) {
+    if (error.code !== 'BROWSER_UNAVAILABLE') throw error;
+    t.skip(`Chromium unavailable: ${error.message}`);
+    return;
+  }
+  t.after(sandbox.close);
+  await sandbox.page.goto(`${origin}/allowed`);
+  assert.equal(await send(sandbox.page, `${origin}/private`, 'GET'), 'blocked');
+  for (let i = 0; i < 15; i++) await send(sandbox.page, `${origin}/allowed/item-${i}`, 'GET');
+  assert.ok(requests.length <= 12);
+  assert.ok(requests.every(row => row.url.startsWith(`${origin}/allowed`) && row.responseType === 'buffer'));
+  assert.ok(sandbox.blocked.some(row => row.reason === 'out_of_scope_path'));
+  assert.ok(sandbox.blocked.some(row => row.reason === 'external capture request limit or method'));
+  const records = await capture(origin, { outDir, expectedOrigin: origin, path: '/allowed',
+    externalScope: scope, externalRequest });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].url, `${origin}/allowed`);
+  assert.ok((await readFile(records[0].path)).subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')));
 });
 
 test('requests to another origin are blocked', async t => {

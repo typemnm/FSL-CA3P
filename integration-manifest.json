@@ -179,6 +179,13 @@
       ]
     },
     {
+      "id": "external-http",
+      "path": "packages/external-http",
+      "layer": "policy",
+      "status": "active",
+      "dependencies": []
+    },
+    {
       "id": "report",
       "path": "packages/report",
       "layer": "reporting",
@@ -187,7 +194,8 @@
         "agent",
         "contracts",
         "run-store",
-        "casper-db"
+        "casper-db",
+        "external-http"
       ]
     },
     {
@@ -225,7 +233,8 @@
         "worker",
         "adapters",
         "chat-store",
-        "verifier"
+        "verifier",
+        "external-http"
       ]
     },
     {

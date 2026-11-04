@@ -29,6 +29,11 @@ def _dispatch(tools: ReportTools, name: str, args: dict) -> dict:
     try:
         if name == "read_bundle":
             return {"ok": True, "content": tools.read_bundle(args.get("path"))}
+        if name == "capture_screenshot":
+            return tools.capture_screenshot(
+                path=args.get("path"), selector=args.get("selector"),
+                full_page=args.get("full_page", False),
+            )
         if name == "finish_report":
             return tools.finish_report(model=args.get("model"), filename=args.get("filename"))
         return {"ok": False, "error": f"unknown tool: {name}"}

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
  * node cli.mjs --origin <url> --out <dir> --expected-origin <url>
+ *   [--path <absolute path>] [--external-scope '<json>']
  *   [--selector <s>] [--full-page] [--session '<json>'] [--allow-session '<json array>']
  * Prints exactly one JSON line; errors become {ok:false,error:{code,message}}.
  */
@@ -18,12 +19,14 @@ async function main() {
   const { values } = parseArgs({
     options: {
       origin: { type: 'string' },
+      path: { type: 'string' },
       out: { type: 'string' },
       selector: { type: 'string' },
       'full-page': { type: 'boolean', default: false },
       session: { type: 'string' },
       'allow-session': { type: 'string' },
       'expected-origin': { type: 'string' },
+      'external-scope': { type: 'string' },
     },
     strict: true,
   });
@@ -34,6 +37,8 @@ async function main() {
     allowSessionSwitches: json('allow-session', values['allow-session']),
     outDir: values.out,
     expectedOrigin: values['expected-origin'],
+    path: values.path,
+    externalScope: json('external-scope', values['external-scope']),
   });
   return { ok: true, captures };
 }
