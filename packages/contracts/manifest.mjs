@@ -48,7 +48,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
     const loopBudget = validateGeneralLoopBudget(options.loopBudget ?? GENERAL_LOOP_BUDGET_DEFAULTS);
     const effectiveLoopBudget = { ...loopBudget,
       maxProbes: Math.min(loopBudget.maxProbes, options.scope.maxRequests - 2) };
-    const moduleNames = ['agent', 'packages/verifier', 'packages/models', 'packages/report',
+    const moduleNames = ['agent', 'packages/verifier', 'packages/models', 'packages/report', 'packages/external-http',
       'apps/application', 'apps/worker', 'packages/contracts', 'packages/run-store'];
     const modules = Object.fromEntries(moduleNames.map(name => [name,
       { contentDigest: treeDigest(join(PROJECT_ROOT, name)), packageVersion: null }]));
@@ -76,7 +76,10 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       target: { kind: 'external', fixtureId: null, entryUrl: redact(options.target),
         origin: options.scope.origin, scope: options.scope, initialStateDigest: null,
         stateCapture: 'external-live-state-not-snapshotted', testProfile: 'external-general' },
-      policy: { rulesetDigest: treeDigest(join(PROJECT_ROOT, 'apps/application/external-target.mjs')),
+      policy: { rulesetDigest: digest({
+        application: treeDigest(join(PROJECT_ROOT, 'apps/application/external-target.mjs')),
+        externalHttp: treeDigest(join(PROJECT_ROOT, 'packages/external-http/index.mjs')),
+      }),
         methods: ['GET', 'HEAD'], maxRequests: options.scope.maxRequests,
         maxResponseBytes: options.scope.maxResponseBytes, requestTimeoutMs: options.scope.requestTimeoutMs,
         maxDurationMs: options.scope.maxDurationMs, durationMeasure: 'cumulative-target-http-time',
@@ -100,8 +103,8 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
   const moduleNames = general
     ? ['agent', universityLab ? 'vul-web2' : 'vul-web-1', 'casper-db',
       'attack-tool', 'attack-module', 'guardrail', 'packages/models', 'packages/adapters', 'web-parser',
-      'packages/report', 'packages/run-store', 'apps/application', 'apps/worker']
-    : ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'apps/application', 'apps/worker'];
+      'packages/report', 'packages/external-http', 'packages/run-store', 'apps/application', 'apps/worker']
+    : ['vul-web2', 'attack-module', 'guardrail', 'packages/adapters', 'packages/evaluation', 'packages/external-http', 'apps/application', 'apps/worker'];
   const modules = Object.fromEntries(moduleNames
     .map(name => [name, { contentDigest: treeDigest(join(PROJECT_ROOT, name)),
       packageVersion: (() => { try { return JSON.parse(readFileSync(join(PROJECT_ROOT, name, 'package.json'), 'utf8')).version; } catch { return null; } })() }]));

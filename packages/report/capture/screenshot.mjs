@@ -8,7 +8,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { externalScopeRejectionReason } from '../../../apps/application/external-target.mjs';
+import { externalScopeRejectionReason } from '../../external-http/index.mjs';
 import { CaptureError, bodyText, openSandbox } from './sandbox.mjs';
 
 export { CaptureError } from './sandbox.mjs';

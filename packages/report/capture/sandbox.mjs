@@ -8,7 +8,7 @@
  */
 
 import { chromium } from 'playwright';
-import { externalScopeRejectionReason, requestExternalHttp } from '../../../apps/application/external-target.mjs';
+import { externalScopeRejectionReason, requestExternalHttp } from '../../external-http/index.mjs';
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_BLOCKED = 32;
