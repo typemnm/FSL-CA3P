@@ -168,6 +168,83 @@ test('later iterations reference prior hypotheses and assign a unique ID to a re
   assert.equal(plan.probes[0].hypothesisId, 'hyp-search');
 });
 
+test('focused planner passes the selected hypothesis to the model and rejects scope expansion', async () => {
+  const input = assessmentInput();
+  input.hypotheses = [{ ...modelPlan().hypotheses[0], status: 'not_tested' }];
+  input.focusHypothesisId = 'hyp-search';
+  input.availableTools = ['http_get'];
+  const focusedPlan = { done: false, hypotheses: [], probes: [
+    { ...modelPlan().probes[0], tool: 'http_get' }] };
+  const client = fakeClient(focusedPlan);
+  const result = await createGeneralModelPlanner({ client }).propose(input);
+  assert.equal(client.calls[0].userPayload.focusHypothesisId, 'hyp-search');
+  assert.equal(client.calls[0].userPayload.focusAsset, '/api/search');
+  assert.match(client.calls[0].systemPrompt, /focusHypothesisId/u);
+  assert.deepEqual(result.probes, focusedPlan.probes);
+  assert.deepEqual(result.hypotheses, []);
+
+  for (const invalidPlan of [
+    modelPlan(),
+    { ...focusedPlan, probes: [{ ...focusedPlan.probes[0], hypothesisId: 'other' }] },
+  ]) {
+    const invalidClient = fakeClient(invalidPlan);
+    await assert.rejects(createGeneralModelPlanner({ client: invalidClient }).propose(input),
+      { code: 'GENERAL_PLANNER_SCHEMA_ERROR' });
+    assert.equal(invalidClient.calls.length, 2);
+  }
+  await assert.rejects(createGeneralModelPlanner({ client: fakeClient(focusedPlan) })
+    .propose({ ...input, focusHypothesisId: 'missing' }), { code: 'GENERAL_PLANNER_CONTEXT_ERROR' });
+});
+
+test('focused planner retries an out-of-asset GET before it can consume a child probe', async () => {
+  const input = assessmentInput();
+  input.hypotheses = [{ ...modelPlan().hypotheses[0], status: 'inconclusive' }];
+  input.focusHypothesisId = 'hyp-search';
+  input.availableTools = ['http_get'];
+  const valid = { done: false, hypotheses: [], probes: [
+    { id: 'probe-focus', hypothesisId: 'hyp-search', tool: 'http_get',
+      input: { path: '/api/search' } }] };
+  const outside = { ...valid, probes: [{ ...valid.probes[0], input: { path: '/api/session' } }] };
+  const calls = [];
+  const values = [outside, valid];
+  const client = { async completeJson(request) {
+    calls.push(request);
+    return { value: values.shift(), metadata: { provider: 'deepseek', model: 'deepseek-flash' } };
+  } };
+  const result = await createGeneralModelPlanner({ client }).propose(input);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].userPayload.focusAsset, '/api/search');
+  assert.match(calls[0].systemPrompt, /input\.path exactly to focusAsset/u);
+  assert.match(calls[1].systemPrompt, /Focused probe must use the assigned asset/u);
+  assert.deepEqual(result.probes, valid.probes);
+  assert.deepEqual(result.modelAttempts.map(item => item.status), ['failed', 'completed']);
+  assert.deepEqual(result.rejectedProbes, []);
+
+  const persistent = fakeClient(outside);
+  await assert.rejects(createGeneralModelPlanner({ client: persistent }).propose(input),
+    { code: 'GENERAL_PLANNER_SCHEMA_ERROR', message: 'Focused probe must use the assigned asset' });
+  assert.equal(persistent.calls.length, 2);
+});
+
+test('focused planner binds repository reads to the assigned source file', async () => {
+  const input = assessmentInput();
+  input.hypotheses = [{ id: 'hyp-source', category: 'source review', asset: 'vul-web-1/server.js',
+    rationale: 'Read the cited source.', evidenceIds: ['ev-search'], status: 'not_tested' }];
+  input.focusHypothesisId = 'hyp-source';
+  input.availableTools = ['repository_read'];
+  const valid = { done: false, hypotheses: [], probes: [
+    { id: 'probe-source', hypothesisId: 'hyp-source', tool: 'repository_read',
+      input: { file: 'vul-web-1/server.js' } }] };
+  const outside = { ...valid, probes: [{ ...valid.probes[0], input: { file: 'vul-web-1/other.js' } }] };
+  const values = [outside, valid];
+  const client = { async completeJson() {
+    return { value: values.shift(), metadata: { provider: 'deepseek', model: 'deepseek-flash' } };
+  } };
+  const result = await createGeneralModelPlanner({ client }).propose(input);
+  assert.deepEqual(result.probes, valid.probes);
+  assert.deepEqual(result.modelAttempts.map(item => item.status), ['failed', 'completed']);
+});
+
 test('general planner fails explicitly when the complete context cannot fit the model prompt', async () => {
   const client = fakeClient();
   const input = assessmentInput();

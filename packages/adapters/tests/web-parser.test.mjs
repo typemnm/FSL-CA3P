@@ -177,10 +177,12 @@ test('page titles decode HTML entities once for the summary and the evidence', (
 test('collectWebInfo returns the raw TargetInfo and its summary, bounding timeoutMs at 15s', async () => {
   const seen = [];
   const info = targetInfo();
+  const beforeRequest = () => {};
   const { info: returned, summary } = await collectWebInfo('http://127.0.0.1/app', {
-    timeoutMs: 999_999, cookies: [{ name: 'sid', value: 'lab-1' }],
+    timeoutMs: 999_999, cookies: [{ name: 'sid', value: 'lab-1' }], beforeRequest,
     collectImpl: async (url, opts) => { seen.push({ url, opts }); return info; } });
   assert.equal(returned, info);
+  assert.equal(seen[0].opts.beforeRequest, beforeRequest);
   assert.equal(summary.status, 200);
   assert.equal(seen[0].opts.timeoutMs, 15000);
   assert.deepEqual(seen[0].opts.cookies, [{ name: 'sid', value: 'lab-1' }]);

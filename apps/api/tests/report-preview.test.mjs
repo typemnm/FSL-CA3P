@@ -30,8 +30,19 @@ test('report preview requires a session, matching finding and intact stored HTML
     path, sha256: sha256(bytes), size: bytes.length };
   const htmlArtifact = { id: htmlId, runId: run.id, kind: 'report-preview-html', findingId: 'finding:h1',
     path: htmlPath, sha256: sha256(htmlBytes), size: htmlBytes.length };
+  const subtaskId = `sub-${'a'.repeat(24)}`;
+  const childHtmlId = sha256('child-html-preview');
+  const childHtmlArtifact = { ...htmlArtifact, id: childHtmlId, subtaskId, sourceFindingId: 'finding:h1' };
+  run.reportDocuments.items.push({ subtaskId, sourceFindingId: 'finding:h1', findingId: 'finding:h1',
+    status: 'ready', previewHtmlArtifactId: childHtmlId, filename: '서브 보고서.hwpx' });
+  const task = { id: subtaskId, sourceFindingId: 'finding:h1', status: 'completed', result: { report: {
+    schemaVersion: 'general-assessment/1', runId: subtaskId, status: 'completed',
+    findings: [{ id: 'finding:h1', status: 'confirmed' }],
+  } } };
   const runtime = { getRun: id => id === run.id ? run : null,
-    store: { getArtifact: id => id === previewId ? artifact : id === htmlId ? htmlArtifact : null },
+    store: { getArtifact: id => id === previewId ? artifact : id === htmlId ? htmlArtifact
+      : id === childHtmlId ? childHtmlArtifact : null,
+    getSubtask: (runId, taskId) => runId === run.id && taskId === subtaskId ? task : null },
     close: async () => {}, subscribe: () => () => {}, getState: () => ({}) };
   const auth = createAuthentication({ users: [hashAccount('viewer', 'password', 'viewer')] });
   const server = createDashboardServer({ runtime, auth, platformProvider: async () => ({ modules: [] }),
@@ -58,6 +69,16 @@ test('report preview requires a session, matching finding and intact stored HTML
   assert.deepEqual(await fallback.json(), { markdown: bytes.toString('utf8'), filename: '검사 보고서.hwpx' });
   run.reportDocuments.items[0].previewHtmlArtifactId = htmlId;
   assert.equal((await fetch(`${base}/api/runs/${run.id}/report-preview/finding:h2`, { headers })).status, 404);
+
+  const childEndpoint = `${base}/api/runs/${run.id}/report-preview/${subtaskId}/finding:h1`;
+  assert.equal((await fetch(childEndpoint, { headers })).status, 200);
+  assert.equal((await fetch(`${base}/api/runs/${run.id}/report-preview/${subtaskId}/finding:h2`, { headers })).status, 404);
+  childHtmlArtifact.sourceFindingId = 'finding:other';
+  assert.equal((await fetch(childEndpoint, { headers })).status, 404);
+  childHtmlArtifact.sourceFindingId = 'finding:h1';
+  task.result.report.findings[0].status = 'inconclusive';
+  assert.equal((await fetch(childEndpoint, { headers })).status, 409);
+  task.result.report.findings[0].status = 'confirmed';
 
   await writeFile(htmlPath, 'tampered report');
   const changed = await fetch(endpoint, { headers });

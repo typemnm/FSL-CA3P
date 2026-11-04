@@ -94,7 +94,8 @@ def _core_event(runtime_event: dict) -> StoredEvent | None:
     )
 
 
-def _general_events(state: dict) -> list[StoredEvent]:
+def _general_events(state: dict, subtask_id: str | None = None,
+                    agent_id: str | None = None) -> list[StoredEvent]:
     """Read the final, projected Agent events used by general verification.
 
     General runs do not send pentest-db append messages. The application stores
@@ -105,9 +106,22 @@ def _general_events(state: dict) -> list[StoredEvent]:
         raise CollectError("general run has no event list")
     result = []
     for event in raw:
-        if not isinstance(event, dict) or event.get("source") != "agent/general-assessment":
+        if not isinstance(event, dict):
             continue
-        if event.get("module") != "agent" or not _structured(event):
+        if subtask_id is None:
+            if event.get("source") != "agent/general-assessment":
+                continue
+            module = "agent"
+        else:
+            if event.get("source") != "agent/finding-subagent" or event.get("taskId") != subtask_id:
+                continue
+            # Lifecycle records are emitted by the coordinator, not by the child core.
+            if event.get("stage") in ("subagent.started", "subagent.completed"):
+                continue
+            module = "subagent"
+            if event.get("agentId") != agent_id:
+                raise CollectError("subtask event agent does not match the selected task")
+        if event.get("module") != module or not _structured(event):
             raise CollectError("general run contains a malformed Agent event")
         result.append(StoredEvent(
             stage=event["stage"],
@@ -120,7 +134,41 @@ def _general_events(state: dict) -> list[StoredEvent]:
     return result
 
 
-def read_run(db_path: Path, run_id: str) -> RunRecord | None:
+def _selected_subtask(row: tuple, parent: dict, subtask_id: str) -> tuple[dict, str, str, str]:
+    source_finding_id, kind, agent_id, status, input_json, result_json = row
+    if kind != "finding-followup" or status != "completed" or not isinstance(agent_id, str):
+        raise CollectError("selected subtask is not a completed finding follow-up")
+    task_input = _load(input_json, "subtask input")
+    result = _load(result_json, "subtask result")
+    child = result.get("report") if isinstance(result, dict) else None
+    if (not isinstance(task_input, dict) or not isinstance(child, dict)
+        or child.get("schemaVersion") != "general-assessment/1"
+        or child.get("assessmentMode") != "general"
+        or child.get("runId") != subtask_id or child.get("status") != "completed"):
+        raise CollectError("selected subtask has no completed general report")
+    if (parent.get("schemaVersion") != "general-assessment/1"
+        or parent.get("assessmentMode") != "general"):
+        raise CollectError("selected subtask requires a parent general report")
+    parent_findings = parent.get("findings")
+    parent_hypotheses = parent.get("hypotheses")
+    child_hypotheses = child.get("hypotheses")
+    if (not isinstance(parent_findings, list) or not isinstance(parent_hypotheses, list)
+        or not isinstance(child_hypotheses, list)):
+        raise CollectError("selected subtask has malformed finding provenance")
+    source = [finding for finding in parent_findings
+              if isinstance(finding, dict) and finding.get("id") == source_finding_id]
+    source_hypothesis = task_input.get("hypothesisId")
+    if (len(source) != 1 or not isinstance(source_hypothesis, str)
+        or source[0].get("hypothesisId") != source_hypothesis
+        or source_hypothesis not in {item.get("id") for item in parent_hypotheses
+                                     if isinstance(item, dict)}
+        or source_hypothesis not in {item.get("id") for item in child_hypotheses
+                                     if isinstance(item, dict)}):
+        raise CollectError("selected subtask is not linked to its parent finding")
+    return child, source_finding_id, source_hypothesis, agent_id
+
+
+def read_run(db_path: Path, run_id: str, subtask_id: str | None = None) -> RunRecord | None:
     if not db_path.is_file():
         raise CollectError("run-store database not found")
     try:
@@ -139,6 +187,12 @@ def read_run(db_path: Path, run_id: str) -> RunRecord | None:
         rows = connection.execute(
             "SELECT event_json FROM run_events WHERE run_id = ? ORDER BY sequence", (run_id,)
         ).fetchall()
+        task_row = None
+        if subtask_id is not None:
+            task_row = connection.execute(
+                "SELECT source_finding_id,kind,agent_id,status,input_json,result_json "
+                "FROM run_subtasks WHERE run_id = ? AND id = ?", (run_id, subtask_id)
+            ).fetchone()
     except sqlite3.Error as exc:
         # The class name only: sqlite messages can name files.
         raise CollectError(f"run-store query failed: {type(exc).__name__}") from exc
@@ -150,13 +204,20 @@ def read_run(db_path: Path, run_id: str) -> RunRecord | None:
     report = state.get("report")
     if report is not None and (not isinstance(report, dict) or report.get("runId") != run_id):
         raise CollectError("run-store report does not match the requested runId")
+    source_finding_id = None
+    source_hypothesis_id = None
+    agent_id = None
+    if subtask_id is not None:
+        if not isinstance(report, dict) or task_row is None:
+            raise CollectError("selected subtask or parent report is missing")
+        report, source_finding_id, source_hypothesis_id, agent_id = _selected_subtask(task_row, report, subtask_id)
     events = []
     for (value,) in rows:
         runtime_event = _load(value, "event")
         if isinstance(runtime_event, dict) and (event := _core_event(runtime_event)):
             events.append(event)
     if isinstance(report, dict) and report.get("assessmentMode") == "general":
-        events = _general_events(state)
+        events = _general_events(state, subtask_id, agent_id)
     return RunRecord(
         run_id=run_id,
         driver=DRIVER,
@@ -166,6 +227,13 @@ def read_run(db_path: Path, run_id: str) -> RunRecord | None:
             "source": "run-store",
             "runStatus": state.get("status"),
             "verifiedByStorage": False,
+            **({"subtaskId": subtask_id, "sourceFindingId": source_finding_id,
+                "sourceHypothesisId": source_hypothesis_id,
+                "agentId": agent_id} if subtask_id is not None else {}),
         },
         events=events,
+        meta={key: state[key] for key in ("startedAt", "testProfile", "target", "fixtureId")
+              if key in state},
+        subtask_id=subtask_id,
+        source_finding_id=source_finding_id,
     )

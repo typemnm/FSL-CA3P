@@ -59,6 +59,9 @@ RUN_REQUIRED_TABLES = {"runs", "jobs", "run_events", "action_intents", "model_ca
 # Version 1 stores gained these tables without changing user_version. Older
 # releases remain valid rollback targets, so validate additions only if present.
 RUN_OPTIONAL_COLUMNS = {
+    "run_subtasks": {"run_id", "id", "source_finding_id", "source_finding_digest", "kind",
+                     "agent_id", "status", "input_json", "result_json", "error_code",
+                     "created_at", "started_at", "completed_at", "updated_at"},
     "experiment_control": {"id", "status", "owner", "epoch", "last_reset_at", "summary_json", "error"},
     "pending_target_resets": {"id", "obligations_json"},
     "general_loop_budget": {"id", "limits_json", "updated_at"},

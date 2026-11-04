@@ -52,16 +52,22 @@ test('actual Python report agent produces a valid HWPX that survives storage, vi
           const observed = JSON.parse(JSON.parse(tool.content).content);
           assert.equal(observed.runId, runId);
           assert.equal(observed.report.finding.title, report.finding.title);
+          // REPORT_SPEC JSON; the code-owned run and generator values it sends must be overwritten.
           message = toolCall('finish_report', { filename, model: {
-            generatedAt: '2026-10-23T00:00:00Z', generator: { profile: 'stored_xss' },
-            run: { ...report, metrics: { requestCount: 2 } },
-            findings: [{ common: { title: report.finding.title, cwe: 'CWE-79', status: 'confirmed',
-              location: { method: 'POST', path: '/api/posts', parameter: 'content' },
-              severity: 'medium', summary: '합성 점검의 브라우저 실행 증거입니다.', remediation: '출력 인코딩을 적용합니다.' },
-            reproduction: [{ step: 1, text: '합성 카나리를 게시합니다.' }],
-            textEvidence: [{ label: '합성 payload', text: '<img data-synthetic="true">' }], checks: [] }],
-            priorCases: [], guardrail: { decisions: [] }, safety: { synthetic: true },
-            references: { collectors: [{ name: 'collect-run', driver: 'run-store', status: 'ok' }], verifiedByStorage: false },
+            run: { run_id: 'forged-run', request_count: 99 }, generator: { profile: 'stored_xss' },
+            executive_summary: '합성 게시판에서 저장형 XSS 1건을 확인했습니다.',
+            objective: '합성 게시판의 저장형 XSS 여부를 확인합니다.',
+            scope: `${origin} (합성 시험 환경)`, run_limitations: '합성 점검 1회 결과입니다.',
+            findings: [{ title: report.finding.title, severity: 'medium', cvss_score: '6.1',
+              cvss_vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N', cwe: 'CWE-79',
+              location: 'POST /api/posts (content)', privilege: '일반 사용자',
+              description: '합성 점검의 브라우저 실행 증거입니다.', impact: '세션 탈취로 이어질 수 있습니다.',
+              steps: ['일반 문자열을 게시한다.', '합성 카나리를 게시한다.', '브라우저 실행 여부를 비교해 판정한다.'],
+              evidence: [{ label: '[대조 요청]', content: '기록된 대조 요청이 없습니다.' },
+                { label: '[공격 요청]', content: '<img data-synthetic="true">' }],
+              checks: [{ item: '브라우저 실행', result: '실행됨' }], fix_summary: '출력 인코딩 적용',
+              fix_short: '출력 인코딩을 적용합니다.', fix_long: 'HTML 정화와 회귀 테스트를 둡니다.',
+              limitations: '', references: ['CWE-79'] }],
           } });
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });

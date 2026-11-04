@@ -22,7 +22,7 @@ def select_finding(run: RunRecord, finding_id: str) -> dict:
     if (run.driver != "run-store" or not isinstance(report, dict)
         or report.get("schemaVersion") != "general-assessment/1"
         or report.get("assessmentMode") != "general"
-        or report.get("runId") != run.run_id
+        or report.get("runId") != (run.subtask_id or run.run_id)
         or report.get("status") not in ("completed", "failed")):
         raise CollectError("selected finding requires a final general run-store report")
 
@@ -42,6 +42,10 @@ def select_finding(run: RunRecord, finding_id: str) -> dict:
                 linked.append(item)
     if not linked:
         raise CollectError("selected finding has no hypothesis ID")
+    if run.subtask_id is not None:
+        source_hypothesis = run.provenance.get("sourceHypothesisId") if run.provenance else None
+        if source_hypothesis not in linked:
+            raise CollectError("selected subtask finding is not linked to its source hypothesis")
     by_hypothesis = {item.get("id"): item for item in _rows(report.get("hypotheses"), "hypotheses")
                      if isinstance(item.get("id"), str)}
     if any(item not in by_hypothesis for item in linked):

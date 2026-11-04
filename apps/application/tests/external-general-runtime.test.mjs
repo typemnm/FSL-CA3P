@@ -163,3 +163,103 @@ test('truncated external responses cannot produce confirmed findings', async () 
     assert.equal(run.report.partial, true);
   } finally { await runtime.close(); }
 });
+
+test('external follow-up stores an independent child report within the original GET scope and request cap', async () => {
+  const requests = [];
+  const subtasks = new Map();
+  const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    modelId: 'deepseek-flash', runIdFactory: () => 'external-general-followup',
+    multiAgent: { enabled: true, maxTasks: 1, maxConcurrentAgents: 1,
+      maxTargetRequests: 5 },
+    subtaskRepository: {
+      create: async task => { subtasks.set(task.id, { ...task, status: 'queued' }); },
+      start: async id => { subtasks.get(id).status = 'running'; },
+      finish: async (id, outcome) => { Object.assign(subtasks.get(id), outcome); },
+    },
+    requestImpl: async (url, options) => {
+      requests.push({ url, method: options.method });
+      return response('<title>Start</title>');
+    },
+    plannerFactory: ({ taskId }) => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      if (taskId) {
+        assert.deepEqual(context.availableTools, ['http_get']);
+        assert.equal(context.hypotheses[0].id, 'h-followup');
+        return { done: false, hypotheses: [], probes: [{ id: 'p-child',
+          hypothesisId: 'h-followup', tool: 'http_get', input: { path: '/start?probe=child' } }] };
+      }
+      return { done: false, hypotheses: [{ id: 'h-followup', category: 'configuration',
+        asset: '/start', rationale: 'Inspect the bounded public page.',
+        evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-main', hypothesisId: 'h-followup', tool: 'http_get',
+        input: { path: '/start?probe=main' } }] };
+    } }),
+    verifyAttackImpl: async attack => ({ schemaVersion: 'verifier/1', attackId: attack.id,
+      status: 'confirmed', reason: 'The bounded response supports the hypothesis.', artifacts: [] }),
+  });
+  try {
+    const done = terminal(runtime); runtime.startLab(); const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    assert.equal(run.multiAgent.status, 'completed');
+    assert.equal(run.multiAgent.tasks.length, 1);
+    const [task] = subtasks.values();
+    assert.equal(task.status, 'completed');
+    assert.equal(task.result.report.runId, task.id);
+    assert.equal(task.result.report.status, 'completed');
+    assert.equal(task.result.report.findings[0].status, 'confirmed');
+    assert.equal(task.result.report.scope.focusPath, '/start');
+    const childVerify = run.events.find(event => event.stage === 'verify'
+      && event.source === 'agent/finding-subagent');
+    assert.equal(childVerify.module, 'subagent');
+    assert.equal(childVerify.taskId, task.id);
+    assert.equal(childVerify.agentId, task.agentId);
+    assert.equal(childVerify.response.status, 'confirmed');
+    assert.notEqual(childVerify.request.probeId, 'p-main');
+    assert.equal(run.report.coverage.requestsUsed, requests.length);
+    assert.ok(requests.length <= 5);
+    assert.ok(requests.every(item => item.method === 'GET'
+      && item.url.startsWith('https://8.8.8.8/start')));
+  } finally { await runtime.close(); }
+});
+
+test('external child cannot probe another discovered path outside its assigned finding', async () => {
+  const requests = [];
+  const subtasks = new Map();
+  const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    modelId: 'deepseek-flash', runIdFactory: () => 'external-general-child-scope',
+    multiAgent: { enabled: true, maxTasks: 1, maxConcurrentAgents: 1 },
+    subtaskRepository: {
+      create: task => { subtasks.set(task.id, { ...task }); },
+      start: () => {},
+      finish: (id, outcome) => { Object.assign(subtasks.get(id), outcome); },
+    },
+    requestImpl: async (url, options) => {
+      requests.push([url, options.method]);
+      return response(url === target ? '<a href="/start/other">Other</a>' : '<title>Page</title>');
+    },
+    plannerFactory: ({ taskId }) => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      if (taskId) return { done: false, hypotheses: [], probes: [
+        { id: 'p-other', hypothesisId: 'h-focus', tool: 'http_get', input: { path: '/start/other' } },
+        { id: 'p-focus', hypothesisId: 'h-focus', tool: 'http_get', input: { path: '/start?probe=child' } },
+      ] };
+      return { done: false, hypotheses: [{ id: 'h-focus', category: 'configuration',
+        asset: '/start', rationale: 'Recheck this page only.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-main', hypothesisId: 'h-focus', tool: 'http_get',
+        input: { path: '/start?probe=main' } }] };
+    } }),
+    verifyAttackImpl: async attack => ({ schemaVersion: 'verifier/1', attackId: attack.id,
+      status: 'confirmed', reason: 'The response supports the hypothesis.', artifacts: [] }),
+  });
+  try {
+    const done = terminal(runtime); runtime.startLab(); const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    const [task] = subtasks.values();
+    assert.equal(task.result.report.probes[0].status, 'blocked');
+    assert.equal(task.result.report.probes[0].reason, 'path_out_of_scope');
+    assert.equal(task.result.report.probes[1].status, 'confirmed');
+    assert.equal(requests.filter(([url]) => url === 'https://8.8.8.8/start/other').length, 1);
+    assert.ok(requests.every(([, method]) => method === 'GET'));
+    assert.ok(requests.length <= 8);
+  } finally { await runtime.close(); }
+});

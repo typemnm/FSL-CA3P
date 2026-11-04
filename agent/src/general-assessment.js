@@ -145,6 +145,23 @@ function normalizeHypotheses(items, knownHypotheses, knownEvidence) {
   });
 }
 
+function normalizeInitialContext(value, limits) {
+  if (value === undefined) return null;
+  if (!record(value) || Object.keys(value).some(key => !['inventory', 'evidence', 'hypotheses', 'focusHypothesisId'].includes(key))
+    || !Object.hasOwn(value, 'inventory') || !Object.hasOwn(value, 'evidence')
+    || !Object.hasOwn(value, 'hypotheses') || !Object.hasOwn(value, 'focusHypothesisId')) {
+    throw fault('INVALID_INITIAL_CONTEXT');
+  }
+  const inventory = redactSensitive(jsonValue(value.inventory, 'inventory', 64 * 1024));
+  if (!record(inventory)) throw fault('INVALID_INITIAL_CONTEXT');
+  const evidence = normalizeEvidence(value.evidence, new Map(), limits.maxEvidenceItems, 'initial_evidence');
+  const knownEvidence = new Map(evidence.map(item => [item.id, item]));
+  const hypotheses = normalizeHypotheses(value.hypotheses, new Map(), knownEvidence);
+  const focusHypothesisId = identifier(value.focusHypothesisId, 'focus_hypothesis_id');
+  if (hypotheses.length !== 1 || hypotheses[0].id !== focusHypothesisId) throw fault('INVALID_INITIAL_CONTEXT');
+  return { inventory, evidence, hypotheses, focusHypothesisId };
+}
+
 function normalizeProbes(items, knownProbes, knownHypotheses, availableTools, remaining) {
   if (!Array.isArray(items) || items.length > remaining) throw fault('PROBE_BUDGET_EXCEEDED');
   const ids = new Set();
@@ -276,7 +293,7 @@ function aborted(signal) { if (signal?.aborted) throw Object.assign(new Error('A
 
 /** General assessment core. All network and target actions enter through mandatory ports. */
 async function runGeneralAssessment({ target, observer, planner, policy, approval, executor, verifier,
-  availableTools, limits, signal, onEvent } = {}) {
+  availableTools, limits, initialContext, signal, onEvent } = {}) {
   assertPort(observer, 'observe', 'observer');
   assertPort(planner, 'propose', 'planner');
   assertPort(policy, 'authorize', 'policy');
@@ -290,15 +307,18 @@ async function runGeneralAssessment({ target, observer, planner, policy, approva
   const safeTarget = redactSensitive(jsonValue(target, 'target', 4096));
   if (!record(safeTarget)) throw fault('INVALID_TARGET');
   const budgetLimits = limitsFor(limits);
+  const seed = normalizeInitialContext(initialContext, budgetLimits);
   const report = { schemaVersion: SCHEMA_VERSION, assessmentMode: 'general', runId: `general-${randomUUID()}`,
-    status: 'running', target: redactSensitive(safeTarget), inventory: {}, evidence: [], hypotheses: [], probes: [],
+    status: 'running', target: redactSensitive(safeTarget), inventory: seed?.inventory ?? {},
+    evidence: seed?.evidence ?? [], hypotheses: seed?.hypotheses ?? [], probes: [],
     rejectedProposals: [], partial: false,
     findings: [], coverage: { totalHypotheses: 0, confirmed: 0, notReproduced: 0, inconclusive: 0, notTested: 0 },
     modelCalls: [], iterations: 0, budget: { ...budgetLimits, usedProbes: 0 }, stopReason: null };
-  const evidenceById = new Map();
-  const hypothesisById = new Map();
+  const evidenceById = new Map(report.evidence.map(item => [item.id, item]));
+  const hypothesisById = new Map(report.hypotheses.map(item => [item.id, item]));
   const probeIds = new Set();
   const verdicts = new Map();
+  if (seed) buildFindings(report, verdicts);
   let usedProbes = 0;
   let retriedInvalidOnlyPlan = false;
   const emit = async event => {
@@ -342,7 +362,8 @@ async function runGeneralAssessment({ target, observer, planner, policy, approva
       try {
         plan = await planner.propose({ inventory: report.inventory, evidence: [...report.evidence],
           hypotheses: [...report.hypotheses], usedProbeIds: [...probeIds], iteration, budget,
-          availableTools: [...availableTools], signal });
+          availableTools: [...availableTools],
+          ...(seed ? { focusHypothesisId: seed.focusHypothesisId } : {}), signal });
       } catch (error) {
         if (error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR'
           && report.findings.some(item => item.status === 'confirmed' || item.status === 'not_reproduced')) {
@@ -363,6 +384,11 @@ async function runGeneralAssessment({ target, observer, planner, policy, approva
       for (const item of attempts) {
         const metadata = modelMetadata(item, iteration);
         if (metadata) report.modelCalls.push(metadata);
+      }
+      if (seed && (!Array.isArray(plan.hypotheses) || plan.hypotheses.length
+        || !Array.isArray(plan.probes)
+        || plan.probes.some(probe => probe?.hypothesisId !== seed.focusHypothesisId))) {
+        throw fault('FOCUS_SCOPE_VIOLATION');
       }
       const newHypotheses = normalizeHypotheses(plan.hypotheses ?? [], hypothesisById, evidenceById);
       if (report.hypotheses.length + newHypotheses.length > 128) throw fault('HYPOTHESIS_BUDGET_EXCEEDED');

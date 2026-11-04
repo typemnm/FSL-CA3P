@@ -19,7 +19,9 @@ async function setup(t) {
   const run = { id: 'run-report', report: { status: 'completed' },
     reportDocument: { status: 'ready', artifactId: artifact.id, filename: artifact.filename } };
   const artifacts = new Map([[artifact.id, artifact]]);
-  const store = { getRun: id => id === run.id ? run : null, getArtifact: id => artifacts.get(id) ?? null };
+  const tasks = new Map();
+  const store = { getRun: id => id === run.id ? run : null, getArtifact: id => artifacts.get(id) ?? null,
+    getSubtask: (runId, taskId) => runId === run.id ? tasks.get(taskId) ?? null : null };
   const runtime = { store, getState: () => ({}), close: async () => {} };
   const auth = createAuthentication({ users: [hashAccount('reader', 'synthetic-password', 'viewer')] });
   const session = auth.login({ headers: {}, socket: { remoteAddress: '127.0.0.1' } }, { username: 'reader', password: 'synthetic-password' });
@@ -28,7 +30,7 @@ async function setup(t) {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { await server.shutdown(); await rm(directory, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${server.address().port}`;
-  return { artifact, artifacts, run, path, get: (route = `/api/runs/${run.id}/report.hwpx`, options = {}) => fetch(base + route, { headers, ...options }) };
+  return { artifact, artifacts, tasks, run, path, get: (route = `/api/runs/${run.id}/report.hwpx`, options = {}) => fetch(base + route, { headers, ...options }) };
 }
 
 test('HWPX download requires authentication and preserves binary bytes and a Korean filename for viewers', async t => {
@@ -124,5 +126,41 @@ test('general report route rejects unready, unrelated, unconfirmed, and altered 
   artifact.kind = 'hwpx-report'; artifact.findingId = 'finding:other'; assert.equal((await get(route)).status, 404);
   artifact.findingId = item.findingId; artifact.filename = 'unexpected.hwpx'; assert.equal((await get(route)).status, 404);
   artifact.filename = item.filename; await writeFile(path, Buffer.alloc(bytes.length, 42));
+  assert.equal((await get(route)).status, 409);
+});
+
+test('child report download binds document, artifact, and confirmed stored subtask even when finding IDs match', async t => {
+  const { get, artifact, artifacts, tasks, run, path } = await setup(t);
+  const subtaskId = `sub-${'a'.repeat(24)}`;
+  const sourceFindingId = 'finding:h1';
+  const findingId = 'finding:h1';
+  const childBytes = Buffer.from('PK\x03\x04child-confirmed-finding');
+  const childPath = join(path, '..', 'child.hwpx');
+  await writeFile(childPath, childBytes);
+  const childArtifact = { ...artifact, id: sha256('child-hwpx'), path: childPath,
+    sha256: sha256(childBytes), size: childBytes.length, subtaskId, sourceFindingId, findingId };
+  artifacts.set(childArtifact.id, childArtifact);
+  artifact.findingId = findingId;
+  run.report = { assessmentMode: 'general', findings: [{ id: findingId, status: 'confirmed' }] };
+  run.reportDocuments = { schemaVersion: 'general-report-documents/1', items: [
+    { findingId, status: 'ready', artifactId: artifact.id, filename: artifact.filename },
+    { subtaskId, sourceFindingId, findingId, status: 'ready', artifactId: childArtifact.id,
+      filename: childArtifact.filename },
+  ] };
+  const task = { id: subtaskId, sourceFindingId, status: 'completed', result: { report: {
+    schemaVersion: 'general-assessment/1', runId: subtaskId, status: 'completed',
+    findings: [{ id: findingId, status: 'confirmed' }],
+  } } };
+  tasks.set(subtaskId, task);
+  const route = `/api/runs/${run.id}/reports/${childArtifact.id}.hwpx`;
+  assert.equal((await get(route, { headers: {} })).status, 401);
+  assert.deepEqual(Buffer.from(await (await get(route)).arrayBuffer()), childBytes);
+  childArtifact.subtaskId = `sub-${'b'.repeat(24)}`;
+  assert.equal((await get(route)).status, 404);
+  childArtifact.subtaskId = subtaskId;
+  task.result.report.findings[0].status = 'inconclusive';
+  assert.equal((await get(route)).status, 409);
+  task.result.report.findings[0].status = 'confirmed';
+  task.status = 'failed';
   assert.equal((await get(route)).status, 409);
 });

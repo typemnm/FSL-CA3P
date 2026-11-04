@@ -7,6 +7,8 @@ selected and cross-checked by `general.select_finding`. Both become `report-find
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from ..trigger import FINDING_ID
 from .general import select_finding
 from .model import CollectError, RunRecord, StoredEvent
@@ -14,6 +16,7 @@ from .model import CollectError, RunRecord, StoredEvent
 FINDING_SCHEMA = "report-finding-1.0"
 ATTACK_SCHEMA = "report-attack-1.0"
 ATTACK_KEYS = ("kind", "request", "response", "control", "followUp", "setup")
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S UTC"
 
 
 def legacy_finding_id(finding: dict) -> str:
@@ -25,7 +28,52 @@ def legacy_finding_id(finding: dict) -> str:
     return "finding"
 
 
+def report_time(value: object) -> str | None:
+    """A source timestamp as the report prints it; text that is not ISO 8601 is kept as is."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    return (moment.astimezone(UTC) if moment.tzinfo else moment).strftime(TIME_FORMAT)
+
+
+def run_header(run: RunRecord, incomplete: bool) -> dict:
+    """REPORT_SPEC `run` (except generated_at), from the run record only. Never from the LLM."""
+    report = run.report or {}
+    state = run.meta
+    target = report.get("target") if isinstance(report.get("target"), dict) else {}
+    state_target = state.get("target")
+    origin = target.get("origin") or (state_target if isinstance(state_target, str) else None)
+    completed = next((e.recorded_at for e in reversed(run.events) if e.stage == "complete"), None)
+    metrics = report.get("metrics") if isinstance(report.get("metrics"), dict) else {}
+    count = metrics.get("requestCount")
+    if not isinstance(count, int) or isinstance(count, bool):
+        # Only general runs record Agent `execute` events; legacy runs without metrics stay unknown.
+        general = report.get("assessmentMode") == "general"
+        count = sum(e.stage == "execute" for e in run.events) if general else None
+    return {
+        "run_id": run.run_id,
+        "target_origin": origin,
+        "target_name": target.get("name") or target.get("fixtureId") or state.get("fixtureId")
+        or origin,
+        "profile": state.get("testProfile") or report.get("testProfile"),
+        "started_at": report_time(state.get("startedAt") or report.get("startedAt")),
+        "finished_at": report_time(report.get("completedAt") or completed or run.stored_at),
+        "request_count": count,
+        "status": report.get("status"),
+        "incomplete": incomplete,
+    }
+
+
 def finding_document(run: RunRecord, finding_id: str | None) -> dict:
+    document = _document(run, finding_id)
+    document["run"] = run_header(run, document["incomplete"])
+    return document
+
+
+def _document(run: RunRecord, finding_id: str | None) -> dict:
     report = run.report or {}
     if report.get("assessmentMode") == "general":
         if finding_id is None:
@@ -35,6 +83,8 @@ def finding_document(run: RunRecord, finding_id: str | None) -> dict:
             "schemaVersion": FINDING_SCHEMA,
             "runId": run.run_id,
             "sourceFindingId": finding_id,
+            **({"subtaskId": run.subtask_id, "parentFindingId": run.source_finding_id}
+               if run.subtask_id is not None else {}),
             "status": "confirmed",
             "runStatus": report["status"],
             "incomplete": report["status"] == "failed" or selection["partial"],

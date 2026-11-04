@@ -169,6 +169,15 @@ test('a browser error reaches round 2 as observation.error and unknown stays inc
   assert.deepEqual(result.artifacts, []);
 });
 
+test('a browser request quota failure stops verification instead of becoming inconclusive', async t => {
+  const failure = Object.assign(new Error('quota'),
+    { code: 'PARENT_TARGET_REQUEST_BUDGET_EXCEEDED', fatalProbe: true });
+  const { factory } = fakeBrowser({ error: failure });
+  const model = scriptedModel([{ verdict: 'unknown', reason: 'need browser', browser: { path: '/posts/1' } }]);
+  await assert.rejects(verifyAttack(record(), { model, outDir: await tempOutDir(t),
+    browserFactory: factory }), error => error === failure);
+});
+
 test('a model failure is inconclusive model_unavailable', async () => {
   const model = scriptedModel([Object.assign(new Error('down'), { code: 'ECONNRESET' })]);
   const result = await verifyAttack(record(), { model });
@@ -177,6 +186,13 @@ test('a model failure is inconclusive model_unavailable', async () => {
   assert.equal(result.verdict, null);
   assert.equal(result.completed, false);
   assert.deepEqual(result.model, []);
+});
+
+test('a model request quota failure stops verification instead of becoming inconclusive', async () => {
+  const failure = Object.assign(new Error('quota'),
+    { code: 'PARENT_MODEL_REQUEST_BUDGET_EXCEEDED', fatalProbe: true });
+  await assert.rejects(verifyAttack(record(), { model: scriptedModel([failure]) }),
+    error => error === failure);
 });
 
 test('a reply without a valid verdict is inconclusive invalid_model_output', async () => {

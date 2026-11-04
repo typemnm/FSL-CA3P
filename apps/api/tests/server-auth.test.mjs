@@ -12,7 +12,7 @@ import { createAuthentication, hashAccount } from '../auth.mjs';
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const state = { instanceId: 'test-server', mode: 'core-fixture', run: { id: 'run-a', mode: 'core-fixture', status: 'idle', events: [] }, lab: {} };
-async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBytes, artifactKind } = {}) {
+async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBytes, artifactKind, subtask } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ca3p-api-auth-'));
   const bytes = Buffer.from(artifactBytes ?? '{"runId":"run-a","evidence":"fixture"}');
   const artifactPath = join(directory, 'evidence.json'); await writeFile(artifactPath, bytes);
@@ -32,7 +32,8 @@ async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBy
     resetExperiment: async body => { calls.experimentReset.push(body); return { ...state, experimentReset: { status: 'completed', epoch: 1 } }; },
     clearRunHistory: async body => { calls.historyClear.push(body); return { ...state, historyClear: { status: 'completed', epoch: 1 } }; },
     close: async () => {}, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-    store: { getArtifact: id => id === artifact.id ? artifact : null },
+    store: { getArtifact: id => id === artifact.id ? artifact : null,
+      getSubtask: (runId, id) => runId === 'run-a' && id === subtask?.id ? subtask : null },
   };
   const auth = createAuthentication({ users: ['admin', 'operator', 'viewer'].map(role => hashAccount(role, 'test-password', role)) });
   const ciResults = { getSnapshot: () => ({ source: 'public-feed', status: 'fresh', runs: [{ runId: 101, status: 'passed' }] }), close() {} };
@@ -42,6 +43,20 @@ async function fixture(t, { publicOrigins = [], runtimeState = state, artifactBy
   const base = `http://127.0.0.1:${server.address().port}`;
   return { base, artifact, calls, listeners, async tamper() { await writeFile(artifactPath, '{"tampered":true}'); } };
 }
+
+test('subtask details require authentication and remain tied to their parent run', async t => {
+  const subtask = { id: 'sub-one', parentRunId: 'run-a', status: 'completed',
+    result: { report: { findings: [{ status: 'confirmed' }] } } };
+  const { base } = await fixture(t, { subtask });
+  const route = '/api/runs/run-a/subtasks/sub-one';
+  assert.equal((await api(base, route)).status, 401);
+  const viewer = await login(base, 'viewer');
+  const result = await api(base, route, { headers: viewer.headers });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.task, subtask);
+  assert.equal((await api(base, '/api/runs/other/subtasks/sub-one', { headers: viewer.headers })).status, 404);
+  assert.equal((await api(base, '/api/runs/run-a/subtasks/unknown', { headers: viewer.headers })).status, 404);
+});
 function api(base, path, { method = 'GET', headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
     const req = request(base + path, { method, headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...headers }, agent: false }, res => {

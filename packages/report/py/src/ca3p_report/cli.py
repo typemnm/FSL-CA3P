@@ -126,8 +126,6 @@ def _run(trigger_text: str, *, client=None) -> int:
 
     source = collected.finding
     finding = source["finding"]
-    report = collected.run.report or {}
-    target = report.get("target") if isinstance(report.get("target"), dict) else {}
     vulnerability = " · ".join(
         str(finding[key]) for key in ("title", "category", "cwe", "asset") if finding.get(key)
     )
@@ -138,9 +136,10 @@ def _run(trigger_text: str, *, client=None) -> int:
             "runId": trigger.run_id,
             "stage": "reported",
             "findingId": source["sourceFindingId"],
+            **({"subtaskId": trigger.subtask_id} if trigger.subtask_id is not None else {}),
             "summary": {
                 "vulnerability": vulnerability,
-                "target": target.get("origin") or "",
+                "target": source["run"]["target_origin"] or "",
                 "exploit": source["status"] or "",
             },
             "files": built["files"],

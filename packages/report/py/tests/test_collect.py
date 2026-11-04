@@ -95,6 +95,12 @@ def test_collects_a_sealed_bundle(stored_run, casper_db, run_id, tmp_path, kind)
     assert [c.get("driver") for c in manifest["collectors"]] == [kind, "casper-db"]
     finding = json.loads((bundle / "run/finding.json").read_text(encoding="utf-8"))
     assert finding["schemaVersion"] == "report-finding-1.0" and finding["runId"] == run_id
+    # Both drivers give the same report header, taken from the run record.
+    header = finding["run"]
+    assert (header["run_id"], header["profile"], header["status"]) == (
+        run_id, "stored_xss_canary", "completed")
+    assert (header["started_at"], header["finished_at"]) == (
+        "2026-10-20 00:00:00 UTC", "2026-10-20 00:00:05 UTC")
     attack = json.loads((bundle / "run/attack.json").read_text(encoding="utf-8"))
     assert [record["kind"] for record in attack["records"]] == ["loop.act"]
     history = json.loads((bundle / "history/casper.json").read_text(encoding="utf-8"))

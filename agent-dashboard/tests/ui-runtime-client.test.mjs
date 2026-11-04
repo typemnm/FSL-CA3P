@@ -16,6 +16,7 @@ test('remote deployment polls state and submits general assessments with CSRF an
       calls.push({ path, options });
       if (path === '/api/auth/session') return response(session);
       if (path.startsWith('/api/comparisons')) return response({ compatible: true });
+      if (path.includes('/subtasks/')) return response({ task: { id: 'task /?#', parentRunId: 'run /?#' } });
       return response(envelope);
     },
   });
@@ -34,10 +35,28 @@ test('remote deployment polls state and submits general assessments with CSRF an
   const general = calls.filter(call => call.path === '/api/runs').at(-1);
   assert.deepEqual(JSON.parse(general.options.body), { mode: 'local-lab-general', modelId: 'deepseek-flash', fixtureId: 'vul-web2-daehan', target: 'http://192.168.0.84:4101' });
   assert.equal(general.options.headers['X-CSRF-Token'], 'csrf-a');
+  assert.deepEqual(await client.getSubtask('run /?#', 'task /?#'),
+    { task: { id: 'task /?#', parentRunId: 'run /?#' } });
+  const subtask = calls.find(call => call.path.includes('/subtasks/'));
+  assert.equal(subtask.path, '/api/runs/run%20%2F%3F%23/subtasks/task%20%2F%3F%23');
+  assert.equal(subtask.options.method, 'GET');
+  assert.equal(subtask.options.credentials, 'same-origin');
+  await client.startAssessment('deepseek-flash', 'vul-web-1', undefined, false, { enabled: true });
+  const followUp = calls.filter(call => call.path === '/api/runs').at(-1);
+  assert.deepEqual(JSON.parse(followUp.options.body), { mode: 'local-lab-general',
+    modelId: 'deepseek-flash', approvalRequired: false, multiAgent: { enabled: true } });
+  await client.startExternal({ target: 'https://example.org/', pathPrefix: '/', preflightToken: 'token',
+    modelId: 'deepseek-flash', multiAgent: { enabled: true } });
+  const external = calls.filter(call => call.path === '/api/runs').at(-1);
+  assert.deepEqual(JSON.parse(external.options.body), { mode: 'external-general',
+    target: 'https://example.org/', scope: { pathPrefix: '/' }, preflightToken: 'token',
+    authorizationConfirmed: true, modelId: 'deepseek-flash', multiAgent: { enabled: true } });
   await client.compare('baseline /?', 'candidate #');
   assert.equal(client.reportDownloadUrl('run /?#'), '/api/runs/run%20%2F%3F%23/report.hwpx');
   assert.equal(client.findingReportDownloadUrl('run /?#', 'artifact /?#'),
     '/api/runs/run%20%2F%3F%23/reports/artifact%20%2F%3F%23.hwpx');
+  assert.equal(client.reportPreviewUrl('run-1', 'finding:h1', 'sub-123'),
+    '/api/runs/run-1/report-preview/sub-123/finding%3Ah1');
   const comparison = calls.find(call => call.path.startsWith('/api/comparisons'));
   assert.equal(new URL(comparison.path, 'http://test').searchParams.get('baseline'), 'baseline /?');
   client.close(); const count = calls.length; await pause(30); assert.equal(calls.length, count);

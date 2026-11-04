@@ -6,4 +6,4 @@ packaging==26.3
 pluggy==1.6.0
 Pygments==2.21.0
 pytest==9.1.1
-python-hwpx==6.8.0
+python-hwpx==6.11.0

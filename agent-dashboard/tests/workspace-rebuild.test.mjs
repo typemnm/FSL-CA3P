@@ -109,6 +109,7 @@ test('workspace navigation, external target preflight and report preview use the
   await page.locator('#model-reset-toggle').uncheck();
   await page.locator('#target-kind-external').click();
   await page.locator('#external-model-select').selectOption('deepseek-flash');
+  await page.locator('#external-multi-agent-toggle').check();
   assert.equal(await page.locator('#external-model-select').inputValue(), 'deepseek-flash');
   await page.locator('#external-url').fill('https://example.org/start');
   assert.equal(await page.locator('#external-authorization').count(), 0);
@@ -121,7 +122,8 @@ test('workspace navigation, external target preflight and report preview use the
   assert.deepEqual(requests.filter(item => ['/api/targets/preflight','/api/runs'].includes(item.path)), [
     { path: '/api/targets/preflight', body: { target: 'https://example.org/start', scope: { pathPrefix: '/' }, authorizationConfirmed: true } },
     { path: '/api/runs', body: { mode: 'external-general', target: 'https://example.org/start', scope: { pathPrefix: '/' },
-      preflightToken: 'token-1', authorizationConfirmed: true, modelId: 'deepseek-flash' } },
+      preflightToken: 'token-1', authorizationConfirmed: true, modelId: 'deepseek-flash',
+      multiAgent: { enabled: true } } },
   ]);
   await page.locator('[data-view=reports]').click();
   await page.locator('#report-run-select').selectOption('stored-report');

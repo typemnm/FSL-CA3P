@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRunRepository, DEFAULT_STORE_PATH } from '../../packages/run-store/index.mjs';
 import { createRunManifest } from '../../packages/contracts/manifest.mjs';
+import { validateMultiAgentOptions } from '../../packages/contracts/multi-agent.mjs';
 import { emptyRun, RUN_MODES, RETIRED_RUN_MODES, ACTIVE_STATUSES, redact } from '../../packages/contracts/index.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
 import { normalizeExternalTarget, resolvePublicAddresses, verifyExternalPreflightToken } from './external-target.mjs';
@@ -133,12 +134,16 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (resetting || store.experimentState().status !== 'ready') throw fault(409, '실험 초기화 또는 검토가 진행 중이거나 초기화 재시도가 필요합니다.');
     if (!body || typeof body !== 'object' || Array.isArray(body)
       || Object.keys(body).some(key => !['mode', 'modelId', 'target', 'delayMs', 'testProfile', 'fixtureId',
-        'scope', 'preflightToken', 'authorizationConfirmed', 'approvalRequired'].includes(key))) {
+        'scope', 'preflightToken', 'authorizationConfirmed', 'approvalRequired', 'multiAgent'].includes(key))) {
       throw fault(400, 'Unsupported run options.');
     }
     if (body.approvalRequired !== undefined && typeof body.approvalRequired !== 'boolean') {
       throw fault(400, 'approvalRequired must be a boolean.');
     }
+    if (body.multiAgent !== undefined && !['local-lab-general', 'external-general'].includes(body.mode)) {
+      throw fault(400, 'Multi-agent follow-up requires a general assessment mode.');
+    }
+    const multiAgent = validateMultiAgentOptions(body.multiAgent);
     if (RETIRED_RUN_MODES.includes(body.mode) || RETIRED_PROFILES.includes(body.testProfile)) {
       throw Object.assign(fault(400, 'The single stored-XSS/BOLA check was retired. Start a general assessment instead.'),
         { code: RETIRED_RUN_MODES.includes(body.mode) ? 'RETIRED_MODE' : 'RETIRED_PROFILE' });
@@ -156,6 +161,9 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       }
       if (!model.available) throw fault(503, 'Selected model is unavailable. Configure server credentials before starting.');
       const { normalizedUrl, scope } = normalizeExternalTarget(body);
+      if (multiAgent && Math.min(scope.maxRequests, multiAgent.maxTargetRequests ?? scope.maxRequests) < 4) {
+        throw fault(400, 'External multi-agent follow-up needs at least four target requests.');
+      }
       if (!verifyExternalPreflightToken(body.preflightToken, normalizedUrl, scope)) {
         throw fault(400, 'External target preflight expired or changed. Check the target again.');
       }
@@ -164,6 +172,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       const options = { mode: body.mode, modelId, target: normalizedUrl, scope,
         testProfile: 'external-general', fixtureId: null, delayMs: 0,
         loopBudget: store.getGeneralLoopBudget() };
+      if (multiAgent) options.multiAgent = multiAgent;
       const manifest = createRunManifest({ runId: id, mode: body.mode, modelId, options,
         model, env });
       const experiment = store.experimentState();
@@ -212,6 +221,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     const options = { mode, modelId, target, delayMs: 0, testProfile, fixtureId, approvalRequired };
     if (general) {
       options.loopBudget = store.getGeneralLoopBudget();
+      if (multiAgent) options.multiAgent = multiAgent;
       try { options.caseSnapshot = prepareCaseSnapshot({ runId: id, storePath: store.path, fixtureId, env }); }
       catch (failure) {
         if (failure.code !== 'CASE_SNAPSHOT_UNAVAILABLE') throw failure;

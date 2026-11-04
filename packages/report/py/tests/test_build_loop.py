@@ -7,60 +7,50 @@ import zipfile
 
 import pytest
 from conftest import needs_node, write_sources
-from fixtures import PAYLOAD, stored_xss_report
+from fixtures import ORIGIN, PAYLOAD, stored_xss_report
 
 from ca3p_report.llm.client import LLMError
 from ca3p_report.llm.loop import run_build
 
 
 def model_for(run_id: str) -> dict:
+    """What a model writes for the stored-XSS fixture: REPORT_SPEC JSON with one finding."""
     report = stored_xss_report(run_id)
-    finding = report["finding"]
     return {
-        "generatedAt": "2026-10-20T00:00:00Z",
-        "notices": ["격리 실습", "데이터 synthetic", "판정은 전달받은 값"],
-        "run": {
-            "runId": run_id,
-            "status": "completed",
-            "testProfile": "stored_xss_canary",
-            "target": {"origin": report["target"]["origin"]},
-            "startedAt": report["startedAt"],
-            "completedAt": report["completedAt"],
-            "metrics": {"requestCount": 1},
-        },
+        "executive_summary": "게시글 본문에서 저장형 XSS 1건을 확인했습니다. "
+        "즉시 출력 인코딩을 적용해야 합니다.",
+        "objective": "게시판의 저장형 XSS 여부를 확인합니다.",
+        "scope": f"{report['target']['origin']} (시험 환경). 공격자 세션을 사용했습니다.",
+        "run_limitations": "단일 반복으로 점검했습니다.",
+        "omitted": ["세션 쿠키 — 사유: 비밀값에 해당하여 기재하지 않음"],
         "findings": [
             {
-                "common": {
-                    "title": finding["title"],
-                    "cwe": finding["cwe"],
-                    "location": {"method": "POST", "path": "/api/posts", "parameter": "content"},
-                    "cvss": {
-                        "version": "3.1",
-                        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
-                        "score": 6.1,
-                        "rating": "Medium",
-                    },
-                    "severity": finding["severity"],
-                    "status": finding["status"],
-                    "summary": "저장형 XSS가 브라우저에서 실행되었습니다.",
-                    "remediation": "출력 인코딩/HTML 정화를 적용합니다.",
-                    "limitations": "격리 실습 단일 반복 판정입니다.",
-                },
-                "reproduction": [{"step": 1, "text": "canary를 게시합니다."}],
-                "textEvidence": [{"label": "점검 페이로드", "text": PAYLOAD}],
-                "checks": [{"label": "브라우저 콜백 실행", "result": "예"}],
+                "title": "저장형 XSS (Stored Cross-Site Scripting)",
+                "severity": "medium",
+                "cvss_score": "6.1",
+                "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+                "cwe": report["finding"]["cwe"],
+                "location": "POST /api/posts (content)",
+                "privilege": "일반 사용자",
+                "description": "게시글 본문이 인코딩 없이 화면에 출력됩니다.",
                 "impact": "세션 탈취로 이어질 수 있습니다.",
-                "profileData": {"marker": finding["marker"]},
+                "steps": [
+                    "일반 문자열로 게시글을 작성한다.",
+                    "canary 페이로드를 담아 게시글을 작성한다.",
+                    "브라우저 콜백 실행 여부를 비교해 판정한다.",
+                ],
+                "evidence": [
+                    {"label": "[대조 요청]", "content": "기록된 대조 요청이 없습니다."},
+                    {"label": "[공격 요청]", "content": f"POST /api/posts\n{PAYLOAD}"},
+                ],
+                "checks": [{"item": "브라우저 콜백 실행", "result": "예"}],
+                "fix_summary": "출력 인코딩 적용",
+                "fix_short": "본문을 HTML 인코딩해 출력합니다.",
+                "fix_long": "HTML 정화 라이브러리와 회귀 테스트를 도입합니다.",
+                "limitations": "",
+                "references": ["CWE-79"],
             }
         ],
-        "triage": {
-            "status": "ok",
-            "rows": [
-                {"caseId": "LAB-STORED-XSS", "location": "POST /api/posts", "label": "재점검 후보"}
-            ],
-        },
-        "priorCases": [],
-        "references": {"collectors": [], "verifiedByStorage": False},
     }
 
 
@@ -73,6 +63,7 @@ class FakeLLM:
 
     def complete(self, messages, tools):
         self.calls += 1
+        self.messages = list(messages)
         if not self._scripted:
             raise AssertionError("fake LLM ran out of scripted turns")
         return self._scripted.pop(0)
@@ -162,6 +153,24 @@ def test_injection_in_bundle_cannot_make_tools_misbehave(tmp_path, run_id):
     assert document.name.startswith(f"{run_id}-") and len(document.stem) == len(run_id) + 9
 
 
+@needs_node
+def test_refused_report_is_returned_to_the_llm_to_fix(tmp_path, run_id):
+    bundle = _bundle(tmp_path, run_id)
+    broken = model_for(run_id)
+    broken["findings"][0]["severity"] = "severe"
+    broken["findings"][0]["steps"] = ["한 단계만 쓴다."]
+    llm = FakeLLM(
+        [
+            _call("finish_report", {"model": broken}),
+            _call("finish_report", {"model": model_for(run_id)}),
+        ]
+    )
+    run_build(llm, bundle=bundle, out_dir=tmp_path / "out" / "report")
+    refusal = json.loads(llm.messages[-1]["content"])
+    assert refusal["ok"] is False and "severity" in refusal["error"] and "steps" in refusal["error"]
+    assert llm.calls == 2 and (tmp_path / "out" / "report" / "report-model.json").is_file()
+
+
 def test_llm_failure_propagates(tmp_path):
     class Boom:
         def complete(self, messages, tools):
@@ -198,3 +207,15 @@ def test_legacy_loop_act_is_sealed_as_the_attack_source(tmp_path, run_id):
     assert record["response"]["status"] == 201
     assert finding["sourceFindingId"] == f"finding-{run_id}-stored-xss-canary"
     assert finding["status"] == "confirmed" and finding["evidenceIds"] == []
+    # The header comes from the legacy report; it records no request count.
+    assert finding["run"] == {
+        "run_id": run_id,
+        "target_origin": ORIGIN,
+        "target_name": ORIGIN,
+        "profile": "stored_xss_canary",
+        "started_at": "2026-10-20 00:00:00 UTC",
+        "finished_at": "2026-10-20 00:00:05 UTC",
+        "request_count": None,
+        "status": "completed",
+        "incomplete": False,
+    }
