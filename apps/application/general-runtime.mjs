@@ -445,7 +445,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     testProfile: 'general', fixtureId, target: origin ?? 'http://127.0.0.1/',
     coreTargetOrigin: origin, simulated: false, targetContacted: false,
     totalSteps: 1, iterations: 0, modelId,
-    provider: plannerProvider(modelId), pendingApproval: null });
+    provider: plannerProvider(modelId), approvalRequired, pendingApproval: null });
   let run = initial();
   let controller = null;
   let task = null;

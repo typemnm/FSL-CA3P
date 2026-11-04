@@ -92,9 +92,11 @@ for (const site of sites) {
   await expect(site, `${site.api}/999999`, 404, { headers: { cookie: ownCookie } });
 
   const adminCookie = await login(site, 'admin', 'admin1234');
-  await expect(site, '/admin', 200, { headers: { cookie: adminCookie } });
+  const adminPage = await (await expect(site, '/admin', 200, { headers: { cookie: adminCookie } })).text();
   await expect(site, '/admin/posts/new', 200, { headers: { cookie: adminCookie } });
-  await expect(site, '/admin/posts/1/edit', 200, { headers: { cookie: adminCookie } });
+  const editPath = adminPage.match(/href="(\/admin\/posts\/\d+\/edit)"/u)?.[1];
+  assert.ok(editPath, `${site.key} has an editable post`);
+  await expect(site, editPath, 200, { headers: { cookie: adminCookie } });
   await expect(site, site.service, 403, { headers: { cookie: adminCookie } });
   await expect(site, '/logout', 302, { headers: { cookie: studentCookie } });
   await expect(site, '/mypage', 302, { headers: { cookie: studentCookie } });

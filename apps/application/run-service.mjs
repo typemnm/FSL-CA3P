@@ -133,8 +133,11 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (resetting || store.experimentState().status !== 'ready') throw fault(409, '실험 초기화 또는 검토가 진행 중이거나 초기화 재시도가 필요합니다.');
     if (!body || typeof body !== 'object' || Array.isArray(body)
       || Object.keys(body).some(key => !['mode', 'modelId', 'target', 'delayMs', 'testProfile', 'fixtureId',
-        'scope', 'preflightToken', 'authorizationConfirmed'].includes(key))) {
+        'scope', 'preflightToken', 'authorizationConfirmed', 'approvalRequired'].includes(key))) {
       throw fault(400, 'Unsupported run options.');
+    }
+    if (body.approvalRequired !== undefined && typeof body.approvalRequired !== 'boolean') {
+      throw fault(400, 'approvalRequired must be a boolean.');
     }
     if (RETIRED_RUN_MODES.includes(body.mode) || RETIRED_PROFILES.includes(body.testProfile)) {
       throw Object.assign(fault(400, 'The single stored-XSS/BOLA check was retired. Start a general assessment instead.'),
@@ -142,7 +145,9 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     }
     if (body.mode === 'external-general') {
       if (body.fixtureId !== undefined || body.testProfile !== undefined || body.delayMs !== undefined
-        || body.authorizationConfirmed !== true) throw fault(400, 'Confirm the external target and use the external profile.');
+        || body.authorizationConfirmed !== true || body.approvalRequired !== undefined) {
+        throw fault(400, 'Confirm the external target and use the external profile.');
+      }
       const modelId = body.modelId ?? 'deepseek-flash';
       const model = listModels().find(item => item.id === modelId);
       if (!model || !model.supportedModes?.includes('external-general')
@@ -203,7 +208,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
     if (general ? testProfile !== 'general' : testProfile !== 'known_record_idor_read') throw fault(400, 'Unsupported fixture test profile.');
     const target = idorOrigin ? validateUniversityOrigin(body.target === undefined ? idorOrigin : body.target) : 'https://demo.ca3p.local';
     const id = `run-${randomUUID()}`;
-    const options = { mode, modelId, target, delayMs: 0, testProfile, fixtureId };
+    const approvalRequired = body.approvalRequired ?? true;
+    const options = { mode, modelId, target, delayMs: 0, testProfile, fixtureId, approvalRequired };
     if (general) {
       options.loopBudget = store.getGeneralLoopBudget();
       try { options.caseSnapshot = prepareCaseSnapshot({ runId: id, storePath: store.path, fixtureId, env }); }
@@ -224,7 +230,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       manifest.data.caseStoreMigration = options.caseSnapshot.schemaVersion;
       manifest.data.caseDatabaseSourcePath = options.caseSnapshot.sourcePath;
     }
-    const state = { ...emptyRun(), id, coreRunId: id, status: 'queued', mode, modelId,
+    const state = { ...emptyRun(), id, coreRunId: id, status: 'queued', mode, modelId, approvalRequired,
       ...(general ? { assessmentMode: 'general' } : {}),
       target: idorOrigin ? target : 'http://127.0.0.1/',
       simulated: false, testProfile, fixtureId, manifest };

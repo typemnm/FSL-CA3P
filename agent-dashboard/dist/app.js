@@ -528,6 +528,10 @@ function renderStats() {
     ? generalCounts ? `${item.events.length} events · 검사 ${generalCounts.probes}건`
       : `${item.events.length} events · 기록된 검사 ID ${generalObservedProbeCount(item)}개`
     : `${item.events.length} events`;
+  const localHitl = ['local-lab-rule', 'local-lab-general'].includes(item.mode) && Boolean(item.id);
+  $('hitl-run-mode').hidden = !localHitl;
+  if (localHitl) $('hitl-run-mode').textContent = (item.approvalRequired ?? item.manifest?.execution?.approvalRequired ?? true)
+    ? 'HITL 켜짐' : 'HITL 꺼짐';
   $('core-state').textContent = inspectedRun ? 'SAVED SESSION' : !connected ? connection === 'connecting' ? 'CONNECTING' : 'CONNECTION LOST' : liveApproval() ? 'AWAITING APPROVAL' : {queued:'QUEUED',preparing:'LAB PREPARING',running:'CORE RUNNING',stopping:'CORE STOPPING',stopped:'CORE STOPPED',cancelled:'CANCELLED',interrupted:'INTERRUPTED',completed:'CORE COMPLETE',failed:'CORE FAILED',idle:'READY TO START'}[item.status];
   $('live-label').innerHTML = `<span class="tiny-dot ${connected && running ? 'green' : 'gray'}"></span>${inspectedRun ? 'SAVED' : !connected ? 'OFFLINE' : liveApproval() ? 'WAITING' : running ? 'LIVE' : 'IDLE'}`;
   $('connection-status').textContent = connectionLabel;
@@ -558,6 +562,8 @@ function renderStats() {
   $('lab-target-origin').disabled = controlPending || active || !canOperate();
   $('lab-target-control').hidden = !idor;
   $('model-select').disabled = controlPending || active || !canOperate();
+  if (!canApprove()) $('hitl-toggle').checked = true;
+  $('hitl-toggle').disabled = controlPending || active || !canApprove();
   $('model-reset-toggle').checked = settings.confirmModelReset;
   $('model-reset-toggle').disabled = controlPending || !!pendingModelChange;
   $('experiment-reset-button').disabled = !canOperate() || !connected || controlPending || active || !!pendingModelChange;
@@ -921,7 +927,7 @@ $('lab-run-button').addEventListener('click', async () => {
     }
   }
   await submitControl(async () => {
-    await runtime.startAssessment(model.id, selectedFixture(), target);
+    await runtime.startAssessment(model.id, selectedFixture(), target, $('hitl-toggle').checked);
     inspectedRun = null;
     selectedEventId = null;
     showAttackProgress();
