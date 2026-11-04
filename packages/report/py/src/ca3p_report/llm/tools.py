@@ -2,11 +2,11 @@
 
 - read_bundle: read a redacted view of a file inside the sealed bundle only.
 - capture_screenshot: capture a new view of the run target, within its origin and scope.
-- finish_report: mask the LLM-assembled ReportModel, overwrite the fields the sealed bundle
-  already decides (finding identity, verdict, evidence IDs, verifier screenshots), render
-  HWPX + Markdown + HTML + JSON, and end.
+- finish_report: check and mask the LLM-written REPORT_SPEC JSON, overwrite the fields the
+  sealed bundle already decides (run header, finding identity, verdict, evidence IDs, verifier
+  screenshots), render HWPX + Markdown + HTML + JSON, and end.
 
-The LLM writes the prose (CWE, CVSS, summary, reproduction, remediation, impact). It cannot
+The LLM writes the prose (CWE, CVSS, summary, steps, evidence, remediation, impact). It cannot
 change what was verified: those fields come from run/finding.json and run/verification.json.
 """
 
@@ -15,11 +15,13 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from ..collect.finding import TIME_FORMAT
 from ..hwpx.filename import normalize_filename
 from ..hwpx.writer import write_html, write_hwpx, write_markdown
 from .redact import redact
@@ -31,6 +33,18 @@ CAPTURE_CLI = next((candidate for candidate in (
     *(parent / "packages" / "report" / "capture" / "cli.mjs"
       for parent in (Path.cwd(), *Path.cwd().parents)),
 ) if candidate.is_file()), _SOURCE_CAPTURE_CLI)
+CLASSIFICATION = "대외비 (CONFIDENTIAL)"
+SCREENSHOT_NOTE = " (보조 자료, 판정 근거 아님)"
+SEVERITIES = ("critical", "high", "medium", "low", "info")
+SOURCE_STATUSES = ("captured", "completed", "available", "empty")
+CWE = re.compile(r"CWE-\d+")
+# REPORT_SPEC §3: what the LLM writes. Anything else it sends is dropped.
+REQUIRED_TEXT = ("executive_summary", "objective", "scope", "run_limitations")
+LLM_KEYS = (*REQUIRED_TEXT, "method", "sources", "history", "omitted", "findings")
+FINDING_TEXT = ("title", "cvss_score", "cvss_vector", "cwe", "location", "privilege",
+                "description", "impact", "fix_summary", "fix_short", "fix_long")
+FINDING_KEYS = (*FINDING_TEXT, "severity", "steps", "evidence", "checks", "limitations",
+                "references")
 
 
 class ToolError(RuntimeError):
@@ -60,17 +74,61 @@ class FinishResult:
     report_filename: str
 
 
-def _object(parent: dict, key: str) -> dict:
-    value = parent.get(key)
-    if not isinstance(value, dict):
-        value = parent[key] = {}
-    return value
+def _text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
-def _image_ref(ref: object) -> str | None:
-    if not isinstance(ref, str) or not ref:
-        return None
-    return ref if "/" in ref else f"evidence/images/{ref}"  # bare file name from the LLM
+def _texts(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _rows(value: object, keys: tuple[str, ...]) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(item, dict) and all(isinstance(item.get(key), str) for key in keys)
+        for item in value
+    )
+
+
+def _problems(model: dict) -> list[str]:
+    """What keeps this model from being a REPORT_SPEC report; told to the LLM to fix."""
+    finding = model["findings"][0]
+    problems = [f"{key} is required" for key in REQUIRED_TEXT if not _text(model.get(key))]
+    problems += [f"findings[0].{key} is required" for key in FINDING_TEXT
+                 if not _text(finding.get(key))]
+    if finding.get("severity") not in SEVERITIES:
+        problems.append(f"findings[0].severity must be one of {', '.join(SEVERITIES)}")
+    if _text(finding.get("cwe")) and not CWE.fullmatch(finding["cwe"]):
+        problems.append("findings[0].cwe must look like CWE-89")
+    if _text(finding.get("cvss_vector")) and not finding["cvss_vector"].startswith("CVSS:3.1/"):
+        problems.append("findings[0].cvss_vector must be a CVSS:3.1/ vector")
+    steps = finding.get("steps")
+    if not _texts(steps) or len(steps) < 3 or not all(_text(step) for step in steps):
+        problems.append("findings[0].steps needs at least 3 steps: control, attack, comparison")
+    evidence = finding.get("evidence")
+    if not _rows(evidence, ("label", "content")) or not all(
+        any(word in item["label"] for item in evidence) for word in ("대조", "공격")
+    ):
+        problems.append("findings[0].evidence needs [{label, content}] items with both a "
+                        "control ([대조 ...]) and an attack ([공격 ...]) item")
+    if not _rows(finding.get("checks"), ("item", "result")) or not finding["checks"]:
+        problems.append("findings[0].checks needs [{item, result}] rows")
+    if not isinstance(finding.get("limitations"), str):
+        problems.append("findings[0].limitations must be a string")
+    if not _texts(finding.get("references")):
+        problems.append("findings[0].references must be a list of strings")
+    if not isinstance(model.get("method", ""), str):
+        problems.append("method must be a string")
+    sources = model.get("sources", [])
+    if not _rows(sources, ("collector", "kind", "status", "note")) or any(
+        item["status"] not in SOURCE_STATUSES for item in sources
+    ):
+        problems.append("sources must be [{collector, kind, status, note}] with status one of "
+                        + ", ".join(SOURCE_STATUSES))
+    if not _rows(model.get("history", []), ("date", "finding", "result")):
+        problems.append("history must be [{date, finding, result}]")
+    if not _texts(model.get("omitted", [])):
+        problems.append("omitted must be a list of strings")
+    return problems
 
 
 class ReportTools:
@@ -228,66 +286,50 @@ class ReportTools:
             except ToolError as exc:
                 self._capture_error = str(exc)
 
-    def _attach_report_capture(self, finding: dict) -> None:
+    def _attach_report_capture(self, model: dict) -> None:
         self._capture_report_view()
-        evidence = finding.get("textEvidence")
-        if not isinstance(evidence, list):
-            evidence = finding["textEvidence"] = []
+        finding = model["findings"][0]
+        screenshots = finding["screenshots"]
+        sources = model.setdefault("sources", [])
         for shot in self._capture_records:
-            finding["images"].append({
-                "step": None,
-                "caption": "보고서 작성 시 새로 촬영한 대상 화면 (취약점 재현 증거 아님)",
-                "ref": shot["ref"], "integrity": "ok",
+            screenshots.append({
+                "caption": "보고서 작성 시 새로 촬영한 대상 화면 (취약점 재현 증거 아님)"
+                           + SCREENSHOT_NOTE,
+                "ref": shot["ref"],
             })
-            evidence.append({"label": "보고서 작성 시 화면 촬영",
-                             "text": f"주소: {shot['pageUrl']}; 촬영 시각: {shot['capturedAt']}"})
+            sources.append({"collector": "보고서 화면 촬영", "kind": "대상 화면",
+                            "status": "captured",
+                            "note": f"주소: {redact(shot['pageUrl'])}; 촬영 시각: {shot['capturedAt']}"})
         if not self._capture_records:
-            evidence.append({"label": "보고서 작성 시 화면 촬영",
-                             "text": f"촬영 실패: {self._capture_error or '화면 없음'}"})
+            sources.append({"collector": "보고서 화면 촬영", "kind": "대상 화면",
+                            "status": "empty",
+                            "note": f"촬영 실패: {self._capture_error or '화면 없음'}"})
 
     # -- finish_report -----------------------------------------------------------------
-    def _verification_images(self, proposed: object) -> list[dict]:
-        """The verifier's sealed screenshots. The LLM may only place them (step, caption)."""
+    def _screenshots(self) -> list[dict]:
+        """The verifier's sealed screenshots; the LLM cannot add, drop or caption them."""
         if not (self._bundle / "run" / "verification.json").is_file():
             return []
         document = self._read_json("run/verification.json")
-        placed = {
-            _image_ref(item.get("ref")): item
-            for item in (proposed if isinstance(proposed, list) else [])
-            if isinstance(item, dict)
-        }
-        images = []
-        for record in document.get("images") or []:
-            llm = placed.get(record["ref"], {})
-            step = llm.get("step")
-            caption = llm.get("caption")
-            images.append({
-                "step": step if isinstance(step, int) and not isinstance(step, bool) else None,
-                "caption": caption if isinstance(caption, str) and caption.strip()
-                else record.get("label") or "검증 캡처",
-                "ref": record["ref"],
-                "integrity": "ok",
-            })
-        return images
+        return [
+            {"caption": redact(record.get("label") or "검증 화면") + SCREENSHOT_NOTE,
+             "ref": record["ref"]}
+            for record in document.get("images") or []
+        ]
 
     def _fix_verified_fields(self, model: dict) -> None:
         source = self._read_json("run/finding.json")
+        model["run"] = {**source["run"], "generated_at": datetime.now(UTC).strftime(TIME_FORMAT)}
         finding = model["findings"][0]
-        common = _object(finding, "common")
-        common["findingId"] = source["sourceFindingId"]
-        common["status"] = source["status"]
-        run = _object(model, "run")
-        run["runId"] = source["runId"]
-        run["status"] = source["runStatus"]
-        run["incomplete"] = source["incomplete"]
+        finding["id"] = "V-01"
+        finding["finding_id"] = source["sourceFindingId"]
+        finding["verdict"] = "confirmed" if source["status"] == "confirmed" else "unverified"
+        finding["screenshots"] = self._screenshots()
+        model.pop("review_status", None)
+        model["classification"] = CLASSIFICATION
         model["sourceFindingId"] = source["sourceFindingId"]
         model["sourceEvidenceIds"] = list(source["evidenceIds"])
         model["generator"] = {"method": "llm"}
-        model["generatedAt"] = datetime.now(UTC).isoformat()
-        finding["images"] = self._verification_images(finding.get("images"))
-        # Notices are dropped: the report states facts in its sections, not in a cover box.
-        for key in ("notices", "guardrail", "safety", "referenceContext"):
-            model.pop(key, None)
 
     def _reference_context(self) -> dict | None:
         """Source review state is carried deterministically, independent of prose generation."""
@@ -320,17 +362,25 @@ class ReportTools:
         findings = model.get("findings")
         one = isinstance(findings, list) and len(findings) == 1 and isinstance(findings[0], dict)
         if not one:
-            raise ToolError("model.findings must hold exactly one finding")
-        safe_model = redact(model)
+            raise ToolError("model.findings must hold exactly one finding object")
+        written = {key: model[key] for key in LLM_KEYS if model.get(key) is not None}
+        written["findings"] = [{key: findings[0][key] for key in FINDING_KEYS
+                                if findings[0].get(key) is not None}]
+        score = written["findings"][0].get("cvss_score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            written["findings"][0]["cvss_score"] = str(score)
+        safe_model = redact(written)
+        if problems := _problems(safe_model):
+            raise ToolError("fix and call finish_report again: " + "; ".join(problems))
         # After masking, so the sealed identifiers are never altered by it.
         self._fix_verified_fields(safe_model)
-        self._attach_report_capture(safe_model["findings"][0])
+        self._attach_report_capture(safe_model)
         if (context := self._reference_context()) is not None:
             safe_model["referenceContext"] = context
         self._out.mkdir(parents=True, exist_ok=True)
         # Fallback differs per finding so two reports of one run never share a name.
         finding_hash = hashlib.sha256(safe_model["sourceFindingId"].encode("utf-8")).hexdigest()
-        fallback = f"{safe_model['run']['runId'][:100]}-{finding_hash[:8]}"
+        fallback = f"{safe_model['run']['run_id'][:100]}-{finding_hash[:8]}"
         name = normalize_filename(filename, fallback)
         hwpx_path = self._out / name
         model_path = self._out / "report-model.json"
@@ -395,14 +445,15 @@ def tool_schemas() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "finish_report",
-                "description": "Render the ReportModel to HWPX (+ Markdown + JSON) and end. "
-                "Secrets are masked before rendering.",
+                "description": "Check the report JSON, render it to HWPX (+ Markdown + HTML + "
+                "JSON) and end. A refusal says what to fix. Secrets are masked before rendering.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "model": {
                             "type": "object",
-                            "description": "The full ReportModel (report-1.0).",
+                            "description": "The report JSON (REPORT_SPEC) with exactly one "
+                            "finding.",
                         },
                         "filename": {"type": "string", "description": "Proposed .hwpx file name."},
                     },

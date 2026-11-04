@@ -131,17 +131,19 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       session = { ...session, authenticated: false, user: null, csrfToken: null };
       onSession(session); onAuthRequired(); onConnection('disconnected', transport);
     },
-    async startAssessment(modelId, fixtureId = 'vul-web-1', target, approvalRequired = true) {
+    async startAssessment(modelId, fixtureId = 'vul-web-1', target, approvalRequired = true, multiAgent) {
       const value = await request('/api/runs', { mode: 'local-lab-general', modelId,
         ...(fixtureId !== 'vul-web-1' ? { fixtureId } : {}), ...(target ? { target } : {}),
-        ...(approvalRequired ? {} : { approvalRequired: false }) });
+        ...(approvalRequired ? {} : { approvalRequired: false }),
+        ...(multiAgent ? { multiAgent } : {}) });
       receive(value); return value;
     },
     preflightExternal(target, pathPrefix = '/') { return api('/api/targets/preflight', { method: 'POST', body: { target, scope: { pathPrefix }, authorizationConfirmed: true } }); },
-    async startExternal({ target, pathPrefix, preflightToken, modelId }) {
+    async startExternal({ target, pathPrefix, preflightToken, modelId, multiAgent }) {
       const value = await api('/api/runs', { method: 'POST', body: {
         mode: 'external-general', target, scope: { pathPrefix }, preflightToken,
         authorizationConfirmed: true, modelId,
+        ...(multiAgent ? { multiAgent } : {}),
       } });
       receive(value); return value;
     },
@@ -169,12 +171,14 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
       return request(`/api/runs${query.size ? `?${query}` : ''}`);
     },
     getRun(id) { return request(`/api/runs/${encodeURIComponent(id)}`); },
+    getSubtask(runId, taskId) { return request(`/api/runs/${encodeURIComponent(runId)}/subtasks/${encodeURIComponent(taskId)}`); },
     reportDownloadUrl(id) { return `/api/runs/${encodeURIComponent(id)}/report.hwpx`; },
     findingReportDownloadUrl(runId, artifactId) {
       return `/api/runs/${encodeURIComponent(runId)}/reports/${encodeURIComponent(artifactId)}.hwpx`;
     },
-    reportPreviewUrl(runId, findingId) {
-      return `/api/runs/${encodeURIComponent(runId)}/report-preview/${encodeURIComponent(findingId)}`;
+    reportPreviewUrl(runId, findingId, subtaskId) {
+      const taskPath = subtaskId ? `${encodeURIComponent(subtaskId)}/` : '';
+      return `/api/runs/${encodeURIComponent(runId)}/report-preview/${taskPath}${encodeURIComponent(findingId)}`;
     },
     getModels() { return request('/api/models'); },
     getPlatform() { return request('/api/platform'); },

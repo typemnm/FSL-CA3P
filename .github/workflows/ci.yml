@@ -130,6 +130,7 @@ jobs:
           docker compose -p ca3p-ci up --build -d --wait --wait-timeout 120
           curl --fail --silent http://127.0.0.1:4173/api/health
           docker compose -p ca3p-ci exec -T dashboard node -e 'if (Number(process.versions.node.split(".")[0]) !== 24) process.exit(1)'
+          docker compose -p ca3p-ci exec -T dashboard node --input-type=module -e "const {runWorker}=await import('./apps/worker/worker.mjs'); const worker=await runWorker({storePath:'/tmp/ci-worker-smoke.sqlite'}); await worker.shutdown()"
       - name: Test the university sites and bounded IDOR probes
         run: |
           npm ci --prefix vul-web2 --no-audit --no-fund

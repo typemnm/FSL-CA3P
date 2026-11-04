@@ -12,6 +12,7 @@ import { openVerifierBrowser } from '../browser.mjs';
 const CHROMIUM_AVAILABLE = existsSync(chromium.executablePath());
 const PAGES = {
   '/ok': '<!doctype html><script>window.__ca3pXssProbe(\'m1\');</script>',
+  '/with-asset': '<!doctype html><body><img src="/asset.png"></body>',
   '/writes': '<!doctype html><img src="http://127.0.0.1:9/x">'
     + '<script>fetch("/w", { method: "POST", body: "x" }).catch(() => {}); new WebSocket("ws://127.0.0.1:9");</script>',
   '/ready': '<!doctype html><body><script>setTimeout(() => { const el = document.createElement("div"); el.id = "ready"; el.textContent = "ready"; document.body.append(el); }, 100);</script>',
@@ -94,6 +95,23 @@ test('binding, selfCheck, cookies and screenshot work on a real page', { skip: !
   } finally {
     await session.close();
   }
+});
+
+test('request gate observes page resources and rejects before dispatch', { skip: !CHROMIUM_AVAILABLE }, async () => {
+  const allowed = [];
+  const session = await openVerifierBrowser(origin, { beforeRequest: request => { allowed.push(request.url); } });
+  try {
+    await session.goto('/with-asset');
+    assert.equal(await until(() => allowed.some(url => url.endsWith('/asset.png')), 1000), true);
+    assert.ok(allowed.some(url => url.endsWith('/with-asset')));
+  } finally { await session.close(); }
+
+  const denied = await openVerifierBrowser(origin, { beforeRequest: () => {
+    throw Object.assign(new Error('quota'), { code: 'PARENT_TARGET_REQUEST_BUDGET_EXCEEDED', fatalProbe: true });
+  } });
+  try {
+    await assert.rejects(denied.goto('/ok'), error => error.code === 'PARENT_TARGET_REQUEST_BUDGET_EXCEEDED');
+  } finally { await denied.close(); }
 });
 
 test('writes are blocked while reads from other origins load', { skip: !CHROMIUM_AVAILABLE }, async () => {

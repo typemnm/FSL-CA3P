@@ -29,6 +29,104 @@ function ports(overrides = {}) {
   };
 }
 
+function focusedSeed(overrides = {}) {
+  return { inventory: { assets: ['/records/1'], credentials: { password: 'PRIVATE_PASSWORD' } },
+    evidence: [{ id: 'prior-observation', source: 'parent-run', kind: 'http',
+      summary: 'The record route was observed.', asset: '/records/1' }],
+    hypotheses: [{ id: 'access-1', category: 'access-control', asset: '/records/1',
+      rationale: 'The record route may not check its owner.', evidenceIds: ['prior-observation'],
+      status: 'confirmed' }],
+    focusHypothesisId: 'access-1', ...overrides };
+}
+
+test('focused seed exposes one sanitized hypothesis without inheriting a verdict', async () => {
+  const seed = focusedSeed();
+  const { report } = await runGeneralAssessment(ports({
+    initialContext: seed,
+    observer: { async observe() { return { evidence: [] }; } },
+    planner: { async propose(context) {
+      assert.equal(context.focusHypothesisId, 'access-1');
+      assert.equal(context.hypotheses.length, 1);
+      assert.equal(context.hypotheses[0].status, 'not_tested');
+      assert.deepEqual(context.evidence.map(item => item.id), ['prior-observation']);
+      assert.equal(context.inventory.credentials, '[redacted]');
+      return { done: true, hypotheses: [], probes: [] };
+    } },
+    verifier: { async verify() { assert.fail('no probe was executed'); } },
+  }));
+  assert.equal(report.status, 'completed');
+  assert.equal(report.findings[0].status, 'not_tested');
+  assert.equal(report.coverage.totalHypotheses, 1);
+  assert.doesNotMatch(JSON.stringify(report), /PRIVATE_PASSWORD/u);
+  assert.equal(seed.hypotheses[0].status, 'confirmed');
+});
+
+test('focused seed can confirm only after a new probe yields independently verified evidence', async () => {
+  const events = [];
+  const { report } = await runGeneralAssessment(ports({
+    initialContext: focusedSeed(),
+    observer: { async observe() { return { evidence: [] }; } },
+    planner: { async propose({ iteration }) { return iteration === 1
+      ? { hypotheses: [], probes: [{ id: 'followup-1', hypothesisId: 'access-1',
+        tool: 'http-read', input: { path: '/records/1' } }] }
+      : { done: true, hypotheses: [], probes: [] }; } },
+    executor: { async execute() { return { evidence: [{ id: 'fresh-1', source: 'http-read', kind: 'http',
+      summary: 'The other user received the record.', asset: '/records/1' }] }; } },
+    verifier: { async verify({ evidence }) {
+      assert.deepEqual(evidence.map(item => item.id), ['prior-observation', 'fresh-1']);
+      return { status: 'confirmed', completed: true, evidenceIds: ['fresh-1'] };
+    } },
+    onEvent: event => events.push(event),
+  }));
+  assert.equal(report.status, 'completed');
+  assert.equal(report.findings[0].status, 'confirmed');
+  assert.deepEqual(report.findings[0].evidenceIds, ['prior-observation', 'fresh-1']);
+  assert.deepEqual(events.filter(item => item.stage === 'verify').map(item => item.evidenceIds), [['fresh-1']]);
+});
+
+test('focused run rejects a planner that expands to another hypothesis before policy or execution', async () => {
+  let authorized = 0;
+  let executed = 0;
+  for (const plan of [
+    { hypotheses: [{ id: 'other', category: 'xss', asset: '/other', rationale: 'new target',
+      evidenceIds: ['prior-observation'] }], probes: [] },
+    { hypotheses: [], probes: [{ id: 'off-focus', hypothesisId: 'other',
+      tool: 'http-read', input: { path: '/other' } }] },
+  ]) {
+    const { report } = await runGeneralAssessment(ports({
+      initialContext: focusedSeed(),
+      observer: { async observe() { return { evidence: [] }; } },
+      planner: { async propose() { return plan; } },
+      policy: { async authorize() { authorized += 1; return { allowed: true }; } },
+      executor: { async execute() { executed += 1; return { evidence: [] }; } },
+    }));
+    assert.equal(report.status, 'failed');
+    assert.equal(report.error.code, 'FOCUS_SCOPE_VIOLATION');
+    assert.equal(report.findings[0].status, 'not_tested');
+  }
+  assert.equal(authorized, 0);
+  assert.equal(executed, 0);
+});
+
+test('focused seed validates its scope, references, duplicate evidence and budget', async () => {
+  const invalid = [
+    focusedSeed({ focusHypothesisId: 'other' }),
+    focusedSeed({ hypotheses: [...focusedSeed().hypotheses, { ...focusedSeed().hypotheses[0], id: 'other' }] }),
+    focusedSeed({ hypotheses: [{ ...focusedSeed().hypotheses[0], evidenceIds: ['unknown'] }] }),
+    focusedSeed({ evidence: [...focusedSeed().evidence, focusedSeed().evidence[0]] }),
+    focusedSeed({ probes: [{ id: 'fake', status: 'confirmed' }] }),
+  ];
+  for (const initialContext of invalid) {
+    await assert.rejects(runGeneralAssessment(ports({ initialContext })),
+      error => typeof error?.code === 'string' && error.code !== 'GENERAL_ASSESSMENT_FAILED');
+  }
+  const extraEvidence = { ...observed.evidence[0], id: 'second-observation' };
+  await assert.rejects(runGeneralAssessment(ports({
+    initialContext: focusedSeed({ evidence: [...focusedSeed().evidence, extraEvidence] }),
+    limits: { maxIterations: 2, maxProbes: 4, maxEvidenceItems: 1 },
+  })), { code: 'INVALID_EVIDENCE' });
+});
+
 test('general core rejects an unbounded model attempt list', async () => {
   const { report } = await runGeneralAssessment(ports({
     planner: { async propose() { return { done: true, hypotheses: [], probes: [],

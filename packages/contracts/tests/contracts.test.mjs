@@ -87,6 +87,24 @@ test('general university manifests record model execution and omit deferred XSS 
   assert.equal(manifest.environment.browserVersion, 'not-applicable');
 });
 
+test('general manifest freezes multi-agent follow-up and separates its logical input', () => {
+  const base = { runId: 'general-follow-up', mode: 'local-lab-general', modelId: 'deepseek-flash',
+    model: { provider: 'deepseek' }, options: { fixtureId: 'vul-web2-daehan', testProfile: 'general' } };
+  const ordinary = createRunManifest(base);
+  const followUp = createRunManifest({ ...base,
+    options: { ...base.options, approvalRequired: false, multiAgent: { enabled: true } } });
+  assert.equal(ordinary.execution.multiAgent, undefined);
+  assert.deepEqual(followUp.execution.multiAgent,
+    { enabled: true, maxConcurrentAgents: 2, maxTasks: 4 });
+  assert.ok(ordinary.modules['packages/report']);
+  assert.ok(followUp.modules['packages/report']);
+  assert.notEqual(followUp.data.logicalInputDigest, ordinary.data.logicalInputDigest);
+  assert.equal(followUp.execution.approvalRequired, false);
+  assert.throws(() => createRunManifest({ ...base, mode: 'local-lab-rule',
+    options: { fixtureId: 'vul-web2-daehan', testProfile: 'known_record_idor_read',
+      multiAgent: { enabled: true } } }), /general assessment mode/);
+});
+
 test('external general manifest binds the model, verifier, loop budget and public scope', () => {
   const scope = { origin: 'https://example.com', pathPrefix: '/audit', methods: ['GET', 'HEAD'],
     maxRequests: 8, maxResponseBytes: 65536, requestTimeoutMs: 5000, maxDurationMs: 30000 };
@@ -116,6 +134,23 @@ test('external general manifest binds the model, verifier, loop budget and publi
   assert.equal(manifest.target.testProfile, 'external-general');
   assert.deepEqual(manifest.target.scope, scope);
   assert.equal(manifest.data.unavailableInputs.includes('independent-verifiers'), false);
+});
+
+test('external follow-up manifest freezes the smaller effective request and time limits', () => {
+  const scope = { origin: 'https://example.com', pathPrefix: '/audit', methods: ['GET', 'HEAD'],
+    maxRequests: 8, maxResponseBytes: 65536, requestTimeoutMs: 5000, maxDurationMs: 30000 };
+  const multiAgent = { enabled: true, maxConcurrentAgents: 1, maxTasks: 1,
+    maxTargetRequests: 5, deadlineMs: 60_000 };
+  const manifest = createRunManifest({ runId: 'external-followup-manifest',
+    mode: 'external-general', modelId: 'deepseek-flash', model: { provider: 'deepseek' },
+    options: { target: 'https://example.com/audit', scope, multiAgent } });
+  assert.deepEqual(manifest.execution.multiAgent, multiAgent);
+  assert.equal(manifest.execution.childRequestReserve, 1);
+  assert.equal(manifest.execution.maxRequests, 5);
+  assert.equal(manifest.policy.maxRequests, 5);
+  assert.equal(manifest.execution.assessmentDurationMs, 60_000);
+  assert.equal(manifest.policy.assessmentDurationMs, 60_000);
+  assert.ok(manifest.modules['packages/report']);
 });
 
 test('general manifests bind the unified catalog snapshot and actual execution dependencies', t => {

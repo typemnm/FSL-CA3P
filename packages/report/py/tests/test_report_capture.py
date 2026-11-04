@@ -44,11 +44,11 @@ def test_fresh_capture_falls_back_from_broken_home_and_enters_hwpx(tmp_path, cap
         assert _run(_trigger(db, output, "finding:h-a"), client=writer()) == EXIT_OK
         result = _result(capsys)
         model = json.loads((output / "report" / "report-model.json").read_text("utf-8"))
-        images = model["findings"][0]["images"]
+        images = model["findings"][0]["screenshots"]
         assert len(images) == 1
         assert "취약점 재현 증거 아님" in images[0]["caption"]
         assert (output / "bundle" / images[0]["ref"]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-        assert any("/notices" in row["text"] for row in model["findings"][0]["textEvidence"])
+        assert any("/notices" in row["note"] for row in model["sources"])
         with zipfile.ZipFile(output / "report" / result["reportFilename"]) as archive:
             assert sum(name.startswith("BinData/") for name in archive.namelist()) == 1
     finally:
@@ -72,8 +72,8 @@ def test_llm_capture_tool_uses_same_report_image_path(tmp_path, capsys):
         assert _run(_trigger(db, output, "finding:h-a"), client=llm) == EXIT_OK
         _result(capsys)
         model = json.loads((output / "report" / "report-model.json").read_text("utf-8"))
-        assert len(model["findings"][0]["images"]) == 1
-        assert any("/notices" in row["text"] for row in model["findings"][0]["textEvidence"])
+        assert len(model["findings"][0]["screenshots"]) == 1
+        assert any("/notices" in row["note"] for row in model["sources"])
     finally:
         server.shutdown()
         server.server_close()
@@ -89,8 +89,8 @@ def test_capture_failure_is_recorded_without_discarding_report(tmp_path, capsys)
     assert _run(_trigger(db, output, "finding:h-a"), client=writer()) == EXIT_OK
     result = _result(capsys)
     model = json.loads((output / "report" / "report-model.json").read_text("utf-8"))
-    assert model["findings"][0]["images"] == []
-    assert any("촬영 실패" in row["text"] for row in model["findings"][0]["textEvidence"])
+    assert model["findings"][0]["screenshots"] == []
+    assert any("촬영 실패" in row["note"] for row in model["sources"])
     assert (output / "report" / result["reportFilename"]).is_file()
 
 

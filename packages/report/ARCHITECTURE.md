@@ -42,7 +42,7 @@ worker는 실제 실습의 완료·실패 보고서를 저장한 뒤 문서 생�
 | `py/src/ca3p_report/collect/` | run·과거 사례·verifier handoff 수집, finding 한 건 정규화(`finding.py`), 범용 확정 finding과 현재 검증 증거 선택(`general.py`), SHA-256 manifest와 번들 봉인 |
 | `py/src/ca3p_report/llm/` | OpenAI-compatible 클라이언트, 도구 호출 루프, 읽기 뷰와 출력 모델 마스킹, 검증된 필드 고정 |
 | `capture/` | run 대상 origin에 고정된 Playwright PNG 촬영. 외부 대상은 공개 DNS·경로 범위를 적용한 HTTP 요청으로 전달 |
-| `py/src/ca3p_report/hwpx/` | 파일명 정규화, 고정 목차·표·이미지·점검 미완료 표시, HWPX·Markdown·HTML 렌더링 |
+| `py/src/ca3p_report/hwpx/` | 파일명 정규화, [REPORT_SPEC.md](REPORT_SPEC.md) 레이아웃을 python-hwpx 서식 API로 HWPX·Markdown·HTML 렌더링(캡처 PNG 포함) |
 | `packages/run-store/index.mjs` | `hwpx-report` binary artifact의 bytes·해시·크기·파일명·선택 finding ID 보관 |
 | `apps/api/server.mjs` | 실행과 artifact의 연결·무결성 검사 후 인증된 사용자에게 다운로드 제공 |
 | `agent-dashboard/dist/` | 문서 상태·과금 안내 표시, 준비된 실행의 HWPX 다운로드 |

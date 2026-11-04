@@ -10,6 +10,7 @@ import { once } from 'node:events';
 import { digest } from '../../../packages/contracts/index.mjs';
 import { createDashboardServer } from '../../api/server.mjs';
 import { runWorker } from '../worker.mjs';
+import { createGeneralRuntime } from '../../application/general-runtime.mjs';
 
 async function waitFor(check, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
@@ -25,7 +26,7 @@ const toolCall = (name, args) => ({ role: 'assistant', content: null, tool_calls
   id: name, type: 'function', function: { name, arguments: JSON.stringify(args) },
 }] });
 
-async function setup(modelId = 'deepseek-flash', loopBudget) {
+async function setup(modelId = 'deepseek-flash', loopBudget, multiAgent) {
   const runtimeRoot = fileURLToPath(new URL('../../../.runtime/', import.meta.url));
   mkdirSync(runtimeRoot, { recursive: true });
   const directory = mkdtempSync(join(runtimeRoot, 'general-worker-'));
@@ -37,10 +38,123 @@ async function setup(modelId = 'deepseek-flash', loopBudget) {
     state: { id, mode: 'local-lab-general', assessmentMode: 'general', modelId,
       status: 'queued', events: [] },
     options: { mode: 'local-lab-general', testProfile: 'general', fixtureId: 'vul-web2-daehan',
-      target: 'http://127.0.0.1:4101', delayMs: 0, ...(loopBudget ? { loopBudget } : {}) } });
+      target: 'http://127.0.0.1:4101', delayMs: 0,
+      ...(loopBudget ? { loopBudget } : {}), ...(multiAgent ? { multiAgent } : {}) } });
   store.close();
   return { id, storePath, directory };
 }
+
+test('multi-agent worker keeps parent and child documents distinct when their finding IDs match', async t => {
+  const config = { enabled: true, maxConcurrentAgents: 2, maxTasks: 2 };
+  const { id, storePath, directory } = await setup('deepseek-flash', undefined, config);
+  const reportCalls = [];
+  const factory = options => {
+    const listeners = new Set();
+    let state;
+    return {
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      async startLab() {
+        assert.deepEqual(options.multiAgent, config);
+        const task = { id: 'sub-one', agentId: 'agent-one', sourceFindingId: 'finding:h1',
+          sourceFindingDigest: 'a'.repeat(64), input: { hypothesisId: 'h1' } };
+        options.subtaskRepository.create(task);
+        options.subtaskRepository.start(task.id);
+        options.subtaskRepository.finish(task.id, { status: 'completed', result: {
+          report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
+            runId: task.id, status: 'completed', findings: [{ id: 'finding:h1',
+              hypothesisId: 'h1', status: 'confirmed', evidenceIds: ['child-e1'] }] },
+        } });
+        state = { run: { id, mode: 'local-lab-general', status: 'completed',
+          events: [], report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general',
+            status: 'completed', findings: [{ id: 'finding:h1', hypothesisId: 'h1',
+              status: 'confirmed', evidenceIds: ['e1'] }] },
+          multiAgent: { status: 'completed', tasks: [{ id: task.id, status: 'completed' }] },
+          reviewItems: [] } };
+        for (const listener of listeners) listener(structuredClone(state));
+      },
+      getState() { return structuredClone(state); }, stop() {}, async close() {},
+    };
+  };
+  const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10,
+    env: {}, generalRuntimeFactory: factory,
+    reportGenerator: ({ findingId, subtaskId, subtask }) => {
+      reportCalls.push({ findingId, subtaskId: subtaskId ?? null });
+      if (subtaskId) assert.equal(subtask.result.report.runId, subtaskId);
+      return { status: 'ready', filename: `${subtaskId ?? 'parent'}.hwpx`,
+        bytes: Buffer.from(`PK\x03\x04${subtaskId ?? 'parent'}`),
+        previewMarkdown: `# ${subtaskId ?? 'parent'}` };
+    } });
+  t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+  const run = await waitFor(() => { const value = worker.store.getRun(id);
+    return value.status === 'completed' && value.reportDocuments?.completedAt && value; });
+  assert.deepEqual(reportCalls, [{ findingId: 'finding:h1', subtaskId: null },
+    { findingId: 'finding:h1', subtaskId: 'sub-one' }]);
+  assert.equal(run.reportDocuments.status, 'ready');
+  assert.deepEqual(run.reportDocuments.items.map(item => [item.findingId, item.subtaskId ?? null,
+    item.sourceFindingId ?? null, item.status]), [
+    ['finding:h1', null, null, 'ready'],
+    ['finding:h1', 'sub-one', 'finding:h1', 'ready'],
+  ]);
+  const [parent, child] = run.reportDocuments.items;
+  for (const [item, expectedSubtask] of [[parent, undefined], [child, 'sub-one']]) {
+    for (const artifactId of [item.artifactId, item.previewArtifactId]) {
+      const artifact = worker.store.getArtifact(artifactId);
+      assert.equal(artifact.findingId, item.findingId);
+      assert.equal(artifact.subtaskId, expectedSubtask);
+      assert.equal(artifact.sourceFindingId, expectedSubtask ? 'finding:h1' : undefined);
+    }
+  }
+  assert.equal(worker.store.listSubtasks(id)[0].status, 'completed');
+});
+
+test('worker runs a real finding-focused child and persists its independent verdict', async t => {
+  const { id, storePath, directory } = await setup('deepseek-flash', undefined,
+    { enabled: true, maxConcurrentAgents: 2, maxTasks: 2 });
+  const fetchImpl = async (url) => {
+    const path = new URL(url).pathname;
+    const body = path === '/api/search'
+      ? JSON.stringify({ site: '대한대학교', results: [] })
+      : '<html><title>대한대학교</title><a href="/about">About</a></html>';
+    return new Response(body, { status: 200, headers: { 'content-type': path === '/api/search'
+      ? 'application/json' : 'text/html' } });
+  };
+  const plannerFactory = () => ({ async propose(context) {
+    if (context.focusHypothesisId) return context.iteration > 1
+      ? { done: true, hypotheses: [], probes: [] }
+      : { done: false, hypotheses: [], probes: [{ id: 'child-read',
+        hypothesisId: context.focusHypothesisId, tool: 'http_get', input: { path: '/about' } }] };
+    return context.iteration > 1 ? { done: true, hypotheses: [], probes: [] }
+      : { done: false, hypotheses: [{ id: 'h-followup', category: 'access_control',
+        asset: '/about', rationale: 'Check the observed path', evidenceIds: [context.evidence[0].id] }], probes: [] };
+  } });
+  const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10, env: {},
+    generalPlannerFactory: plannerFactory,
+    generalRuntimeFactory: options => createGeneralRuntime({ ...options,
+      fetchImpl, unavailableInputs: ['casper-db'], enableRequiredTemplates: false,
+      approvalRequired: false,
+      verifyAttackImpl: async record => ({ schemaVersion: 'verifier/1', attackId: record.id,
+        status: 'confirmed', reason: 'synthetic evidence', artifacts: [] }) }),
+    reportGenerator: ({ findingId, subtaskId, subtask }) => {
+      assert.equal(findingId, 'finding:h-followup');
+      assert.equal(subtaskId, subtask.id);
+      return { status: 'ready', filename: 'child.hwpx', bytes: Buffer.from('PK\x03\x04child') };
+    } });
+  t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+  const run = await waitFor(() => { const value = worker.store.getRun(id);
+    return value.status === 'completed' && value.reportDocuments?.completedAt && value; });
+  assert.equal(run.report.findings[0].status, 'not_tested');
+  assert.equal(run.multiAgent.tasks[0].finding.status, 'confirmed');
+  const [task] = worker.store.listSubtasks(id);
+  assert.equal(task.status, 'completed');
+  assert.equal(task.result.report.findings[0].status, 'confirmed');
+  assert.equal(run.reportDocuments.status, 'ready');
+  assert.deepEqual(run.reportDocuments.items.map(item => [item.subtaskId, item.findingId,
+    item.sourceFindingId, item.status]), [[task.id, task.result.report.findings[0].id,
+    'finding:h-followup', 'ready']]);
+  const artifact = worker.store.getArtifact(run.reportDocuments.items[0].artifactId);
+  assert.equal(artifact.subtaskId, task.id);
+  assert.equal(artifact.sourceFindingId, 'finding:h-followup');
+});
 
 async function runWithFindings(t, { findings, status = 'completed', reportGenerator, beforeWait }) {
   const { id, storePath, directory } = await setup();
@@ -208,10 +322,19 @@ test('general worker generates two distinct real Python HWPX files for two confi
           const { sourceFindingId } = JSON.parse(JSON.parse(tool.content).content);
           written.push(sourceFindingId);
           message = toolCall('finish_report', { filename: `${sourceFindingId.replace(':', '-')}.hwpx`, model: {
-            findings: [{ common: { title: '합성 접근 제어 우회', cwe: 'CWE-639',
-              cvss: { version: '3.1', score: 6.5, rating: 'Medium', vector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N' },
-              summary: '다른 사용자의 기록에 접근할 수 있습니다.', remediation: '서버에서 소유자를 확인합니다.' },
-            reproduction: [{ step: 1, text: '다른 계정으로 같은 기록을 요청합니다.' }] }] } });
+            executive_summary: '접근 제어 취약점 1건을 확인했습니다.', objective: '객체 수준 인가를 확인합니다.',
+            scope: '합성 시험 환경', run_limitations: '합성 점검 결과입니다.',
+            findings: [{ title: '합성 접근 제어 우회 (Authorization Bypass)', severity: 'medium', cvss_score: '6.5',
+              cvss_vector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N', cwe: 'CWE-639',
+              location: 'GET /api/records/:id (id)', privilege: '일반 사용자',
+              description: '다른 사용자의 기록을 읽을 수 있습니다.', impact: '타인 정보가 노출됩니다.',
+              steps: ['본인 계정으로 자기 기록을 요청한다.', '다른 계정으로 같은 기록을 요청한다.',
+                '두 응답을 비교해 판정한다.'],
+              evidence: [{ label: '[대조 요청]', content: 'GET /api/records/1' },
+                { label: '[공격 요청]', content: 'GET /api/records/2' }],
+              checks: [{ item: '대조군 대비 결과 차이', result: '타인 기록 열람' }],
+              fix_summary: '서버에서 소유자를 확인', fix_short: '조회 전에 소유자를 비교합니다.',
+              fix_long: '객체 수준 인가와 회귀 테스트를 둡니다.', limitations: '', references: ['CWE-639'] }] } });
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ choices: [{ message }] }));
@@ -377,7 +500,7 @@ test('general worker passes the verifier handoff only for a finding whose confir
       { id: 'finding:h2', hypothesisId: 'h2', status: 'confirmed', evidenceIds: ['ev2'] },
     ],
     probes: [
-      { id: 'p1', hypothesisId: 'h1', status: 'confirmed' },
+      { id: 'p1', hypothesisId: 'h1', status: 'confirmed', evidenceIds: ['ev1'] },
       { id: 'p2', hypothesisId: 'h2', status: 'not_reproduced' },
     ],
     evidence: [], coverage: { totalHypotheses: 2, confirmed: 2 } };
@@ -391,7 +514,9 @@ test('general worker passes the verifier handoff only for a finding whose confir
         mkdirSync(join(options.verificationRoot, 'p1'), { recursive: true });
         writeFileSync(join(options.verificationRoot, 'p1', 'verification.json'), '{}');
         state = { run: { id, mode: 'local-lab-general', assessmentMode: 'general',
-          status: 'completed', events: [], report, reviewItems: [] } };
+          status: 'completed', events: [{ id: 'verify-p1', source: 'agent/general-assessment',
+            module: 'agent', stage: 'verify', request: { hypothesisId: 'h1', probeId: 'p1' },
+            response: { status: 'confirmed', evidenceIds: ['ev1'] } }], report, reviewItems: [] } };
         for (const listener of listeners) listener(structuredClone(state));
       },
       getState() { return structuredClone(state); }, stop() {}, async close() {},

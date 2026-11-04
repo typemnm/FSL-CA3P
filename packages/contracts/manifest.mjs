@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { digest, redact, CONTRACT_VERSIONS } from './index.mjs';
 import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from './general-loop-budget.mjs';
+import { validateMultiAgentOptions } from './multi-agent.mjs';
 
 export const PROJECT_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const EXCLUDED = new Set(['node_modules', '.git', '.runtime', 'data', '__pycache__', '.pytest_cache', '.ruff_cache', '.venv', 'reports', '.env']);
@@ -44,10 +45,17 @@ function attackCatalogSnapshot(path) {
   finally { database?.close(); }
 }
 export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
+  const multiAgent = validateMultiAgentOptions(options.multiAgent);
+  if (multiAgent && !['local-lab-general', 'external-general'].includes(mode)) {
+    throw new TypeError('Multi-agent follow-up requires a general assessment mode.');
+  }
   if (mode === 'external-general') {
     const loopBudget = validateGeneralLoopBudget(options.loopBudget ?? GENERAL_LOOP_BUDGET_DEFAULTS);
+    const requestLimit = Math.min(options.scope.maxRequests, multiAgent?.maxTargetRequests ?? options.scope.maxRequests);
+    if (multiAgent && requestLimit < 4) throw new TypeError('External multi-agent follow-up needs at least four target requests.');
+    const childRequestReserve = multiAgent ? Math.min(4, Math.floor((requestLimit - 2) / 2)) : 0;
     const effectiveLoopBudget = { ...loopBudget,
-      maxProbes: Math.min(loopBudget.maxProbes, options.scope.maxRequests - 2) };
+      maxProbes: Math.min(loopBudget.maxProbes, requestLimit - childRequestReserve - 2) };
     const moduleNames = ['agent', 'packages/verifier', 'packages/models', 'packages/report', 'packages/external-http',
       'apps/application', 'apps/worker', 'packages/contracts', 'packages/run-store'];
     const modules = Object.fromEntries(moduleNames.map(name => [name,
@@ -60,9 +68,9 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       shared: { contractDigest: treeDigest(join(PROJECT_ROOT, 'packages/contracts')),
         lockDigest: null, modelRegistryDigest: treeDigest(join(PROJECT_ROOT, 'packages/models')) },
       execution: { mode, simulated: false, maxIterations: loopBudget.maxIterations,
-        loopBudget, effectiveLoopBudget, delayMs: 0,
-        maxRequests: options.scope.maxRequests, targetHttpDurationMs: options.scope.maxDurationMs,
-        assessmentDurationMs: 300_000,
+        loopBudget, effectiveLoopBudget, ...(multiAgent ? { multiAgent, childRequestReserve } : {}), delayMs: 0,
+        maxRequests: requestLimit, targetHttpDurationMs: options.scope.maxDurationMs,
+        assessmentDurationMs: Math.min(300_000, multiAgent?.deadlineMs ?? 300_000),
         inspectionMode: 'external-general' },
       model: { id: modelId, provider: model.provider ?? 'deepseek', requestedModel: modelId,
         reportedModel: null, snapshot: null,
@@ -70,7 +78,7 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
         promptTemplateDigest: treeDigest(join(PROJECT_ROOT, 'agent/src/general-model-planner.js')),
         settings: model.settings ?? {}, actualPromptDigests: [] },
       data: { logicalInputDigest: digest({ mode, target: options.target, scope: options.scope,
-        loopBudget }),
+        loopBudget, ...(multiAgent ? { multiAgent } : {}) }),
         datasetDigest: null, catalogDigest: null, caseSnapshotDigest: null, caseRevisions: [],
         unavailableInputs: ['casper-db', 'authenticated-sessions', 'repository-source'] },
       target: { kind: 'external', fixtureId: null, entryUrl: redact(options.target),
@@ -80,10 +88,10 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
         application: treeDigest(join(PROJECT_ROOT, 'apps/application/external-target.mjs')),
         externalHttp: treeDigest(join(PROJECT_ROOT, 'packages/external-http/index.mjs')),
       }),
-        methods: ['GET', 'HEAD'], maxRequests: options.scope.maxRequests,
+        methods: ['GET', 'HEAD'], maxRequests: requestLimit,
         maxResponseBytes: options.scope.maxResponseBytes, requestTimeoutMs: options.scope.requestTimeoutMs,
         maxDurationMs: options.scope.maxDurationMs, durationMeasure: 'cumulative-target-http-time',
-        assessmentDurationMs: 300_000,
+        assessmentDurationMs: Math.min(300_000, multiAgent?.deadlineMs ?? 300_000),
         redirects: 'manual-no-follow', mutationRetry: 'never', targetReset: 'not-required-read-only',
         recovery: 'interrupted-new-run-required', maxIterations: loopBudget.maxIterations },
       environment: { nodeVersion: process.version, pythonVersion: 'not-applicable',
@@ -118,7 +126,8 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       lockDigest: null,
       modelRegistryDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')) },
     execution: { mode, simulated: false, maxIterations: loopBudget?.maxIterations ?? 1,
-      ...(general ? { loopBudget } : {}), delayMs: options.delayMs ?? 0,
+      ...(general ? { loopBudget } : {}), ...(multiAgent ? { multiAgent } : {}),
+      delayMs: options.delayMs ?? 0,
       approvalRequired: options.approvalRequired ?? true },
     model: { id: modelId, provider: model.provider ?? (requestedModel ? 'deepseek' : 'rules'), requestedModel,
       reportedModel: null, snapshot: null, adapterDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'packages/models')),
@@ -127,7 +136,8 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
       settings: model.settings ?? {}, actualPromptDigests: [] },
     data: { logicalInputDigest: digest({ mode, fixtureId, testProfile,
       approvalRequired: options.approvalRequired ?? true,
-      ...(general ? { loopBudget } : {}), ...(universityLab ? { origin: universityOrigin } : {}) }),
+      ...(general ? { loopBudget } : {}), ...(multiAgent ? { multiAgent } : {}),
+      ...(universityLab ? { origin: universityOrigin } : {}) }),
       datasetDigest: treeDigest(join(PROJECT_ROOT, universityLab ? 'vul-web2' : 'vul-web-1')),
       catalogDigest: general && options.caseSnapshot?.path ? attackCatalogSnapshot(options.caseSnapshot.path) : null,
       catalogSeedDigest: fixedUniversityProbe ? null : treeDigest(join(PROJECT_ROOT, 'casper-db/src/casper_db/catalog_seed')),

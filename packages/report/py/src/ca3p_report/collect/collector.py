@@ -64,7 +64,9 @@ def _verification(run_id: str, location: Path, finding: dict) -> tuple[dict, lis
 
 
 def collect(trigger: Trigger, *, now: datetime | None = None) -> CollectResult:
-    run = RUN_DRIVERS[trigger.run.kind](trigger.run.location, trigger.run_id)
+    run = (run_store.read_run(trigger.run.location, trigger.run_id, trigger.subtask_id)
+           if trigger.subtask_id is not None
+           else RUN_DRIVERS[trigger.run.kind](trigger.run.location, trigger.run_id))
     if run is None:
         raise RunNotFound(trigger.run_id)
     if run.report is None:

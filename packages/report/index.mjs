@@ -13,6 +13,7 @@ const MAX_PREVIEW_BYTES = 2_000_000;
 const MAX_HTML_PREVIEW_BYTES = 30_000_000;
 const DEFAULT_TIMEOUT_MS = 300_000;
 const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const SUBTASK_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 // Runs without a language model (rule-only) write with the configured default DeepSeek model.
 const RULE_ONLY_MODELS = new Set([undefined, 'rule-baseline']);
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -100,21 +101,45 @@ function resolveSettings({ modelId, env, envFile }) {
 
 /** Runs the Python report agent; public results never contain paths or credentials. */
 export async function generateReportDocument({ run, storePath, historyPath, envFile, env = process.env,
-  findingId, verificationDir, signal, timeoutMs = DEFAULT_TIMEOUT_MS, execute = executeReportProcess } = {}) {
+  findingId, subtaskId, subtask, verificationDir, signal, timeoutMs = DEFAULT_TIMEOUT_MS,
+  execute = executeReportProcess } = {}) {
   if (run?.mode === 'core-fixture' || run?.simulated) {
     return { status: 'skipped', errorCode: 'FIXTURE_SKIPPED', message: '코어 fixture는 HWPX 보고서를 생성하지 않습니다.' };
   }
   if (!run?.report || !['completed', 'failed'].includes(run.report.status)) {
     return { status: 'skipped', errorCode: 'NO_FINAL_REPORT', message: '최종 검사 보고서가 없습니다.' };
   }
-  const general = run.report.assessmentMode === 'general';
+  let selectedReport = run.report;
+  if (subtaskId !== undefined) {
+    const sourceFindingId = subtask?.sourceFindingId;
+    const sourceHypothesisId = subtask?.input?.hypothesisId;
+    const parents = Array.isArray(run.report.findings)
+      ? run.report.findings.filter(item => item?.id === sourceFindingId) : [];
+    if (typeof subtaskId !== 'string' || !SUBTASK_ID.test(subtaskId)
+      || subtask?.id !== subtaskId || subtask?.status !== 'completed'
+      || subtask?.kind !== 'finding-followup'
+      || typeof sourceFindingId !== 'string' || !FINDING_ID.test(sourceFindingId)
+      || typeof sourceHypothesisId !== 'string' || parents.length !== 1
+      || parents[0].hypothesisId !== sourceHypothesisId
+      || subtask?.result?.report?.runId !== subtaskId
+      || subtask.result.report.schemaVersion !== 'general-assessment/1'
+      || subtask.result.report.assessmentMode !== 'general'
+      || subtask.result.report.status !== 'completed') {
+      return { status: 'failed', errorCode: 'REPORT_INVALID_SELECTION',
+        message: '완료된 서브에이전트 finding을 하나 선택해야 합니다.' };
+    }
+    selectedReport = subtask.result.report;
+  }
+  const general = selectedReport.assessmentMode === 'general';
   let selectedFinding;
   if (general) {
-    const matches = Array.isArray(run.report.findings) && typeof findingId === 'string'
-      ? run.report.findings.filter(item => item?.id === findingId) : [];
+    const matches = Array.isArray(selectedReport.findings) && typeof findingId === 'string'
+      ? selectedReport.findings.filter(item => item?.id === findingId) : [];
     if (matches.length !== 1 || matches[0].status !== 'confirmed'
       || !Array.isArray(matches[0].evidenceIds)
-      || matches[0].evidenceIds.some(id => typeof id !== 'string')) {
+      || matches[0].evidenceIds.some(id => typeof id !== 'string')
+      || (subtaskId !== undefined && ![matches[0].hypothesisId, ...(matches[0].hypothesisIds ?? [])]
+        .includes(subtask.input.hypothesisId))) {
       return { status: 'failed', errorCode: 'REPORT_INVALID_SELECTION',
         message: '확정된 범용 finding을 하나 선택해야 합니다.' };
     }
@@ -123,7 +148,7 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     return { status: 'failed', errorCode: 'REPORT_INVALID_SELECTION',
       message: '이 보고서 형식은 finding 선택을 지원하지 않습니다.' };
   }
-  const source = general ? selectedFinding : run.report.finding;
+  const source = general ? selectedFinding : selectedReport.finding;
   const expectedId = general ? findingId : legacyFindingId(source);
   const sourceStatus = general ? 'confirmed' : source?.status ?? null;
   const sourceEvidence = general ? selectedFinding.evidenceIds
@@ -143,7 +168,8 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
       sources: { run: { kind: 'run-store', location: resolve(storePath) },
         history: historyPath ? { kind: 'casper-db', location: resolve(historyPath) } : { kind: 'none' },
         ...(verificationDir ? { verification: { kind: 'handoff-dir', location: resolve(verificationDir) } } : {}) },
-      output: { dir: output }, ...(general ? { options: { findingId } } : {}) };
+      output: { dir: output }, ...(general ? { options: { findingId,
+        ...(subtaskId !== undefined ? { subtaskId } : {}) } } : {}) };
     const childEnv = { ...env, PYTHONPATH: PYTHON_ROOT, PYTHONIOENCODING: 'utf-8',
       DEEPSEEK_BASE_URL: settings.baseUrl, DEEPSEEK_API_KEY: settings.apiKey, DEEPSEEK_MODEL: settings.model };
     const result = await execute({ command: env.CA3P_REPORT_PYTHON || env.CASPER_DB_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'),
@@ -163,6 +189,7 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     const name = response.reportFilename;
     if (response.schemaVersion !== 'report-result-1.0' || response.runId !== run.id || response.stage !== 'reported'
       || response.findingId !== expectedId
+      || (subtaskId !== undefined && response.subtaskId !== subtaskId)
       || typeof name !== 'string' || !/^[^<>:"/\\|?*\u0000-\u001f]{1,120}\.hwpx$/u.test(name)
       || name.includes('..') || !Array.isArray(response.files)) {
       throw failure('REPORT_INVALID_OUTPUT', '보고서 실행 식별자 또는 파일명이 올바르지 않습니다.');
@@ -177,15 +204,15 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
     let model;
     try { model = JSON.parse(modelBytes.toString('utf8')); }
     catch { throw failure('REPORT_INVALID_OUTPUT', '보고서 모델의 형식이 올바르지 않습니다.'); }
-    if (model?.run?.runId !== run.id) {
+    if (model?.run?.run_id !== run.id) {
       throw failure('REPORT_INVALID_OUTPUT', '보고서 내용의 실행 식별자가 일치하지 않습니다.');
     }
     const evidenceIds = model.sourceEvidenceIds;
     if (model.sourceFindingId !== expectedId
-      || model.run?.status !== run.report.status
+      || model.run.status !== selectedReport.status
       || !Array.isArray(model.findings) || model.findings.length !== 1
-      || model.findings[0]?.common?.findingId !== expectedId
-      || (model.findings[0]?.common?.status ?? null) !== sourceStatus
+      || model.findings[0]?.finding_id !== expectedId
+      || model.findings[0].verdict !== (sourceStatus === 'confirmed' ? 'confirmed' : 'unverified')
       || !Array.isArray(evidenceIds) || (sourceEvidence.length > 0 && !evidenceIds.length)
       || new Set(evidenceIds).size !== evidenceIds.length
       || evidenceIds.some(id => typeof id !== 'string' || !sourceEvidence.includes(id))) {
@@ -212,6 +239,7 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
       throw failure('REPORT_INVALID_OUTPUT', '보고서 HTML 미리보기 형식이 올바르지 않습니다.');
     }
     return { status: 'ready', ...(general ? { findingId } : {}),
+      ...(subtaskId !== undefined ? { subtaskId, sourceFindingId: subtask.sourceFindingId } : {}),
       filename: name, bytes, sha256: hash(bytes), size: bytes.length, previewMarkdown, previewHtml };
   } catch (error) {
     const known = typeof error?.code === 'string' && /^REPORT_[A-Z_]+$/.test(error.code);

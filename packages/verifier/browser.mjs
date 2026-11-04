@@ -53,8 +53,10 @@ function pushCapped(list, item, max) {
 const READY_WAIT_MS = 5000;
 const MAX_SHOT_HEIGHT = 2000;
 
-export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10000, signal, bindingName = '__ca3pXssProbe' } = {}) {
+export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10000, signal,
+  beforeRequest, bindingName = '__ca3pXssProbe' } = {}) {
   if (signal?.aborted) throw abortError();
+  if (beforeRequest !== undefined && typeof beforeRequest !== 'function') throw new TypeError('beforeRequest must be a function.');
   const allowedOrigin = originOf(origin);
   const deadline = Date.now() + timeoutMs;
   const remaining = () => Math.max(deadline - Date.now(), 1);
@@ -66,6 +68,14 @@ export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10
   let pageErrorCount = 0;
   let browser;
   let closing;
+  let interruptedError;
+  const pendingRequests = new Map();
+  const requestHops = new Map();
+  const requestRoot = request => {
+    let root = request;
+    while (root.redirectedFrom?.()) root = root.redirectedFrom();
+    return root;
+  };
 
   // Pending calls race this promise so the one session deadline and abort fail them.
   let rejectPending;
@@ -78,10 +88,15 @@ export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10
       clearTimeout(deadlineTimer);
       signal?.removeEventListener('abort', onAbort);
       await browser?.close().catch(() => {});
+      for (const [request, settle] of pendingRequests) {
+        settle(requestHops.get(request) ?? 0, !interruptedError);
+      }
+      pendingRequests.clear();
     })();
     return closing;
   };
   const interrupt = error => {
+    interruptedError = error;
     rejectPending(error);
     void close();
   };
@@ -114,6 +129,10 @@ export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10
   try {
     await guard(launchBrowser());
     const context = await guard(browser.newContext({ serviceWorkers: 'block', acceptDownloads: false }));
+    context.on('request', request => {
+      const root = requestRoot(request);
+      requestHops.set(root, (requestHops.get(root) ?? 0) + 1);
+    });
     await guard(context.route('**/*', async route => {
       const request = route.request();
       const method = request.method();
@@ -122,6 +141,14 @@ export async function openVerifierBrowser(origin, { cookies = [], timeoutMs = 10
       if (reason) {
         block(method, request.url(), reason);
         return route.abort('blockedbyclient');
+      }
+      if (beforeRequest) try {
+        const settle = await beforeRequest({ method, url: request.url(), resourceType: request.resourceType() });
+        if (typeof settle === 'function') pendingRequests.set(request, settle);
+      } catch (error) {
+        interrupt(error);
+        await route.abort('blockedbyclient').catch(() => {});
+        return;
       }
       return route.continue();
     }));

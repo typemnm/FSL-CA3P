@@ -73,6 +73,8 @@
               <div class="external-scope-note">선택한 모델이 허용 범위의 공개 자료에서 가설을 세웁니다. 정책과 독립 검증이 허용하는 검사만 실행하며 미지원 검사는 미점검으로 기록합니다.</div>
               <label for="external-model-select">판단 엔진 / AI 모델 <select id="external-model-select" aria-describedby="external-model-readiness"><option value="">모델 목록 수신 중</option></select></label>
               <small id="external-model-readiness" aria-live="polite">점검 모델을 확인하는 중입니다.</small>
+              <label class="experiment-reset-toggle" for="external-multi-agent-toggle"><input id="external-multi-agent-toggle" type="checkbox" role="switch" aria-describedby="external-multi-agent-help"><span>Finding별 서브에이전트 후속 검사</span></label>
+              <small id="external-multi-agent-help">메인 점검 후 허용 범위와 요청 한도 안에서 후속 검사를 진행합니다. 추가 모델 호출이 발생할 수 있습니다.</small>
               <button class="button secondary" id="external-preflight-button" type="submit">대상 사전 점검</button>
               <div id="external-preflight-status" role="status" aria-live="polite">URL을 입력하고 사전 점검을 시작하세요.</div>
               <button class="button primary" id="external-run-button" type="button" disabled>범용 취약점 점검 시작</button>
@@ -92,6 +94,8 @@
               <small id="model-reset-help">켜면 모델을 바꿀 때 실험 흔적 제거 여부를 묻습니다. 확인 전에는 삭제하지 않습니다.</small>
               <p id="model-reset-warning" class="experiment-reset-warning" role="status" hidden>실험 흔적을 유지하고 모델을 변경했습니다. 이전 실험의 영향이 남을 수 있습니다.</p>
               <small class="lab-cost" id="model-scope">선택한 모델로 범용 취약점 점검을 수행합니다. 모델 API 호출에는 비용이 발생할 수 있습니다.</small>
+              <label class="experiment-reset-toggle" for="multi-agent-toggle"><input id="multi-agent-toggle" type="checkbox" role="switch" aria-describedby="multi-agent-help"><span>Finding별 서브에이전트 후속 검사</span></label>
+              <small id="multi-agent-help">메인 점검이 끝난 뒤 검사할 finding을 배정합니다. 추가 모델 호출이 발생할 수 있습니다.</small>
               <small id="lab-readiness" aria-live="polite">실행 환경을 확인하는 중입니다.</small>
             </div>
             <div class="lab-origin-control" id="lab-target-control" hidden><label for="lab-target-origin">에이전트에서 접근할 실습 원점 · IP와 포트</label><input id="lab-target-origin" type="text" value="http://127.0.0.1:4101" placeholder="http://192.168.0.84:4101" autocomplete="off" spellcheck="false" aria-describedby="lab-target-help"><small id="lab-target-help">Mac에서 직접 실행하면 127.0.0.1을 사용합니다. Docker에서는 host.docker.internal 또는 같은 네트워크의 daehan / wonchang을 사용하세요. 등록된 vul-web2 실습의 사설망 HTTP 원점만 허용합니다.</small></div>

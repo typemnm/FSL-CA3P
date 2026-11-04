@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyRun, assertIdentifier } from '../../packages/contracts/index.mjs';
 import { verifyAttack } from '../../packages/verifier/index.mjs';
+import { openVerifierBrowser } from '../../packages/verifier/browser.mjs';
 import { writeReportHandoff } from '../../packages/verifier/report-handoff.mjs';
 import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../packages/contracts/general-loop-budget.mjs';
 import { validateUniversityOrigin } from '../../packages/contracts/university-target.mjs';
@@ -15,6 +16,9 @@ import { collectWebInfo, evidenceFromTargetInfo } from '../../packages/adapters/
 import { createAttackToolBridge, renderTemplate, verifyTemplate, templateExecutionSupport, projectTemplateResponse, listTemplates } from '../../packages/adapters/integrations/attack-tool.mjs';
 import { buildRequiredTemplatePlan, librariesFromInventory } from './required-templates.mjs';
 import { createAssessmentPlanner, createModelJsonClient, isGeneralPlannerModel, plannerProvider, usesJsonClient } from '../../packages/models/local-planner.mjs';
+import { validateMultiAgentOptions } from '../../packages/contracts/multi-agent.mjs';
+import { selectFindingSubtasks, runFindingSubtasks, createSharedExecutionBudget,
+  createTargetRequestGate, PARENT_EXECUTION_LIMITS } from './finding-subagents.mjs';
 
 const { runGeneralAssessment } = generalCore;
 const { createGeneralModelPlannerFromEnv } = generalPlanner;
@@ -27,6 +31,45 @@ const WEB_INFO_EVIDENCE_BUDGET_BYTES = 6800;
 const MAX_BODY_BYTES = 24 * 1024;
 const MAX_INITIAL_PAGES = 14;
 const CATALOG_SOURCE = 'casper-db/attack-catalog';
+const DESTRUCTIVE_PATH_SEGMENT = /(?:^|\/)(?:delete|destroy|remove|wipe|purge|truncate|drop|reset)(?:\/|$)/iu;
+const DESTRUCTIVE_PAYLOAD = /\b(?:delete\s+from|drop\s+(?:table|database|schema)|truncate\s+table)\b/iu;
+const DESTRUCTIVE_COMMAND = /^(?:delete|destroy|remove|wipe|purge|truncate|drop|reset)$/iu;
+
+function destructiveTargetPath(path) {
+  try {
+    let pathname = new URL(path, 'http://localhost').pathname;
+    for (let pass = 0; pass < 3; pass += 1) {
+      if (DESTRUCTIVE_PATH_SEGMENT.test(pathname)) return true;
+      pathname = decodeURIComponent(pathname);
+    }
+    return DESTRUCTIVE_PATH_SEGMENT.test(pathname);
+  }
+  catch { return true; }
+}
+
+function destructiveTemplate(template) {
+  return [template.target?.endpoint, template.request?.packet?.path,
+    template.verify?.baseline?.path, template.verify?.followUp?.path]
+    .some(path => typeof path === 'string' && destructiveTargetPath(path));
+}
+
+function destructivePacket(packet) {
+  if (!packet || !['GET', 'POST'].includes(packet.method)) return true;
+  if (destructiveTargetPath(packet.path)) return true;
+  for (const fields of [packet.query, packet.body]) {
+    if (!fields || typeof fields !== 'object') continue;
+    for (const [key, value] of Object.entries(fields)) {
+      if (/^(?:action|operation|command|_method)$/iu.test(key)
+        && DESTRUCTIVE_COMMAND.test(String(value))) return true;
+    }
+  }
+  let content = JSON.stringify({ query: packet.query ?? null, body: packet.body ?? null });
+  for (let pass = 0; pass < 2; pass += 1) {
+    if (DESTRUCTIVE_PAYLOAD.test(content)) return true;
+    try { content = decodeURIComponent(content); } catch { break; }
+  }
+  return DESTRUCTIVE_PAYLOAD.test(content);
+}
 const FIXTURES = Object.freeze({
   'vul-web-1': {
     name: '로컬 게시판', siteKey: null, origin: null,
@@ -419,7 +462,8 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   catalogReader = readKnowledgeCatalogReadOnly, templateCatalog,
   webParserCollect = collectWebInfo, verificationRoot, verifyAttackImpl = verifyAttack, verifierModel,
   limits = GENERAL_LOOP_BUDGET_DEFAULTS, enableRequiredTemplates = true,
-  approvalRequired = false, approvalTimeoutMs = 1_800_000 } = {}) {
+  approvalRequired = false, approvalTimeoutMs = 1_800_000,
+  multiAgent, subtaskRepository } = {}) {
   if (!Object.hasOwn(FIXTURES, fixtureId)) throw new TypeError('Choose a registered local fixture.');
   if (!isGeneralPlannerModel(modelId)) throw new TypeError('A registered planner model is required for a general assessment.');
   if (typeof runIdFactory !== 'function' || typeof fetchImpl !== 'function'
@@ -437,6 +481,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     throw new TypeError('Invalid general runtime approval options.');
   }
   limits = validateGeneralLoopBudget(limits);
+  multiAgent = validateMultiAgentOptions(multiAgent);
+  if (multiAgent && (!subtaskRepository || ['create', 'start', 'finish'].some(key =>
+    typeof subtaskRepository[key] !== 'function'))) throw new TypeError('A subtask repository is required for multi-agent assessment.');
   const config = FIXTURES[fixtureId];
   const origin = config.siteKey ? validateUniversityOrigin(targetOrigin ?? config.origin) : null;
   const instanceId = randomUUID();
@@ -452,6 +499,49 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   let board = null;
   let closed = false;
   let approvalController = null;
+  let approvalQueue = Promise.resolve();
+  const executionLimits = multiAgent ? Object.fromEntries(Object.entries(PARENT_EXECUTION_LIMITS)
+    .map(([key, cap]) => [key, Math.min(cap, multiAgent[key] ?? cap)])) : null;
+  const executionBudget = executionLimits ? createSharedExecutionBudget(executionLimits) : null;
+  const targetGate = createTargetRequestGate();
+  async function modelTransportFetch(url, options) {
+    const endpoint = new URL(String(url));
+    if (!executionBudget || !/\/(?:chat\/completions|api\/chat)$/u.test(endpoint.pathname)) {
+      return fetch(url, options);
+    }
+    let payload;
+    try { payload = JSON.parse(options?.body); } catch { payload = {}; }
+    const outputLimit = payload.max_tokens ?? payload.max_completion_tokens ?? payload.options?.num_predict ?? 8192;
+    // A UTF-8 byte upper-bounds a prompt token; reserve output before any HTTP attempt.
+    const estimate = Buffer.byteLength(String(options?.body ?? ''), 'utf8')
+      + (Number.isSafeInteger(outputLimit) && outputLimit > 0 ? outputLimit : 8192);
+    const settle = executionBudget.reserveModelRequest(estimate);
+    try {
+      const response = await fetch(url, options);
+      let actual;
+      try {
+        const envelope = await response.clone().json();
+        const usage = envelope.usage;
+        actual = usage?.total_tokens ?? (Number.isSafeInteger(usage?.prompt_tokens)
+          && Number.isSafeInteger(usage?.completion_tokens)
+          ? usage.prompt_tokens + usage.completion_tokens : undefined);
+        if (actual === undefined && Number.isSafeInteger(envelope.prompt_eval_count)
+          && Number.isSafeInteger(envelope.eval_count)) actual = envelope.prompt_eval_count + envelope.eval_count;
+      } catch { /* No trustworthy usage: retain the conservative reservation. */ }
+      settle(actual);
+      return response;
+    } catch (error) { settle(); throw error; }
+  }
+  async function requestSerializedApproval(input) {
+    let release;
+    const previous = approvalQueue;
+    approvalQueue = new Promise(resolve => { release = resolve; });
+    await previous;
+    try {
+      input.signal?.throwIfAborted();
+      return await approvalController.request(input);
+    } finally { release(); }
+  }
   // Session cookies stay only in this runtime process. Inventory and reports keep role labels.
   const sessionCookies = new Map();
 
@@ -480,9 +570,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
   async function checkedRequest(url, { id, iteration = 0, tool = 'http_get', session = 'public',
     method = 'GET', headers, signal: requestSignal } = {}) {
     const probe = { id, probeId: id, iteration, tool, session, method, url: url.href };
-    const reservation = await invokeHook(beforeProbe, probe);
+    const release = await targetGate.acquire(method, requestSignal);
+    let reservation;
+    let hookStarted = false;
     let summary;
     try {
+      executionBudget?.reserveTargetRequest();
+      reservation = await invokeHook(beforeProbe, probe);
+      hookStarted = true;
       const timeout = AbortSignal.timeout(5000);
       const combined = requestSignal ? AbortSignal.any([requestSignal, timeout]) : timeout;
       const response = await fetchImpl(url, { method, headers, redirect: 'manual', signal: combined });
@@ -491,8 +586,10 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       summary = responseSummary(url.pathname + url.search, response, body, url.origin);
       return summary;
     } finally {
-      await invokeHook(afterProbe, probe, { status: summary?.status ?? null,
-        evidenceId: summary ? evidenceId('http', id) : null }, reservation);
+      try {
+        if (hookStarted) await invokeHook(afterProbe, probe, { status: summary?.status ?? null,
+          evidenceId: summary ? evidenceId('http', id) : null }, reservation);
+      } finally { release(); }
     }
   }
   async function verifyFixtureIdentity(allowedOrigin, currentSignal) {
@@ -509,9 +606,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       const url = new URL(check.path, allowedOrigin);
       const probe = { id: check.id, probeId: check.id, iteration: 0, tool: 'fixture_identity',
         session: 'public', method: 'GET', url: url.href };
-      const reservation = await invokeHook(beforeProbe, probe);
+      const release = await targetGate.acquire('GET', currentSignal);
+      let reservation;
+      let hookStarted = false;
       let response;
       try {
+        executionBudget?.reserveTargetRequest();
+        reservation = await invokeHook(beforeProbe, probe);
+        hookStarted = true;
         const timeout = AbortSignal.timeout(5000);
         try {
           response = await fetchImpl(url, { method: 'GET', redirect: 'manual',
@@ -528,7 +630,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             { code: 'FIXTURE_IDENTITY_MISMATCH' });
         }
       } finally {
-        await invokeHook(afterProbe, probe, { status: response?.status ?? null }, reservation);
+        try {
+          if (hookStarted) await invokeHook(afterProbe, probe, { status: response?.status ?? null }, reservation);
+        } finally { release(); }
       }
     }
   }
@@ -553,9 +657,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     const url = new URL(path, allowedOrigin);
     const probe = { id: 'inventory-login-' + spec.role, probeId: 'inventory-login-' + spec.role,
       iteration: 1, tool: 'fixture_session', session: spec.role, method: 'POST', url: url.href };
-    const reservation = await invokeHook(beforeProbe, probe);
+    const release = await targetGate.acquire('POST', currentSignal);
+    let reservation;
+    let hookStarted = false;
     let response;
     try {
+      executionBudget?.reserveTargetRequest();
+      reservation = await invokeHook(beforeProbe, probe);
+      hookStarted = true;
       const timeout = AbortSignal.timeout(5000);
       const body = config.siteKey
         ? new URLSearchParams({ username: spec.account, password: spec.password })
@@ -575,7 +684,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       }
       return cookie;
     } finally {
-      await invokeHook(afterProbe, probe, { status: response?.status ?? null }, reservation);
+      try {
+        if (hookStarted) await invokeHook(afterProbe, probe, { status: response?.status ?? null }, reservation);
+      } finally { release(); }
     }
   }
   async function authenticatedObservation(allowedOrigin, currentSignal) {
@@ -733,7 +844,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       currentSignal?.throwIfAborted();
       const path = queued.shift();
       const url = safePath(path, allowedOrigin);
-      if (!url || seen.has(url.pathname + url.search)) continue;
+      if (!url || destructiveTargetPath(url.pathname) || seen.has(url.pathname + url.search)) continue;
       seen.add(url.pathname + url.search);
       try {
         const page = await checkedRequest(url, { id: 'inventory-' + seen.size,
@@ -780,13 +891,30 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     };
     return { inventory, evidence };
   }
-  async function execute(allowedOrigin, currentSignal) {
+  async function execute(allowedOrigin, currentSignal, { initialContext, taskId,
+    agentId, focusAsset, coreLimits = limits } = {}) {
     const planner = plannerFactory
       ? await plannerFactory({ modelId, env, envFile, signal: currentSignal })
-      : await createAssessmentPlanner({ modelId, env, envFile });
+      : await createAssessmentPlanner({ modelId, env, envFile,
+        ...(executionBudget ? { fetchImpl: modelTransportFetch } : {}) });
     if (!planner || typeof planner.propose !== 'function') throw new TypeError('General planner is unavailable.');
-    const localVerifier = verifierModel ?? (usesJsonClient(modelId) && verifyAttackImpl === verifyAttack
-      ? await createModelJsonClient({ modelId, env, envFile }) : undefined);
+    const localVerifier = verifierModel ?? (verifyAttackImpl === verifyAttack && planner instanceof generalPlanner.GeneralModelPlanner
+      ? planner.client : usesJsonClient(modelId) && verifyAttackImpl === verifyAttack
+        ? await createModelJsonClient({ modelId, env, envFile,
+          ...(executionBudget ? { fetchImpl: modelTransportFetch } : {}) }) : undefined);
+    const verifierBrowserFactory = executionBudget ? async (target, options) => {
+      const release = await targetGate.acquire('GET', options?.signal);
+      let browser;
+      try {
+        browser = await openVerifierBrowser(target, { ...options,
+          beforeRequest: () => executionBudget.reserveBrowserRequest() });
+      } catch (error) { release(); throw error; }
+      let closed = false;
+      return { ...browser, async close() {
+        try { await browser.close(); }
+        finally { if (!closed) { closed = true; release(); } }
+      } };
+    } : undefined;
     let observed = false;
     let observedPages = [];
     let requiredPass = null;
@@ -798,7 +926,10 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     const failedModelCalls = [];
     let evidenceCount = 0;
     let webInfoBytes = 0;
+    const focusPath = taskId ? safePath(focusAsset, allowedOrigin)?.pathname : null;
+    const focusFile = taskId && Object.hasOwn(config.files, focusAsset) ? focusAsset : null;
     const allowedPaths = new Set(config.routes.map(path => new URL(path, allowedOrigin).pathname));
+    if (focusPath) allowedPaths.add(focusPath);
     const extendPaths = page => {
       for (const path of [...(page.links ?? []), ...(page.forms ?? []).map(form => form.path)]) {
         const url = safePath(path, allowedOrigin);
@@ -807,7 +938,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     };
     const observer = { async observe() {
       if (observed) return { inventory, evidence: [] };
-      const initial = await initialObservation(allowedOrigin, currentSignal);
+      const initial = initialContext
+        ? { inventory: structuredClone(initialContext.inventory), evidence: [] }
+        : await initialObservation(allowedOrigin, currentSignal);
       observed = true; inventory = { ...initial.inventory, attackTool: {
         transport: 'http-json', flow: ['agent', 'attack-tool', 'guardrail', 'executor'],
         endpoints: attackTool.endpoints, templates: attackTool.templates,
@@ -829,10 +962,14 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           return { allowed: false, reason: 'invalid_' + probe.tool + '_input' };
         }
         const url = safePath(probe.input.path, allowedOrigin);
-        return { allowed: !!url && allowedPaths.has(url.pathname), reason: 'path_out_of_scope' };
+        return { allowed: !!url && allowedPaths.has(url.pathname)
+          && !destructiveTargetPath(url.pathname)
+          && (!taskId || url.pathname === focusPath),
+        reason: url && destructiveTargetPath(url.pathname) ? 'destructive_action_blocked' : 'path_out_of_scope' };
       }
       if (probe.tool === 'repository_read') return {
         allowed: Object.hasOwn(config.files, probe.input.file)
+          && (!taskId || probe.input.file === focusFile)
           && (probe.input.offset === undefined || Number.isSafeInteger(probe.input.offset)
             && probe.input.offset >= 0 && probe.input.offset <= 32 * 1024),
         reason: 'file_out_of_scope' };
@@ -866,6 +1003,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const steps = [rendered.baseline, rendered.packet, rendered.followUp].filter(Boolean);
         for (const item of steps) {
           if (!['GET', 'POST'].includes(item.method)) return { allowed: false, reason: 'method_out_of_scope' };
+          if (destructivePacket(item)) return { allowed: false, reason: 'destructive_action_blocked' };
           const query = item.query ? new URLSearchParams(item.query).toString() : '';
           const url = safePath(item.path + (query ? '?' + query : ''), allowedOrigin);
           if (!url || !allowedPaths.has(url.pathname)) return { allowed: false, reason: 'path_out_of_scope' };
@@ -909,7 +1047,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const sessionRole = probe.input.sessionRole;
         const cookie = sessionRole === undefined ? null : sessionCookies.get(sessionRole);
         // The core ends the run when one execution returns more evidence than it has room for.
-        const remaining = limits.maxEvidenceItems - evidenceCount;
+        const remaining = coreLimits.maxEvidenceItems - evidenceCount;
         // A page can reflect a fixed session value (header, URL) or carry URL userinfo; keep both out.
         const evidenceText = value => [...sessionCookies.values()].reduce(
           (text, pair) => text.replaceAll(pair.slice(pair.indexOf('=') + 1), '[redacted]'),
@@ -919,7 +1057,9 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           value: cookie.slice(cookie.indexOf('=') + 1) }] : null;
         const probeRecord = { id: probe.id, probeId: probe.id, iteration: run.iterations,
           tool: probe.tool, session: sessionRole ?? 'public', method: 'GET', url: url.href };
-        const reservation = await invokeHook(beforeProbe, probeRecord);
+        const release = await targetGate.acquire('GET', probeSignal);
+        let reservation;
+        let hookStarted = false;
         let observedStatus = null;
         const bytes = items => items.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), 'utf8'), 0);
         const asset = url.pathname + url.search;
@@ -929,8 +1069,17 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           source: 'web-parser', title: '웹 정보 수집', probeId: probe.id, iteration: run.iterations, asset,
           sessionRole: sessionRole ?? null, status: observedStatus, ...fields });
         try {
+          reservation = await invokeHook(beforeProbe, probeRecord);
+          hookStarted = true;
           const { info, summary } = await webParserCollect(url.href, {
-            ...(cookiePair ? { cookies: cookiePair } : {}), signal: probeSignal });
+            ...(cookiePair ? { cookies: cookiePair } : {}), signal: probeSignal,
+            beforeRequest: request => {
+              if (!['GET', 'HEAD'].includes(request.method)) {
+                throw Object.assign(new Error('Browser write blocked before dispatch.'),
+                  { code: 'BROWSER_WRITE_BLOCKED', fatalProbe: true });
+              }
+              return executionBudget?.reserveBrowserRequest();
+            } });
           observedStatus = info.navigation.status ?? null;
           // Extend scope with the same-origin http(s) paths web-parser discovered (like extendPaths).
           for (const entry of info.paths ?? []) {
@@ -975,8 +1124,10 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           webInfoBytes += bytes(evidence);
           return { kind: 'web_info', error: 'request_unavailable', evidence };
         } finally {
-          await invokeHook(afterProbe, probeRecord, { status: observedStatus,
-            evidenceId: evidenceId('probe', probe.id) }, reservation);
+          try {
+            if (hookStarted) await invokeHook(afterProbe, probeRecord, { status: observedStatus,
+              evidenceId: evidenceId('probe', probe.id) }, reservation);
+          } finally { release(); }
         }
       }
       if (probe.tool === 'repository_read') {
@@ -1003,6 +1154,10 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         const sessionRole = rendered.template.sessionRole ?? 'public';
         const cookie = sessionRole === 'public' ? null : sessionCookies.get(sessionRole);
         async function templateRequest(packet, label) {
+          if (destructivePacket(packet)) {
+            throw Object.assign(new Error('Destructive request blocked before dispatch.'),
+              { code: 'DESTRUCTIVE_ACTION_BLOCKED', fatalProbe: true });
+          }
           const query = packet.query ? new URLSearchParams(packet.query).toString() : '';
           const url = safePath(packet.path + (query ? '?' + query : ''), allowedOrigin);
           const timeout = AbortSignal.timeout(5000);
@@ -1013,9 +1168,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           };
           const probeRecord = { id: probe.id + '-' + label, probeId: probe.id, iteration: run.iterations,
             tool: probe.tool, session: sessionRole, method: packet.method, url: url.href };
-          const reservation = await invokeHook(beforeProbe, probeRecord);
+          let reservation;
+          let hookStarted = false;
           let response;
           try {
+            executionBudget?.reserveTargetRequest();
+            reservation = await invokeHook(beforeProbe, probeRecord);
+            hookStarted = true;
             response = await fetchImpl(url, { method: packet.method, redirect: 'manual',
               ...(Object.keys(headers).length ? { headers } : {}),
               ...(packet.body ? { body: new URLSearchParams(packet.body).toString() } : {}),
@@ -1028,10 +1187,13 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
               headers: { 'content-type': response.headers.get('content-type') ?? '' },
               json, body, truncated: Buffer.byteLength(body, 'utf8') >= MAX_BODY_BYTES };
           } finally {
-            await invokeHook(afterProbe, probeRecord, { status: response?.status ?? null,
+            if (hookStarted) await invokeHook(afterProbe, probeRecord, { status: response?.status ?? null,
               evidenceId: evidenceId('probe', probe.id) }, reservation);
           }
         }
+        // Keep the baseline, attack, and follow-up on one target snapshot. No model call
+        // happens while this lock is held; verification starts after the executor returns.
+        const releaseBundle = await targetGate.acquire('POST', probeSignal);
         try {
           const baseline = await templateRequest(rendered.baseline, 'baseline');
           const attack = await templateRequest(rendered.packet, 'attack');
@@ -1083,7 +1245,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
             evidence: [{ id: evidenceId('probe', probe.id), source: 'attack-tool/' + fixtureId,
               kind: 'unavailable', asset: probe.input.templateId,
               summary: 'Attack template baseline or attack request failed; the hypothesis remains unverified.' }] };
-        }
+        } finally { releaseBundle(); }
       }
       return { kind: probe.tool, evidence: [] };
     } };
@@ -1103,16 +1265,17 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       const verdict = await judgeAttackRecord(recordForProbe({ probe, hypothesis, execution, origin: allowedOrigin,
         relatedEvidence: [...cited, ...earlier], pages: observedPages }), { evidenceId: id, sessions, verify: verifyAttackImpl,
         outDir: verificationRoot ? join(verificationRoot, probe.id) : undefined, model: localVerifier,
-        env, envFile, signal });
+        env, envFile, signal, ...(verifierBrowserFactory ? { browserFactory: verifierBrowserFactory } : {}) });
       return identity ? { ...verdict, identity } : verdict;
     } };
     const wrappedPlanner = { async propose(context) {
-      if (enableRequiredTemplates && !requiredPass) {
+      if (enableRequiredTemplates && !initialContext && !requiredPass) {
         const evidenceId = context.evidence?.[0]?.id;
         const forms = observedPages.flatMap(page => page.forms ?? []);
         requiredPass = evidenceId
           ? buildRequiredTemplatePlan({
-            templates: listTemplates(), paths: [...allowedPaths], forms,
+            templates: listTemplates().filter(template => !destructiveTemplate(template)),
+            paths: [...allowedPaths], forms,
             libraries: librariesFromInventory(inventory),
             evidenceId, usedProbeIds: context.usedProbeIds ?? [],
             remainingProbes: context.budget?.remainingProbes,
@@ -1165,7 +1328,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           && Array.isArray(error?.modelAttempts) ? error.modelAttempts : [];
         for (const attempt of attempts) {
           failedModelCalls.push(attempt);
-          await onModelCall?.(attempt);
+          await onModelCall?.(taskId ? { ...attempt, taskId, agentId } : attempt);
         }
         if (attempts.length && error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR') throw error;
         const failed = { provider: plannerProvider(modelId),
@@ -1182,20 +1345,32 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
           failed.finishReason = error.finishReason;
         }
         failedModelCalls.push(failed);
-        await onModelCall?.(failed);
+        await onModelCall?.(taskId ? { ...failed, taskId, agentId } : failed);
         throw error;
       }
       const trustedPlanner = planner instanceof generalPlanner.GeneralModelPlanner;
       const attempts = trustedPlanner && Array.isArray(plan?.modelAttempts)
         ? plan.modelAttempts : [plan?.modelMetadata];
-      for (const attempt of attempts) if (attempt) await onModelCall?.(attempt);
+      for (const attempt of attempts) if (attempt) await onModelCall?.(taskId
+        ? { ...attempt, taskId, agentId } : attempt);
       if (!trustedPlanner && plan && typeof plan === 'object' && Object.hasOwn(plan, 'modelAttempts')) {
         plan = { ...plan };
         delete plan.modelAttempts;
       }
+      if (taskId && Array.isArray(plan?.probes)) {
+        const prefix = `s${createHash('sha256').update(taskId).digest('hex').slice(0, 8)}-`;
+        plan = { ...plan, probes: plan.probes.map(probe => {
+          if (!record(probe) || typeof probe.id !== 'string') return probe;
+          const namespaced = probe.id.startsWith(prefix) ? probe.id : prefix + probe.id;
+          return { ...probe, id: namespaced.length <= 64 ? namespaced
+            : prefix + createHash('sha256').update(probe.id).digest('hex').slice(0, 32) };
+        }) };
+      }
       return plan;
     } };
-    const availableTools = ['http_get', 'web_info', 'repository_read', 'execute_attack_template'];
+    const availableTools = taskId
+      ? focusPath ? ['http_get'] : ['repository_read']
+      : ['http_get', 'web_info', 'repository_read', 'execute_attack_template'];
     // Each vulnerability worker receives its own authenticated logical client.
     // The daemon owns the transport, while target and policy authority remain in
     // this runtime; model input cannot install an executor or change its scope.
@@ -1221,7 +1396,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         digest: createHash('sha256').update(JSON.stringify(action)).digest('hex') };
       };
       const { summary, digest: actionDigest } = actionForApproval();
-      const outcome = await approvalController.request({ kind: 'general-probe', probeId: probe.id,
+      const outcome = await requestSerializedApproval({ kind: 'general-probe', probeId: probe.id,
         summary, actionDigest, signal: approvalSignal });
       if (outcome.decision === 'approved' && actionForApproval().digest !== actionDigest) {
         throw fault(409, 'Approved probe changed before execution.');
@@ -1232,13 +1407,15 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     try {
       ({ report } = await runGeneralAssessment({
         target: { fixtureId, origin: allowedOrigin }, observer, planner: wrappedPlanner,
-        policy, executor: toolExecutor, verifier, approval, availableTools, limits, signal: currentSignal,
+        policy, executor: toolExecutor, verifier, approval, availableTools,
+        limits: coreLimits, initialContext, signal: currentSignal,
         onEvent: async event => {
           // The core reports its stored evidence count (initial observation included) before each probe.
           evidenceCount = event.progress?.evidenceCount ?? evidenceCount;
           const iteration = eventCount(event.iteration) ?? run.iterations;
           run.iterations = Math.max(run.iterations, iteration);
-          appendEvent({ ...projectGeneralEvent(event, limits), iteration });
+          appendEvent({ ...projectGeneralEvent(event, coreLimits), iteration,
+            ...(taskId ? { source: 'agent/finding-subagent', module: 'subagent', taskId, agentId } : {}) });
         },
       }));
       report.attackTool = { transport: 'http-json',
@@ -1251,7 +1428,7 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       probeHypotheses.clear();
       templatePlans.clear();
     }
-    report.runId = run.id;
+    report.runId = taskId ?? run.id;
     const requiredIds = requiredPass?.requiredIds ?? [];
     const used = new Set((report.probes ?? []).filter(item => item.tool === 'execute_attack_template').map(item => item.id));
     report.coverage = {
@@ -1267,12 +1444,83 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
     report.scope = { fixtureId, origin: allowedOrigin,
       methods: ['GET'],
       sessionBootstrap: (config.siteKey ? 'POST /login' : 'POST /api/session') + ' using fixed demo accounts',
-      toolIds: availableTools, allowedPaths: [...allowedPaths].sort(), ...limits };
+      toolIds: availableTools, allowedPaths: [...allowedPaths].sort(), ...coreLimits };
     return report;
   }
+  async function followUpFindings(mainReport, allowedOrigin, runSignal, probeBudget) {
+    const tasks = selectFindingSubtasks(mainReport, {
+      runId: run.id, maxTasks: multiAgent.maxTasks, probeBudget,
+      eligible: finding => {
+        const path = safePath(finding.asset, allowedOrigin)?.pathname;
+        return Boolean(path && mainReport.scope?.allowedPaths?.includes(path))
+          || Object.hasOwn(config.files, finding.asset);
+      },
+    });
+    const summaries = tasks.map(task => ({ id: task.id, agentId: task.agentId,
+      sourceFindingId: task.sourceFindingId, sourceStatus: task.finding.status,
+      hypothesisId: task.hypothesis.id, status: 'queued', maxProbes: task.maxProbes }));
+    run.multiAgent = { schemaVersion: 'finding-subagents/1', status: tasks.length ? 'running' : 'skipped',
+      maxConcurrentAgents: multiAgent.maxConcurrentAgents, maxTasks: multiAgent.maxTasks,
+      probeBudget, tasks: summaries,
+      ...(tasks.length ? {} : { reason: probeBudget ? 'no_eligible_findings' : 'no_child_probe_budget' }),
+      completedAt: tasks.length ? null : new Date().toISOString() };
+    publish();
+    for (const task of tasks) {
+      await subtaskRepository.create({ id: task.id, agentId: task.agentId,
+        sourceFindingId: task.sourceFindingId, sourceFindingDigest: task.sourceFindingDigest,
+        input: { hypothesisId: task.hypothesis.id, sourceStatus: task.finding.status,
+          maxProbes: task.maxProbes } });
+    }
+    await runFindingSubtasks(tasks, multiAgent.maxConcurrentAgents, async (task, index) => {
+      await subtaskRepository.start(task.id);
+      summaries[index].status = 'running';
+      appendEvent({ source: 'agent/finding-subagent', module: 'subagent', stage: 'subagent.started',
+        title: '서브에이전트 후속 검사', taskId: task.id, agentId: task.agentId,
+        sourceFindingId: task.sourceFindingId });
+      const initialContext = { inventory: mainReport.inventory, evidence: task.evidence,
+        hypotheses: [task.hypothesis], focusHypothesisId: task.hypothesis.id };
+      const coreLimits = { maxIterations: Math.min(2, limits.maxIterations),
+        maxProbes: task.maxProbes,
+        maxEvidenceItems: Math.min(limits.maxEvidenceItems,
+          Math.max(task.evidence.length + 8, 16)) };
+      let child;
+      try {
+        child = await execute(allowedOrigin, runSignal, { initialContext,
+          taskId: task.id, agentId: task.agentId, focusAsset: task.finding.asset, coreLimits });
+      } catch (error) {
+        if (runSignal.aborted) child = { status: 'cancelled', stopReason: 'cancelled' };
+        else child = { status: 'failed', error: { code: 'SUBAGENT_FAILED' },
+          stopReason: 'failure' };
+      }
+      const taskStatus = ['completed', 'cancelled'].includes(child.status) ? child.status : 'failed';
+      await subtaskRepository.finish(task.id, { status: taskStatus, result: { report: child },
+        ...(taskStatus === 'completed' ? {} : { errorCode: taskStatus === 'cancelled'
+          ? 'SUBAGENT_CANCELLED' : 'SUBAGENT_FAILED' }) });
+      summaries[index].status = taskStatus;
+      summaries[index].finding = child.findings?.[0]
+        ? { id: child.findings[0].id, category: child.findings[0].category,
+          asset: child.findings[0].asset, status: child.findings[0].status,
+          evidenceIds: child.findings[0].evidenceIds } : null;
+      summaries[index].stopReason = child.stopReason ?? null;
+      appendEvent({ source: 'agent/finding-subagent', module: 'subagent', stage: 'subagent.completed',
+        title: '서브에이전트 후속 검사 결과', taskId: task.id, agentId: task.agentId,
+        sourceFindingId: task.sourceFindingId, response: { status: taskStatus,
+          findingStatus: summaries[index].finding?.status ?? null } });
+      return summaries[index];
+    }, runSignal);
+    if (runSignal.aborted) for (const summary of summaries) {
+      if (summary.status === 'queued') summary.status = 'cancelled';
+    }
+    run.multiAgent.status = runSignal.aborted ? 'cancelled'
+      : summaries.some(item => item.status !== 'completed') ? 'partial' : 'completed';
+    run.multiAgent.completedAt = new Date().toISOString();
+    publish();
+  }
   async function runTask() {
+    const deadlineSignal = executionLimits ? AbortSignal.timeout(executionLimits.deadlineMs) : null;
     try {
-      const runSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+      const runSignal = deadlineSignal || signal
+        ? AbortSignal.any([controller.signal, signal, deadlineSignal].filter(Boolean)) : controller.signal;
       runSignal.throwIfAborted();
       if (!config.siteKey) {
         const factory = boardFactory ?? (async () => {
@@ -1289,9 +1537,22 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
       run.target = allowedOrigin; run.coreTargetOrigin = allowedOrigin;
       await verifyFixtureIdentity(allowedOrigin, runSignal);
       run.status = 'running'; publish();
-      const report = await execute(allowedOrigin, runSignal);
+      const childProbeBudget = multiAgent && limits.maxProbes > 1
+        ? Math.min(8, Math.max(1, Math.floor(limits.maxProbes / 3))) : 0;
+      const mainLimits = childProbeBudget
+        ? { ...limits, maxProbes: limits.maxProbes - childProbeBudget } : limits;
+      const report = await execute(allowedOrigin, runSignal, { coreLimits: mainLimits });
       run.report = report;
-      run.status = report.status === 'cancelled' ? 'stopped' : report.status;
+      if (multiAgent && report.status === 'completed') {
+        await followUpFindings(report, allowedOrigin, runSignal, childProbeBudget);
+      } else if (multiAgent) {
+        run.multiAgent = { schemaVersion: 'finding-subagents/1', status: 'skipped',
+          reason: report.stopReason ?? 'main_assessment_incomplete', tasks: [],
+          completedAt: new Date().toISOString() };
+      }
+      if (deadlineSignal?.aborted) throw Object.assign(new Error('Parent execution deadline exceeded.'),
+        { code: 'PARENT_DEADLINE_EXCEEDED' });
+      run.status = runSignal.aborted || report.status === 'cancelled' ? 'stopped' : report.status;
       run.error = report.status === 'failed' ? report.error?.code ?? 'GENERAL_ASSESSMENT_FAILED' : undefined;
       run.reviewItems = report.findings.map(finding => ({
         id: run.id + ':' + finding.id, title: finding.category + ' · ' + finding.asset,
@@ -1300,13 +1561,17 @@ export function createGeneralRuntime({ fixtureId, targetOrigin, modelId,
         status: finding.status, simulated: false,
       }));
     } catch (error) {
+      const timedOut = deadlineSignal?.aborted && !controller.signal.aborted && !signal?.aborted;
       run.status = controller.signal.aborted || signal?.aborted ? 'stopped' : 'failed';
-      run.error = run.status === 'stopped' ? '사용자가 실행을 중지했습니다.'
-        : safeText(error?.code ?? 'GENERAL_RUNTIME_FAILED');
+      run.error = timedOut ? 'PARENT_DEADLINE_EXCEEDED'
+        : run.status === 'stopped' ? '사용자가 실행을 중지했습니다.'
+          : safeText(error?.code ?? 'GENERAL_RUNTIME_FAILED');
+      if (executionBudget) run.executionBudget = executionBudget.snapshot();
       appendEvent({ stage: 'general.failed', title: run.status === 'stopped' ? '범용 점검 중지' : '범용 점검 실패',
         type: 'error', detail: run.error });
     } finally {
       run.elapsedMs = Date.now() - Date.parse(run.startedAt);
+      if (executionBudget) run.executionBudget = executionBudget.snapshot();
       run.totalSteps = Math.max(1, run.events.length);
       run.pendingApproval = null;
       sessionCookies.clear();

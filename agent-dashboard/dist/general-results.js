@@ -201,6 +201,36 @@ export function generalSummary(item) {
   };
 }
 
+export function renderFindingSubagents(item, taskDetails = new Map()) {
+  const multiAgent = object(item?.multiAgent) ? item.multiAgent : null;
+  if (multiAgent?.schemaVersion !== 'finding-subagents/1') return '';
+  const tasks = list(multiAgent.tasks).filter(object);
+  const taskStatus = { queued: '대기', running: '검사 중', completed: '완료', failed: '실패',
+    cancelled: '취소', interrupted: '중단', timed_out: '시간 초과' };
+  const rows = tasks.map(task => {
+    const finding = object(task.finding) ? task.finding : null;
+    const findingStatus = finding && STATUSES.has(finding.status) ? STATUS_LABELS[finding.status] : '결과 대기';
+    const taskId = text(task.id);
+    const detail = taskId ? taskDetails.get(`${item.id}:${taskId}`) : null;
+    const detailIsCurrent = detail?.status === 'ready' && detail.task?.status === task.status;
+    const actions = taskId && text(item.id)
+      ? `<div class="subtask-actions"><button type="button" class="button secondary" data-subtask-detail="${escape(taskId)}"${detail?.status === 'loading' ? ' disabled' : ''}>${detail?.status === 'loading' ? '작업 기록을 불러오는 중' : '작업 상세 보기'}</button><button type="button" class="button secondary" data-subtask-export="${escape(taskId)}"${detail?.status === 'loading' ? ' disabled' : ''}>작업 JSON 다운로드</button></div>`
+      : '';
+    const detailMarkup = detailIsCurrent && object(detail.task)
+      ? `<details class="subtask-detail" open><summary>작업 전체 기록</summary><pre tabindex="0" aria-label="${escape(taskId)} 작업 상세 JSON">${escape(JSON.stringify(detail.task, null, 2))}</pre></details>`
+      : detail?.status === 'error' ? `<p class="subtask-error" role="alert">${escape(detail.message)}</p>`
+        : detail?.status === 'ready' ? '<p>작업 상태가 갱신되었습니다. 상세를 다시 열어 최신 기록을 확인하세요.</p>' : '';
+    return `<li><strong>${escape(text(task.sourceFindingId) || '원본 finding 미기록')}</strong> · ${escape(taskStatus[task.status] || '상태 미기록')}`
+      + (finding ? ` · 후속 판정 ${escape(findingStatus)} · ${escape(text(finding.category) || '분류 미기록')} · ${escape(text(finding.asset) || '위치 미기록')}` : '')
+      + `${actions}${detailMarkup}</li>`;
+  }).join('');
+  return `<section class="panel general-coverage" aria-label="서브에이전트 후속 검사"><h3>서브에이전트 후속 검사</h3>`
+    + `<p>메인 finding을 기준으로 ${tasks.length}건의 후속 검사를 배정했습니다. 서브 판정은 메인 결과와 별도로 표시합니다.</p>`
+    + (rows ? `<ul>${rows}</ul>` : multiAgent.reason === 'no_child_probe_budget'
+      ? '<p>후속 검사에 배정할 probe 예산이 없습니다.</p>' : '<p>배정 가능한 finding이 없습니다.</p>')
+    + '<p>이 실행의 HWPX 통합 보류 · 메인과 서브의 결과는 화면과 JSON에서 확인할 수 있습니다.</p></section>';
+}
+
 export function renderGeneralOverview(item) {
   const summary = generalSummary(item);
   if (!summary) {

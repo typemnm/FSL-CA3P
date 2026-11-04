@@ -208,10 +208,11 @@ export function evidenceFromTargetInfo(info, { idBase, source, asset, sessionRol
  * Open one endpoint and return its raw TargetInfo plus a model-sized summary.
  * `collectImpl` is injectable for unit tests; the default is the real web-parser.
  */
-export async function collectWebInfo(url, { cookies, signal, timeoutMs = DEFAULT_TIMEOUT_MS,
+export async function collectWebInfo(url, { cookies, signal, beforeRequest, timeoutMs = DEFAULT_TIMEOUT_MS,
   collectImpl = collectDefault } = {}) {
   const budget = Math.min(timeoutMs, DEFAULT_TIMEOUT_MS);
   const info = await collectImpl(url, { timeoutMs: budget,
-    ...(cookies ? { cookies } : {}), ...(signal ? { signal } : {}) });
+    ...(cookies ? { cookies } : {}), ...(signal ? { signal } : {}),
+    ...(beforeRequest ? { beforeRequest } : {}) });
   return { info, summary: summarizeTargetInfo(info) };
 }

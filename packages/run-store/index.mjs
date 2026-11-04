@@ -11,6 +11,28 @@ const now = () => new Date().toISOString();
 const json = value => JSON.stringify(redact(value));
 const parse = value => value ? JSON.parse(value) : null;
 const fault = (code, message, status = 409) => Object.assign(new Error(message), { code, status });
+const SUBTASK_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const SUBTASK_DIGEST = /^[a-f0-9]{64}$/u;
+const SUBTASK_TERMINAL = new Set(['completed', 'failed', 'cancelled', 'timed_out', 'interrupted']);
+const SUBTASK_FINISH = new Set(['completed', 'failed', 'cancelled', 'timed_out']);
+function subtaskIdentifier(value, name) {
+  if (typeof value !== 'string' || !SUBTASK_ID.test(value)) {
+    throw fault('INVALID_SUBTASK', `${name} must be a safe identifier.`, 400);
+  }
+  return value;
+}
+function subtaskJson(value, name, maxBytes) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw fault('INVALID_SUBTASK', `${name} must be an object.`, 400);
+  }
+  let serialized;
+  try { serialized = json(value); }
+  catch { throw fault('INVALID_SUBTASK', `${name} must be JSON data.`, 400); }
+  if (!serialized || Buffer.byteLength(serialized, 'utf8') > maxBytes) {
+    throw fault('INVALID_SUBTASK', `${name} exceeds its size limit.`, 400);
+  }
+  return serialized;
+}
 
 /** One transaction owns each dispatch intent. An expired lease is never resumed. */
 export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.now } = {}) {
@@ -38,6 +60,15 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
       run_id TEXT NOT NULL REFERENCES runs(id), action_id TEXT NOT NULL, lease_epoch INTEGER NOT NULL,
       status TEXT NOT NULL, request_digest TEXT NOT NULL, result_json TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(run_id, action_id));
+    CREATE TABLE IF NOT EXISTS run_subtasks (
+      run_id TEXT NOT NULL REFERENCES runs(id), id TEXT NOT NULL,
+      source_finding_id TEXT NOT NULL, source_finding_digest TEXT NOT NULL,
+      kind TEXT NOT NULL, agent_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','cancelled','timed_out','interrupted')),
+      input_json TEXT NOT NULL, result_json TEXT, error_code TEXT,
+      created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL,
+      PRIMARY KEY(run_id, id), UNIQUE(run_id, source_finding_id, source_finding_digest, kind));
+    CREATE INDEX IF NOT EXISTS run_subtasks_status_idx ON run_subtasks(run_id, status);
     CREATE TABLE IF NOT EXISTS model_calls (
       id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), sequence INTEGER NOT NULL,
       metadata_json TEXT NOT NULL, UNIQUE(run_id, sequence));
@@ -97,7 +128,7 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
   }
   function deleteRunRecords() {
     const counts = {};
-    for (const table of ['review_audit', 'artifacts', 'model_calls', 'action_intents', 'run_events', 'jobs', 'runs']) {
+    for (const table of ['review_audit', 'artifacts', 'model_calls', 'action_intents', 'run_subtasks', 'run_events', 'jobs', 'runs']) {
       counts[table] = db.prepare(`SELECT count(*) AS count FROM ${table}`).get().count;
       db.exec(`DELETE FROM ${table}`);
     }
@@ -130,6 +161,44 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
     if (!allowCancelled && job.cancel_requested) throw fault('RUN_CANCELLED', 'Run cancellation was requested.');
     return job;
   }
+  function subtaskFromRow(row) {
+    return row ? { id: row.id, parentRunId: row.run_id,
+      sourceFindingId: row.source_finding_id, sourceFindingDigest: row.source_finding_digest,
+      kind: row.kind, agentId: row.agent_id, status: row.status,
+      input: parse(row.input_json), result: parse(row.result_json), errorCode: row.error_code,
+      createdAt: row.created_at, startedAt: row.started_at, completedAt: row.completed_at,
+      updatedAt: row.updated_at } : null;
+  }
+  function getSubtask(runId, id) {
+    assertIdentifier(runId, 'runId'); subtaskIdentifier(id, 'subtask ID');
+    return subtaskFromRow(db.prepare('SELECT * FROM run_subtasks WHERE run_id=? AND id=?').get(runId, id));
+  }
+  function terminalizeSubtasks(runId, status, errorCode) {
+    const finished = now();
+    db.prepare("UPDATE run_subtasks SET status=?,error_code=?,completed_at=?,updated_at=? WHERE run_id=? AND status IN ('queued','running')")
+      .run(status, errorCode, finished, finished, runId);
+  }
+  function withSubtaskStatuses(state, runId, overallStatus) {
+    if (!state.multiAgent || !Array.isArray(state.multiAgent.tasks)) return state;
+    const tasks = new Map(db.prepare('SELECT id,status,error_code,completed_at FROM run_subtasks WHERE run_id=?')
+      .all(runId).map(row => [row.id, row]));
+    return { ...state, multiAgent: { ...state.multiAgent,
+      ...(overallStatus ? { status: overallStatus, completedAt: now() } : {}),
+      tasks: state.multiAgent.tasks.map(item => {
+        const stored = tasks.get(item?.id);
+        return stored ? { ...item, status: stored.status,
+          ...(stored.error_code ? { errorCode: stored.error_code } : {}),
+          ...(stored.completed_at ? { completedAt: stored.completed_at } : {}) } : item;
+      }) } };
+  }
+  function reconcileSubtaskState(runId, overallStatus) {
+    const row = db.prepare('SELECT state_json FROM runs WHERE id=?').get(runId);
+    if (!row) return;
+    const state = parse(row.state_json);
+    if (!state.multiAgent || !Array.isArray(state.multiAgent.tasks)) return;
+    db.prepare('UPDATE runs SET state_json=?,updated_at=? WHERE id=?')
+      .run(json(withSubtaskStatuses(state, runId, overallStatus)), now(), runId);
+  }
   function recoverExpired() {
     return transaction(() => {
       const expired = db.prepare("SELECT * FROM jobs WHERE status='leased' AND lease_until<=?").all(clock());
@@ -141,6 +210,8 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
         db.prepare("UPDATE jobs SET status='interrupted', lease_epoch=lease_epoch+1 WHERE id=?").run(job.id);
         db.prepare("UPDATE runs SET status='interrupted', state_json=?, updated_at=? WHERE id=?").run(json(state), now(), job.run_id);
         db.prepare("UPDATE action_intents SET status='unknown', updated_at=? WHERE run_id=? AND status='reserved'").run(now(), job.run_id);
+        terminalizeSubtasks(job.run_id, 'interrupted', 'PARENT_LEASE_EXPIRED');
+        reconcileSubtaskState(job.run_id, 'interrupted');
       }
       return expired.map(item => item.run_id);
     });
@@ -150,6 +221,77 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
     experimentState,
     pendingTargetResets,
     getGeneralLoopBudget,
+    getSubtask,
+    listSubtasks(runId) {
+      assertIdentifier(runId, 'runId');
+      return db.prepare('SELECT * FROM run_subtasks WHERE run_id=? ORDER BY created_at,id').all(runId).map(subtaskFromRow);
+    },
+    createSubtask(lease, { id, sourceFindingId, sourceFindingDigest, kind = 'finding-followup', agentId, input = {} } = {}) {
+      subtaskIdentifier(id, 'subtask ID'); subtaskIdentifier(sourceFindingId, 'source finding ID');
+      subtaskIdentifier(kind, 'subtask kind'); subtaskIdentifier(agentId, 'agent ID');
+      if (typeof sourceFindingDigest !== 'string' || !SUBTASK_DIGEST.test(sourceFindingDigest)) {
+        throw fault('INVALID_SUBTASK', 'source finding digest must be SHA-256.', 400);
+      }
+      const inputJson = subtaskJson(input, 'subtask input', 256 * 1024);
+      return transaction(() => {
+        assertLease(lease);
+        const existing = db.prepare('SELECT * FROM run_subtasks WHERE run_id=? AND source_finding_id=? AND source_finding_digest=? AND kind=?')
+          .get(lease.runId, sourceFindingId, sourceFindingDigest, kind);
+        if (existing) {
+          if (existing.id !== id || existing.agent_id !== agentId || existing.input_json !== inputJson) {
+            throw fault('SUBTASK_CONFLICT', 'This finding was assigned with different subtask details.');
+          }
+          return subtaskFromRow(existing);
+        }
+        if (getSubtask(lease.runId, id)) throw fault('SUBTASK_CONFLICT', 'Subtask ID belongs to a different finding.');
+        const created = now();
+        db.prepare('INSERT INTO run_subtasks(run_id,id,source_finding_id,source_finding_digest,kind,agent_id,status,input_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(lease.runId, id, sourceFindingId, sourceFindingDigest, kind, agentId, 'queued', inputJson, created, created);
+        return getSubtask(lease.runId, id);
+      });
+    },
+    startSubtask(lease, id) {
+      subtaskIdentifier(id, 'subtask ID');
+      return transaction(() => {
+        assertLease(lease);
+        const task = getSubtask(lease.runId, id);
+        if (!task) throw fault('SUBTASK_NOT_FOUND', 'Subtask does not belong to this run.', 404);
+        if (task.status === 'running') return task;
+        if (task.status !== 'queued') throw fault('SUBTASK_NOT_QUEUED', 'Subtask is no longer queued.');
+        const started = now();
+        db.prepare("UPDATE run_subtasks SET status='running',started_at=?,updated_at=? WHERE run_id=? AND id=?")
+          .run(started, started, lease.runId, id);
+        return getSubtask(lease.runId, id);
+      });
+    },
+    finishSubtask(lease, id, { status, result, errorCode = null } = {}) {
+      subtaskIdentifier(id, 'subtask ID');
+      if (!SUBTASK_FINISH.has(status) || (errorCode !== null && (typeof errorCode !== 'string'
+        || !/^[A-Z][A-Z0-9_]{0,63}$/u.test(errorCode))) || (status === 'completed' && result === undefined)) {
+        throw fault('INVALID_SUBTASK', 'Invalid subtask completion.', 400);
+      }
+      const resultJson = result === undefined ? null : subtaskJson(result, 'subtask result', 2 * 1024 * 1024);
+      return transaction(() => {
+        assertLease(lease, { allowCancelled: true });
+        const task = getSubtask(lease.runId, id);
+        if (!task) throw fault('SUBTASK_NOT_FOUND', 'Subtask does not belong to this run.', 404);
+        if (SUBTASK_TERMINAL.has(task.status)) {
+          if (task.status === status && JSON.stringify(task.result) === (resultJson ?? 'null')
+            && task.errorCode === errorCode) return task;
+          throw fault('SUBTASK_ALREADY_FINISHED', 'Subtask result is immutable.');
+        }
+        if (task.status !== 'running') throw fault('SUBTASK_NOT_RUNNING', 'Subtask has not started.');
+        // The worker may record a cancelled task after the parent cancellation.
+        // A late successful result must not be published once cancellation is set.
+        if (status === 'completed' && db.prepare('SELECT cancel_requested FROM jobs WHERE run_id=?').get(lease.runId).cancel_requested) {
+          throw fault('RUN_CANCELLED', 'Run cancellation was requested.');
+        }
+        const completed = now();
+        db.prepare('UPDATE run_subtasks SET status=?,result_json=?,error_code=?,completed_at=?,updated_at=? WHERE run_id=? AND id=?')
+          .run(status, resultJson, errorCode, completed, completed, lease.runId, id);
+        return getSubtask(lease.runId, id);
+      });
+    },
     setGeneralLoopBudget(limits) {
       const validated = validateGeneralLoopBudget(limits);
       return transaction(() => {
@@ -296,7 +438,7 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
     },
     saveState(lease, state) {
       return transaction(() => {
-        assertLease(lease, { allowCancelled: true });
+        const job = assertLease(lease, { allowCancelled: true });
         if (state.id !== lease.runId) throw fault('RUN_ID_MISMATCH', 'Runtime runId changed.');
         for (const event of state.events ?? []) {
           if (db.prepare('SELECT 1 FROM run_events WHERE run_id=? AND source_id=?').get(lease.runId, event.id)) continue;
@@ -304,7 +446,10 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
           db.prepare('INSERT INTO run_events VALUES (?,?,?,?)').run(lease.runId, sequence, event.id, json({ ...event, sequence }));
         }
         const events = api.listEvents(lease.runId);
-        const next = { ...state, events, modelId: getRun(lease.runId).modelId };
+        const status = job.cancel_requested && ACTIVE_STATUSES.includes(state.status)
+          ? 'stopping' : state.status;
+        const next = withSubtaskStatuses({ ...state, status, events,
+          modelId: getRun(lease.runId).modelId }, lease.runId);
         db.prepare('UPDATE runs SET status=?,state_json=?,updated_at=? WHERE id=?').run(next.status, json(next), now(), lease.runId);
         return getRun(lease.runId);
       });
@@ -364,9 +509,17 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
       if (!TERMINAL_STATUSES.includes(status)) throw fault('INVALID_TERMINAL_STATUS', 'Invalid terminal status.');
       return transaction(() => {
         assertLease(lease, { allowCancelled: true });
+        if (status === 'completed' && db.prepare("SELECT 1 FROM run_subtasks WHERE run_id=? AND status IN ('queued','running') LIMIT 1").get(lease.runId)) {
+          throw fault('SUBTASKS_ACTIVE', 'Finish all subtasks before completing their parent run.');
+        }
         db.prepare('UPDATE jobs SET status=?,lease_until=NULL WHERE run_id=?').run(status, lease.runId);
         db.prepare("UPDATE action_intents SET status='unknown',updated_at=? WHERE run_id=? AND status='reserved'").run(now(), lease.runId);
-        const state = getRun(lease.runId); state.status = status;
+        terminalizeSubtasks(lease.runId, status === 'cancelled' ? 'cancelled' : 'interrupted',
+          status === 'cancelled' ? 'PARENT_CANCELLED' : 'PARENT_FINISHED');
+        const state = withSubtaskStatuses(getRun(lease.runId), lease.runId,
+          status === 'cancelled' ? 'cancelled' : status === 'interrupted' ? 'interrupted'
+            : status === 'failed' ? 'partial' : undefined);
+        state.status = status;
         db.prepare('UPDATE runs SET status=?,state_json=?,updated_at=? WHERE id=?').run(status, json(state), now(), lease.runId);
         return getRun(lease.runId);
       });
@@ -378,8 +531,11 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
         if (TERMINAL_STATUSES.includes(state.status)) return state;
         const queued = state.status === 'queued'; state.status = queued ? 'cancelled' : 'stopping';
         db.prepare("UPDATE jobs SET cancel_requested=1,status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END WHERE run_id=?").run(id);
+        db.prepare("UPDATE run_subtasks SET status='cancelled',error_code='PARENT_CANCELLED',completed_at=?,updated_at=? WHERE run_id=? AND status='queued'")
+          .run(now(), now(), id);
         db.prepare('UPDATE runs SET status=?,state_json=?,updated_at=? WHERE id=?').run(state.status, json(state), now(), id);
-        return state;
+        reconcileSubtaskState(id, queued ? 'cancelled' : undefined);
+        return withSubtaskStatuses(state, id, queued ? 'cancelled' : undefined);
       });
     },
     recoverExpired,
@@ -392,6 +548,8 @@ export function createRunRepository({ path = DEFAULT_STORE_PATH, clock = Date.no
           db.prepare("UPDATE jobs SET status='interrupted',lease_epoch=lease_epoch+1,lease_until=NULL WHERE id=?").run(job.id);
           db.prepare("UPDATE runs SET status='interrupted',state_json=?,updated_at=? WHERE id=?").run(json(state), now(), job.run_id);
           db.prepare("UPDATE action_intents SET status='unknown',updated_at=? WHERE run_id=? AND status='reserved'").run(now(), job.run_id);
+          terminalizeSubtasks(job.run_id, 'interrupted', 'PARENT_INTERRUPTED');
+          reconcileSubtaskState(job.run_id, 'interrupted');
         }
         return jobs.map(item => item.run_id);
       });

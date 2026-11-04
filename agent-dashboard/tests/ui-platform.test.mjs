@@ -33,7 +33,7 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const browser = await chromium.launch({ headless: true,
     executablePath: process.env.CA3P_PLAYWRIGHT_EXECUTABLE || undefined });
-  const page = await browser.newPage(); const errors = []; const mutations = []; const reviews = []; const resets = []; const approvals = [];
+  const page = await browser.newPage({ acceptDownloads: true }); const errors = []; const mutations = []; const reviews = []; const resets = []; const approvals = []; const subtaskRequests = [];
   page.on('pageerror', error => errors.push(error.message));
   let authenticated = false; let state = reportOptions.state ?? idle; let detailCalls = 0; let resetError = reportOptions.resetError; let serverEpoch = 0;
   const stateEnvelope = () => {
@@ -102,6 +102,13 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
       }
       runs.unshift(state); return json(wrap(state));
     }
+    const subtask = /^\/api\/runs\/([^/]+)\/subtasks\/([^/]+)$/.exec(path);
+    if (subtask && request.method() === 'GET') {
+      subtaskRequests.push({ runId: subtask[1], taskId: subtask[2] });
+      const task = reportOptions.subtasks?.[subtask[2]];
+      if (!task) return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"Subtask not found"}' });
+      return json({ task });
+    }
     if (/^\/api\/runs\/[^/]+\/report\.hwpx$/.test(path)) return route.continue();
     const review = /^\/api\/runs\/([^/]+)\/reviews\/([^/]+)$/.exec(path);
     if (review && request.method() === 'POST') {
@@ -131,10 +138,11 @@ async function setup(t, role = 'operator', ciRuns = null, reportOptions = {}) {
   await page.waitForFunction(() => document.querySelector('#connection-status').textContent.includes('연결됨'));
   await page.locator('[data-view=assets]').click();
   await page.locator('#view-assets').waitFor({ state: 'visible' });
-  return { page, mutations, reviews, resets, approvals, errors, detailCalls: () => detailCalls,
+  return { page, mutations, reviews, resets, approvals, errors, subtaskRequests, detailCalls: () => detailCalls,
     setResetError(value) { resetError = value; },
     advanceExperiment() { state = idle; runs.splice(0); serverEpoch += 1; },
-    setReportDocument(value) { runs[0].reportDocument = value; } };
+    setReportDocument(value) { runs[0].reportDocument = value; },
+    setMultiAgent(value) { runs[0].multiAgent = value; } };
 }
 
 test('model change requires Yes before deleting experimental history and owned browser cache', async t => {
@@ -395,10 +403,10 @@ test('a viewer downloads the saved HWPX after reopening central history and relo
   await page.locator('[data-view=reports]').click();
   const link = page.locator('#report-download-button');
   await link.waitFor(); assert.equal(await link.getAttribute('href'), '/api/runs/candidate/report.hwpx');
+  assert.equal(await link.getAttribute('download'), '검사 보고서.hwpx');
   assert.match(await page.locator('#report-document-status').textContent(), /준비됨/);
   const downloading = page.waitForEvent('download'); await link.click();
   const download = await downloading;
-  assert.equal(download.suggestedFilename(), '검사 보고서.hwpx');
   assert.equal(await download.failure(), null);
   assert.deepEqual(await readFile(await download.path()), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 255]));
   assert.deepEqual(errors, []);
@@ -429,6 +437,50 @@ test('fixture reports skip model generation while JSON export remains available'
   assert.match(await page.locator('#report-document-status').textContent(), /보고서 생성 생략/);
   assert.equal(await page.locator('#report-download-button').isDisabled(), true);
   assert.equal(await page.locator('#export-button').isEnabled(), true);
+});
+
+test('saved subagent tasks refresh, reveal authenticated details, and export their full JSON', async t => {
+  const run = { ...snapshot('candidate', 'local-lab-general'), assessmentMode: 'general',
+    report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general', findings: [],
+      hypotheses: [], probes: [], evidence: [], coverage: { totalHypotheses: 0 } },
+    reportDocuments: { schemaVersion: 'general-report-documents/1', status: 'skipped',
+      errorCode: 'MULTI_AGENT_REPORT_DEFERRED', items: [] },
+    multiAgent: { schemaVersion: 'finding-subagents/1', status: 'running',
+      tasks: [{ id: 'task-a', sourceFindingId: 'finding-a', status: 'queued' }] } };
+  const task = { id: 'task-a', parentRunId: 'candidate', sourceFindingId: 'finding-a',
+    status: 'completed', input: { apiKey: 'private-key' }, result: { report: {
+      findings: [{ id: 'child-a', status: 'confirmed', rationale: '<img src=x onerror=alert(1)>' }],
+      evidence: [{ id: 'e-child', summary: 'child evidence' }] } } };
+  const { page, errors, subtaskRequests, setMultiAgent } = await setup(t, 'viewer', null,
+    { historyRun: run, subtasks: { 'task-a': task } });
+  await page.locator('[data-view=sessions]').click();
+  await page.locator('[data-session=candidate]').click();
+  await page.locator('#history-banner').waitFor({ state: 'visible' });
+  await page.locator('[data-view=reports]').click();
+  assert.match(await page.locator('#report-document-status').textContent(), /이 실행의 HWPX 통합 보류/);
+  const row = page.locator('[aria-label="서브에이전트 후속 검사"] li');
+  assert.match(await row.textContent(), /대기/);
+  setMultiAgent({ ...run.multiAgent, status: 'completed',
+    tasks: [{ ...run.multiAgent.tasks[0], status: 'completed' }] });
+  await page.locator('#refresh-reports').click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="서브에이전트 후속 검사"] li')?.textContent?.includes('완료'));
+  await row.locator('[data-subtask-detail="task-a"]').click();
+  await row.locator('.subtask-detail').waitFor();
+  assert.match(await row.locator('.subtask-detail').textContent(), /child evidence/);
+  assert.match(await row.locator('.subtask-detail').textContent(), /\[redacted\]/);
+  assert.equal(await row.locator('img').count(), 0);
+  const downloading = page.waitForEvent('download');
+  await row.locator('[data-subtask-export="task-a"]').click();
+  const download = await downloading;
+  assert.equal(download.suggestedFilename(), 'ca3p-candidate-subtask-task-a.json');
+  const exported = JSON.parse(await readFile(await download.path(), 'utf8'));
+  assert.equal(exported.schemaVersion, 'finding-subtask-export/1');
+  assert.equal(exported.task.parentRunId, 'candidate');
+  assert.equal(exported.task.input.apiKey, '[redacted]');
+  assert.equal(exported.task.result.report.evidence[0].summary, 'child evidence');
+  assert.deepEqual(subtaskRequests, [{ runId: 'candidate', taskId: 'task-a' },
+    { runId: 'candidate', taskId: 'task-a' }]);
+  assert.deepEqual(errors, []);
 });
 
 test('authenticated workspace starts a general assessment and safely renders comparisons and platform evidence', async t => {
@@ -472,6 +524,31 @@ test('an administrator can disable HITL for one local assessment', async t => {
   assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary',
     approvalRequired: false }, csrf: 'csrf-live' });
   assert.equal(await page.locator('#hitl-run-mode').textContent(), 'HITL 꺼짐');
+  assert.deepEqual(errors, []);
+});
+
+test('assets screen opts in to finding-based subagent follow-up', async t => {
+  const { page, mutations, errors } = await setup(t);
+  await page.waitForFunction(() => document.querySelector('#model-select').value === 'deepseek-primary');
+  const toggle = page.locator('#multi-agent-toggle');
+  assert.equal(await toggle.isChecked(), false);
+  await toggle.check();
+  await page.locator('#lab-run-button').click();
+  await page.locator('#view-dashboard').waitFor({ state: 'visible' });
+  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary',
+    multiAgent: { enabled: true } }, csrf: 'csrf-live' });
+  assert.deepEqual(errors, []);
+});
+
+test('local follow-up keeps the selected HITL setting', async t => {
+  const { page, mutations, errors } = await setup(t, 'admin');
+  await page.waitForFunction(() => document.querySelector('#model-select').value === 'deepseek-primary');
+  await page.locator('#hitl-toggle').uncheck();
+  await page.locator('#multi-agent-toggle').check();
+  await page.locator('#lab-run-button').click();
+  await page.locator('#view-dashboard').waitFor({ state: 'visible' });
+  assert.deepEqual(mutations[0], { body: { mode: 'local-lab-general', modelId: 'deepseek-primary',
+    approvalRequired: false, multiAgent: { enabled: true } }, csrf: 'csrf-live' });
   assert.deepEqual(errors, []);
 });
 
