@@ -1,4 +1,4 @@
-FROM node:24.19.0-bookworm
+FROM node:26.13.0-bookworm
 
 # Keep API/worker on the same Node 24 runtime used by CI, including node:sqlite.
 # Browser dependencies are installed from the repository's pinned Playwright.
