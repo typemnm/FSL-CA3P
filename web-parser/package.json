@@ -1,0 +1,24 @@
+{
+  "name": "web-parser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "collect.mjs",
+  "bin": {
+    "web-parser": "cli.mjs"
+  },
+  "scripts": {
+    "collect": "node cli.mjs",
+    "fetch-dataset": "node scripts/fetch-dataset.mjs",
+    "postinstall": "node scripts/fetch-dataset.mjs",
+    "pretest": "node scripts/fetch-dataset.mjs",
+    "test": "node --test --test-timeout=120000 test/*.test.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.58.2",
+    "wapalyzer-core": "6.11.0"
+  }
+}

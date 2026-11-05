@@ -8,13 +8,11 @@ const {
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL,
   DEFAULT_TIMEOUT_MS,
-  DeepSeekClient,
   DeepSeekError,
 } = require('./deepseek-client');
-const { DeepSeekReasoningEngine } = require('./deepseek-reasoning-engine');
 
 const DEFAULT_ENV_FILE = path.resolve(__dirname, '..', '.env');
-const SUPPORTED_MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
+const SUPPORTED_MODELS = new Set(require('./model-definitions').DEEPSEEK_MODELS);
 
 function parseEnvText(text) {
   const values = {};
@@ -126,6 +124,7 @@ function resolveDeepSeekOptions({
   env = process.env,
   envFile = DEFAULT_ENV_FILE,
   readFileSync,
+  defaultMaxTokens = DEFAULT_MAX_TOKENS,
 } = {}) {
   if (!env || typeof env !== 'object') throw configError('env must be an object');
   const fileValues = readOptionalEnvFile(envFile, readFileSync);
@@ -155,29 +154,14 @@ function resolveDeepSeekOptions({
     maxTokens: parseIntegerSetting(
       'DEEPSEEK_MAX_TOKENS',
       pickSetting(env, fileValues, 'DEEPSEEK_MAX_TOKENS'),
-      DEFAULT_MAX_TOKENS,
+      defaultMaxTokens,
       { min: 64, max: 8_192 },
     ),
   });
 }
 
-function createDeepSeekReasoningEngineFromEnv({
-  env,
-  envFile,
-  readFileSync,
-  fetchImpl,
-  sleep,
-  ruleEngine,
-  curlMode,
-} = {}) {
-  const options = resolveDeepSeekOptions({ env, envFile, readFileSync });
-  const client = new DeepSeekClient({ ...options, fetchImpl, sleep });
-  return new DeepSeekReasoningEngine({ client, ruleEngine, curlMode });
-}
-
 module.exports = {
   DEFAULT_ENV_FILE,
-  createDeepSeekReasoningEngineFromEnv,
   parseEnvText,
   resolveDeepSeekOptions,
 };

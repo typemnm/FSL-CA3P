@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org" th:with="site=${site != null ? site : {'name':'원창대학교','enName':'WONCHANG UNIVERSITY','logoMark':'原','city':'경상남도 원창시 대학로 77','phone':'055-210-1000'}}, year=${year != null ? year : #dates.year(#dates.createNow())}, pageTitle=${(status != null ? status : 500) + ' 오류 | ' + site.name}">
+<head th:replace="~{fragments/head :: head}"></head>
+<body data-site="wonchang" th:attr="data-path=${activePath}">
+<th:block th:replace="~{fragments/header :: header}"></th:block>
+<main id="main-content">
+  <section class="error-section"><div class="container error-inner"><span class="error-code" th:text="${status != null ? status : 500}">500</span><span class="eyebrow">SERVICE INFORMATION</span><h1 th:text="${status == 404 ? '페이지를 찾을 수 없습니다.' : '서비스 이용에 불편을 드려 죄송합니다.'}">서비스 안내</h1><p th:text="${message != null and !#strings.isEmpty(message) ? message : '요청하신 페이지를 표시할 수 없습니다. 잠시 후 다시 시도해 주세요.'}">요청하신 페이지를 표시할 수 없습니다.</p><div class="error-actions"><a class="button button-primary" href="/">홈으로 돌아가기</a><a class="button button-line" href="/faq">이용 안내</a></div><pre th:if="${stack != null and !#strings.isEmpty(stack)}" class="error-stack" th:text="${stack}">오류 상세</pre></div></section>
+</main>
+<footer th:replace="~{fragments/footer :: footer}"></footer>
+<script defer src="/js/site.js"></script>
+</body>
+</html>

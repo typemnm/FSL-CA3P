@@ -1,0 +1,19 @@
+# Start vul-web2/compose.yaml first. This optional overlay lets a Docker
+# dashboard address each fixture by its Compose service name.
+services:
+  dashboard:
+    networks:
+      - default
+      - university-daehan
+      - university-wonchang
+    environment:
+      CA3P_DAEHAN_ORIGIN: http://daehan:4101
+      CA3P_WONCHANG_ORIGIN: http://wonchang:4102
+
+networks:
+  university-daehan:
+    external: true
+    name: ca3p-universities_daehan-net
+  university-wonchang:
+    external: true
+    name: ca3p-universities_wonchang-net

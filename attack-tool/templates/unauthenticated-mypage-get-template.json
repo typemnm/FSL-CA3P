@@ -1,0 +1,21 @@
+{
+  "templateId": "unauthenticated-mypage-get-template",
+  "title": "비로그인 마이페이지 조회",
+  "sessionRole": "public",
+  "attackType": { "name": "broken_access_control", "cwe": "CWE-284" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "cookie-parser" },
+  "target": { "method": "GET", "endpoint": "/mypage" },
+  "request": { "packet": { "method": "GET", "path": "/mypage" } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["mypage"],
+  "verify": {
+    "mode": "textContains",
+    "baseline": { "method": "GET", "path": "/", "status": 200 },
+    "attack": { "status": 200, "contains": "마이" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

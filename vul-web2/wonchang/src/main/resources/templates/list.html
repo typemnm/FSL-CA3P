@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org" th:with="pageTitle=${heading + ' | ' + site.name}">
+<head th:replace="~{fragments/head :: head}"></head>
+<body data-site="wonchang" th:attr="data-path=${activePath}">
+<th:block th:replace="~{fragments/header :: header}"></th:block>
+<main id="main-content">
+  <section class="page-hero"><div class="container"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a><span aria-hidden="true">/</span><span th:text="${heading}">공지사항</span></nav><span class="eyebrow">CAMPUS COMMUNICATION</span><h1 th:text="${heading}">공지사항</h1><p th:text="${intro}">주요 소식을 확인하세요.</p></div></section>
+  <section class="content-section"><div class="container">
+    <div class="board-tools"><p th:text="|등록된 ${heading}을 확인하세요.|">등록된 게시물을 확인하세요.</p><form class="board-search" th:action="${activePath}" method="get" role="search"><label class="sr-only" for="board-q" th:text="|${heading} 검색|">공지사항 검색</label><input type="search" id="board-q" name="q" th:value="${q}" placeholder="제목 검색"><button type="submit" aria-label="검색">검색</button></form></div>
+    <div class="board-list"><div class="board-heading"><span>구분</span><span>제목</span><span>작성일</span></div>
+      <a th:each="item : ${posts}" class="board-row" th:href="|/${type == 'news' ? 'news' : 'notices'}/${item.id}|"><span class="board-category" th:text="${type == 'news' ? '대학 소식' : '공지사항'}">공지사항</span><span class="board-title"><span th:text="${item.title}">게시물 제목</span><small th:text="${item.body != null and #strings.length(item.body) > 86 ? #strings.substring(item.body, 0, 86) + '...' : item.body}">게시물 요약</small></span><time th:text="${item.created_at}">2026-10-20</time><span class="board-row-arrow" aria-hidden="true">↗</span></a>
+      <p th:if="${#lists.isEmpty(posts)}" class="empty-state"><th:block th:if="${q != null and !#strings.isEmpty(q)}"><span th:text="|“${q}”에 대한 검색 결과가 없습니다.|">검색 결과가 없습니다.</span></th:block><th:block th:unless="${q != null and !#strings.isEmpty(q)}">등록된 게시물이 없습니다.</th:block></p>
+    </div>
+    <nav th:if="${totalPages != null and totalPages > 1}" class="pagination" aria-label="페이지 이동">
+      <a th:if="${page > 1}" th:href="@{${activePath}(q=${q},page=${page - 1})}" aria-label="이전 페이지">←</a>
+      <a th:each="n : ${#numbers.sequence(1, totalPages)}" th:href="@{${activePath}(q=${q},page=${n})}" th:attr="aria-current=${n == page ? 'page' : null}" th:text="${n}">1</a>
+      <a th:if="${page < totalPages}" th:href="@{${activePath}(q=${q},page=${page + 1})}" aria-label="다음 페이지">→</a>
+    </nav>
+  </div></section>
+</main>
+<footer th:replace="~{fragments/footer :: footer}"></footer>
+<script defer src="/js/site.js"></script>
+</body>
+</html>

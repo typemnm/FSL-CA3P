@@ -13,6 +13,8 @@ from pydantic import (
     model_validator,
 )
 
+from .case_policy import validate_applicability, validate_route_template
+
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
@@ -65,7 +67,7 @@ class Case(Location):
     description: Text | None = None
     remediation: list[Text] = Field(default_factory=list, max_length=30)
     prior_evidence: Text | None = None
-    parameter: Text
+    parameter: Text | None = None
     parameter_location: InputLocation = "unknown"
     preconditions: list[Text] = Field(min_length=1, max_length=30)
     procedure: list[Text] = Field(min_length=1, max_length=30)
@@ -76,6 +78,13 @@ class Case(Location):
     status: Literal["draft", "ready"] = "draft"
     patch_status: Literal["unknown", "unpatched", "patched"] = "unknown"
     source: ReportSource = "unknown"
+    not_applicable_fields: list[Literal["parameter", "payload"]] = Field(
+        default_factory=list,
+        max_length=2,
+        description="Explicitly reviewed input fields that do not apply to this case",
+    )
+    applicability_reason: Text | None = None
+    route_template: str | None = Field(default=None, max_length=2000)
 
     @field_validator("reported_on")
     @classmethod
@@ -107,13 +116,26 @@ class Case(Location):
 
     @model_validator(mode="after")
     def check_historical_report(self):
+        validate_applicability(
+            self.vulnerability_type,
+            self.not_applicable_fields,
+            self.applicability_reason,
+            self.parameter,
+            self.parameter_location,
+            self.payload,
+        )
+        validate_route_template(
+            self.route_template, self.endpoint, self.parameter, self.parameter_location
+        )
         if (
             self.vulnerability_url
             and (urlsplit(self.vulnerability_url).path or "/") != self.endpoint
         ):
             raise ValueError("vulnerability_url path must match endpoint")
         if self.status == "ready":
-            if self.payload is None or not self.payload.strip():
+            if "payload" not in self.not_applicable_fields and (
+                self.payload is None or not self.payload.strip()
+            ):
                 raise ValueError("ready cases require a non-empty payload")
             if not all((self.reported_on, self.vulnerability_url, self.severity, self.description)):
                 raise ValueError("ready cases require report date, URL, severity and description")
@@ -178,8 +200,9 @@ class Check(Location):
     run_id: Identifier
     case_revision: int | None = Field(default=None, ge=1)
     observed_at: str
-    parameter: Text
+    parameter: Text | None = None
     parameter_location: InputLocation = "unknown"
+    parameter_not_applicable: bool = False
     result: Literal["confirmed", "not_reproduced", "inconclusive"]
     observation: Text
     evidence_refs: list[Text] = Field(default_factory=list, max_length=30)
@@ -187,6 +210,21 @@ class Check(Location):
     review_status: Literal["draft"] = "draft"
     reviewer: None = None
     link_review: LinkReview | None = None
+    observed_evidence: list[EvidenceMetadata] = Field(default_factory=list, max_length=30)
+
+    @model_validator(mode="after")
+    def input_scope_and_observed_evidence(self):
+        if self.parameter_not_applicable:
+            if self.parameter is not None or self.parameter_location != "unknown":
+                raise ValueError("non-applicable input must be null with unknown location")
+        elif self.parameter is None:
+            raise ValueError("check parameter is required unless explicitly not applicable")
+        if (
+            self.observed_evidence
+            and [item.reference for item in self.observed_evidence] != self.evidence_refs
+        ):
+            raise ValueError("observed evidence must match evidence references in order")
+        return self
 
     @field_validator("observed_at")
     @classmethod

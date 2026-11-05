@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org" th:with="pageTitle=${site.name + ' | ' + site.tagline}">
+<head th:replace="~{fragments/head :: head}"></head>
+<body data-site="wonchang" th:attr="data-path=${activePath}">
+<th:block th:replace="~{fragments/header :: header}"></th:block>
+<main id="main-content">
+  <section class="home-hero" aria-labelledby="hero-title">
+    <div class="hero-photo" aria-hidden="true"></div><div class="hero-overlay" aria-hidden="true"></div>
+    <div class="container hero-inner">
+      <div class="hero-copy"><span class="hero-kicker" th:text="${site.enName}">WONCHANG UNIVERSITY</span><h1 id="hero-title" th:text="${site.heroTitle}">지역의 가능성이 세계의 경쟁력이 되다</h1><p th:text="${site.heroSubtitle}">현장과 연구를 연결합니다.</p><div class="hero-actions"><a class="button button-light" href="/about">대학 알아보기 <span aria-hidden="true">↗</span></a><a class="button button-outline-light" href="/admissions">입학 안내 <span aria-hidden="true">→</span></a></div></div>
+      <div class="hero-index" aria-hidden="true"><span>01</span><i></i><span>03</span></div>
+    </div>
+    <div class="container hero-quicklinks" aria-label="자주 찾는 서비스">
+      <a href="/admissions"><span class="quick-icon" aria-hidden="true">01</span><span>입학 안내<small>새로운 시작을 위한 길</small></span><b aria-hidden="true">↗</b></a>
+      <a href="/academics"><span class="quick-icon" aria-hidden="true">02</span><span>학사 안내<small>배움의 모든 과정</small></span><b aria-hidden="true">↗</b></a>
+      <a href="/research"><span class="quick-icon" aria-hidden="true">03</span><span>연구·산학<small>내일을 향한 도전</small></span><b aria-hidden="true">↗</b></a>
+      <a href="/campus"><span class="quick-icon" aria-hidden="true">04</span><span>캠퍼스 안내<small>함께하는 대학 생활</small></span><b aria-hidden="true">↗</b></a>
+    </div>
+  </section>
+
+  <section class="home-section home-notice-section" aria-labelledby="notice-heading"><div class="container">
+    <div class="section-title-row"><div><span class="eyebrow">CAMPUS NOTICE</span><h2 id="notice-heading">알림과 안내</h2><p>대학의 주요 소식을 가장 먼저 전합니다.</p></div><a class="text-link" href="/notices">공지사항 전체보기 <span aria-hidden="true">↗</span></a></div>
+    <div class="notice-layout">
+      <a th:if="${featured != null}" class="featured-notice" th:href="|/notices/${featured.id}|"><span class="pill">주요 공지</span><h3 th:text="${featured.title}">주요 공지</h3><p th:text="${featured.body != null and #strings.length(featured.body) > 140 ? #strings.substring(featured.body, 0, 140) + '...' : featured.body}">주요 내용을 확인하세요.</p><span class="featured-more">자세히 보기 <span aria-hidden="true">→</span></span></a>
+      <div class="notice-list"><a th:each="item : ${notices}" th:href="|/notices/${item.id}|"><span class="notice-type">공지</span><span class="notice-text" th:text="${item.title}">공지 제목</span><time th:text="${item.created_at}">2026-10-20</time><span class="notice-arrow" aria-hidden="true">↗</span></a><p th:if="${#lists.isEmpty(notices)}" class="empty-state">등록된 공지사항이 없습니다.</p></div>
+    </div>
+  </div></section>
+
+  <section class="home-section home-news-section" aria-labelledby="news-heading"><div class="container">
+    <div class="section-title-row"><div><span class="eyebrow">UNIVERSITY NEWS</span><h2 id="news-heading" th:text="|${site.name}의 오늘|">원창대학교의 오늘</h2><p>배움과 도전이 이어지는 현장을 만나보세요.</p></div><a class="text-link" href="/news">소식 전체보기 <span aria-hidden="true">↗</span></a></div>
+    <div class="news-grid"><a th:each="item, stat : ${news}" class="news-card" th:href="|/news/${item.id}|"><div class="news-visual" th:classappend="|news-visual-${stat.count}|"><span th:text="${#numbers.formatInteger(stat.count, 2)}">01</span></div><div class="news-card-body"><span class="card-kicker">CAMPUS STORY</span><h3 th:text="${item.title}">대학 소식</h3><p th:text="${item.body != null and #strings.length(item.body) > 90 ? #strings.substring(item.body, 0, 90) + '...' : item.body}">소식 요약</p><time th:text="${item.created_at}">2026-10-20</time></div></a><p th:if="${#lists.isEmpty(news)}" class="empty-state">등록된 대학 소식이 없습니다.</p></div>
+  </div></section>
+
+  <section class="feature-band"><div class="container feature-band-inner"><div><span class="eyebrow">BEYOND THE CLASSROOM</span><h2>배움이 지역과 만나<br>새로운 내일이 됩니다.</h2><p th:text="|${site.name}는 교육과 연구를 통해 더 나은 미래를 만들어 갑니다.|">교육과 연구를 통해 더 나은 미래를 만듭니다.</p></div><a class="round-arrow" href="/research" aria-label="연구·산학 안내 보기">↗</a></div></section>
+
+  <section class="home-section events-section" aria-labelledby="events-heading"><div class="container"><div class="section-title-row"><div><span class="eyebrow">ACADEMIC CALENDAR</span><h2 id="events-heading">학사일정</h2><p>학기 주요 일정을 확인하세요.</p></div><a class="text-link" href="/schedule">일정 전체보기 <span aria-hidden="true">↗</span></a></div><div class="event-strip"><a th:each="event : ${events}" href="/schedule"><span class="event-date" th:text="${event.date}">2026-10-20</span><strong th:text="${event.title}">행사</strong><small th:text="${event.location}">장소</small><span aria-hidden="true">↗</span></a><p th:if="${#lists.isEmpty(events)}" class="empty-state">등록된 일정이 없습니다.</p></div></div></section>
+</main>
+<footer th:replace="~{fragments/footer :: footer}"></footer>
+<script defer src="/js/site.js"></script>
+</body>
+</html>

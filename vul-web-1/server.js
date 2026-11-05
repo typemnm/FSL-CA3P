@@ -9,7 +9,12 @@ const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_FILE = process.env.BOARD_DATA_FILE || path.join(__dirname, 'data', 'posts.json');
 const COOKIE_SECRET = process.env.BOARD_COOKIE_SECRET || crypto.randomBytes(32).toString('hex');
+const SAFE_MODE = process.env.BOARD_SAFE_MODE === '1';
 const COOKIE_NAME = 'board_user';
+
+// A private lab must not survive an abruptly terminated worker. Standalone
+// website execution has no IPC channel and keeps its usual server lifecycle.
+if (process.connected) process.once('disconnect', () => process.exit(0));
 
 const USERS = Object.freeze({
   alice: Object.freeze({ id: 'alice', name: '앨리스', role: 'member' }),
@@ -150,7 +155,7 @@ async function readJson(req) {
 async function handleApi(req, res, url) {
   if (url.pathname === '/api/session') {
     if (req.method === 'GET') {
-      sendJson(res, 200, { user: currentUser(req, res) });
+      sendJson(res, 200, { user: currentUser(req, res), safeMode: SAFE_MODE });
       return;
     }
     if (req.method === 'POST') {
@@ -161,7 +166,7 @@ async function handleApi(req, res, url) {
         return;
       }
       res.setHeader('Set-Cookie', signedUserCookie(user));
-      sendJson(res, 200, { user });
+      sendJson(res, 200, { user, safeMode: SAFE_MODE });
       return;
     }
   }
@@ -200,7 +205,7 @@ async function handleApi(req, res, url) {
 
   const postRoute = url.pathname.match(/^\/api\/posts\/(\d+)$/);
   if (postRoute && req.method === 'DELETE') {
-    currentUser(req, res);
+    const current = currentUser(req, res);
     const id = Number(postRoute[1]);
     const posts = readPosts();
     const index = posts.findIndex(post => post.id === id);
@@ -210,7 +215,8 @@ async function handleApi(req, res, url) {
     }
     const suppliedAuthorId = url.searchParams.get('authorId');
     // 실습용 파라미터 변조 취약점: 쿠키 사용자와 대조하지 않고 요청 파라미터만 신뢰합니다.
-    if (!suppliedAuthorId || suppliedAuthorId !== posts[index].authorId) {
+    if (!suppliedAuthorId || suppliedAuthorId !== posts[index].authorId
+      || (SAFE_MODE && current.id !== posts[index].authorId)) {
       sendJson(res, 403, { error: '삭제 권한이 없습니다.' });
       return;
     }

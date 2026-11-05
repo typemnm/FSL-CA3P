@@ -3,23 +3,29 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VCS_REF: ${CA3P_COMMIT_SHA:-local}
+    image: ca3p-dashboard:local
     init: true
     shm_size: 1gb
     ports:
-      - "0.0.0.0:4173:4173"
+      - "127.0.0.1:4173:4173"
     env_file:
       - path: ./agent/.env
         required: false
     environment:
       DASHBOARD_HOST: 0.0.0.0
-      DASHBOARD_PUBLIC_ORIGINS: ${CA3P_PUBLIC_ORIGINS:-}
       PORT: "4173"
       CASPER_DB_PYTHON: /opt/ca3p-venv/bin/python
+      CA3P_STORE_PATH: /app/.runtime/runs.sqlite
+      DASHBOARD_AUTH_FILE: /app/.runtime/auth.json
+      DASHBOARD_PUBLIC_ORIGIN: ${DASHBOARD_PUBLIC_ORIGIN:-}
     volumes:
       - casper-db-data:/app/casper-db/data
       - pentest-reports:/app/reports/pentest-db-runs
+      - platform-runtime:/app/.runtime
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4173/api/state').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4173/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 3s
       start_period: 10s
@@ -28,3 +34,4 @@ services:
 volumes:
   casper-db-data:
   pentest-reports:
+  platform-runtime:

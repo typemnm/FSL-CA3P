@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org" th:with="pageTitle=${'로그인 | ' + site.name}">
+<head th:replace="~{fragments/head :: head}"></head>
+<body data-site="wonchang" th:attr="data-path=${activePath}">
+<th:block th:replace="~{fragments/header :: header}"></th:block>
+<main id="main-content">
+  <section class="auth-section"><div class="container auth-layout"><div class="auth-intro"><span class="eyebrow">UNIVERSITY SERVICE</span><h1>배움의 여정을<br>이어가세요.</h1><p th:text="|${site.name} 구성원을 위한 온라인 서비스를 이용할 수 있습니다.|">구성원을 위한 온라인 서비스입니다.</p><div class="auth-decoration" aria-hidden="true"><span th:text="${site.logoMark}">原</span></div></div><div class="auth-card"><div class="auth-card-heading"><span class="eyebrow">MEMBER LOGIN</span><h2>로그인</h2><p>계정 정보를 입력해 주세요.</p></div><div th:if="${error != null and !#strings.isEmpty(error)}" class="form-error" role="alert" th:text="${error}">로그인 오류</div><form action="/login" method="post" class="stacked-form"><input type="hidden" name="next" th:value="${next != null ? next : '/mypage'}"><label for="username">아이디</label><input id="username" name="username" autocomplete="username" required placeholder="아이디를 입력하세요"><label for="password">비밀번호</label><input id="password" type="password" name="password" autocomplete="current-password" required placeholder="비밀번호를 입력하세요"><button class="button button-primary full-button" type="submit">로그인 <span aria-hidden="true">→</span></button></form><div class="auth-footnote"><span>계정 관련 문의는 대학 담당 부서에 연락해 주세요.</span><a href="/faq">이용 안내</a></div></div></div></section>
+</main>
+<footer th:replace="~{fragments/footer :: footer}"></footer>
+<script defer src="/js/site.js"></script>
+</body>
+</html>

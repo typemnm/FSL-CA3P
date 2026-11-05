@@ -148,6 +148,29 @@ function childEnv() {
 async function executeCurl(command, { allowedOrigin, cookie = null, signal } = {}) {
   const origin = parseAllowedOrigin(allowedOrigin);
   if (!origin) return failure('invalid_allowed_origin');
+  return executePinnedCurl(command, { cookie, signal }, origin);
+}
+
+// The university entry point extends addresses only for this read-only profile.
+// The existing XSS/mutation entry point remains restricted to loopback.
+async function executeUniversityRead(command, { allowedOrigin, siteKey, cookie = null, signal } = {}) {
+  const { validateUniversityOrigin } = await import('../packages/contracts/university-target.mjs');
+  let origin;
+  try {
+    if (validateUniversityOrigin(allowedOrigin) !== allowedOrigin) return failure('invalid_allowed_origin');
+    origin = new URL(allowedOrigin);
+  } catch { return failure('invalid_allowed_origin'); }
+  const endpoints = { daehan: '/api/admissions/partner/applications', wonchang: '/api/staff/mobile/cases' };
+  if (!Object.hasOwn(endpoints, siteKey)) return failure('invalid_university_profile');
+  const parsed = parseCommand(command, origin);
+  if (parsed.error) return failure(parsed.error);
+  const target = new URL(parsed.url);
+  if (parsed.method !== 'GET' || parsed.serializedBody !== null || target.search
+    || ![1, 3].some(id => target.pathname === `${endpoints[siteKey]}/${id}`)) return failure('university_read_not_allowed');
+  return executePinnedCurl(command, { cookie, signal }, origin);
+}
+
+async function executePinnedCurl(command, { cookie, signal }, origin) {
 
   const parsed = parseCommand(command, origin);
   if (parsed.error) return failure(parsed.error);
@@ -250,4 +273,4 @@ async function executeCurl(command, { allowedOrigin, cookie = null, signal } = {
   });
 }
 
-module.exports = { executeCurl };
+module.exports = { executeCurl, executeUniversityRead };

@@ -1,0 +1,111 @@
+{
+  "$defs": {
+    "SoftwareComponent": {
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Ecosystem",
+          "type": "string"
+        },
+        "package": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Package",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "cpe": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cpe"
+        },
+        "source_refs": {
+          "items": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "call_paths": {
+          "items": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "title": "Call Paths",
+          "type": "array"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "package",
+        "source_refs"
+      ],
+      "title": "SoftwareComponent",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "casper-software-inventory-1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "target_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Target Id",
+      "type": "string"
+    },
+    "observed_at": {
+      "title": "Observed At",
+      "type": "string"
+    },
+    "components": {
+      "items": {
+        "$ref": "#/$defs/SoftwareComponent"
+      },
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Components",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "target_id",
+    "observed_at",
+    "components"
+  ],
+  "title": "SoftwareInventory",
+  "type": "object"
+}

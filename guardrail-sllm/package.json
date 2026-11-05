@@ -1,0 +1,17 @@
+{
+  "name": "fsl-ca3p-sllm-guardrail",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Validate security test payloads with a local sLLM guardrail",
+  "main": "src/sllm-verdict.js",
+  "scripts": {
+    "test": "node --test",
+    "test:mock": "node --test test/sllm-guardrail.test.js test/sllm-hardening.test.js",
+    "test:ollama": "node integration/run-notion-vulnerability-matrix.js",
+    "test:ollama:core": "node integration/run-verdict-matrix.js",
+    "ollama:check": "node integration/run-local-sllm.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

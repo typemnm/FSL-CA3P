@@ -1,0 +1,21 @@
+{
+  "templateId": "unauthenticated-admin-get-template",
+  "title": "비로그인 관리 화면 조회",
+  "sessionRole": "public",
+  "attackType": { "name": "broken_access_control", "cwe": "CWE-284" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "cookie-parser" },
+  "target": { "method": "GET", "endpoint": "/admin" },
+  "request": { "packet": { "method": "GET", "path": "/admin" } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["admin"],
+  "verify": {
+    "mode": "textContains",
+    "baseline": { "method": "GET", "path": "/", "status": 200 },
+    "attack": { "status": 200, "contains": "관리" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

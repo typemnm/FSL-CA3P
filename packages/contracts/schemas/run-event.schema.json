@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ca3p.local/contracts/run-event/1.0",
+  "title": "CA3P durable ordered event",
+  "type": "object",
+  "required": ["sequence"],
+  "properties": {
+    "sequence": {"type": "integer", "minimum": 1},
+    "id": {"type": "string"},
+    "module": {"type": "string"},
+    "stage": {"type": "string"},
+    "request": {"type": "object"},
+    "response": {"type": "object"}
+  }
+}

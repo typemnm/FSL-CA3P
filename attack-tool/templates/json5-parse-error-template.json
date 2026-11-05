@@ -1,0 +1,21 @@
+{
+  "templateId": "json5-parse-error-template",
+  "title": "JSON5 파서 오류 스택 공개",
+  "sessionRole": "public",
+  "attackType": { "name": "info_disclosure", "cwe": "CWE-209" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "json5" },
+  "target": { "method": "GET", "endpoint": "/api/search" },
+  "request": { "packet": { "method": "GET", "path": "/api/search", "query": { "filters": "{{payload}}" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["not-json5"],
+  "verify": {
+    "mode": "textContains",
+    "baseline": { "status": 200, "query": { "filters": "{}" } },
+    "attack": { "status": 500, "contains": "SyntaxError" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

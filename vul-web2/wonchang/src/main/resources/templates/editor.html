@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org" th:with="pageTitle=${(post != null ? '게시물 수정' : '새 글 작성') + ' | ' + site.name}">
+<head th:replace="~{fragments/head :: head}"></head>
+<body data-site="wonchang" th:attr="data-path=${activePath}">
+<th:block th:replace="~{fragments/header :: header}"></th:block>
+<main id="main-content">
+  <section class="page-hero page-hero-compact"><div class="container"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a><span aria-hidden="true">/</span><a href="/admin">관리자</a><span aria-hidden="true">/</span><span th:text="${post != null ? '게시물 수정' : '새 글 작성'}">새 글 작성</span></nav><span class="eyebrow">CONTENT MANAGEMENT</span><h1 th:text="${post != null ? '게시물 수정' : '새 글 작성'}">새 글 작성</h1></div></section>
+  <section class="content-section"><div class="container editor-container"><div class="editor-heading"><h2>게시물 정보</h2><p>제목과 내용을 입력한 뒤 저장하세요.</p></div><div th:if="${error != null and !#strings.isEmpty(error)}" class="form-error" role="alert" th:text="${error}">입력 오류</div><form th:action="${post != null ? '/admin/posts/' + post.id : '/admin/posts'}" method="post" class="editor-form"><div class="form-field"><label for="post-type">게시판</label><select id="post-type" name="type" required><option value="notice" th:selected="${post == null or post.type == 'notice'}">공지사항</option><option value="news" th:selected="${post != null and post.type == 'news'}">대학 소식</option></select></div><div class="form-field"><label for="post-title">제목</label><input id="post-title" name="title" maxlength="200" th:value="${post != null and post.title != null ? post.title : ''}" placeholder="제목을 입력하세요" required></div><div class="form-field"><label for="post-body">내용</label><textarea id="post-body" name="body" rows="16" placeholder="내용을 입력하세요" required th:text="${post != null and post.body != null ? post.body : ''}"></textarea></div><div class="form-actions"><a class="button button-line" href="/admin">취소</a><button class="button button-primary" type="submit" th:text="${post != null ? '수정 사항 저장' : '게시물 등록'}">게시물 등록</button></div></form></div></section>
+</main>
+<footer th:replace="~{fragments/footer :: footer}"></footer>
+<script defer src="/js/site.js"></script>
+</body>
+</html>

@@ -8,8 +8,9 @@ const DEFAULT_MAX_TOKENS = 512;
 const MAX_PROMPT_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 512 * 1024;
 const MAX_CONTENT_BYTES = 64 * 1024;
-const SUPPORTED_MODELS = new Set(['deepseek-flash', 'deepseek-v4-pro']);
+const SUPPORTED_MODELS = new Set(require('./model-definitions').DEEPSEEK_MODELS);
 const RETRYABLE_STATUSES = new Set([429, 500, 503]);
+const SAFE_FINISH_REASONS = new Set(['length', 'content_filter', 'tool_calls', 'insufficient_system_resource']);
 
 class DeepSeekError extends Error {
   constructor(message, {
@@ -384,10 +385,12 @@ class DeepSeekClient {
       const finishReason = choice?.finish_reason;
       if (finishReason !== 'stop') {
         const retryable = finishReason === 'insufficient_system_resource';
-        throw new DeepSeekError('DeepSeek did not complete the JSON response', {
+        const error = new DeepSeekError('DeepSeek did not complete the JSON response', {
           code: 'DEEPSEEK_INCOMPLETE_RESPONSE',
           retryable,
         });
+        if (SAFE_FINISH_REASONS.has(finishReason)) error.finishReason = finishReason;
+        throw error;
       }
 
       const content = choice?.message?.content;
@@ -422,6 +425,8 @@ class DeepSeekClient {
         metadata: {
           provider: 'deepseek',
           model: this.model,
+          ...(typeof envelope.model === 'string' && /^[a-zA-Z0-9._:/-]{1,128}$/.test(envelope.model)
+            ? { reportedModel: envelope.model } : {}),
           finishReason,
           usage: sanitizeUsage(envelope.usage),
         },

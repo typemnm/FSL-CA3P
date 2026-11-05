@@ -1,0 +1,9 @@
+{
+  "name": "ca3p-attack-tool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-agent attack daemon with guarded structured packets",
+  "scripts": { "start": "node cli.mjs", "test": "node --test test/*.test.mjs" },
+  "engines": { "node": ">=24 <25" }
+}

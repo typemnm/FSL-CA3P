@@ -1,0 +1,21 @@
+{
+  "templateId": "ssti-query-template",
+  "title": "검색 질의 템플릿 주입 canary",
+  "sessionRole": "public",
+  "attackType": { "name": "template_injection", "cwe": "CWE-1336" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "nunjucks" },
+  "target": { "method": "GET", "endpoint": "/api/search" },
+  "request": { "packet": { "method": "GET", "path": "/api/search", "query": { "q": "{{payload}}" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["{{7*7}}"],
+  "verify": {
+    "mode": "textContains",
+    "baseline": { "status": 200, "query": { "q": "zzqnomatch" } },
+    "attack": { "status": 200, "contains": "49" }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

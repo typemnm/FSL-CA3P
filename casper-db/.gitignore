@@ -9,3 +9,10 @@ data/
 *.sqlite3-*
 build/
 dist/
+
+# Personal workspaces and local experiments are never PR inputs.
+*.code-workspace
+local-dev/
+# Source reports may contain confidential vulnerability information.
+*.hwp
+*.hwpx

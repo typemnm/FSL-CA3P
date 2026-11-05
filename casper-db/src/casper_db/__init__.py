@@ -1,4 +1,4 @@
-"""CASPER's independent first-stage case database."""
+"""Report ingestion and versioned vulnerability case storage."""
 
 from .matching import assess_observation
 from .models import Case, CaseQuery, CaseRecord, Check, CheckRecord, LinkReview

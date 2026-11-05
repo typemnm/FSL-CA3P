@@ -1,0 +1,17 @@
+{
+  "name": "ca3p-verifier",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Attack result verifier: HTTP review, sandboxed Playwright verification and evidence capture, report handoff",
+  "main": "index.mjs",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "test": "node --test --test-force-exit tests/*.test.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.58.2"
+  }
+}

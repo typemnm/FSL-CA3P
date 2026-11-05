@@ -1,0 +1,11 @@
+.git
+**/node_modules
+**/target
+**/data
+**/*.log
+.env
+.env.*
+docs
+scripts/*
+!scripts/daehan-reset-supervisor.mjs
+README.md

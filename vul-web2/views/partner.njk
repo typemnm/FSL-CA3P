@@ -1,0 +1,61 @@
+{% extends "layout.njk" %}
+{% block title %}협력기관 입학업무 | {{ site.name }}{% endblock %}
+{% block main %}
+<section class="page-hero page-hero-compact">
+  <div class="container">
+    <nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a><span aria-hidden="true">/</span><a href="/admissions">입학안내</a><span aria-hidden="true">/</span><span>협력기관 입학업무</span></nav>
+    <span class="eyebrow">ADMISSIONS PARTNER SERVICE</span>
+    <h1>협력기관 입학업무</h1>
+    <p>협력기관에서 접수한 지원자의 진행 현황을 확인할 수 있습니다.</p>
+  </div>
+</section>
+<section class="content-section">
+  <div class="container">
+    <div class="my-summary side-service-summary">
+      <div><span class="eyebrow">PARTNER DESK</span><h2>{{ user.display_name }}님, 안녕하세요.</h2><p>입학 지원 접수와 처리 현황을 확인하세요.</p></div>
+      <span class="my-avatar" aria-hidden="true">{{ site.logoMark }}</span>
+    </div>
+    <div class="content-heading">
+      <div><span class="eyebrow">APPLICATIONS</span><h2>담당 접수 내역</h2></div>
+      <p>최근 접수 내역을 선택하면 세부 정보를 확인할 수 있습니다.</p>
+    </div>
+    <div class="request-list side-service-records">
+      <div class="request-list-head"><span>접수번호 · 지원자</span><span>변경일</span><span>진행 상태</span></div>
+      {% for application in applications %}
+      <div class="request-row">
+        <strong><a class="side-service-record-link" href="/admissions/partner?id={{ application.id }}">{{ application.application_no }} · {{ application.applicant_name }}</a></strong>
+        <time>{{ application.updated_at }}</time>
+        <span class="status-chip">{{ application.status }}</span>
+      </div>
+      {% else %}
+      <p class="empty-state">현재 담당 중인 접수 내역이 없습니다.</p>
+      {% endfor %}
+    </div>
+
+    <div class="request-form-panel side-service-search">
+      <div><span class="eyebrow">APPLICATION LOOKUP</span><h2>접수 건 조회</h2><p>접수 건의 조회번호를 입력해 상세 내용을 확인하세요.</p></div>
+      <form action="/admissions/partner" method="get" class="stacked-form">
+        <label for="partner-application-id">조회번호</label>
+        <input id="partner-application-id" name="id" type="number" min="1" step="1" inputmode="numeric" required placeholder="조회번호를 입력하세요" value="{% if selectedId %}{{ selectedId }}{% endif %}">
+        <button class="button button-primary" type="submit">조회하기 <span aria-hidden="true">→</span></button>
+      </form>
+    </div>
+
+    {% if selected %}
+    <div class="side-service-detail" id="application-detail">
+      <div class="content-heading"><div><span class="eyebrow">APPLICATION DETAIL</span><h2>접수 상세 정보</h2></div><a class="text-link" href="/admissions/partner">목록으로 <span aria-hidden="true">↗</span></a></div>
+      <dl class="side-service-detail-grid">
+        <div class="side-service-field"><dt>접수번호</dt><dd>{{ selected.application_no }}</dd></div>
+        <div class="side-service-field"><dt>지원자</dt><dd>{{ selected.applicant_name }}</dd></div>
+        <div class="side-service-field"><dt>지원 과정</dt><dd>{{ selected.program }}</dd></div>
+        <div class="side-service-field"><dt>연락처</dt><dd>{{ selected.contact }}</dd></div>
+        <div class="side-service-field"><dt>진행 상태</dt><dd><span class="status-chip">{{ selected.status }}</span></dd></div>
+        <div class="side-service-field"><dt>최종 변경일</dt><dd>{{ selected.updated_at }}</dd></div>
+      </dl>
+    </div>
+    {% elif lookupAttempted %}
+    <p class="empty-state side-service-empty">조회한 접수 건을 찾을 수 없습니다. 조회번호를 확인해 주세요.</p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

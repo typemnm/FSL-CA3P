@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ca3p.local/contracts/run-manifest/1.0",
+  "title": "CA3P immutable run manifest",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "source", "model", "data", "policy"],
+  "properties": {
+    "schemaVersion": {"const": "1.0"},
+    "runId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "source": {"type": "object", "properties": {"commitSha": {"type": ["string", "null"]}}},
+    "model": {"type": ["object", "null"]},
+    "data": {"type": ["object", "null"]},
+    "policy": {"type": ["object", "null"]}
+  },
+  "description": "Initial conditions are immutable. Unknown imported values are null; runtime measurements live in model_calls and run events."
+}

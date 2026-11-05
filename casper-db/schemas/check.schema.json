@@ -1,5 +1,33 @@
 {
   "$defs": {
+    "EvidenceMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "reference": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Reference",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reference",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "EvidenceMetadata",
+      "type": "object"
+    },
     "LinkReview": {
       "additionalProperties": false,
       "description": "A local reviewer explicitly associates a changed location with an old report.",
@@ -90,10 +118,18 @@
       "type": "string"
     },
     "parameter": {
-      "maxLength": 4000,
-      "minLength": 1,
-      "title": "Parameter",
-      "type": "string"
+      "anyOf": [
+        {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parameter"
     },
     "parameter_location": {
       "default": "unknown",
@@ -108,6 +144,11 @@
       ],
       "title": "Parameter Location",
       "type": "string"
+    },
+    "parameter_not_applicable": {
+      "default": false,
+      "title": "Parameter Not Applicable",
+      "type": "boolean"
     },
     "result": {
       "enum": [
@@ -164,6 +205,14 @@
         }
       ],
       "default": null
+    },
+    "observed_evidence": {
+      "items": {
+        "$ref": "#/$defs/EvidenceMetadata"
+      },
+      "maxItems": 30,
+      "title": "Observed Evidence",
+      "type": "array"
     }
   },
   "required": [
@@ -174,7 +223,6 @@
     "case_id",
     "run_id",
     "observed_at",
-    "parameter",
     "result",
     "observation",
     "source"

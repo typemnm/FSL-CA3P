@@ -1,0 +1,19 @@
+name: ca3p-vul-web-1
+
+services:
+  board:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ca3p-vul-web-1:local
+    init: true
+    ports:
+      - "127.0.0.1:3000:3000"
+    read_only: true
+    tmpfs:
+      - /app/data:uid=1000,gid=1000,mode=0700,size=16m
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

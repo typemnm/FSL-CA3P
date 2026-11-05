@@ -1,0 +1,21 @@
+{
+  "templateId": "debug-path-template",
+  "title": "디버그 경로 설정 노출",
+  "sessionRole": "public",
+  "attackType": { "name": "info_disclosure", "cwe": "CWE-215" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "express" },
+  "target": { "method": "GET", "endpoint": "/debug" },
+  "request": { "packet": { "method": "GET", "path": "/debug" } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["/_diag/config"],
+  "verify": {
+    "mode": "containsFields",
+    "baseline": { "path": "/", "status": 200 },
+    "attack": { "status": 200, "fields": ["database", "node"] }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

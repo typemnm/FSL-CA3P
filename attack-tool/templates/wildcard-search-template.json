@@ -1,0 +1,21 @@
+{
+  "templateId": "wildcard-search-template",
+  "title": "와일드카드 검색 과다 노출",
+  "sessionRole": "public",
+  "attackType": { "name": "information_exposure", "cwe": "CWE-200" },
+  "dependency": { "runtime": "node", "framework": "express", "library": "node:sqlite" },
+  "target": { "method": "GET", "endpoint": "/api/search" },
+  "request": { "packet": { "method": "GET", "path": "/api/search", "query": { "q": "{{payload}}" } } },
+  "blanks": {
+    "origin": { "required": true, "type": "url" },
+    "payload": { "required": true, "type": "string", "pickFrom": "payloads" }
+  },
+  "payloads": ["%"],
+  "verify": {
+    "mode": "resultCount",
+    "baseline": { "q": "zzqnomatch", "expect": 0 },
+    "attack": { "expectMin": 1 }
+  },
+  "executor": "guardrail",
+  "trust": "unverified"
+}

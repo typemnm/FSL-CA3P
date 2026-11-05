@@ -1,0 +1,24 @@
+{
+  "repository": "typemnm/FSL-CA3P",
+  "repoDir": "/Users/casper/dev/CA3P/FSL-CA3P",
+  "deployRoot": "/Users/casper/dev/CA3P/FSL-CA3P/.runtime/device-deploy",
+  "runtimeDir": "/Users/casper/dev/CA3P/FSL-CA3P/.runtime",
+  "caseDbPath": "/Users/casper/dev/CA3P/FSL-CA3P/casper-db/data/cases.sqlite3",
+  "legacyReportsDir": "/Users/casper/dev/CA3P/FSL-CA3P/reports/pentest-db-runs",
+  "nodePath": "/Users/casper/dev/CA3P/FSL-CA3P/.runtime/bin/node",
+  "pythonPath": "/Users/casper/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+  "npmCli": "/Users/casper/dev/CA3P/FSL-CA3P/.runtime/bin/npm/package/bin/npm-cli.js",
+  "serviceLabel": "kr.or.casper.ca3p.macmini-dashboard",
+  "servicePlistPath": "/Users/casper/Library/LaunchAgents/kr.or.casper.ca3p.macmini-dashboard.plist",
+  "host": "192.168.0.84",
+  "port": 4175,
+  "publicOrigin": "https://macmini.casper.or.kr",
+  "trustedProxyIps": "192.168.0.3",
+  "probePort": 4185,
+  "credentialFile": "/Users/casper/dev/CA3P/FSL-CA3P/.runtime/access.txt",
+  "fixtures": {
+    "enabled": true,
+    "dockerPath": "/usr/local/bin/docker",
+    "project": "ca3p-universities"
+  }
+}

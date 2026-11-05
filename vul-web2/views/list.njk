@@ -1,0 +1,10 @@
+{% extends "layout.njk" %}
+{% block title %}{{ heading }} | {{ site.name }}{% endblock %}
+{% block main %}
+<section class="page-hero"><div class="container"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a><span aria-hidden="true">/</span><span>{{ heading }}</span></nav><span class="eyebrow">CAMPUS COMMUNICATION</span><h1>{{ heading }}</h1><p>{{ intro }}</p></div></section>
+<section class="content-section"><div class="container">
+  <div class="board-tools"><p>등록된 {{ heading }}을 확인하세요.</p><form class="board-search" action="{{ activePath }}" method="get" role="search"><label class="sr-only" for="board-q">{{ heading }} 검색</label><input type="search" id="board-q" name="q" value="{{ q or '' }}" placeholder="제목 검색"><button type="submit" aria-label="검색">검색</button></form></div>
+  <div class="board-list"><div class="board-heading"><span>구분</span><span>제목</span><span>작성일</span></div>{% for item in posts %}<a class="board-row" href="/{% if type == 'news' %}news{% else %}notices{% endif %}/{{ item.id }}"><span class="board-category">{% if type == 'news' %}대학 소식{% else %}공지사항{% endif %}</span><span class="board-title">{{ item.title }}<small>{{ item.body | truncate(86) }}</small></span><time>{{ item.created_at }}</time><span class="board-row-arrow" aria-hidden="true">↗</span></a>{% else %}<p class="empty-state">{% if q %}“{{ q }}”에 대한 검색 결과가 없습니다.{% else %}등록된 게시물이 없습니다.{% endif %}</p>{% endfor %}</div>
+  {% if totalPages and totalPages > 1 %}<nav class="pagination" aria-label="페이지 이동">{% if page > 1 %}<a href="{{ activePath }}?q={{ (q or '') | urlencode }}&page={{ page - 1 }}" aria-label="이전 페이지">←</a>{% endif %}{% for n in range(1, totalPages + 1) %}<a href="{{ activePath }}?q={{ (q or '') | urlencode }}&page={{ n }}" {% if n == page %}aria-current="page"{% endif %}>{{ n }}</a>{% endfor %}{% if page < totalPages %}<a href="{{ activePath }}?q={{ (q or '') | urlencode }}&page={{ page + 1 }}" aria-label="다음 페이지">→</a>{% endif %}</nav>{% endif %}
+</div></section>
+{% endblock %}

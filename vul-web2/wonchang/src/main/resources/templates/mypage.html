@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org" th:with="pageTitle=${'마이페이지 | ' + site.name}">
+<head th:replace="~{fragments/head :: head}"></head>
+<body data-site="wonchang" th:attr="data-path=${activePath}">
+<th:block th:replace="~{fragments/header :: header}"></th:block>
+<main id="main-content">
+  <section class="page-hero"><div class="container"><nav class="breadcrumb" aria-label="현재 위치"><a href="/">홈</a><span aria-hidden="true">/</span><span>마이페이지</span></nav><span class="eyebrow">MY UNIVERSITY</span><h1>마이페이지</h1><p th:text="|${user.display_name}님의 대학 서비스 이용 현황입니다.|">대학 서비스 이용 현황입니다.</p></div></section>
+  <section class="content-section"><div class="container"><div class="my-summary"><div><span class="eyebrow">WELCOME BACK</span><h2 th:text="|${user.display_name}님, 안녕하세요.|">안녕하세요.</h2><p>나의 신청 내역과 대학 소식을 확인할 수 있습니다.</p></div><span class="my-avatar" aria-hidden="true" th:text="${site.logoMark}">原</span></div><div class="content-heading"><div><span class="eyebrow">MY REQUESTS</span><h2>나의 신청 내역</h2></div><a class="text-link" href="/notices">공지사항 보기 <span aria-hidden="true">↗</span></a></div><div class="request-list"><div class="request-list-head"><span>신청 내용</span><span>신청일</span><span>진행 상태</span></div><div th:each="request : ${requests}" class="request-row"><strong th:text="${request.title}">신청 제목</strong><time th:text="${request.created_at}">2026-10-20</time><span class="status-chip" th:text="${request.status}">접수</span></div><p th:if="${#lists.isEmpty(requests)}" class="empty-state">아직 신청 내역이 없습니다.</p></div><div class="request-form-panel"><div><span class="eyebrow">NEW REQUEST</span><h2>서비스 신청</h2><p>필요한 내용을 남겨 주세요. 담당자가 확인한 뒤 처리합니다.</p></div><form action="/mypage/requests" method="post" class="stacked-form"><label for="request-title">신청 제목</label><input id="request-title" name="title" maxlength="160" required placeholder="신청 제목을 입력하세요"><label for="request-body">상세 내용</label><textarea id="request-body" name="body" rows="5" required placeholder="신청 내용을 입력하세요"></textarea><button class="button button-primary" type="submit">신청하기 <span aria-hidden="true">→</span></button></form></div></div></section>
+</main>
+<footer th:replace="~{fragments/footer :: footer}"></footer>
+<script defer src="/js/site.js"></script>
+</body>
+</html>

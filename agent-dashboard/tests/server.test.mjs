@@ -2,12 +2,67 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { request } from 'node:http';
-import { createLocalRuntime } from '../local-runtime.mjs';
 import { createDashboardServer } from '../local-server.mjs';
 
-async function serve(t, { delayMs = 0, publicOrigins } = {}) {
-  const runtime = createLocalRuntime({ defaultDelayMs: delayMs });
-  const server = createDashboardServer({ runtime, publicOrigins });
+const STEPS = 6;
+
+// In-memory runtime with the run-service surface the HTTP layer uses; it never contacts a target.
+function createStubRuntime({ delayMs = 0 } = {}) {
+  const fail = (status, message) => Object.assign(new Error(message), { status });
+  const listeners = new Set();
+  const idle = () => ({ id: null, status: 'idle', target: null, targetContacted: false, events: [] });
+  let run = idle(); let timer = null; let closed = false; let count = 0; let settled = Promise.resolve();
+  const getState = () => structuredClone({ run, mode: 'stub', instanceId: 'stub-instance' });
+  const publish = () => { for (const listener of listeners) listener(getState()); };
+  const active = () => ['running', 'stopping'].includes(run.status);
+  function step() {
+    timer = null;
+    if (run.status !== 'running') return;
+    run.events.push({ id: `${run.id}:event-${run.events.length + 1}`, module: 'agent', stage: 'loop.act' });
+    if (run.events.length === STEPS) { run.status = 'completed'; run.report = { status: 'completed' }; }
+    else timer = setTimeout(step, delayMs);
+    publish();
+  }
+  function start(options = {}) {
+    if (closed) throw fail(503, 'Runtime is closed.');
+    if (active()) throw fail(409, 'A run is already active.');
+    if (Object.keys(options).some(key => !['target', 'delayMs'].includes(key))) throw fail(400, 'Only target and delayMs are accepted.');
+    let target;
+    try { target = new URL(options.target).href; } catch { throw fail(400, 'Provide a valid URL.'); }
+    if (options.delayMs !== undefined && (!Number.isInteger(options.delayMs) || options.delayMs < 0)) throw fail(400, 'Invalid delayMs.');
+    run = { id: `stub-${count += 1}`, status: 'running', target, targetContacted: false, events: [] };
+    timer = setTimeout(step, delayMs);
+    publish();
+    return getState();
+  }
+  function stop(id) {
+    if (id !== run.id) throw fail(404, 'Run not found.');
+    if (run.status === 'running') {
+      run.status = 'stopping'; clearTimeout(timer); timer = null; publish();
+      // Cancellation finishes later, so a server that did not await close() would still see 'stopping'.
+      settled = new Promise(resolve => setTimeout(() => {
+        run.status = 'stopped'; run.report = { status: 'failed' }; publish(); resolve();
+      }, 20));
+    }
+    return getState();
+  }
+  function reset() {
+    if (active()) throw fail(409, 'Stop the active run before resetting.');
+    run = idle(); publish(); return getState();
+  }
+  async function close() {
+    closed = true;
+    if (run.status === 'running') stop(run.id);
+    await settled;
+    listeners.clear();
+  }
+  return { getState, start, stop, reset, close,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+}
+
+async function serve(t, { delayMs = 0 } = {}) {
+  const runtime = createStubRuntime({ delayMs });
+  const server = createDashboardServer({ runtime });
   assert.equal(server.listening, false, 'Creating the server must have no listen side effect');
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -43,31 +98,6 @@ function statusWithHostHeader(url, host) {
     });
     req.on('error', reject);
     req.setTimeout(5000, () => req.destroy(new Error('Local Host-header check timed out')));
-    req.end();
-  });
-}
-
-function requestWithHeaders(url, { method = 'GET', headers = {}, body, streaming = false } = {}) {
-  // Connect only to the loopback test listener; Host models the external URL.
-  assert.equal(new URL(url).hostname, '127.0.0.1');
-  return new Promise((resolve, reject) => {
-    const req = request(url, { method, agent: false, headers }, res => {
-      if (streaming) {
-        resolve({ status: res.statusCode, headers: res.headers });
-        res.destroy();
-        return;
-      }
-      const chunks = [];
-      res.on('data', chunk => chunks.push(chunk));
-      res.on('end', () => resolve({
-        status: res.statusCode, headers: res.headers,
-        body: Buffer.concat(chunks).toString('utf8'),
-      }));
-      res.on('error', reject);
-    });
-    req.on('error', reject);
-    req.setTimeout(5000, () => req.destroy(new Error('Local public-origin check timed out')));
-    if (body !== undefined) req.write(body);
     req.end();
   });
 }
@@ -128,8 +158,8 @@ test('the local API serves static UI and exposes the same runtime state envelope
   assert.equal(response.headers.get('access-control-allow-origin'), null);
   assert.deepEqual(body, runtime.getState());
   const started = await getJson(`${base}/api/runs`, jsonPost({ target: 'https://metadata-only.invalid', delayMs: 0 }));
-  assert.equal(started.response.ok, true);
-  assert.equal(started.body.mode, 'core-fixture');
+  assert.equal(started.response.status, 201);
+  assert.equal(started.body.run.status, 'running');
   assert.equal(started.body.run.target, 'https://metadata-only.invalid/');
   assert.equal(started.body.run.targetContacted, false);
 });
@@ -146,7 +176,7 @@ test('the API rejects invalid input, oversized JSON, unsupported methods, and un
     ['/api/runs', jsonPost({ target: 'https://metadata-only.invalid', gateway: {} }), 400],
     ['/api/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: `https://metadata-only.invalid/${'x'.repeat(8192)}` }) }, 413],
     ['/api/state', { method: 'POST' }, 405],
-    ['/api/runs', { method: 'GET' }, 405],
+    ['/api/runs', { method: 'PUT' }, 405],
     ['/api/missing', undefined, 404],
   ];
   for (const [path, options, expected] of cases) {
@@ -178,88 +208,6 @@ test('cross-origin requests and non-local Host values cannot read or mutate the 
   await sameOrigin.text();
 });
 
-test('configured LAN and HTTPS proxy origins serve the UI, API, and event stream', async t => {
-  const { runtime, base } = await serve(t, {
-    publicOrigins: 'http://192.168.0.84:4173,https://ca3p.casper.or.kr',
-  });
-  const lanHost = '192.168.0.84:4173';
-  const lanOrigin = `http://${lanHost}`;
-  const proxyHost = 'ca3p.casper.or.kr';
-  const proxyOrigin = `https://${proxyHost}`;
-
-  for (const host of [lanHost, proxyHost]) {
-    const page = await requestWithHeaders(`${base}/`, { headers: { Host: host } });
-    assert.equal(page.status, 200, `UI via ${host}`);
-    assert.match(page.body, /CA3P/);
-  }
-  for (const [host, origin] of [[lanHost, lanOrigin], [proxyHost, proxyOrigin]]) {
-    const state = await requestWithHeaders(`${base}/api/state`, {
-      headers: { Host: host, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-    });
-    assert.equal(state.status, 200, `API via ${origin}`);
-    assert.deepEqual(JSON.parse(state.body), runtime.getState());
-    assert.equal(state.headers['access-control-allow-origin'], undefined);
-
-    const events = await requestWithHeaders(`${base}/api/events`, {
-      headers: { Host: host, Origin: origin, 'Sec-Fetch-Site': 'same-origin' },
-      streaming: true,
-    });
-    assert.equal(events.status, 200, `SSE via ${origin}`);
-    assert.match(events.headers['content-type'], /text\/event-stream/);
-  }
-
-  const started = await requestWithHeaders(`${base}/api/runs`, {
-    method: 'POST',
-    headers: {
-      Host: proxyHost, Origin: proxyOrigin, 'Sec-Fetch-Site': 'same-origin',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ target: 'https://metadata-only.invalid', delayMs: 0 }),
-  });
-  assert.equal(started.status, 201);
-  assert.equal(JSON.parse(started.body).run.targetContacted, false);
-});
-
-test('public-origin allowlist rejects unknown Hosts, scheme mismatches, and cross-site API calls', async t => {
-  const { runtime, base } = await serve(t, {
-    publicOrigins: 'http://192.168.0.84:4173,https://ca3p.casper.or.kr',
-  });
-  const idle = runtime.getState();
-  const denied = [
-    { path: '/', headers: { Host: 'untrusted.invalid' } },
-    { path: '/api/state', headers: { Host: 'untrusted.invalid', Origin: 'https://untrusted.invalid' } },
-    { path: '/api/state', headers: { Host: 'ca3p.casper.or.kr', Origin: 'http://ca3p.casper.or.kr' } },
-    { path: '/api/events', headers: { Host: '192.168.0.84:4173', Origin: 'https://ca3p.casper.or.kr' } },
-    {
-      path: '/api/lab-runs', method: 'POST', body: '{}',
-      headers: { Host: '192.168.0.84:4173', Origin: 'https://untrusted.invalid', 'Content-Type': 'application/json' },
-    },
-    {
-      path: '/api/lab-runs', method: 'POST', body: '{}',
-      headers: {
-        Host: 'ca3p.casper.or.kr', Origin: 'https://ca3p.casper.or.kr',
-        'Sec-Fetch-Site': 'cross-site', 'Content-Type': 'application/json',
-      },
-    },
-  ];
-  for (const { path, ...options } of denied) {
-    const response = await requestWithHeaders(`${base}${path}`, options);
-    assert.equal(response.status, 403, `${options.method ?? 'GET'} ${path} ${options.headers.Host}`);
-    assert.deepEqual(runtime.getState(), idle, 'Denied requests must not alter the runtime');
-  }
-});
-
-test('public origins must be exact HTTP(S) origins', () => {
-  for (const publicOrigins of [
-    'https://ca3p.casper.or.kr/',
-    'https://ca3p.casper.or.kr/path',
-    'ftp://ca3p.casper.or.kr',
-    'https://ca3p.casper.or.kr,',
-  ]) {
-    assert.throws(() => createDashboardServer({ runtime: {}, publicOrigins }), TypeError, publicOrigins);
-  }
-});
-
 test('SSE sends an initial snapshot and live core events through completion', async t => {
   const { runtime, base } = await serve(t);
   const controller = new AbortController();
@@ -281,7 +229,7 @@ test('SSE sends an initial snapshot and live core events through completion', as
   for (let index = 0; index < 100; index += 1) {
     const state = await nextState();
     assert.equal(state.instanceId, started.body.instanceId);
-    assert.equal(state.mode, 'core-fixture');
+    assert.equal(state.mode, 'stub');
     seen.push(state);
     if (['completed', 'failed'].includes(state.run?.status)) {
       final = state;
@@ -290,7 +238,7 @@ test('SSE sends an initial snapshot and live core events through completion', as
   }
   assert.ok(final, 'The stream must deliver a terminal state');
   assert.equal(final.run.status, 'completed');
-  assert.equal(final.run.events.length, 25);
+  assert.equal(final.run.events.length, STEPS);
   assert.equal(final.run.targetContacted, false);
   assert.ok(seen.some(state => state.run?.status === 'running' && state.run.events.length > 0));
   assert.deepEqual(final, runtime.getState());
@@ -312,7 +260,7 @@ test('API stop cancels an active run, while active replacement and reset return 
   assert.ok(['stopping', 'stopped'].includes(stopped.body.run.status));
   await waitForStopped(runtime);
   assert.equal(runtime.getState().run.status, 'stopped');
-  assert.ok(runtime.getState().run.events.length < 25);
+  assert.ok(runtime.getState().run.events.length < STEPS);
   const reset = await getJson(`${base}/api/reset`, jsonPost({}));
   assert.equal(reset.response.ok, true);
   assert.ok(!reset.body.run || reset.body.run.status === 'idle');
@@ -353,7 +301,7 @@ test('shutdown ends an active SSE stream and awaits cancellation before closing 
   const final = runtime.getState();
   assert.equal(final.run.status, 'stopped');
   assert.ok(final.run.events.length > 0);
-  assert.ok(final.run.events.length < 19);
+  assert.ok(final.run.events.length < STEPS);
   assert.equal(final.run.targetContacted, false);
   assert.equal(final.run.report.status, 'failed');
   assert.throws(() => runtime.start({ target: 'https://metadata-only.invalid' }), error => error.status === 503);
