@@ -11,6 +11,7 @@ import { syncRunChecks } from '../../packages/history/check-sync.mjs';
 import { PROJECT_ROOT, treeDigest } from '../../packages/contracts/manifest.mjs';
 import { join } from 'node:path';
 import { generateReportDocument } from '../../packages/report/index.mjs';
+import { providerOutputTokens, resolveProvider } from '../../packages/models/provider-settings.mjs';
 
 const GENERAL_DOCUMENTS_SCHEMA_VERSION = 'general-report-documents/1';
 const publicDocumentMessage = value => (typeof value === 'string'
@@ -273,6 +274,13 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
             documents.message = '확정 결과의 식별자가 올바르지 않아 HWPX를 생성하지 않았습니다.';
           } else {
             saveProgress();
+            // An operator-registered custom AI API provider (deploy/openai/openai-compatible)
+            // writes the HWPX with its own endpoint and key; the report package does not import
+            // the model-adapters layer, so resolve it here and pass it in.
+            const reportProvider = resolveProvider(finalState.modelId, { env });
+            const providerSettings = reportProvider ? { baseUrl: reportProvider.baseUrl,
+              apiKey: reportProvider.apiKey, model: reportProvider.model,
+              maxTokens: providerOutputTokens(reportProvider) } : null;
             for (const item of items) {
               if (controller.signal.aborted) {
                 item.status = 'skipped'; item.errorCode = 'REPORT_CANCELLED';
@@ -290,6 +298,7 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
                   ...(item.subtaskId ? { subtaskId: item.subtaskId, subtask } : {}),
                   storePath: store.path, historyPath: lease.options.caseSnapshot?.sourcePath,
                   envFile, env, signal: controller.signal,
+                  ...(providerSettings ? { providerSettings } : {}),
                   ...(verificationDir ? { verificationDir } : {}) });
                 if (document?.status === 'ready' && controller.signal.aborted) document = {
                   status: 'failed', errorCode: 'REPORT_CANCELLED', message: '보고서 생성을 취소했습니다.',

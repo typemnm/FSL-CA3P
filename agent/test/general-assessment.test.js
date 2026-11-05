@@ -658,3 +658,42 @@ test('a late model schema error preserves verified findings as an explicit parti
   assert.equal(report.findings[0].status, 'confirmed');
   assert.deepEqual(report.rejectedProposals, [{ iteration: 2, reason: 'invalid_model_plan' }]);
 });
+
+test('a transient late model-call failure preserves verified findings as a partial result', async () => {
+  const base = ports();
+  const { report } = await runGeneralAssessment(ports({
+    planner: { async propose(context) {
+      if (context.iteration === 1) return base.planner.propose(context);
+      throw Object.assign(new Error('provider API timed out'), { code: 'LLM_PROVIDER_TIMEOUT' });
+    } },
+  }));
+  assert.equal(report.status, 'completed');
+  assert.equal(report.stopReason, 'model_call_incomplete');
+  assert.equal(report.partial, true);
+  assert.equal(report.findings[0].status, 'confirmed');
+  assert.deepEqual(report.rejectedProposals, [{ iteration: 2, reason: 'model_call_incomplete' }]);
+});
+
+test('a transient model-call failure before any finding still fails the run', async () => {
+  const { report } = await runGeneralAssessment(ports({
+    planner: { async propose() {
+      throw Object.assign(new Error('provider API timed out'), { code: 'LLM_PROVIDER_TIMEOUT' });
+    } },
+  }));
+  assert.equal(report.status, 'failed');
+  assert.equal(report.stopReason, 'failure');
+  assert.equal(report.error.code, 'LLM_PROVIDER_TIMEOUT');
+  assert.notEqual(report.partial, true);
+});
+
+test('a non-transient model-call failure still fails the run even with findings', async () => {
+  const base = ports();
+  const { report } = await runGeneralAssessment(ports({
+    planner: { async propose(context) {
+      if (context.iteration === 1) return base.planner.propose(context);
+      throw Object.assign(new Error('provider rejected the API key'), { code: 'LLM_PROVIDER_AUTH_FAILED' });
+    } },
+  }));
+  assert.equal(report.status, 'failed');
+  assert.equal(report.error.code, 'LLM_PROVIDER_AUTH_FAILED');
+});

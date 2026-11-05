@@ -241,6 +241,40 @@ test('general worker uses its own runtime and model, persists the report, and wr
   assert.doesNotMatch(actions[0].result_json, /PRIVATE_RESPONSE/);
 });
 
+test('a custom AI API provider run forwards the resolved provider settings to the report generator', async t => {
+  const { id, storePath, directory } = await setup('custom-ab0537de1cad');
+  const providersPath = join(directory, 'llm-providers.json');
+  writeFileSync(providersPath, JSON.stringify({ version: 1, local: null, providers: [{
+    id: 'custom-ab0537de1cad', name: 'deploy-live', kind: 'deploy',
+    baseUrl: 'https://api-sf1-cdn.deploy.com/api/v1', model: 'deepseek-ai/deepseek-v4.1-flash-1017',
+    apiKey: 'provider-fake-key', maxOutputTokens: 32768, createdAt: new Date().toISOString() }] }));
+  const report = { schemaVersion: 'general-assessment/1', assessmentMode: 'general', status: 'completed',
+    findings: [{ id: 'finding:h1', status: 'confirmed', evidenceIds: ['e1'] }], evidence: [],
+    coverage: { totalHypotheses: 1, confirmed: 1 } };
+  const generalRuntimeFactory = () => {
+    let state; const listeners = new Set();
+    return {
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      async startLab() {
+        state = { run: { id, mode: 'local-lab-general', assessmentMode: 'general',
+          status: 'completed', events: [], report, reviewItems: [] } };
+        for (const listener of listeners) listener(structuredClone(state));
+      },
+      getState() { return structuredClone(state); }, stop() {}, async close() {},
+    };
+  };
+  let captured = 'unset';
+  const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10,
+    env: { CA3P_LLM_PROVIDERS_PATH: providersPath }, generalRuntimeFactory,
+    reportGenerator: args => { captured = args.providerSettings;
+      return { status: 'ready', filename: 'f1.hwpx', bytes: Buffer.from('PK\x03\x04f1') }; } });
+  t.after(async () => { await worker.shutdown(); rmSync(directory, { recursive: true, force: true }); });
+  await waitFor(() => { const value = worker.store.getRun(id);
+    return value.status === 'completed' && value.reportDocuments?.completedAt && value; });
+  assert.deepEqual(captured, { baseUrl: 'https://api-sf1-cdn.deploy.com/api/v1',
+    apiKey: 'provider-fake-key', model: 'deepseek-ai/deepseek-v4.1-flash-1017', maxTokens: 32768 });
+});
+
 test('general worker creates one document per confirmed finding and keeps other results in JSON', async t => {
   const calls = [];
   const { worker, run } = await runWithFindings(t, { findings: [

@@ -176,6 +176,43 @@ test('general report selects one confirmed finding and rejects mismatched output
   assert.equal(unconfirmed.errorCode, 'REPORT_INVALID_SELECTION');
 });
 
+test('a custom AI API provider run writes its report through the provider settings', async t => {
+  const options = await setup(t);
+  const customRun = { id: 'custom-report-run', mode: 'local-lab-general', modelId: 'custom-ab0537de1cad',
+    simulated: false,
+    report: { schemaVersion: 'general-assessment/1', assessmentMode: 'general', status: 'completed',
+      findings: [{ id: 'finding:h-a', status: 'confirmed', evidenceIds: ['ev-a'] }] } };
+  const providerSettings = { baseUrl: 'https://api-sf1-cdn.deploy.com/api/v1',
+    apiKey: 'provider-test-fake-key', model: 'deepseek-ai/deepseek-v4.1-flash-1017', maxTokens: 32768 };
+  const execute = async ({ env: childEnv, input }) => {
+    assert.equal(childEnv.DEEPSEEK_BASE_URL, providerSettings.baseUrl);
+    assert.equal(childEnv.DEEPSEEK_API_KEY, providerSettings.apiKey);
+    assert.equal(childEnv.DEEPSEEK_MODEL, providerSettings.model);
+    assert.equal(childEnv.DEEPSEEK_MAX_TOKENS, '32768');
+    const trigger = JSON.parse(input);
+    const directory = join(trigger.output.dir, 'report');
+    await mkdir(directory);
+    const model = Buffer.from(JSON.stringify({ run: { run_id: trigger.runId, status: 'completed' },
+      generator: { method: 'llm' }, sourceFindingId: 'finding:h-a', sourceEvidenceIds: ['ev-a'],
+      findings: [{ id: 'V-01', finding_id: 'finding:h-a', verdict: 'confirmed' }] }));
+    await writeFile(join(directory, 'selected.hwpx'), hwpx);
+    await writeFile(join(directory, 'report-model.json'), model);
+    return { code: 0, stdout: JSON.stringify({ schemaVersion: 'report-result-1.0', ok: true,
+      stage: 'reported', runId: trigger.runId, findingId: 'finding:h-a', reportFilename: 'selected.hwpx', files: [
+        { name: 'selected.hwpx', sha256: sha(hwpx), size: hwpx.length },
+        { name: 'report-model.json', sha256: sha(model), size: model.length },
+      ] }) };
+  };
+  const result = await generateReportDocument({ ...options, run: customRun, findingId: 'finding:h-a',
+    env, envFile: null, providerSettings, execute });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.findingId, 'finding:h-a');
+  // Without the provider settings the same custom run cannot be configured.
+  const missing = await generateReportDocument({ ...options, run: customRun, findingId: 'finding:h-a',
+    env, envFile: null, execute: () => assert.fail('a custom run without provider settings must not dispatch') });
+  assert.equal(missing.errorCode, 'REPORT_NOT_CONFIGURED');
+});
+
 test('child report requires completed task provenance and a matching CLI result', async t => {
   const options = await setup(t);
   const parent = { ...run, id: 'parent-run', mode: 'local-lab-general', modelId: 'deepseek-flash',

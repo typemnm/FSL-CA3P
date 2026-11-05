@@ -90,18 +90,33 @@ function legacyFindingId(finding) {
   return 'finding';
 }
 
-/** The run's own DeepSeek model, or the configured default for rule-only runs. Other models
- * (a local LLM) are refused rather than silently sent to an external provider. */
-function resolveSettings({ modelId, env, envFile }) {
+/** A `custom-<hex12>` model id names an operator-registered AI API provider. The provider's
+ * own baseUrl/apiKey/model are resolved by the model-adapters layer (which this package does
+ * not import) and handed in as `providerSettings`. Mirrors CUSTOM_MODEL_ID in provider-settings. */
+const CUSTOM_PROVIDER_MODEL_ID = /^custom-[a-f0-9]{12}$/u;
+
+/** The run's own DeepSeek model, the configured default for rule-only runs, or the
+ * operator-registered custom AI API provider the run used. A local LLM is still refused
+ * rather than silently sent to an external provider. */
+function resolveSettings({ modelId, env, envFile, providerSettings }) {
   const own = modelDefinitions.DEEPSEEK_MODELS.includes(modelId);
-  if (!own && !RULE_ONLY_MODELS.has(modelId)) return null;
-  return configuration.resolveDeepSeekOptions({ env: own ? { ...env, DEEPSEEK_MODEL: modelId } : env,
-    ...(envFile !== undefined ? { envFile } : {}) });
+  if (own || RULE_ONLY_MODELS.has(modelId)) {
+    return configuration.resolveDeepSeekOptions({ env: own ? { ...env, DEEPSEEK_MODEL: modelId } : env,
+      ...(envFile !== undefined ? { envFile } : {}) });
+  }
+  if (CUSTOM_PROVIDER_MODEL_ID.test(modelId) && providerSettings && typeof providerSettings === 'object'
+    && typeof providerSettings.baseUrl === 'string' && providerSettings.baseUrl
+    && typeof providerSettings.apiKey === 'string' && providerSettings.apiKey
+    && typeof providerSettings.model === 'string' && providerSettings.model) {
+    return { baseUrl: providerSettings.baseUrl, apiKey: providerSettings.apiKey, model: providerSettings.model,
+      ...(Number.isSafeInteger(providerSettings.maxTokens) ? { maxTokens: providerSettings.maxTokens } : {}) };
+  }
+  return null;
 }
 
 /** Runs the Python report agent; public results never contain paths or credentials. */
 export async function generateReportDocument({ run, storePath, historyPath, envFile, env = process.env,
-  findingId, subtaskId, subtask, verificationDir, signal, timeoutMs = DEFAULT_TIMEOUT_MS,
+  findingId, subtaskId, subtask, verificationDir, providerSettings, signal, timeoutMs = DEFAULT_TIMEOUT_MS,
   execute = executeReportProcess } = {}) {
   if (run?.mode === 'core-fixture' || run?.simulated) {
     return { status: 'skipped', errorCode: 'FIXTURE_SKIPPED', message: '코어 fixture는 HWPX 보고서를 생성하지 않습니다.' };
@@ -154,7 +169,7 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
   const sourceEvidence = general ? selectedFinding.evidenceIds
     : Array.isArray(source?.evidenceRefs) ? source.evidenceRefs.filter(id => typeof id === 'string') : [];
   let settings;
-  try { settings = resolveSettings({ modelId: run.modelId, env, envFile }); }
+  try { settings = resolveSettings({ modelId: run.modelId, env, envFile, providerSettings }); }
   catch { settings = null; }
   if (!settings) {
     return { status: 'unavailable', errorCode: 'REPORT_NOT_CONFIGURED',
@@ -171,7 +186,8 @@ export async function generateReportDocument({ run, storePath, historyPath, envF
       output: { dir: output }, ...(general ? { options: { findingId,
         ...(subtaskId !== undefined ? { subtaskId } : {}) } } : {}) };
     const childEnv = { ...env, PYTHONPATH: PYTHON_ROOT, PYTHONIOENCODING: 'utf-8',
-      DEEPSEEK_BASE_URL: settings.baseUrl, DEEPSEEK_API_KEY: settings.apiKey, DEEPSEEK_MODEL: settings.model };
+      DEEPSEEK_BASE_URL: settings.baseUrl, DEEPSEEK_API_KEY: settings.apiKey, DEEPSEEK_MODEL: settings.model,
+      ...(Number.isSafeInteger(settings.maxTokens) ? { DEEPSEEK_MAX_TOKENS: String(settings.maxTokens) } : {}) };
     const result = await execute({ command: env.CA3P_REPORT_PYTHON || env.CASPER_DB_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'),
       args: ['-m', 'ca3p_report', 'run', '--trigger', '-'], input: JSON.stringify(trigger), env: childEnv, signal, timeoutMs });
     if (signal?.aborted) throw failure('REPORT_CANCELLED', '보고서 생성을 취소했습니다.');

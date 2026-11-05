@@ -8,6 +8,17 @@ const VERDICTS = new Set(['confirmed', 'not_reproduced', 'inconclusive']);
 const VERDICT_RANK = Object.freeze({ confirmed: 3, not_reproduced: 2, inconclusive: 1, not_tested: 0 });
 const REJECTED_PROBE_REASONS = new Set(['unknown_hypothesis_id', 'unavailable_tool',
   'unsafe_probe_input', 'invalid_probe_schema', 'proposal_limit']);
+// Transient model-call failures that merely cut a late planning turn short. When
+// earlier iterations have already produced verified findings, a planner call that
+// times out, is truncated/incomplete, is rate limited, or hits a transient upstream
+// error ends the loop as a partial result instead of discarding the whole run.
+// Auth/config/balance/aborted errors are intentionally excluded: they are not
+// transient and must still fail loudly.
+const SALVAGEABLE_PLANNER_ERROR_CODES = new Set([
+  'LLM_PROVIDER_TIMEOUT', 'LLM_PROVIDER_OUTPUT_TRUNCATED', 'LLM_PROVIDER_OUTPUT_INVALID',
+  'LLM_PROVIDER_RATE_LIMITED', 'LLM_PROVIDER_UNAVAILABLE',
+  'DEEPSEEK_TIMEOUT', 'DEEPSEEK_INCOMPLETE_RESPONSE', 'DEEPSEEK_EMPTY_RESPONSE',
+  'DEEPSEEK_RATE_LIMITED', 'DEEPSEEK_UPSTREAM_ERROR', 'DEEPSEEK_TRANSPORT_ERROR']);
 const SENSITIVE_KEY = /^(?:(?:x[-_])?(?:api[-_]?key|auth[-_]?(?:key|token)|access[-_]?token|refresh[-_]?token|csrf[-_]?token|client[-_]?secret)|authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|password|passwd|secret|token|session(?:[-_]?id)?|credentials?|private[-_]?key)$/iu;
 const FORBIDDEN_TOOL_KEY = /^(?:(?:x[-_])?(?:api[-_]?key|auth[-_]?(?:key|token)|access[-_]?token|refresh[-_]?token|csrf[-_]?token|client[-_]?secret)|authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|password|passwd|secret|token|session(?:[-_]?id)?|credentials?|private[-_]?key|command|shell|argv)$/iu;
 const LIMIT_DEFAULTS = Object.freeze({ maxIterations: 6, maxProbes: 24, maxEvidenceItems: 128 });
@@ -365,12 +376,24 @@ async function runGeneralAssessment({ target, observer, planner, policy, approva
           availableTools: [...availableTools],
           ...(seed ? { focusHypothesisId: seed.focusHypothesisId } : {}), signal });
       } catch (error) {
-        if (error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR'
-          && report.findings.some(item => item.status === 'confirmed' || item.status === 'not_reproduced')) {
+        const hasVerifiedFindings = report.findings.some(item => item.status === 'confirmed'
+          || item.status === 'not_reproduced');
+        if (error?.code === 'GENERAL_PLANNER_SCHEMA_ERROR' && hasVerifiedFindings) {
           report.rejectedProposals.push({ iteration, reason: 'invalid_model_plan' });
           report.stopReason = 'invalid_model_plan';
           report.partial = true;
           await emit({ stage: 'plan_rejected', iteration, status: 'invalid_model_plan' });
+          break;
+        }
+        // A transient model-call failure on a later iteration ends the loop with the
+        // findings already gathered rather than failing the whole run. The failed
+        // attempt is still recorded as a model call by the planner adapter.
+        if (hasVerifiedFindings && !signal?.aborted
+          && SALVAGEABLE_PLANNER_ERROR_CODES.has(error?.code)) {
+          report.rejectedProposals.push({ iteration, reason: 'model_call_incomplete' });
+          report.stopReason = 'model_call_incomplete';
+          report.partial = true;
+          await emit({ stage: 'plan_rejected', iteration, status: 'model_call_incomplete' });
           break;
         }
         throw error;
