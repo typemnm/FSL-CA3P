@@ -233,3 +233,5 @@ HTTP 기반 공격 정의를 실행하는 [Repeater](vul-web-1/scripts/REPEATER.
 ### Attack tool
 
 여러 AI가 접근하는 복수 포트 attack-tool daemon과 SQLi 패킷 템플릿이 추가되었습니다. 일반 평가 실행은 Agent → attack-tool → Guardrail → 실행기 경로를 사용합니다. [모듈 사용법](attack-tool/README.md)과 [이슈 #32 구현 계획](docs/ATTACK_TOOL_PLAN.md)을 참고하세요.
+
+외부 범용 점검의 Agent probe는 attack-tool을 거쳐 로컬 sLLM의 실행 전 판정을 받습니다. 설정과 입력 계약은 [외부 sLLM 패킷 계약](docs/EXTERNAL_SLLM_CONTRACT.md)을 참고하세요.

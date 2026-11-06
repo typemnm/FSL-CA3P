@@ -231,7 +231,8 @@ test('run service persists an external run only after bound preflight and confir
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-external-'));
   const service = createRunService({ storePath: join(directory, 'runs.sqlite3'),
     autoStartWorker: false, importLegacy: false, envFile: null,
-    env: { DEEPSEEK_API_KEY: 'test-key' } });
+    env: { DEEPSEEK_API_KEY: 'test-key', CA3P_GUARDRAIL_SLLM_ENDPOINT: 'http://127.0.0.1:11434',
+      CA3P_GUARDRAIL_SLLM_MODEL: 'guardrail-local' } });
   try {
     const body = { mode: 'external-general',
       target: checked.normalizedUrl, scope: { pathPrefix: '/' },
@@ -280,7 +281,8 @@ test('run service freezes external follow-up options after preflight without wid
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-external-followup-'));
   const service = createRunService({ storePath: join(directory, 'runs.sqlite3'),
     autoStartWorker: false, importLegacy: false, envFile: null,
-    env: { DEEPSEEK_API_KEY: 'test-key' } });
+    env: { DEEPSEEK_API_KEY: 'test-key', CA3P_GUARDRAIL_SLLM_ENDPOINT: 'http://127.0.0.1:11434',
+      CA3P_GUARDRAIL_SLLM_MODEL: 'guardrail-local' } });
   try {
     const base = { mode: 'external-general', target: checked.normalizedUrl,
       scope: { pathPrefix: '/' }, preflightToken: checked.token,

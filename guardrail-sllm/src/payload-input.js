@@ -32,6 +32,11 @@ const HARD_DENY_PATTERNS = [
   /(?:^|[;&|])\s*(?:curl|wget|powershell|cmd|bash|sh)\b/i,
   /(?:\.\.\/|\.\.\\)/
 ];
+// Public GET searches can legitimately contain words such as "update". Keep the
+// unambiguous delay, catalog, shell and traversal patterns for external probes.
+function hasHighRiskReadOnlyPattern(text) {
+  return HARD_DENY_PATTERNS.slice(1).some(pattern => pattern.test(text));
+}
 const SQL_INJECTION_EVIDENCE_PATTERN = /(?:\bunion\b\s+\bselect\b|['"`]\s*(?:or|and)\s+[^\s]+\s*=\s*[^\s]+|--|\/\*|\bselect\b.+\bfrom\b|\bdelete\b\s+\bfrom\b)/i;
 const REAL_OR_PRIVILEGED_ACCOUNT_PATTERN = /(?:^|[^a-z0-9])(?:admin(?:istrator)?|root|superuser|real[-_ ]?user|actual[-_ ]?user)(?:[^a-z0-9]|$)/i;
 const PROTOTYPE_POLLUTION_PATTERN = /(?:__proto__|constructor\.prototype|prototype)/i;
@@ -618,6 +623,7 @@ function buildSllmInput(receivedPayload, testContext) {
 module.exports = {
   buildScopeChecks,
   buildSllmInput,
+  hasHighRiskReadOnlyPattern,
   validatePayload,
   validateTestContext
 };

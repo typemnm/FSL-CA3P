@@ -4,6 +4,8 @@ import { emptyRun, assertIdentifier, redact } from '../../packages/contracts/ind
 import { GENERAL_LOOP_BUDGET_DEFAULTS, validateGeneralLoopBudget } from '../../packages/contracts/general-loop-budget.mjs';
 import { validateMultiAgentOptions } from '../../packages/contracts/multi-agent.mjs';
 import { verifyAttack } from '../../packages/verifier/index.mjs';
+import externalSllm from '../../guardrail-sllm/src/external-packet.js';
+import { createAttackToolBridge } from '../../packages/adapters/integrations/attack-tool.mjs';
 import generalCore from '../../agent/src/general-assessment.js';
 import generalPlanner from '../../agent/src/general-model-planner.js';
 import { judgeAttackRecord, projectGeneralEvent, recordForProbe } from './general-runtime.mjs';
@@ -11,8 +13,10 @@ import { externalScopeRejectionReason, normalizeExternalTarget, requestExternalH
 import { createAssessmentPlanner, createModelJsonClient, isGeneralPlannerModel, plannerProvider, usesJsonClient } from '../../packages/models/local-planner.mjs';
 import { createSharedExecutionBudget, PARENT_EXECUTION_LIMITS, runFindingSubtasks,
   selectFindingSubtasks } from './finding-subagents.mjs';
+import { resolveExternalGuardrail } from '../../packages/models/external-guardrail.mjs';
 
 const { runGeneralAssessment } = generalCore;
+const { checkExternalPacketWithSllm } = externalSllm;
 const { GeneralModelPlanner } = generalPlanner;
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 const INITIAL_PAGE_LIMIT = 2;
@@ -128,6 +132,7 @@ function observationSummary(url, response) {
 export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, modelId,
   limits = GENERAL_LOOP_BUDGET_DEFAULTS, runIdFactory = () => 'external-general-' + randomUUID(),
   requestImpl = requestExternalHttp, plannerFactory, verifyAttackImpl, verifierModel,
+  sllmCheckImpl = checkExternalPacketWithSllm,
   verificationRoot, env = process.env, envFile, signal, onModelCall, beforeProbe, afterProbe,
   multiAgent: suppliedMultiAgent, subtaskRepository } = {}) {
   const { normalizedUrl, scope } = normalizeExternalTarget({ target: targetUrl,
@@ -139,12 +144,13 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
   for (const dependency of [requestImpl, runIdFactory]) if (typeof dependency !== 'function') {
     throw new TypeError('Invalid external runtime dependency.');
   }
-  for (const callback of [plannerFactory, verifyAttackImpl, onModelCall, beforeProbe, afterProbe]) {
+  for (const callback of [plannerFactory, verifyAttackImpl, sllmCheckImpl, onModelCall, beforeProbe, afterProbe]) {
     if (callback !== undefined && typeof callback !== 'function') throw new TypeError('Invalid external runtime callback.');
   }
   const multiAgent = validateMultiAgentOptions(suppliedMultiAgent);
   if (multiAgent && (!subtaskRepository || ['create', 'start', 'finish'].some(key =>
     typeof subtaskRepository[key] !== 'function'))) throw new TypeError('External subtask repository is required.');
+  const guardrail = resolveExternalGuardrail({ env, envFile });
   const configuredLimits = validateGeneralLoopBudget(limits);
   const requestLimit = Math.min(scope.maxRequests, multiAgent?.maxTargetRequests ?? scope.maxRequests);
   if (multiAgent && requestLimit < 4) throw new TypeError('External multi-agent follow-up needs at least four target requests.');
@@ -232,7 +238,7 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
           policy: { reason, count, sourcePageId } });
       }
     }
-    async function scopedRequest(url, probe) {
+    async function scopedRequest(url, probe, toolSignal) {
       // The external policy has a cumulative target HTTP time limit. Serialize target
       // requests so two children cannot each consume the same remaining time.
       const previous = targetRequestQueue;
@@ -246,7 +252,8 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
           throw fault(429, 'External request budget exhausted.', 'EXTERNAL_REQUEST_BUDGET');
         }
         const remainingMs = Math.max(1, scope.maxDurationMs - targetRequestMs);
-        const requestSignal = AbortSignal.any([runSignal, AbortSignal.timeout(remainingMs)]);
+        const requestSignal = AbortSignal.any([runSignal, AbortSignal.timeout(remainingMs),
+          ...(toolSignal ? [toolSignal] : [])]);
         executionBudget?.reserveTargetRequest();
         requestsUsed += 1; run.requestAttempted = true;
         if (probe.taskId) taskRequests.set(probe.taskId, (taskRequests.get(probe.taskId) ?? 0) + 1);
@@ -301,6 +308,13 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
     async function executeAssessment({ initialContext, taskId, agentId, focusPath,
       coreLimits = loopLimits } = {}) {
       const verifierModelCalls = [];
+      const guardrailModelCalls = [];
+      const sllmDecisions = [];
+      const approvedPlans = new Map();
+      const probeHypotheses = new Map();
+      const planDigest = (probe, hypothesis) => createHash('sha256')
+        .update(JSON.stringify({ runId: taskId ?? run.id, probe, category: hypothesis?.category,
+          origin: scope.origin, pathPrefix: scope.pathPrefix })).digest('hex');
       let coreObserved = false;
       const planner = plannerFactory
         ? await plannerFactory({ modelId, env, envFile, signal: runSignal, taskId, agentId })
@@ -357,7 +371,7 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
             'A completed run covers only the bounded pages and probes it actually observed.'],
         }, evidence };
       } };
-      const policy = { async authorize({ probe }) {
+      const policy = { async authorize({ probe, hypothesis }) {
         if (!['http_get', 'http_compare'].includes(probe.tool) || !record(probe.input)) {
           return { allowed: false, reason: 'tool_unavailable' };
         }
@@ -378,18 +392,68 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
           requestBudgetReached = true;
           return { allowed: false, reason: 'request_budget' };
         }
+        probeHypotheses.set(probe.id, structuredClone(hypothesis));
+        const packets = compare
+          ? [{ url: control, packetRole: 'control' }, { url: candidate, packetRole: 'candidate' }]
+          : [{ url: candidate, packetRole: 'single' }];
+        for (const [index, item] of packets.entries()) {
+          const started = Date.now();
+          let result;
+          try {
+            result = await sllmCheckImpl({ method: 'GET', url: item.url.href, body: null }, {
+              runId: taskId ?? run.id, probeId: probe.id, packetRole: item.packetRole,
+              origin: scope.origin, pathPrefix: scope.pathPrefix,
+              allowedPaths: [...allowedPaths], maxRequests: phaseRequestLimit,
+              requestsUsed: requestsUsed + index, upstreamDecision: 'ALLOW',
+              category: hypothesis.category, purpose: `${hypothesis.category}: ${hypothesis.asset}`,
+            }, { endpoint: guardrail.endpoint, model: guardrail.model, signal: runSignal });
+          } catch {
+            result = { verdict: 'ERROR', reasonCode: 'UNKNOWN_ERROR', allowExecution: false };
+          }
+          runSignal.throwIfAborted();
+          const durationMs = Date.now() - started;
+          const verdict = ['IN_SCOPE', 'DENY', 'UNCERTAIN', 'ERROR'].includes(result?.verdict)
+            ? result.verdict : 'ERROR';
+          const reasonCode = typeof result?.reasonCode === 'string'
+            && /^[A-Z_]{1,48}$/u.test(result.reasonCode) ? result.reasonCode : 'INVALID_SLLM_OUTPUT';
+          sllmDecisions.push({ probeId: probe.id, packetRole: item.packetRole,
+            verdict, reasonCode, durationMs });
+          appendEvent({ stage: 'guardrail', module: 'guardrail',
+            source: 'guardrail-sllm/external-packet', title: '외부 요청 sLLM 판정',
+            ...(taskId ? { taskId, agentId } : {}),
+            request: { probeId: probe.id, packetRole: item.packetRole },
+            response: { status: verdict, reasonCode } });
+          if (result?.modelCalled) {
+            const usage = record(result.usage) ? Object.fromEntries(
+              ['prompt_tokens', 'completion_tokens'].filter(key => Number.isSafeInteger(result.usage[key])
+                && result.usage[key] >= 0).map(key => [key, result.usage[key]])) : {};
+            const metadata = { provider: guardrail.provider, role: 'guardrail',
+              requestedModel: guardrail.model ?? 'unconfigured',
+              model: guardrail.model ?? 'unconfigured',
+              status: verdict === 'ERROR' ? 'failed' : 'completed',
+              iteration: run.iterations, probeId: probe.id, durationMs,
+              ...(Object.keys(usage).length ? { usage } : {}) };
+            const scoped = taskId ? { ...metadata, taskId, agentId } : metadata;
+            await invokeHook(onModelCall, scoped);
+            guardrailModelCalls.push(scoped);
+          }
+          if (verdict !== 'IN_SCOPE' || result?.allowExecution !== true) {
+            return { allowed: false, reason: `sllm_${reasonCode.toLowerCase()}` };
+          }
+        }
+        approvedPlans.set(probe.id, planDigest(probe, hypothesis));
         return { allowed: true };
       } };
-      const executor = { async execute({ probe }) {
+      const executor = { async execute({ probe, signal: toolSignal }) {
         const candidate = scopedProbeUrl(probe.input.path, scope.origin, scope, allowedPaths);
         const controlUrl = probe.tool === 'http_compare'
           ? scopedProbeUrl(probe.input.controlPath, scope.origin, scope, allowedPaths) : null;
         try {
           const control = controlUrl ? { url: controlUrl,
             response: await scopedRequest(controlUrl, { id: `${probe.id}-control`, iteration: run.iterations,
-              tool: probe.tool, session: 'public', taskId }) } : null;
+              tool: probe.tool, session: 'public', taskId }, toolSignal) } : null;
           const response = await scopedRequest(candidate, { id: probe.id, iteration: run.iterations,
-            tool: probe.tool, session: 'public', taskId });
+            tool: probe.tool, session: 'public', taskId }, toolSignal);
           observedPaths.add(candidate.pathname);
           if (control) observedPaths.add(control.url.pathname);
           return probeEvidence(probe, candidate, response, control);
@@ -457,22 +521,54 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
         }
         return plan;
       } };
-      const { report } = await runGeneralAssessment({
-        target: { kind: 'external', entryUrl: redact(normalizedUrl), origin: scope.origin },
-        observer, planner: wrappedPlanner, policy, executor, verifier,
-        availableTools: taskId ? ['http_get'] : ['http_get', 'http_compare'],
-        limits: coreLimits, initialContext, signal: runSignal,
-        onEvent: async event => {
-          run.iterations = Math.max(run.iterations, event.iteration ?? 0);
-          appendEvent({ ...projectGeneralEvent(event, coreLimits),
-            module: taskId ? 'subagent' : 'agent',
-            source: taskId ? 'agent/finding-subagent' : 'agent/general-assessment',
-            ...(taskId ? { taskId, agentId } : {}), iteration: event.iteration });
+      const attackTool = await createAttackToolBridge({ runId: taskId ?? run.id, targetOrigin: scope.origin,
+        authorize: ({ probe, hypothesis }) => {
+          if (approvedPlans.get(probe.id) !== planDigest(probe, hypothesis)) return { allowed: false };
+          const candidate = scopedProbeUrl(probe.input?.path, scope.origin, scope, allowedPaths);
+          const control = probe.tool === 'http_compare'
+            ? scopedProbeUrl(probe.input?.controlPath, scope.origin, scope, allowedPaths) : null;
+          return { allowed: !!candidate && (!taskId || candidate.pathname === focusPath)
+            && (probe.tool === 'http_get'
+            || probe.tool === 'http_compare' && !!control && candidate.pathname === control.pathname)
+            && requestsUsed + (control ? 2 : 1) <= phaseRequestLimit };
+        },
+        execute: async ({ probe, hypothesis, signal: toolSignal }) => {
+          if (approvedPlans.get(probe.id) !== planDigest(probe, hypothesis)) {
+            throw fault(403, 'External packet approval changed.', 'EXTERNAL_PACKET_CHANGED');
+          }
+          approvedPlans.delete(probe.id);
+          return executor.execute({ probe, signal: toolSignal });
         },
       });
-      report.runId = taskId ?? run.id;
-      report.modelCalls.push(...verifierModelCalls);
-      return report;
+      const toolExecutor = { execute: ({ probe, signal: toolSignal }) => attackTool.execute({
+        probe, hypothesis: probeHypotheses.get(probe.id), signal: toolSignal ?? runSignal }) };
+      try {
+        const { report } = await runGeneralAssessment({
+          target: { kind: 'external', entryUrl: redact(normalizedUrl), origin: scope.origin },
+          observer, planner: wrappedPlanner, policy, executor: toolExecutor, verifier,
+          availableTools: taskId ? ['http_get'] : ['http_get', 'http_compare'],
+          limits: coreLimits, initialContext, signal: runSignal,
+          onEvent: async event => {
+            run.iterations = Math.max(run.iterations, event.iteration ?? 0);
+            appendEvent({ ...projectGeneralEvent(event, coreLimits),
+              module: taskId ? 'subagent' : 'agent',
+              source: taskId ? 'agent/finding-subagent' : 'agent/general-assessment',
+              ...(taskId ? { taskId, agentId } : {}), iteration: event.iteration });
+          },
+        });
+        report.runId = taskId ?? run.id;
+        report.modelCalls.push(...guardrailModelCalls, ...verifierModelCalls);
+        report.sllm = { profile: 'external-read-only', decisions: sllmDecisions,
+          evaluatedPackets: sllmDecisions.length,
+          allowedPackets: sllmDecisions.filter(item => item.verdict === 'IN_SCOPE').length,
+          modelCalls: guardrailModelCalls.length };
+        report.attackTool = { transport: 'http-json', flow: ['agent', 'attack-tool', 'guardrail-sllm', 'executor'],
+          metrics: attackTool.metrics() };
+        return report;
+      } finally {
+        await attackTool.close();
+        approvedPlans.clear(); probeHypotheses.clear();
+      }
     }
     try {
       runSignal.throwIfAborted(); run.status = 'running'; publish();

@@ -49,10 +49,12 @@ export const ARTIFACT_LABELS = Object.freeze({
   'report-preview-html': '보고서 미리보기',
 });
 
-const TOOL_LABELS = { execute_attack_template: '공격 템플릿', http_get: 'HTTP GET', web_info: '웹 정보 수집', repository_read: '소스 읽기' };
+const TOOL_LABELS = { execute_attack_template: '공격 템플릿', http_get: 'HTTP GET',
+  http_compare: 'HTTP 비교', web_info: '웹 정보 수집', repository_read: '소스 읽기' };
 const STATUS_LABELS = {
   allowed: '허용', blocked: '차단', confirmed: '취약점 확인', not_reproduced: '재현 안 됨', inconclusive: '판단 보류',
   approved: '승인', rejected: '거절', timed_out: '승인 시간 초과', completed: '완료', failed: '실패', cancelled: '취소',
+  IN_SCOPE: '허용', DENY: '차단', UNCERTAIN: '판단 보류', ERROR: '오류',
   stopped: '중지', interrupted: '중단', pending: '대기', invalid_model_plan: '계획 형식 오류', invalid_model_proposal: '제안 형식 오류',
 };
 const TERMINAL = new Set(['completed', 'failed', 'stopped', 'cancelled', 'interrupted']);
@@ -76,9 +78,12 @@ const tone = value => (value === 'confirmed' ? 'success' : ['blocked', 'rejected
   ? 'warning' : ['failed', 'interrupted'].includes(value) ? 'error' : value === 'not_reproduced' ? 'muted' : 'info');
 
 /** Route of an executed probe through the modules that carried it. */
-function toolRoute(tool) {
+function toolRoute(tool, mode) {
   if (tool === 'execute_attack_template') return ['agent', 'attack', 'guardrail', 'attack', 'target', 'attack', 'agent'];
   if (tool === 'web_info') return ['agent', 'parser', 'target', 'parser', 'agent'];
+  if (mode === 'external-general' && (tool === 'http_get' || tool === 'http_compare')) {
+    return ['agent', 'attack', 'target', 'attack', 'agent'];
+  }
   if (tool === 'http_get' || tool === 'repository_read') return ['agent', 'target', 'agent'];
   return ['agent'];
 }
@@ -101,7 +106,7 @@ function modelSummary(calls) {
     .filter(Boolean).join(' · ');
 }
 
-function eventActivity(event, modelCalls) {
+function eventActivity(event, modelCalls, mode) {
   const request = object(event.request) ? event.request : {};
   const response = object(event.response) ? event.response : {};
   const stage = text(event.stage);
@@ -137,6 +142,10 @@ function eventActivity(event, modelCalls) {
       return { ...base, node: 'guardrail', tone: result === 'blocked' ? 'warning' : 'success',
         title: `가드레일 ${status(result) || '검사'}`, detail: `${TOOL_LABELS[tool] || tool || '검사'}${probeLabel}${reason ? ` · ${reason}` : ''}`,
         route: ['agent', 'guardrail', 'agent'] };
+    case 'guardrail':
+      return { ...base, node: 'guardrail', tone: result === 'IN_SCOPE' ? 'success' : 'warning',
+        title: `sLLM 요청 판정 · ${status(result)}`, detail: [probe, text(request.packetRole), text(response.reasonCode)].filter(Boolean).join(' · '),
+        route: ['agent', 'guardrail', 'agent'] };
     case 'approval.requested':
       return { ...base, node: 'dashboard', tone: 'warning', title: '관리자 승인 요청',
         detail: `실행 전 승인 대기${request.probeId ? ` · ${request.probeId}` : ''}`, route: ['agent', 'dashboard'] };
@@ -147,9 +156,10 @@ function eventActivity(event, modelCalls) {
       return { ...base, node: 'agent', tone: tone(result), title: `승인 결과 반영 · ${status(result)}`,
         detail: `${TOOL_LABELS[tool] || tool || '검사'}${probeLabel}`, route: [] };
     case 'execute':
-      return { ...base, node: tool === 'execute_attack_template' ? 'attack' : tool === 'web_info' ? 'parser' : 'target',
+      return { ...base, node: tool === 'execute_attack_template' || mode === 'external-general'
+        && ['http_get', 'http_compare'].includes(tool) ? 'attack' : tool === 'web_info' ? 'parser' : 'target',
         tone: 'info', title: `${TOOL_LABELS[tool] || tool || '검사'} 실행`, detail: `${probe || '검사'} · 증거 ${evidence}건`,
-        route: toolRoute(tool) };
+        route: toolRoute(tool, mode) };
     case 'verify':
       return { ...base, node: 'verifier', tone: tone(result), title: `검증 · ${status(result) || '판정'}`,
         detail: `${TOOL_LABELS[tool] || tool || '검사'}${probeLabel}${reason ? ` · ${reason}` : ''}`,
@@ -218,7 +228,7 @@ export function deriveFlow(run) {
 
   for (const event of list(run.events)) {
     if (!object(event) || !text(event.id)) continue;
-    const activity = eventActivity(event, modelCalls);
+    const activity = eventActivity(event, modelCalls, run.mode);
     if (!activity) continue;
     const artifactId = text(event.artifactId);
     if (event.stage === 'web_info.collected' && ARTIFACT_ID.test(artifactId)) {

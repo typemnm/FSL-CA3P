@@ -9,6 +9,7 @@ import { createExternalGeneralRuntime } from '../application/external-runtime.mj
 import { digest } from '../../packages/contracts/index.mjs';
 import { syncRunChecks } from '../../packages/history/check-sync.mjs';
 import { PROJECT_ROOT, treeDigest } from '../../packages/contracts/manifest.mjs';
+import { resolveExternalGuardrail } from '../../packages/models/external-guardrail.mjs';
 import { join } from 'node:path';
 import { generateReportDocument } from '../../packages/report/index.mjs';
 import { providerOutputTokens, resolveProvider } from '../../packages/models/provider-settings.mjs';
@@ -108,6 +109,16 @@ export async function runWorker({ storePath, owner = `worker-${randomUUID()}`,
       for (const [field, path] of [['contractDigest', 'packages/contracts'], ['modelRegistryDigest', 'packages/models']]) {
         if (frozen.shared?.[field] && treeDigest(join(PROJECT_ROOT, path)) !== frozen.shared[field]) {
           throw Object.assign(new Error('Shared execution conditions changed after this run was queued.'), { code: 'CONDITION_CHANGED' });
+        }
+      }
+      if (externalRun && frozen.policy?.sllmContractDigest) {
+        const guardrail = resolveExternalGuardrail({ env, envFile });
+        if (guardrail.provider === 'unavailable'
+          || frozen.policy.sllmProvider !== guardrail.provider
+          || frozen.policy.sllmModel !== guardrail.model
+          || frozen.policy.sllmEndpointDigest !== (guardrail.endpoint ? digest(guardrail.endpoint) : null)) {
+          throw Object.assign(new Error('External guardrail settings changed after this run was queued.'),
+            { code: 'CONDITION_CHANGED' });
         }
       }
       if (lease.options.caseSnapshot && treeDigest(lease.options.caseSnapshot.path) !== lease.options.caseSnapshot.fileDigest) {

@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { createExternalGeneralRuntime } from '../external-runtime.mjs';
 import { normalizeExternalTarget } from '../external-target.mjs';
 
 const target = 'https://8.8.8.8/start';
 const response = (body, status = 200) => ({ status, contentType: 'text/html', body,
   headers: { 'x-content-type-options': 'nosniff' }, truncated: false, durationMs: 1 });
+const allowPacket = async () => ({ verdict: 'IN_SCOPE', reasonCode: 'IN_SCOPE',
+  allowExecution: true, modelCalled: false });
 function terminal(runtime) {
   return new Promise(resolve => {
     const detach = runtime.subscribe(({ run }) => {
@@ -17,6 +20,7 @@ function terminal(runtime) {
 test('external general loop plans scoped comparisons and uses the independent verifier', async () => {
   const requests = []; const records = []; const modelCalls = [];
   const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    sllmCheckImpl: allowPacket,
     modelId: 'deepseek-flash', runIdFactory: () => 'external-general-verified',
     requestImpl: async (url, options) => {
       requests.push([url, options.method]);
@@ -76,6 +80,7 @@ test('external general loop plans scoped comparisons and uses the independent ve
 test('external general policy blocks unobserved paths and credential queries', async () => {
   const requests = [];
   const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    sllmCheckImpl: allowPacket,
     scope: normalizeExternalTarget({ target, scope: { pathPrefix: '/start' } }).scope,
     modelId: 'deepseek-flash', runIdFactory: () => 'external-general-scope',
     requestImpl: async url => {
@@ -110,9 +115,94 @@ test('external general policy blocks unobserved paths and credential queries', a
   } finally { await runtime.close(); }
 });
 
+test('external comparison sends neither packet when the candidate fails sLLM review', async () => {
+  const requests = []; const roles = [];
+  const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    modelId: 'deepseek-flash', runIdFactory: () => 'external-sllm-denied',
+    requestImpl: async url => {
+      requests.push(url);
+      return response(url === target
+        ? '<title>Start</title><a href="/start/search">Search</a>' : '<title>Search</title>');
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-one', category: 'reflected_input',
+        asset: '/start/search', rationale: 'Compare a public marker.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-one', hypothesisId: 'h-one', tool: 'http_compare',
+        input: { path: '/start/search?q=candidate', controlPath: '/start/search?q=control' } }] };
+    } }),
+    sllmCheckImpl: async (_packet, trusted) => {
+      roles.push(trusted.packetRole);
+      return trusted.packetRole === 'control' ? allowPacket()
+        : { verdict: 'DENY', reasonCode: 'DENY', allowExecution: false, modelCalled: false };
+    },
+  });
+  try {
+    const done = terminal(runtime); runtime.startLab(); const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    assert.deepEqual(roles, ['control', 'candidate']);
+    assert.deepEqual(requests, [target, 'https://8.8.8.8/start/search']);
+    assert.equal(run.report.probes[0].status, 'blocked');
+    assert.equal(run.report.probes[0].reason, 'sllm_deny');
+    assert.equal(run.report.sllm.evaluatedPackets, 2);
+    assert.equal(run.report.coverage.requestsUsed, 2);
+  } finally { await runtime.close(); }
+});
+
+test('external probe uses the configured local sLLM before attack-tool sends requests', async t => {
+  const modelRequests = []; const targetRequests = [];
+  const modelServer = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const message = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const input = JSON.parse(message.messages[1].content);
+    modelRequests.push(input);
+    const output = { verdict: 'IN_SCOPE',
+      evidence: [{ source: 'query', key: 'q', value: input.request.query.q }],
+      checks: { testPurposeClear: true, noSensitiveAccess: true,
+        noDangerousImpact: true, commonCriteriaSatisfied: true },
+      reason: 'Bounded public read-only request.', confidence: 0.9 };
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ message: { content: JSON.stringify(output) },
+      prompt_eval_count: 20, eval_count: 10 }));
+  });
+  await new Promise(resolve => modelServer.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => modelServer.close(resolve)));
+  const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    modelId: 'deepseek-flash', runIdFactory: () => 'external-live-local-sllm',
+    env: { CA3P_GUARDRAIL_SLLM_ENDPOINT: `http://127.0.0.1:${modelServer.address().port}`,
+      CA3P_GUARDRAIL_SLLM_MODEL: 'guardrail-local' },
+    requestImpl: async url => {
+      targetRequests.push(url);
+      return response(url === target
+        ? '<title>Start</title><a href="/start/search">Search</a>' : '<title>Search</title>');
+    },
+    plannerFactory: () => ({ async propose(context) {
+      if (context.iteration > 1) return { done: true, hypotheses: [], probes: [] };
+      return { done: false, hypotheses: [{ id: 'h-live', category: 'reflected_input',
+        asset: '/start/search', rationale: 'Compare a public marker.', evidenceIds: [context.evidence[0].id] }],
+      probes: [{ id: 'p-live', hypothesisId: 'h-live', tool: 'http_compare',
+        input: { path: '/start/search?q=marker', controlPath: '/start/search?q=ordinary' } }] };
+    } }),
+    verifyAttackImpl: async attack => ({ schemaVersion: 'verifier/1', attackId: attack.id,
+      status: 'not_reproduced', reason: 'No reflection observed.', artifacts: [] }),
+  });
+  try {
+    const done = terminal(runtime); runtime.startLab(); const run = await done;
+    assert.equal(run.status, 'completed', run.error);
+    assert.equal(run.report.probes[0].status, 'not_reproduced');
+    assert.equal(run.report.sllm.modelCalls, 2);
+    assert.equal(run.report.attackTool.metrics.requests, 1);
+    assert.deepEqual(modelRequests.map(item => item.request.packetRole), ['control', 'candidate']);
+    assert.deepEqual(targetRequests.slice(2), [
+      'https://8.8.8.8/start/search?q=ordinary', 'https://8.8.8.8/start/search?q=marker']);
+  } finally { await runtime.close(); }
+});
+
 test('external general loop counts both requests in each comparison and stops at the scope budget', async () => {
   const requests = [];
   const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    sllmCheckImpl: allowPacket,
     modelId: 'deepseek-flash', runIdFactory: () => 'external-general-budget',
     requestImpl: async url => { requests.push(url); return response('<title>Start</title>'); },
     plannerFactory: () => ({ async propose(context) {
@@ -142,6 +232,7 @@ test('external general loop counts both requests in each comparison and stops at
 test('truncated external responses cannot produce confirmed findings', async () => {
   let verifierCalls = 0;
   const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    sllmCheckImpl: allowPacket,
     modelId: 'deepseek-flash', runIdFactory: () => 'external-general-truncated',
     requestImpl: async url => ({ ...response('<title>Start</title>'),
       truncated: url.includes('probe=') }),
@@ -168,6 +259,7 @@ test('external follow-up stores an independent child report within the original 
   const requests = [];
   const subtasks = new Map();
   const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    sllmCheckImpl: allowPacket,
     modelId: 'deepseek-flash', runIdFactory: () => 'external-general-followup',
     multiAgent: { enabled: true, maxTasks: 1, maxConcurrentAgents: 1,
       maxTargetRequests: 5 },
@@ -207,6 +299,7 @@ test('external follow-up stores an independent child report within the original 
     assert.equal(task.result.report.runId, task.id);
     assert.equal(task.result.report.status, 'completed');
     assert.equal(task.result.report.findings[0].status, 'confirmed');
+    assert.equal(task.result.report.sllm.evaluatedPackets, 1);
     assert.equal(task.result.report.scope.focusPath, '/start');
     const childVerify = run.events.find(event => event.stage === 'verify'
       && event.source === 'agent/finding-subagent');
@@ -226,6 +319,7 @@ test('external child cannot probe another discovered path outside its assigned f
   const requests = [];
   const subtasks = new Map();
   const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    sllmCheckImpl: allowPacket,
     modelId: 'deepseek-flash', runIdFactory: () => 'external-general-child-scope',
     multiAgent: { enabled: true, maxTasks: 1, maxConcurrentAgents: 1 },
     subtaskRepository: {
