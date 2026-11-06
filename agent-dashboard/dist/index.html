@@ -70,6 +70,8 @@
             <form id="external-target-form" class="external-target-form" hidden>
               <label for="external-url">시작 URL <input id="external-url" type="url" placeholder="https://example.org/" autocomplete="off" required></label>
               <label for="external-path">허용 경로 <input id="external-path" type="text" value="/" placeholder="/" autocomplete="off"></label>
+              <label for="external-max-requests">최대 요청 수 <input id="external-max-requests" type="number" min="4" max="64" step="1" value="8" inputmode="numeric" aria-describedby="external-request-help" required></label>
+              <small id="external-request-help">기본 8건 · 4~64건. 실제 사용량은 더 적을 수 있습니다. 사전 점검은 별도이며, 처음 관찰하는 페이지는 최대 2곳입니다.</small>
               <div class="external-scope-note">선택한 모델이 허용 범위의 공개 자료에서 가설을 세웁니다. 정책과 독립 검증이 허용하는 검사만 실행하며 미지원 검사는 미점검으로 기록합니다.</div>
               <label for="external-model-select">판단 엔진 / AI 모델 <select id="external-model-select" aria-describedby="external-model-readiness"><option value="">모델 목록 수신 중</option></select></label>
               <small id="external-model-readiness" aria-live="polite">점검 모델을 확인하는 중입니다.</small>

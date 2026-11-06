@@ -113,16 +113,25 @@ test('workspace navigation, external target preflight and report preview use the
   assert.equal(await page.locator('#external-model-select').inputValue(), 'deepseek-flash');
   assert.match(await page.locator('#external-model-readiness').textContent(), /로컬 sLLM/);
   await page.locator('#external-url').fill('https://example.org/start');
+  await page.locator('#external-max-requests').fill('20');
+  if (process.env.CA3P_UI_PREVIEW) await page.screenshot({
+    path: process.env.CA3P_UI_PREVIEW.replace(/\.png$/i, '-external.png'), fullPage: true });
   assert.equal(await page.locator('#external-authorization').count(), 0);
   await page.locator('#external-preflight-button').click();
   // The button is visible while preflight is pending; wait for its result.
   await page.waitForFunction(() => document.querySelector('#external-run-button')?.disabled === false);
   assert.equal(await page.locator('#external-run-button').isEnabled(), true);
+  await page.locator('#external-max-requests').fill('21');
+  assert.equal(await page.locator('#external-run-button').isDisabled(), true);
+  await page.locator('#external-max-requests').fill('20');
+  await page.locator('#external-preflight-button').click();
+  await page.waitForFunction(() => document.querySelector('#external-run-button')?.disabled === false);
   await page.locator('#external-run-button').click();
   await page.locator('#view-dashboard').waitFor({ state: 'visible' });
   assert.deepEqual(requests.filter(item => ['/api/targets/preflight','/api/runs'].includes(item.path)), [
-    { path: '/api/targets/preflight', body: { target: 'https://example.org/start', scope: { pathPrefix: '/' }, authorizationConfirmed: true } },
-    { path: '/api/runs', body: { mode: 'external-general', target: 'https://example.org/start', scope: { pathPrefix: '/' },
+    { path: '/api/targets/preflight', body: { target: 'https://example.org/start', scope: { pathPrefix: '/', maxRequests: 20 }, authorizationConfirmed: true } },
+    { path: '/api/targets/preflight', body: { target: 'https://example.org/start', scope: { pathPrefix: '/', maxRequests: 20 }, authorizationConfirmed: true } },
+    { path: '/api/runs', body: { mode: 'external-general', target: 'https://example.org/start', scope: { pathPrefix: '/', maxRequests: 20 },
       preflightToken: 'token-1', authorizationConfirmed: true, modelId: 'deepseek-flash',
       multiAgent: { enabled: true } } },
   ]);

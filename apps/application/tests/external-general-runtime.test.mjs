@@ -20,6 +20,7 @@ function terminal(runtime) {
 test('external general loop plans scoped comparisons and uses the independent verifier', async () => {
   const requests = []; const records = []; const modelCalls = [];
   const runtime = createExternalGeneralRuntime({ targetUrl: target,
+    scope: normalizeExternalTarget({ target, scope: { maxRequests: 12 } }).scope,
     sllmCheckImpl: allowPacket,
     modelId: 'deepseek-flash', runIdFactory: () => 'external-general-verified',
     requestImpl: async (url, options) => {
@@ -57,6 +58,7 @@ test('external general loop plans scoped comparisons and uses the independent ve
     assert.equal(run.report.probes[0].status, 'confirmed');
     assert.equal(run.report.coverage.supportedIndependentChecks, 1);
     assert.equal(run.report.coverage.requestsUsed, 4);
+    assert.equal(run.report.scope.maxRequests, 12);
     assert.equal(run.report.modelCalls.length, 3);
     assert.equal(modelCalls.length, 3);
     assert.equal(run.report.modelCalls.at(-1).role, 'verifier');
