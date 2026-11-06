@@ -37,6 +37,14 @@ test('external URL normalization binds an origin and a narrow path', async () =>
     scope: { origin: 'https://example.com', pathPrefix: '/start', methods: ['GET', 'HEAD'],
       maxRequests: 8, maxResponseBytes: 65536, requestTimeoutMs: 5000, maxDurationMs: 30000 },
   });
+  for (const maxRequests of [4, 20, 64]) {
+    assert.equal(normalizeExternalTarget({ target: 'https://example.com/start',
+      scope: { pathPrefix: '/start', maxRequests } }).scope.maxRequests, maxRequests);
+  }
+  for (const maxRequests of [3, 65, 8.5, '20', null]) {
+    assert.throws(() => normalizeExternalTarget({ target: 'https://example.com/start',
+      scope: { pathPrefix: '/start', maxRequests } }), { code: 'INVALID_EXTERNAL_SCOPE' });
+  }
   assert.throws(() => normalizeExternalTarget('file:///etc/passwd'));
   assert.throws(() => normalizeExternalTarget('http://user:pass@example.com/'));
   assert.throws(() => normalizeExternalTarget('https://example.com/?token=private'));
@@ -68,7 +76,7 @@ test('external URL normalization binds an origin and a narrow path', async () =>
 test('preflight binds the URL and scope and cannot authorize a changed target', async () => {
   const calls = [];
   const checked = await preflightExternalTarget({ target: 'https://8.8.8.8/start',
-    scope: { pathPrefix: '/start' } }, { request: async (url, options) => {
+    scope: { pathPrefix: '/start', maxRequests: 20 } }, { request: async (url, options) => {
     calls.push([url, options.method]); return { status: 200 };
   } });
   assert.equal(checked.ready, true);
@@ -77,12 +85,14 @@ test('preflight binds the URL and scope and cannot authorize a changed target', 
   assert.equal(verifyExternalPreflightToken(checked.token, 'https://8.8.8.8/other', checked.scope), false);
   assert.equal(verifyExternalPreflightToken(checked.token, checked.normalizedUrl,
     { ...checked.scope, pathPrefix: '/' }), false);
+  assert.equal(verifyExternalPreflightToken(checked.token, checked.normalizedUrl,
+    { ...checked.scope, maxRequests: 21 }), false);
 });
 
 test('external runtime observes only in-scope public links and leaves findings unconfirmed', async () => {
   const requested = [];
   const runtime = createExternalRuntime({ targetUrl: 'https://8.8.8.8/start',
-    scope: { pathPrefix: '/start' }, runIdFactory: () => 'external-test',
+    scope: { pathPrefix: '/start', maxRequests: 4 }, runIdFactory: () => 'external-test',
     requestImpl: async url => {
       requested.push(url);
       return { status: 200, contentType: 'text/html', durationMs: 2, truncated: false,
@@ -107,6 +117,7 @@ test('external runtime observes only in-scope public links and leaves findings u
     assert.equal(run.report.inspectionMode, 'external-read-only');
     assert.deepEqual(run.report.findings, []);
     assert.equal(run.report.inventory.pages.length, 2);
+    assert.equal(run.report.scope.maxRequests, 4);
     assert.deepEqual(run.report.policyRejections, { total: 3, byReason: {
       credential_query: 1, out_of_scope_path: 1, out_of_scope_origin: 1,
     } });
@@ -226,7 +237,8 @@ test('compressed and truncated external responses are not reported as complete o
 });
 
 test('run service persists an external run only after bound preflight and confirmation', async () => {
-  const checked = await preflightExternalTarget({ target: 'https://8.8.8.8/start' },
+  const checked = await preflightExternalTarget({ target: 'https://8.8.8.8/start',
+    scope: { maxRequests: 20 } },
     { request: async () => ({ status: 200 }) });
   const directory = mkdtempSync(join(tmpdir(), 'ca3p-external-'));
   const service = createRunService({ storePath: join(directory, 'runs.sqlite3'),
@@ -235,13 +247,14 @@ test('run service persists an external run only after bound preflight and confir
       CA3P_GUARDRAIL_SLLM_MODEL: 'guardrail-local' } });
   try {
     const body = { mode: 'external-general',
-      target: checked.normalizedUrl, scope: { pathPrefix: '/' },
+      target: checked.normalizedUrl, scope: { pathPrefix: '/', maxRequests: 20 },
       preflightToken: checked.token, authorizationConfirmed: true };
     assert.equal(service.getState().lab.externalAvailable, true);
     assert.equal(service.getState().lab.models.find(model => model.id === 'deepseek-flash')
       .supportedModes.includes('external-general'), true);
     await assert.rejects(service.start({ ...body, authorizationConfirmed: false }), { status: 400 });
     await assert.rejects(service.start({ ...body, target: 'https://8.8.8.8/changed' }), { status: 400 });
+    await assert.rejects(service.start({ ...body, scope: { ...body.scope, maxRequests: 21 } }), { status: 400 });
     await assert.rejects(service.start({ ...body, modelId: 'rule-baseline' }), { status: 400 });
     const state = await service.start(body);
     assert.equal(state.run.mode, 'external-general');
@@ -249,11 +262,14 @@ test('run service persists an external run only after bound preflight and confir
     assert.equal(state.run.testProfile, 'external-general');
     assert.equal(state.run.manifest.target.kind, 'external');
     assert.equal(state.run.manifest.policy.methods[0], 'GET');
+    assert.equal(state.run.manifest.policy.maxRequests, 20);
+    assert.equal(state.run.manifest.execution.maxRequests, 20);
     assert.equal(state.run.manifest.model.provider, 'deepseek');
     assert.deepEqual(state.run.manifest.execution.loopBudget, service.getGeneralLoopBudget());
     assert.equal(service.getRun(state.run.id).target, checked.normalizedUrl);
     const lease = service.store.claimNext('external-options-test');
     assert.equal(lease.options.testProfile, 'external-general');
+    assert.equal(lease.options.scope.maxRequests, 20);
     assert.deepEqual(lease.options.loopBudget, service.getGeneralLoopBudget());
     assert.equal(lease.options.caseSnapshot, undefined);
     service.store.finish(lease, 'completed');

@@ -138,10 +138,12 @@ export function createRuntimeClient({ onState, onConnection, onError, onSession 
         ...(multiAgent ? { multiAgent } : {}) });
       receive(value); return value;
     },
-    preflightExternal(target, pathPrefix = '/') { return api('/api/targets/preflight', { method: 'POST', body: { target, scope: { pathPrefix }, authorizationConfirmed: true } }); },
-    async startExternal({ target, pathPrefix, preflightToken, modelId, multiAgent }) {
+    preflightExternal(target, pathPrefix = '/', maxRequests) { return api('/api/targets/preflight', { method: 'POST', body: {
+      target, scope: { pathPrefix, ...(maxRequests === undefined ? {} : { maxRequests }) }, authorizationConfirmed: true } }); },
+    async startExternal({ target, pathPrefix, maxRequests, preflightToken, modelId, multiAgent }) {
       const value = await api('/api/runs', { method: 'POST', body: {
-        mode: 'external-general', target, scope: { pathPrefix }, preflightToken,
+        mode: 'external-general', target,
+        scope: { pathPrefix, ...(maxRequests === undefined ? {} : { maxRequests }) }, preflightToken,
         authorizationConfirmed: true, modelId,
         ...(multiAgent ? { multiAgent } : {}),
       } });
