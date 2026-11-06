@@ -7,7 +7,9 @@ export { isPublicAddress, externalScopeRejectionReason, withinExternalScope,
 
 const TOKEN_KEY = randomBytes(32);
 const TOKEN_LIFETIME_MS = 5 * 60_000;
-const MAX_REQUESTS = 8;
+const DEFAULT_MAX_REQUESTS = 8;
+const MIN_MAX_REQUESTS = 4;
+const MAX_MAX_REQUESTS = 64;
 const MAX_DURATION_MS = 30_000;
 const fault = (status, message, code) => Object.assign(new Error(message), { status, code });
 
@@ -28,10 +30,16 @@ export function normalizeExternalTarget(input) {
   url.hash = '';
   const suppliedScope = body.scope ?? {};
   if (!suppliedScope || typeof suppliedScope !== 'object' || Array.isArray(suppliedScope)
-    || Object.keys(suppliedScope).some(key => key !== 'pathPrefix')) {
+    || Object.keys(suppliedScope).some(key => !['pathPrefix', 'maxRequests'].includes(key))) {
     throw fault(400, '지원하지 않는 외부 대상 범위입니다.', 'INVALID_EXTERNAL_SCOPE');
   }
   const pathPrefix = suppliedScope.pathPrefix ?? '/';
+  const maxRequests = Object.hasOwn(suppliedScope, 'maxRequests')
+    ? suppliedScope.maxRequests : DEFAULT_MAX_REQUESTS;
+  if (!Number.isSafeInteger(maxRequests) || maxRequests < MIN_MAX_REQUESTS
+    || maxRequests > MAX_MAX_REQUESTS) {
+    throw fault(400, '최대 요청 수는 4~64 사이의 정수여야 합니다.', 'INVALID_EXTERNAL_SCOPE');
+  }
   let canonicalPath = false;
   try {
     const parsed = new URL(pathPrefix, url.origin);
@@ -43,7 +51,7 @@ export function normalizeExternalTarget(input) {
     || !canonicalPath) {
     throw fault(400, '허용 경로는 정규화된 절대 경로여야 합니다.', 'INVALID_EXTERNAL_SCOPE');
   }
-  const scope = { origin: url.origin, pathPrefix, methods: ['GET', 'HEAD'], maxRequests: MAX_REQUESTS,
+  const scope = { origin: url.origin, pathPrefix, methods: ['GET', 'HEAD'], maxRequests,
     maxResponseBytes: MAX_RESPONSE_BYTES, requestTimeoutMs: REQUEST_TIMEOUT_MS,
     maxDurationMs: MAX_DURATION_MS };
   if (!withinExternalScope(url, scope)) throw fault(400, '시작 URL이 허용 경로 밖에 있습니다.', 'EXTERNAL_SCOPE_MISMATCH');

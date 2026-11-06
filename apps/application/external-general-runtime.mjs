@@ -136,7 +136,9 @@ export function createExternalGeneralRuntime({ targetUrl, scope: suppliedScope, 
   verificationRoot, env = process.env, envFile, signal, onModelCall, beforeProbe, afterProbe,
   multiAgent: suppliedMultiAgent, subtaskRepository } = {}) {
   const { normalizedUrl, scope } = normalizeExternalTarget({ target: targetUrl,
-    scope: { pathPrefix: suppliedScope?.pathPrefix ?? '/' } });
+    scope: { pathPrefix: suppliedScope?.pathPrefix ?? '/',
+      ...(suppliedScope && Object.hasOwn(suppliedScope, 'maxRequests')
+        ? { maxRequests: suppliedScope.maxRequests } : {}) } });
   if (suppliedScope && JSON.stringify(suppliedScope) !== JSON.stringify(scope)) {
     throw new TypeError('External scope changed after run preparation.');
   }

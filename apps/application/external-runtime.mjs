@@ -53,7 +53,9 @@ export function createExternalRuntime({ targetUrl, scope: suppliedScope, modelId
   runIdFactory = () => 'external-' + randomUUID(), requestImpl = requestExternalHttp,
   signal, beforeProbe, afterProbe } = {}) {
   const { normalizedUrl, scope } = normalizeExternalTarget({ target: targetUrl,
-    scope: { pathPrefix: suppliedScope?.pathPrefix ?? '/' } });
+    scope: { pathPrefix: suppliedScope?.pathPrefix ?? '/',
+      ...(suppliedScope && Object.hasOwn(suppliedScope, 'maxRequests')
+        ? { maxRequests: suppliedScope.maxRequests } : {}) } });
   if (suppliedScope?.origin && JSON.stringify(suppliedScope) !== JSON.stringify(scope)) {
     throw new TypeError('External scope changed after run preparation.');
   }

@@ -553,6 +553,8 @@ function renderStats() {
   $('external-preflight-button').disabled = !canOperate() || !connected || active || externalPreflightPending;
   $('external-run-button').disabled = !canOperate() || !connected || controlPending || active || experimentBlocked || !!pendingModelChange
     || !externalPreflight?.ready || !model?.available
+    || !$('external-max-requests').checkValidity()
+    || $('external-max-requests').valueAsNumber !== externalPreflight?.scope?.maxRequests
     || !(model.provider === 'deepseek' || model.provider === 'custom' || (model.provider === 'local' && model.supportedModes?.includes('external-general')))
     || !model.supportedModes?.includes('external-general')
     || !labReadiness.externalSupported || !labReadiness.externalAvailable;
@@ -862,28 +864,38 @@ function setTargetKind(kind) {
 function invalidateExternalPreflight() {
   externalPreflightGeneration += 1;
   externalPreflight = null;
-  $('external-preflight-status').textContent = 'URL 또는 범위가 바뀌었습니다. 다시 사전 점검하세요.';
+  $('external-preflight-status').textContent = 'URL, 경로 또는 요청 한도가 바뀌었습니다. 다시 사전 점검하세요.';
   renderStats();
 }
 $('target-kind-lab').addEventListener('click', () => setTargetKind('lab'));
 $('target-kind-external').addEventListener('click', () => setTargetKind('external'));
 $('external-url').addEventListener('input', invalidateExternalPreflight);
 $('external-path').addEventListener('input', invalidateExternalPreflight);
+$('external-max-requests').addEventListener('input', invalidateExternalPreflight);
 $('external-target-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (!canOperate() || connection !== 'connected') return;
   const target = $('external-url').value.trim();
   const pathPrefix = $('external-path').value.trim() || '/';
+  const maxRequests = $('external-max-requests').valueAsNumber;
+  if (!$('external-max-requests').checkValidity() || !Number.isSafeInteger(maxRequests)) {
+    $('external-max-requests').reportValidity();
+    return;
+  }
   const generation = ++externalPreflightGeneration;
   externalPreflightPending = true;
   $('external-preflight-status').textContent = '대상 DNS·연결·범위를 확인하고 있습니다.';
   externalPreflight = null;
   renderStats();
   try {
-    const result = await runtime.preflightExternal(target, pathPrefix);
-    if (generation !== externalPreflightGeneration || $('external-url').value.trim() !== target || ($('external-path').value.trim() || '/') !== pathPrefix) return;
-    externalPreflight = result.ready && result.allowed && result.token ? result : null;
-    $('external-preflight-status').textContent = result.ready
+    const result = await runtime.preflightExternal(target, pathPrefix, maxRequests);
+    if (generation !== externalPreflightGeneration || $('external-url').value.trim() !== target
+      || ($('external-path').value.trim() || '/') !== pathPrefix
+      || $('external-max-requests').valueAsNumber !== maxRequests) return;
+    const matchingRequestLimit = result.scope?.maxRequests === maxRequests;
+    externalPreflight = result.ready && result.allowed && result.token && matchingRequestLimit ? result : null;
+    $('external-preflight-status').textContent = result.ready && !matchingRequestLimit
+      ? '사전 점검 결과의 요청 한도가 입력값과 다릅니다. 다시 점검하세요.' : result.ready
       ? `${result.normalizedUrl} · ${result.scope?.pathPrefix || '/'} · 허용된 읽기 요청 · 최대 ${result.scope?.maxRequests ?? '설정된'}요청. ${result.message || ''}`
       : result.message || '이 대상은 현재 점검할 수 없습니다.';
     if (result.normalizedUrl) $('external-url').value = result.normalizedUrl;
@@ -898,7 +910,8 @@ $('external-target-form').addEventListener('submit', async event => {
   }
 });
 $('external-run-button').addEventListener('click', async () => {
-  if (!externalPreflight?.ready) return;
+  if (!externalPreflight?.ready || !$('external-max-requests').checkValidity()
+    || $('external-max-requests').valueAsNumber !== externalPreflight.scope.maxRequests) return;
   if (['queued','preparing','running','stopping'].includes(run.status)) return;
   const model = selectedModel();
   if (!model?.available || !model.supportedModes?.includes('external-general')
@@ -907,7 +920,8 @@ $('external-run-button').addEventListener('click', async () => {
     || pendingModelChange || browserResetError || ['failed', 'resetting'].includes(experimentStatus)) return;
   await submitControl(async () => {
     await runtime.startExternal({ target: externalPreflight.normalizedUrl,
-      pathPrefix: externalPreflight.scope.pathPrefix, preflightToken: externalPreflight.token,
+      pathPrefix: externalPreflight.scope.pathPrefix, maxRequests: externalPreflight.scope.maxRequests,
+      preflightToken: externalPreflight.token,
       modelId: model.id, ...($('external-multi-agent-toggle').checked ? { multiAgent: { enabled: true } } : {}) });
     inspectedRun = null;
     selectedEventId = null;
