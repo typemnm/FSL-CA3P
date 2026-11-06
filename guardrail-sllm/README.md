@@ -5,6 +5,8 @@
 기존 가드레일의 판정 결과를 `testContext.upstreamGuardrail`로 받아 함께 사용합니다.
 기존 가드레일이 `DENY`한 요청은 sLLM이 다시 허용할 수 없습니다.
 
+외부 사이트의 Agent probe에는 `src/external-packet.js`의 `external-read-only` 계약을 사용합니다. 이 계약은 아래 fixture 기반 `execute_curl` 계약과 공통 안전 기준·fail-closed 처리를 공유하고, 신뢰된 외부 원점과 경로 범위로 요청을 검사합니다. 적용 범위는 [외부 sLLM 패킷 계약](../docs/EXTERNAL_SLLM_CONTRACT.md)에 정리했습니다.
+
 ## 네 가지 기능 파일
 
 | 파일 | 기능 |

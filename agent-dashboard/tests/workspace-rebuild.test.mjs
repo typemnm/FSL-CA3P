@@ -47,7 +47,7 @@ test('workspace navigation, external target preflight and report preview use the
     const json = value => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
     if (request.method() === 'POST' && path !== '/api/db/intakes') requests.push({ path, body: request.postDataJSON() });
     if (path === '/api/auth/session') return json({ authenticated: true, authRequired: false, user: { role, name: 'Test' }, csrfToken: 'csrf-test' });
-    if (path === '/api/state') return json({ instanceId: 'workspace-test', mode: activeRun.mode, run: activeRun, lab: { available: true, generalSupported: true, generalAvailable: true, externalSupported: true, externalAvailable: true } });
+    if (path === '/api/state') return json({ instanceId: 'workspace-test', mode: activeRun.mode, run: activeRun, lab: { available: true, generalSupported: true, generalAvailable: true, externalSupported: true, externalAvailable: true, externalGuardrailProvider: 'local' } });
     if (path === '/api/models') return json({ models: [
       { id: 'deepseek-primary', name: 'DeepSeek Primary', provider: 'deepseek', mode: 'local-lab-general', supportedModes: ['local-lab-general', 'external-general'], available: true },
       { id: 'deepseek-flash', name: 'DeepSeek Flash', provider: 'deepseek', mode: 'local-lab-general', supportedModes: ['local-lab-general', 'external-general'], available: true },
@@ -111,6 +111,7 @@ test('workspace navigation, external target preflight and report preview use the
   await page.locator('#external-model-select').selectOption('deepseek-flash');
   await page.locator('#external-multi-agent-toggle').check();
   assert.equal(await page.locator('#external-model-select').inputValue(), 'deepseek-flash');
+  assert.match(await page.locator('#external-model-readiness').textContent(), /로컬 sLLM/);
   await page.locator('#external-url').fill('https://example.org/start');
   assert.equal(await page.locator('#external-authorization').count(), 0);
   await page.locator('#external-preflight-button').click();

@@ -52,7 +52,7 @@ function isJsonObject(value) {
 }
 
 // sLLM 서버에 보낼 요청 JSON을 만든다.
-function buildSllmRequestBody(sllmInput, modelName) {
+function buildSllmRequestBody(sllmInput, modelName, systemPrompt = buildJudgmentPrompt()) {
   // 호출할 모델 이름이 없으면 어떤 모델을 사용할 수 없으므로 오류로 처리한다.
   if (typeof modelName !== 'string' || modelName.length === 0) {
     throw createSllmError('INVALID_MODEL', '사용할 로컬 sLLM 모델 이름이 필요합니다.');
@@ -74,7 +74,7 @@ function buildSllmRequestBody(sllmInput, modelName) {
       {
         // system message에는 모델의 역할과 판단 기준을 넣는다.
         role: 'system',
-        content: buildJudgmentPrompt()
+        content: systemPrompt
       },
       {
         // user message에는 실제로 검사할 sLLM 입력 JSON을 넣는다.
@@ -101,7 +101,8 @@ function getLocalSllmEndpoint(configuredEndpoint) {
 
   // 암호화된 외부 HTTPS 주소가 아니라 로컬 HTTP 주소만 사용한다.
   if (endpointUrl.protocol !== 'http:'
-    || !allowedHosts.includes(endpointUrl.hostname)) {
+    || !allowedHosts.includes(endpointUrl.hostname)
+    || endpointUrl.username || endpointUrl.password || endpointUrl.search || endpointUrl.hash) {
     throw createSllmError(
       'INVALID_SLLM_ENDPOINT',
       'sLLM은 로컬 HTTP 주소만 사용할 수 있습니다.'
@@ -119,7 +120,7 @@ async function sendToSllm(sllmInput, settings) {
 
   // 서버 주소를 검사하고 모델에 보낼 최종 요청 JSON을 만든다.
   const endpoint = getLocalSllmEndpoint(settings.endpoint);
-  const requestBody = buildSllmRequestBody(sllmInput, settings.model);
+  const requestBody = buildSllmRequestBody(sllmInput, settings.model, settings.systemPrompt);
 
   // 테스트에서는 가짜 fetch 함수를 사용할 수 있고,
   // 실제 실행에서는 Node.js의 기본 fetch 함수를 사용한다.
@@ -139,19 +140,28 @@ async function sendToSllm(sllmInput, settings) {
     abortController.abort();
   }, timeoutMs);
 
-  let response;
-
   try {
     // 판단 기준과 페이로드가 들어 있는 JSON을 로컬 sLLM에 POST로 전송한다.
-    response = await fetchFunction(endpoint, {
+    const response = await fetchFunction(endpoint, {
       method: 'POST',
+      redirect: 'error',
       headers: {
         'content-type': 'application/json'
       },
       body: JSON.stringify(requestBody),
-      signal: abortController.signal
+      signal: settings.signal
+        ? AbortSignal.any([abortController.signal, settings.signal]) : abortController.signal
     });
+    if (!response.ok) {
+      throw createSllmError('SLLM_HTTP_ERROR', 'sLLM 서버가 HTTP ' + response.status + ' 오류를 반환했습니다.');
+    }
+    try { return await response.json(); }
+    catch (error) {
+      if (abortController.signal.aborted || settings.signal?.aborted) throw error;
+      throw createSllmError('INVALID_SLLM_RESPONSE', 'sLLM 서버 응답이 JSON 형식이 아닙니다.');
+    }
   } catch (error) {
+    if (['SLLM_HTTP_ERROR', 'INVALID_SLLM_RESPONSE'].includes(error?.code)) throw error;
     // AbortController가 요청을 취소했다면 timeout 오류로 구분한다.
     if (error && error.name === 'AbortError') {
       throw createSllmError('SLLM_TIMEOUT', 'sLLM 응답 시간이 초과되었습니다.');
@@ -164,20 +174,6 @@ async function sendToSllm(sllmInput, settings) {
     clearTimeout(timeoutId);
   }
 
-  // 서버가 200번대 성공 응답을 반환하지 않으면 HTTP 오류로 처리한다.
-  if (!response.ok) {
-    throw createSllmError(
-      'SLLM_HTTP_ERROR',
-      'sLLM 서버가 HTTP ' + response.status + ' 오류를 반환했습니다.'
-    );
-  }
-
-  try {
-    // sLLM 서버가 반환한 응답 본문을 JSON으로 읽는다.
-    return await response.json();
-  } catch (error) {
-    throw createSllmError('INVALID_SLLM_RESPONSE', 'sLLM 서버 응답이 JSON 형식이 아닙니다.');
-  }
 }
 
 // 모델 응답에서 content를 꺼내 JSON으로 읽는다.

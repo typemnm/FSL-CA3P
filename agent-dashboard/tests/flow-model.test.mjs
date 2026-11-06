@@ -60,6 +60,20 @@ test('a general run is projected into ordered, routed activities', () => {
   assert.equal(new Set(activities.map(item => item.id)).size, activities.length);
 });
 
+test('external probe flow shows sLLM review and attack-tool transport', () => {
+  const run = generalRun({ mode: 'external-general', events: [
+    event(1, { stage: 'guardrail', module: 'guardrail', request: { probeId: 'p1', packetRole: 'single' },
+      response: { status: 'IN_SCOPE', reasonCode: 'IN_SCOPE' } }),
+    event(2, { stage: 'execute', request: { probeId: 'p1', tool: 'http_get' },
+      response: { status: 'completed', evidenceIds: ['e1'] } }),
+  ], artifacts: [], reportDocuments: undefined });
+  const { activities } = deriveFlow(run);
+  const guardrail = activities.find(item => item.title === 'sLLM 요청 판정 · 허용');
+  const probe = activities.find(item => item.title === 'HTTP GET 실행');
+  assert.deepEqual(guardrail.route, ['agent', 'guardrail', 'agent']);
+  assert.deepEqual(probe.route, ['agent', 'attack', 'target', 'attack', 'agent']);
+});
+
 test('artifacts are highlighted once each and point to their report area', () => {
   const { activities } = deriveFlow(generalRun());
   const artifacts = activities.filter(item => item.artifact);

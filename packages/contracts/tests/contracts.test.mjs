@@ -111,7 +111,8 @@ test('external general manifest binds the model, verifier, loop budget and publi
   const loopBudget = { maxIterations: 4, maxProbes: 8, maxEvidenceItems: 64 };
   const manifest = createRunManifest({ runId: 'external-general-manifest', mode: 'external-general',
     modelId: 'deepseek-flash', model: { provider: 'deepseek' },
-    options: { target: 'https://example.com/audit', scope, loopBudget } });
+    options: { target: 'https://example.com/audit', scope, loopBudget },
+    guardrail: { provider: 'local', model: 'guardrail-local', endpoint: 'http://127.0.0.1:11434' } });
   assert.equal(manifest.execution.inspectionMode, 'external-general');
   assert.deepEqual(manifest.execution.loopBudget, loopBudget);
   assert.deepEqual(manifest.execution.effectiveLoopBudget,
@@ -131,6 +132,13 @@ test('external general manifest binds the model, verifier, loop budget and publi
     application: treeDigest(join(PROJECT_ROOT, 'apps/application/external-target.mjs')),
     externalHttp: treeDigest(join(PROJECT_ROOT, 'packages/external-http/index.mjs')),
   }));
+  assert.ok(manifest.modules['attack-tool'].contentDigest);
+  assert.ok(manifest.modules['guardrail-sllm'].contentDigest);
+  assert.ok(manifest.modules['packages/adapters'].contentDigest);
+  assert.ok(manifest.policy.sllmContractDigest);
+  assert.equal(manifest.policy.sllmProvider, 'local');
+  assert.equal(manifest.policy.sllmModel, 'guardrail-local');
+  assert.ok(manifest.policy.sllmEndpointDigest);
   assert.equal(manifest.target.testProfile, 'external-general');
   assert.deepEqual(manifest.target.scope, scope);
   assert.equal(manifest.data.unavailableInputs.includes('independent-verifiers'), false);

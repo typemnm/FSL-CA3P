@@ -316,6 +316,8 @@ function acceptState(envelope) {
     ? { available: envelope.lab.available, model: envelope.lab.model, possibleRetries: envelope.lab.possibleRetries,
       generalSupported: envelope.lab.generalSupported === true, generalAvailable: envelope.lab.generalAvailable === true,
       externalSupported: envelope.lab.externalSupported === true, externalAvailable: envelope.lab.externalAvailable === true,
+      externalGuardrailProvider: envelope.lab.externalGuardrailProvider === 'local'
+        ? envelope.lab.externalGuardrailProvider : 'unavailable',
       targetOrigins: isObject(envelope.lab.targetOrigins) ? envelope.lab.targetOrigins : {} }
     : { available: false };
   run = structuredClone(next);
@@ -558,9 +560,9 @@ function renderStats() {
   $('external-model-select').disabled = controlPending || active || !canOperate();
   $('external-multi-agent-toggle').disabled = controlPending || active || !canOperate();
   $('external-model-readiness').textContent = !labReadiness.externalSupported ? '외부 범용 점검 서버 경로가 연결되지 않았습니다.'
-    : !labReadiness.externalAvailable || !model?.available ? '범용 점검용 실제 모델을 사용할 수 없습니다. DeepSeek 또는 이 장치의 로컬 LLM 설정을 확인하세요.'
+    : !labReadiness.externalAvailable || !model?.available ? '범용 점검 모델 또는 가드레일 모델 설정을 확인하세요.'
       : !model.supportedModes?.includes('external-general') ? '외부 범용 점검을 지원하는 모델을 선택하세요.'
-      : `${model.name || model.id} · 외부 범용 점검 준비됨. 모델 API 호출에는 비용이 발생할 수 있습니다.`;
+      : `${model.name || model.id} · 외부 범용 점검 준비됨. 가드레일: 로컬 sLLM. 모델 API 호출에는 비용이 발생할 수 있습니다.`;
   $('fixture-select').disabled = controlPending || active || !canOperate();
   $('lab-target-origin').disabled = controlPending || active || !canOperate();
   $('lab-target-control').hidden = !idor;

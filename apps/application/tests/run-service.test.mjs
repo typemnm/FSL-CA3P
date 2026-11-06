@@ -261,6 +261,23 @@ test('general assessment requires a real configured model and registered target 
   assert.equal(configured.listRuns().total, 0);
 });
 
+test('external assessment requires a local guardrail even when a planner is available', t => {
+  const withFlash = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: 'test-key' } }).service;
+  assert.equal(withFlash.getState().lab.generalAvailable, true);
+  assert.equal(withFlash.getState().lab.externalAvailable, false);
+  assert.equal(withFlash.getState().lab.externalGuardrailProvider, 'unavailable');
+  const withLocal = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: 'test-key', CA3P_GUARDRAIL_SLLM_ENDPOINT: 'http://127.0.0.1:11434',
+      CA3P_GUARDRAIL_SLLM_MODEL: 'guardrail-local' } }).service;
+  assert.equal(withLocal.getState().lab.externalAvailable, true);
+  assert.equal(withLocal.getState().lab.externalGuardrailProvider, 'local');
+  const withRemote = setup(t, { autoStartWorker: false, importLegacy: false,
+    env: { DEEPSEEK_API_KEY: 'test-key', CA3P_GUARDRAIL_SLLM_ENDPOINT: 'https://model.example',
+      CA3P_GUARDRAIL_SLLM_MODEL: 'guardrail-local' } }).service;
+  assert.equal(withRemote.getState().lab.externalAvailable, false);
+});
+
 test('a configured local planner queues a general assessment without DeepSeek', async t => {
   const { service } = setup(t, { autoStartWorker: false, importLegacy: false, env: {
     DEEPSEEK_API_KEY: '', CA3P_CHAT_LOCAL_ENDPOINT: 'http://127.0.0.1:11434',

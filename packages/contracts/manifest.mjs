@@ -44,7 +44,8 @@ function attackCatalogSnapshot(path) {
   } catch { return null; }
   finally { database?.close(); }
 }
-export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env }) {
+export function createRunManifest({ runId, mode, modelId, options = {}, model = {}, env = process.env,
+  guardrail = null }) {
   const multiAgent = validateMultiAgentOptions(options.multiAgent);
   if (multiAgent && !['local-lab-general', 'external-general'].includes(mode)) {
     throw new TypeError('Multi-agent follow-up requires a general assessment mode.');
@@ -56,10 +57,13 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
     const childRequestReserve = multiAgent ? Math.min(4, Math.floor((requestLimit - 2) / 2)) : 0;
     const effectiveLoopBudget = { ...loopBudget,
       maxProbes: Math.min(loopBudget.maxProbes, requestLimit - childRequestReserve - 2) };
-    const moduleNames = ['agent', 'packages/verifier', 'packages/models', 'packages/report', 'packages/external-http',
+    const moduleNames = ['agent', 'attack-tool', 'guardrail-sllm', 'packages/adapters',
+      'packages/verifier', 'packages/models', 'packages/report', 'packages/external-http',
       'apps/application', 'apps/worker', 'packages/contracts', 'packages/run-store'];
     const modules = Object.fromEntries(moduleNames.map(name => [name,
       { contentDigest: treeDigest(join(PROJECT_ROOT, name)), packageVersion: null }]));
+    const guardrailEndpoint = guardrail?.endpoint ?? env.CA3P_GUARDRAIL_SLLM_ENDPOINT ?? env.SLLM_ENDPOINT;
+    const guardrailModel = guardrail?.model ?? env.CA3P_GUARDRAIL_SLLM_MODEL ?? env.SLLM_MODEL ?? null;
     return { schemaVersion: CONTRACT_VERSIONS.runManifest, runId, createdAt: new Date().toISOString(),
       source: { commitSha: git(['rev-parse', 'HEAD']), branch: git(['rev-parse', '--abbrev-ref', 'HEAD']),
         dirty: Boolean(git(['status', '--porcelain'])), baselineSha: null,
@@ -88,6 +92,10 @@ export function createRunManifest({ runId, mode, modelId, options = {}, model = 
         application: treeDigest(join(PROJECT_ROOT, 'apps/application/external-target.mjs')),
         externalHttp: treeDigest(join(PROJECT_ROOT, 'packages/external-http/index.mjs')),
       }),
+        sllmContractDigest: treeDigest(join(PROJECT_ROOT, 'guardrail-sllm')),
+        sllmProvider: guardrail?.provider ?? (guardrailModel ? 'local' : null),
+        sllmModel: guardrailModel,
+        sllmEndpointDigest: guardrailEndpoint ? digest(guardrailEndpoint) : null,
         methods: ['GET', 'HEAD'], maxRequests: requestLimit,
         maxResponseBytes: options.scope.maxResponseBytes, requestTimeoutMs: options.scope.requestTimeoutMs,
         maxDurationMs: options.scope.maxDurationMs, durationMeasure: 'cumulative-target-http-time',

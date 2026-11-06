@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { digest } from '../../../packages/contracts/index.mjs';
 import { createRunRepository } from '../../../packages/run-store/index.mjs';
 import { targetResetObligationsForRuns } from '../../application/experiment-targets.mjs';
 import { normalizeExternalTarget } from '../../application/external-target.mjs';
@@ -30,7 +31,9 @@ test('external worker runs the general loop on a scoped public target and skips 
   const store = createRunRepository({ path: storePath });
   store.createRun({ id, mode: 'external-general', modelId: 'deepseek-flash',
     manifest: { runId: id, modules: {}, shared: {}, target: { kind: 'external', origin: scope.origin },
-      execution: { inspectionMode: 'external-general' }, policy: { methods: ['GET', 'HEAD'] } },
+      execution: { inspectionMode: 'external-general' }, policy: { methods: ['GET', 'HEAD'],
+        sllmContractDigest: 'guardrail-test', sllmProvider: 'local', sllmModel: 'guardrail-local',
+        sllmEndpointDigest: digest('http://127.0.0.1:11434') } },
     state: { id, mode: 'external-general', assessmentMode: 'general', modelId: 'deepseek-flash',
       status: 'queued', events: [] },
     options: { mode: 'external-general', modelId: 'deepseek-flash', target: normalizedUrl, scope,
@@ -39,6 +42,8 @@ test('external worker runs the general loop on a scoped public target and skips 
   store.close();
   const requested = [];
   const worker = await runWorker({ storePath, pollMs: 10, heartbeatMs: 10,
+    env: { CA3P_GUARDRAIL_SLLM_ENDPOINT: 'http://127.0.0.1:11434',
+      CA3P_GUARDRAIL_SLLM_MODEL: 'guardrail-local' }, envFile: null,
     generalPlannerFactory: () => ({ async propose() { return { done: true, hypotheses: [], probes: [],
       modelMetadata: { provider: 'deepseek', model: 'deepseek-flash' } }; } }),
     externalRequestImpl: async url => { requested.push(url); return {
@@ -110,6 +115,8 @@ test('external worker carries an independently confirmed finding into the HWPX h
     externalRuntimeFactory: options => {
       verificationRoot = options.verificationRoot;
       return createExternalGeneralRuntime({ ...options,
+        sllmCheckImpl: async () => ({ verdict: 'IN_SCOPE', reasonCode: 'IN_SCOPE',
+          allowExecution: true, modelCalled: false }),
         verifyAttackImpl: async attack => {
           verdicts.push(attack);
           return { schemaVersion: 'verifier/1', attackId: attack.id, status: 'confirmed',

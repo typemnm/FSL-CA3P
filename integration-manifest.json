@@ -55,6 +55,13 @@
       "dependencies": []
     },
     {
+      "id": "guardrail-sllm",
+      "path": "guardrail-sllm",
+      "layer": "policy",
+      "status": "active",
+      "dependencies": []
+    },
+    {
       "id": "casper-db",
       "path": "casper-db",
       "layer": "knowledge",
@@ -234,7 +241,8 @@
         "adapters",
         "chat-store",
         "verifier",
-        "external-http"
+        "external-http",
+        "guardrail-sllm"
       ]
     },
     {

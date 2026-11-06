@@ -10,6 +10,7 @@ import { normalizeExternalTarget, resolvePublicAddresses, verifyExternalPrefligh
 import { compareRunRecords } from '../../packages/evaluation/index.mjs';
 import { listModels as registryModels } from '../../packages/models/registry.mjs';
 import { providerSettingsPath } from '../../packages/models/provider-settings.mjs';
+import { resolveExternalGuardrail } from '../../packages/models/external-guardrail.mjs';
 import { prepareCaseSnapshot } from './case-snapshot.mjs';
 import { importLegacyRuns } from './import-legacy.mjs';
 import { prepareExperimentCleanup, prepareHistoryReset } from './experiment-cleanup.mjs';
@@ -29,7 +30,6 @@ const UNIVERSITY_ORIGIN_ENV = Object.freeze({
   'vul-web2-daehan': 'CA3P_DAEHAN_ORIGIN',
   'vul-web2-wonchang': 'CA3P_WONCHANG_ORIGIN',
 });
-
 /** API-side application service. It never runs the lab in the HTTP process. */
 export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWorker = true,
   pollMs = 100, workerOptions = {}, envFile, env = process.env, defaultDelayMs = 0, importLegacy = true,
@@ -67,11 +67,14 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
       && model.supportedModes?.includes('local-lab-general') && model.available);
     const customPlanner = models.find(model => model.provider === 'custom' && model.available);
     const plannerReady = Boolean(remote || localPlanner || customPlanner);
+    const guardrail = resolveExternalGuardrail({ env, envFile });
     const experiment = store.experimentState();
     return { run, mode: run.mode, instanceId, experiment: { epoch: experiment.epoch, lastResetAt: experiment.lastResetAt, status: experiment.status },
       experimentReset: experiment, lab: { available: true, model: 'rule-baseline', provider: 'rules',
       remoteAvailable: Boolean(remote), generalSupported: true, generalAvailable: plannerReady,
-      externalSupported: true, externalAvailable: plannerReady, targetOrigins: universityOrigins, models } };
+      externalSupported: true, externalAvailable: plannerReady && guardrail.provider !== 'unavailable',
+      externalGuardrailProvider: guardrail.provider,
+      targetOrigins: universityOrigins, models } };
   }
   function publish(force = false) {
     if (closed) return;
@@ -160,6 +163,8 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
         throw fault(400, 'External assessment requires a registered DeepSeek, local or AI API provider model.');
       }
       if (!model.available) throw fault(503, 'Selected model is unavailable. Configure server credentials before starting.');
+      const guardrail = resolveExternalGuardrail({ env, envFile });
+      if (guardrail.provider === 'unavailable') throw fault(503, 'Configure a local guardrail sLLM before starting an external assessment.');
       const { normalizedUrl, scope } = normalizeExternalTarget(body);
       if (multiAgent && Math.min(scope.maxRequests, multiAgent.maxTargetRequests ?? scope.maxRequests) < 4) {
         throw fault(400, 'External multi-agent follow-up needs at least four target requests.');
@@ -174,7 +179,7 @@ export function createRunService({ storePath = DEFAULT_STORE_PATH, autoStartWork
         loopBudget: store.getGeneralLoopBudget() };
       if (multiAgent) options.multiAgent = multiAgent;
       const manifest = createRunManifest({ runId: id, mode: body.mode, modelId, options,
-        model, env });
+        model, env, guardrail });
       const experiment = store.experimentState();
       manifest.experiment = { epoch: experiment.epoch, lastResetAt: experiment.lastResetAt,
         previousRunCount: store.listRuns({ limit: 1 }).total };
